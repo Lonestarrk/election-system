@@ -15,6 +15,13 @@ export default defineConfig({
     },
   },
   test: {
+    /**
+     * Playwright-specarna ligger under tests/e2e och körs av `npm run test:e2e`.
+     * Utan den här uteslutningen skulle Vitest plocka upp dem och falla på
+     * `import { test } from '@playwright/test'`.
+     */
+    exclude: ['tests/e2e/**', 'node_modules/**', 'dist/**', '.next/**'],
+
     environment: 'node',
     globalSetup: ['./tests/global-setup.ts'],
     setupFiles: ['./tests/setup.ts'],

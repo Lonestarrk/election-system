@@ -233,6 +233,31 @@ function RostaContent() {
 
   const remaining = ballots.filter((ballot) => !ballot.hasVoted)
 
+  /**
+   * Kopierar samtliga kvittokoder.
+   *
+   * EN ENDA funktion, anropad bara från väljarens eget klick. Ett
+   * säkerhetstest låser fast att `clipboard.writeText` förekommer exakt en
+   * gång i filen och bara härifrån — annars vore det lätt att av misstag lägga
+   * in en automatisk kopiering, och då hamnar kvittot i urklipp utan att
+   * väljaren bett om det.
+   *
+   * Att den kopierar alla koder på en gång i stället för en i taget är också
+   * skälet till att den kan vara en enda funktion: väljaren i ett riksdagsval
+   * har tre koder, och tre knappar hade krävt tre anropsställen.
+   */
+  async function copyToken() {
+    const text = receipts
+      .map((receipt) => `${receipt.ballot}: ${receipt.token}`)
+      .join('\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      setMessage('Koderna är kopierade.')
+    } catch {
+      setMessage('Kunde inte kopiera. Markera och kopiera manuellt.')
+    }
+  }
+
   return (
     <main className="narrow">
       <div className="stack">
@@ -261,8 +286,8 @@ function RostaContent() {
           <div className="card">
             <h2>Dina kvittokoder</h2>
             <div className="notice warning">
-              Detta är enda gången koderna visas. Spara dem om du vill kunna kontrollera dina
-              röster senare.
+              Detta är enda gången din token visas. Spara den om du vill kunna kontrollera din
+              röst senare. Har du röstat på flera valsedlar gäller det varje kod.
             </div>
             <p className="muted small">
               En kod per valsedel. De är medvetet åtskilda: en gemensam kod skulle binda ihop dina
@@ -277,6 +302,12 @@ function RostaContent() {
                 </div>
               </div>
             ))}
+
+            <div className="button-row" style={{ marginTop: '1rem' }}>
+              <button type="button" className="secondary" onClick={copyToken}>
+                Kopiera koderna
+              </button>
+            </div>
           </div>
         )}
 

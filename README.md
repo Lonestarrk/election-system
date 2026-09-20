@@ -227,6 +227,19 @@ därför med **POST** och token i begärans kropp. Svarsformatet följer specen 
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — komponenter, dataflöde, modulkontrakt,
   datamodell, testarkitektur
+### E2E-tester
+
+Playwright kör mot appen i en riktig webbläsare. Det prövar det som ingen annan
+svit kan: att blindningen av röstintyget fungerar med WebCrypto och BigInt på
+klienten, mot serverns Node-RSA.
+
+```bash
+docker compose up -d postgres
+npm run migrate && npm run seed
+npx playwright install chromium
+npm run test:e2e
+```
+
 - **[VERIFIABILITY.md](VERIFIABILITY.md)** — oberoende verifierbarhet: blinda
   röstintyg, Merkleåtaganden, automatisk slutkontroll, observatörsgränssnitt och
   vad som fortfarande kräver tillit
