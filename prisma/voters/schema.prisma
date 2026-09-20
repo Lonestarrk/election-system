@@ -1,0 +1,84 @@
+// ---------------------------------------------------------------------------
+// RÖSTLÄNGDSDATABASEN (voters_db)
+//
+// Denna databas vet VEM som är röstberättigad och VEM som har röstat.
+// Den vet aldrig VAD någon röstat på.
+//
+// Det finns ingen kolumn här som kan kopplas till en rad i AnonymousVote.
+// Ingen token, inget token-hash, ingen röst-id, ingen parti-id.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../node_modules/.prisma/voters"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("VOTERS_DATABASE_URL")
+}
+
+/// En rad per röstberättigad person i röstlängden.
+model VoterStatus {
+  id String @id @default(uuid())
+
+  /// HMAC-SHA256(personnummer, IDENTITY_PEPPER).
+  /// Personnumret lagras aldrig i klartext. Peppret gör att en databasdump
+  /// inte räcker för att brute-forca fram personnummer — utfallsrummet för
+  /// svenska personnummer är litet nog att en ren SHA-256 skulle falla på
+  /// sekunder.
+  externalIdentityHash String  @unique @map("external_identity_hash")
+
+  isEligible Boolean @default(true) @map("is_eligible")
+  hasVoted   Boolean @default(false) @map("has_voted")
+
+  /// AVSIKTLIGT GROVKORNIG: avrundad till dygn.
+  ///
+  /// Med millisekundsupplösning här och i AnonymousVote.createdAt skulle en
+  /// angripare med båda databaserna kunna matcha rad mot rad på tid och
+  /// därmed återskapa kopplingen mellan väljare och röst. Hela separationen
+  /// vore då meningslös. Se SECURITY.md, avsnittet om tidskorrelation.
+  votedAt DateTime? @map("voted_at")
+
+  sessions VotingSession[]
+
+  @@map("voter_status")
+}
+
+/// Kortlivad session mellan lyckad legitimering och lagd röst.
+///
+/// Detta är den ENDA punkt i systemet där en identitet och ett pågående
+/// röstningsförsök existerar samtidigt. Raden raderas i samma transaktion som
+/// rösten markeras som lagd — efter att rösten är lagd finns inget
+/// sessions-id kvar som kan koppla ihop de två sidorna.
+model VotingSession {
+  id String @id @default(uuid())
+
+  voterStatusId String      @map("voter_status_id")
+  voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime @map("expires_at")
+
+  /// CSRF-hemlighet knuten till sessionen (double-submit cookie).
+  csrfSecret String @map("csrf_secret")
+
+  @@index([voterStatusId])
+  @@map("voting_session")
+}
+
+/// Revisionslogg för säkerhetshändelser.
+///
+/// Innehåller ALDRIG: identitet, parti, token, IP-adress, request-id.
+/// Tidsstämpeln är avrundad till hel timme av samma skäl som votedAt.
+///
+/// Detta är en medveten avvägning: en revisionslogg detaljerad nog att
+/// utreda ett enskilt fall vore också detaljerad nog att avanonymisera en
+/// väljare.
+model AuditEvent {
+  id         String   @id @default(uuid())
+  eventType  String   @map("event_type")
+  occurredAt DateTime @map("occurred_at")
+
+  @@index([eventType])
+  @@map("audit_event")
+}

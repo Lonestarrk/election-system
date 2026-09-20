@@ -1,0 +1,23 @@
+node_modules/
+.next/
+out/
+build/
+
+# De genererade Prisma-klienterna hamnar i node_modules/.prisma/ och är redan
+# ignorerade via node_modules ovan. De genereras om av postinstall.
+
+# Miljövariabler. .env innehåller IDENTITY_PEPPER och ska aldrig committas:
+# med peppret i handen blir en hashad röstlängd trivial att vända på.
+.env
+.env.local
+.env.*.local
+
+*.log
+.DS_Store
+.vscode/
+.idea/
+coverage/
+*.tsbuildinfo
+
+# Ursprunglig uppgiftsbeskrivning, hålls utanför publika repot.
+digitalt_valsystem_prompt.txt

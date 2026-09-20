@@ -1,0 +1,60 @@
+// ---------------------------------------------------------------------------
+// DEN ANONYMA RÖSTDATABASEN (votes_db)
+//
+// Denna databas vet VAD som röstats på. Den vet aldrig VEM som röstat.
+//
+// Det finns ingen kolumn här som kan kopplas till en rad i voter_status.
+// Ingen identitet, inget identitetshash, inget väljar-id, ingen IP-adress,
+// inget sessions-id, inget request-id.
+//
+// Databasen ligger i en annan PostgreSQL-databas än röstlängden. En foreign
+// key till voter_status är därför inte bara oskriven — den är omöjlig.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../node_modules/.prisma/votes"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("VOTES_DATABASE_URL")
+}
+
+model Party {
+  id           String @id @default(uuid())
+  name         String @unique
+  abbreviation String @unique
+  /// Hex-färg för UI:t.
+  color        String
+  displayOrder Int    @map("display_order")
+
+  votes AnonymousVote[]
+
+  @@map("party")
+}
+
+/// En anonym röst.
+model AnonymousVote {
+  id String @id @default(uuid())
+
+  /// SHA-256 av den token väljaren fick. Klartext-token lagras aldrig.
+  ///
+  /// Konsekvens: den som dumpar databasen kan inte härma en väljare eller
+  /// slå upp någons röst utan att först ha token. Och token finns bara hos
+  /// väljaren, som fick se den en enda gång.
+  ///
+  /// Unikt index: gör en tokenkollision till ett databasfel i stället för
+  /// en tyst överskrivning av någon annans röst.
+  tokenHash String @unique @map("token_hash")
+
+  partyId String @map("party_id")
+  party   Party  @relation(fields: [partyId], references: [id])
+
+  /// AVSIKTLIGT GROVKORNIG: avrundad till hel timme.
+  /// Se kommentaren om tidskorrelation i prisma/voters/schema.prisma.
+  createdAt DateTime @map("created_at")
+
+  @@index([partyId])
+  @@map("anonymous_vote")
+}

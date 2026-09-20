@@ -1,0 +1,41 @@
+{
+  "name": "election-system",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Proof-of-concept: digitalt valsystem med separerad identitet och röst",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "npm run generate",
+    "generate": "npm run generate:voters && npm run generate:votes",
+    "generate:voters": "prisma generate --schema=prisma/voters/schema.prisma",
+    "generate:votes": "prisma generate --schema=prisma/votes/schema.prisma",
+    "migrate": "npm run migrate:voters && npm run migrate:votes",
+    "migrate:voters": "prisma migrate deploy --schema=prisma/voters/schema.prisma",
+    "migrate:votes": "prisma migrate deploy --schema=prisma/votes/schema.prisma",
+    "seed": "tsx prisma/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:security": "vitest run tests/security"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.5.0",
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "prisma": "^6.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

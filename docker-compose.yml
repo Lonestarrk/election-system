@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: election-postgres
+    environment:
+      POSTGRES_USER: election
+      POSTGRES_PASSWORD: election
+      POSTGRES_DB: voters_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Skapar votes_db vid första uppstarten.
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U election -d voters_db']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: election-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VOTERS_DATABASE_URL: postgresql://election:election@postgres:5432/voters_db?schema=public
+      VOTES_DATABASE_URL: postgresql://election:election@postgres:5432/votes_db?schema=public
+      IDENTITY_PEPPER: byt-ut-mig-detta-ar-bara-for-lokal-utveckling-0000
+      ADMIN_PASSWORD: admin
+      APP_ORIGIN: http://localhost:3000
+      COOKIE_SECURE: 'false'
+      MOCK_BANKID_POLLS_UNTIL_COMPLETE: '2'
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+
+volumes:
+  postgres-data:
