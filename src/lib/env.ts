@@ -34,8 +34,39 @@ export const env = {
     return pepper
   },
 
-  get adminPassword(): string {
-    return required('ADMIN_PASSWORD')
+  /**
+   * ADMIN_PASSWORD är borttagen.
+   *
+   * Adminbehörighet avgörs numera av `isAdmin` på personens rad i
+   * röstlängden, efter BankID-legitimering. Det finns alltså ingen delad
+   * adminhemlighet kvar i konfigurationen — inget att läcka ur en .env-fil,
+   * och inget som är samma i alla miljöer.
+   */
+
+  /**
+   * VAPID-nycklar för Web Push.
+   *
+   * Frivilliga. Saknas de är notiser avstängda och systemet fungerar i övrigt
+   * precis som vanligt — en POC ska inte vägra starta för att en
+   * bekvämlighetsfunktion är okonfigurerad.
+   *
+   * Den privata nyckeln signerar utskicken och identifierar avsändaren mot
+   * push-tjänsterna. Läcker den kan någon annan skicka notiser i systemets
+   * namn, vilket vore ett trovärdigt sätt att lura väljare till en falsk sajt.
+   * Den hör alltså hemma i samma kategori som IDENTITY_PEPPER.
+   */
+  get vapid(): { publicKey: string; privateKey: string; subject: string } | null {
+    const publicKey = process.env.VAPID_PUBLIC_KEY
+    const privateKey = process.env.VAPID_PRIVATE_KEY
+    if (!publicKey || !privateKey) return null
+
+    return {
+      publicKey,
+      privateKey,
+      // mailto: eller en https-URL. Push-tjänsterna kräver en kontaktpunkt för
+      // att kunna höra av sig om utskicken missbrukas.
+      subject: process.env.VAPID_SUBJECT ?? 'mailto:valmyndigheten@example.org',
+    }
   },
 
   get appOrigin(): string {

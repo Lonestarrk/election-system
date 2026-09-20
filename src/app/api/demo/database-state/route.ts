@@ -59,21 +59,41 @@ function shorten(value: string): string {
   return `${value.slice(0, 12)}…`
 }
 
-const VOTER_COLUMNS = ['id', 'external_identity_hash', 'is_eligible', 'has_voted', 'voted_at']
-const VOTE_COLUMNS = ['id', 'token_hash', 'party_id', 'created_at']
+const VOTER_COLUMNS = ['id', 'external_identity_hash', 'is_eligible', 'is_admin']
+const VOTE_COLUMNS = ['id', 'token_hash', 'ballot_id', 'created_at']
 
-const VOTER_TABLES = ['voter_status', 'voting_session', 'audit_event']
-const VOTE_TABLES = ['party', 'anonymous_vote']
+const VOTER_TABLES = [
+  'voter_status',
+  'voter_ballot_status',
+  'voting_session',
+  'admin_session',
+  'election',
+  'election_ballot',
+  'push_subscription',
+  'audit_event',
+]
+const VOTE_TABLES = [
+  'election',
+  'election_ballot',
+  'party',
+  'ballot_party',
+  'candidate',
+  'ballot_option',
+  'anonymous_vote',
+]
 
 export async function GET() {
   const [voters, votes, voterKeys, voteKeys] = await Promise.all([
     votersDb.voterStatus.findMany({
       orderBy: { id: 'asc' },
-      select: { id: true, externalIdentityHash: true, hasVoted: true, votedAt: true },
+      select: { id: true, externalIdentityHash: true, isEligible: true, isAdmin: true },
     }),
     votesDb.anonymousVote.findMany({
       orderBy: { id: 'asc' },
-      select: { id: true, tokenHash: true, createdAt: true, party: { select: { name: true } } },
+      // Bara valsedeln, inte partiet. Demovyn visar att tabellerna saknar
+      // gemensamma värden — den behöver inte avslöja vad någon röstat på för
+      // att göra den poängen.
+      select: { id: true, tokenHash: true, createdAt: true, ballotId: true },
     }),
     votersDb.$queryRawUnsafe<ForeignKeyRow[]>(FOREIGN_KEY_QUERY),
     votesDb.$queryRawUnsafe<ForeignKeyRow[]>(FOREIGN_KEY_QUERY),
@@ -101,9 +121,8 @@ export async function GET() {
       rows: voters.map((voter) => ({
         id: shorten(voter.id),
         externalIdentityHash: shorten(voter.externalIdentityHash),
-        hasVoted: voter.hasVoted,
-        // Dygnsupplösning, precis som den lagras.
-        votedAt: voter.votedAt ? voter.votedAt.toISOString().slice(0, 10) : null,
+        isEligible: voter.isEligible,
+        isAdmin: voter.isAdmin,
       })),
       foreignKeys: voterKeys,
     },
@@ -114,7 +133,7 @@ export async function GET() {
       rows: votes.map((vote) => ({
         id: shorten(vote.id),
         tokenHash: shorten(vote.tokenHash),
-        party: vote.party.name,
+        ballotId: shorten(vote.ballotId),
         // Timupplösning, precis som den lagras.
         createdAt: vote.createdAt.toISOString().slice(0, 13).replace('T', ' ') + ':00',
       })),

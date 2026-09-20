@@ -58,6 +58,16 @@ CREATE TABLE "voting_session" (
 );
 
 -- CreateTable
+CREATE TABLE "admin_session" (
+    "id" TEXT NOT NULL,
+    "voter_status_id" TEXT NOT NULL,
+    "expires_at" TIMESTAMP(3) NOT NULL,
+    "csrf_secret" TEXT NOT NULL,
+
+    CONSTRAINT "admin_session_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "push_subscription" (
     "id" TEXT NOT NULL,
     "endpoint" TEXT NOT NULL,
@@ -93,6 +103,9 @@ CREATE UNIQUE INDEX "voter_ballot_status_voter_status_id_ballot_id_key" ON "vote
 CREATE INDEX "voting_session_voter_status_id_idx" ON "voting_session"("voter_status_id");
 
 -- CreateIndex
+CREATE INDEX "admin_session_voter_status_id_idx" ON "admin_session"("voter_status_id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "push_subscription_endpoint_key" ON "push_subscription"("endpoint");
 
 -- CreateIndex
@@ -109,4 +122,7 @@ ALTER TABLE "voter_ballot_status" ADD CONSTRAINT "voter_ballot_status_ballot_id_
 
 -- AddForeignKey
 ALTER TABLE "voting_session" ADD CONSTRAINT "voting_session_voter_status_id_fkey" FOREIGN KEY ("voter_status_id") REFERENCES "voter_status"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "admin_session" ADD CONSTRAINT "admin_session_voter_status_id_fkey" FOREIGN KEY ("voter_status_id") REFERENCES "voter_status"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 

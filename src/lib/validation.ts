@@ -59,6 +59,11 @@ export const castVoteSchema = z
     message: 'En personröst kräver att du också valt ett parti.',
   })
 
+/** Statistikbegäran. Utan omröstning svarar rutten bara med listan. */
+export const statsRequestSchema = z.object({
+  electionId: z.string().uuid('Ogiltig omröstning.').optional(),
+})
+
 /** Uppslag av en valsedels innehåll. Id:t ligger i kroppen, inte i sökvägen. */
 export const ballotLookupSchema = z.object({
   ballotId: z.string().uuid('Ogiltig valsedel.'),
@@ -133,8 +138,15 @@ export const verifyTokenSchema = z.object({
     .regex(/^[0-9ABCDEFGHJKMNPQRSTVWXYZ-]+$/i, 'Ogiltigt tokenformat.'),
 })
 
+/**
+ * Adminlogin.
+ *
+ * Tar emot en BankID-referens, inte ett lösenord. Behörigheten avgörs av
+ * adminflaggan på personens rad i röstlängden — det finns ingen delad
+ * hemlighet kvar i systemet att skicka hit.
+ */
 export const adminLoginSchema = z.object({
-  password: z.string().min(1, 'Ange lösenord.').max(256),
+  orderRef: z.string().uuid('Ogiltig referens.'),
 })
 
 /** Läser och validerar JSON-body. Kastar aldrig vidare råa parserfel. */

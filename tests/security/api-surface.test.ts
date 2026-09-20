@@ -37,6 +37,7 @@ describe('API-ytan', () => {
   it('hittar samtliga rutter', () => {
     const paths = routes.map((route) => route.path).sort()
     expect(paths).toEqual([
+      'src/app/api/admin/elections/route.ts',
       'src/app/api/admin/login/route.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/auth/bankid/collect/route.ts',
@@ -142,7 +143,7 @@ describe('adminytan', () => {
 
   it('hämtar bara aggregat', () => {
     expect(stats.content).toMatch(/getVoterStatistics/)
-    expect(stats.content).toMatch(/getVoteStatistics/)
+    expect(stats.content).toMatch(/getElectionResults/)
     expect(stats.content).not.toMatch(/findMany/)
   })
 
@@ -156,7 +157,6 @@ describe('skydd på tillståndsändrande rutter', () => {
     (route) =>
       /export async function POST/.test(route.content) &&
       route.path !== 'src/app/api/verify/route.ts',
-      'src/app/api/vote/ballot/route.ts',
   )
 
   it('kontrollerar Origin', () => {

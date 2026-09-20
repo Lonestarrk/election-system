@@ -1,42 +1,47 @@
 import { cookies } from 'next/headers'
-import { safeEqual, sha256Hex } from './crypto'
 import { ADMIN_COOKIE } from './cookies'
-import { env } from './env'
+import {
+  getValidAdminSession,
+  type AdminSession,
+} from '@/modules/eligibility/admin-session.service'
 
 /**
- * Adminautentisering — POC-nivå.
+ * Adminautentisering.
  *
- * Ett delat lösenord ur konfigurationen, och en cookie vars värde härleds ur
- * samma lösenord. Det räcker för att demonstrera att adminvyn är skyddad, men
- * det är inte ett autentiseringssystem: det finns inga individuella konton,
- * ingen tvåfaktor, ingen möjlighet att återkalla en enskild session och ingen
- * spårbarhet till en person.
+ * Behörigheten hänger på IDENTITETEN, inte på en delad hemlighet: den som ska
+ * kunna skapa en omröstning legitimerar sig med BankID precis som en väljare,
+ * och får adminvyn först om hens rad i röstlängden har `isAdmin`.
  *
- * En riktig valadministration behöver flerpartskontroll — funktioner som
- * kräver att flera behöriga personer agerar tillsammans — just för att en
- * ensam administratör inte ska kunna göra något avgörande på egen hand.
+ * Det ersätter ett delat ADMIN_PASSWORD som hade tre problem: det gick inte
+ * att se vem som varit inne, det gick inte att återkalla en enskild session,
+ * och lösenordet låg i klartext i varje .env-fil och driftsmiljö.
  *
- * Värt att notera: hur svag den här inloggningen än är kan en angripare som
- * tar sig in i adminvyn ändå inte se vem som röstat på vad. Adminvyn har inga
- * sådana funktioner, och underlaget finns inte i någon databas den når.
- * Behörighetsskyddet är alltså inte det som bär valhemligheten.
+ * Det som INTE ändrats är den viktigaste egenskapen: hur stark eller svag
+ * inloggningen än är kan en angripare som tar sig in i adminvyn ändå inte se
+ * vem som röstat på vad. Adminvyn har inga sådana funktioner, och underlaget
+ * finns inte i någon databas den når. Behörighetsskyddet är alltså inte det
+ * som bär valhemligheten — det är databasseparationen som gör det.
+ *
+ * Kvar att lösa för ett riktigt system: flerpartskontroll. Att skapa eller
+ * stänga en omröstning borde kräva att flera behöriga personer agerar
+ * tillsammans, så att en ensam administratör inte kan göra något avgörande på
+ * egen hand. Se SECURITY.md.
  */
 
-function expectedCookieValue(): string {
-  return sha256Hex(`admin-session:${env.adminPassword}`)
-}
+/**
+ * Hämtar den inloggade administratörens session, eller null.
+ *
+ * Kontrollerar adminflaggan mot databasen vid varje anrop — en cookie är ett
+ * bevis på att någon loggade in, inte på att personen fortfarande är behörig.
+ */
+export async function getAdminSession(): Promise<AdminSession | null> {
+  const cookieStore = await cookies()
+  const sessionId = cookieStore.get(ADMIN_COOKIE)?.value
+  if (!sessionId) return null
 
-export function isCorrectAdminPassword(candidate: string): boolean {
-  return safeEqual(candidate, env.adminPassword)
-}
-
-export function adminCookieValue(): string {
-  return expectedCookieValue()
+  return getValidAdminSession(sessionId)
 }
 
 export async function isAdminAuthenticated(): Promise<boolean> {
-  const cookieStore = await cookies()
-  const value = cookieStore.get(ADMIN_COOKIE)?.value
-  if (!value) return false
-  return safeEqual(value, expectedCookieValue())
+  return (await getAdminSession()) !== null
 }

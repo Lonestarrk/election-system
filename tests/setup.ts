@@ -27,6 +27,5 @@ if (existsSync(envPath)) {
 
 // Standardvärden så att enhetstesterna kan köras utan .env och utan databas.
 process.env.IDENTITY_PEPPER ??= 'test-pepper-minst-trettiotva-tecken-langt-0000'
-process.env.ADMIN_PASSWORD ??= 'test-admin'
 process.env.APP_ORIGIN ??= 'http://localhost:3000'
 process.env.MOCK_BANKID_POLLS_UNTIL_COMPLETE ??= '0'

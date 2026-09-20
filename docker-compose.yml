@@ -30,7 +30,6 @@ services:
       VOTERS_DATABASE_URL: postgresql://election:election@postgres:5432/voters_db?schema=public
       VOTES_DATABASE_URL: postgresql://election:election@postgres:5432/votes_db?schema=public
       IDENTITY_PEPPER: byt-ut-mig-detta-ar-bara-for-lokal-utveckling-0000
-      ADMIN_PASSWORD: admin
       APP_ORIGIN: http://localhost:3000
       COOKIE_SECURE: 'false'
       MOCK_BANKID_POLLS_UNTIL_COMPLETE: '2'

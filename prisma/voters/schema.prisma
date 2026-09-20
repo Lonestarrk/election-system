@@ -71,6 +71,7 @@ model VoterStatus {
   regionCode       String? @map("region_code")
 
   sessions       VotingSession[]
+  adminSessions  AdminSession[]
   ballotStatuses VoterBallotStatus[]
 
   @@map("voter_status")
@@ -179,6 +180,37 @@ model VotingSession {
 
   @@index([voterStatusId])
   @@map("voting_session")
+}
+
+/// Session för en inloggad administratör.
+///
+/// Skild från VotingSession med flit. De två har olika livslängd, olika syfte
+/// och olika risk, och en gemensam tabell med en `isAdmin`-kolumn skulle
+/// innebära att ett fel i ett villkor kan förvandla en röstsession till en
+/// adminsession.
+///
+/// ADMINSESSIONEN ÄR IDENTIFIERAD, OCH DET ÄR AVSIKTLIGT.
+///
+/// En väljares session raderas i samma stund rösten är lagd, just för att
+/// ingen koppling ska finnas kvar. Här gäller det omvända: den som skapar en
+/// omröstning SKA gå att knyta till en person, eftersom det är en
+/// förvaltningsåtgärd som ska kunna granskas. Det är samtidigt ofarligt för
+/// valhemligheten — adminsessionen ger tillgång till aggregat och metadata,
+/// aldrig till någons röst, och underlaget för att koppla ihop dem finns inte
+/// i någon databas adminvyn når.
+model AdminSession {
+  id String @id @default(uuid())
+
+  voterStatusId String      @map("voter_status_id")
+  voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime @map("expires_at")
+
+  /// CSRF-hemlighet knuten till sessionen (double-submit cookie).
+  csrfSecret String @map("csrf_secret")
+
+  @@index([voterStatusId])
+  @@map("admin_session")
 }
 
 /// En enhet som prenumererar på notiser om nya omröstningar.

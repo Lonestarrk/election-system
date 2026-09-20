@@ -46,6 +46,18 @@ export const RATE_LIMITS = {
   ballotLookup: { limit: 60, windowMs: 60_000 },
   /** Admininloggning. */
   adminLogin: { limit: 5, windowMs: 300_000 },
+
+  /** Adminstatistik. Läses om ofta medan en omröstning pågår. */
+  adminStats: { limit: 120, windowMs: 60_000 },
+
+  /** Skapa omröstning. Sällan-operation; gränsen finns mot felslagna skript. */
+  createElection: { limit: 10, windowMs: 300_000 },
+
+  /**
+   * Prenumeration på notiser. En enhet prenumererar en gång och sedan sällan.
+   * Gränsen hindrar att tabellen fylls med påhittade endpoints.
+   */
+  pushSubscribe: { limit: 5, windowMs: 300_000 },
 } as const satisfies Record<string, RateLimitRule>
 
 export type RateLimitResult = { allowed: boolean; retryAfterSeconds: number }
