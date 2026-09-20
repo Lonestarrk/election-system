@@ -1,14 +1,15 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { castVote } from '@/orchestration/cast-vote.usecase'
-import { createVotingSession, getValidVotingSession } from '@/modules/eligibility/voting-session.service'
+import { castAnonymousVote } from '@/modules/anonymous-vote'
 import {
+  createTestElection,
   createVoter,
   disconnect,
-  firstPartyId,
   isDatabaseAvailable,
   resetElectionData,
+  voteOnce,
+  type TestElection,
 } from '../integration/helpers'
 
 /**
@@ -45,12 +46,14 @@ describe.skipIf(!databaseAvailable)('token i loggarna', () => {
     vi.restoreAllMocks()
   })
 
-  it('en fullständig röstning skriver aldrig ut token', async () => {
-    const voterId = await createVoter('199001011234')
-    const session = await createVotingSession(voterId)
+  let election: TestElection
 
-    const outcome = await castVote(session, await firstPartyId())
-    if (outcome.status !== 'success') throw new Error('Röstningen misslyckades')
+  it('en fullständig röstning skriver aldrig ut token', async () => {
+    election = await createTestElection()
+    const voterId = await createVoter('199001011234')
+
+    const outcome = await voteOnce(voterId, election)
+    if (outcome.status !== 'voted') throw new Error('Röstningen misslyckades: ' + outcome.reason)
 
     const everythingLogged = captured.join('\n')
 
@@ -62,16 +65,20 @@ describe.skipIf(!databaseAvailable)('token i loggarna', () => {
   })
 
   it('en misslyckad röstning skriver varken ut personnummer eller identitet', async () => {
+    election = await createTestElection()
     const voterId = await createVoter('199001011234')
-    const session = await createVotingSession(voterId)
 
-    // Ogiltigt parti → felväg genom orkestreringen.
-    await castVote(session, '00000000-0000-0000-0000-000000000000')
+    // Ett påhittat röstintyg → felvägen genom inlösen.
+    await castAnonymousVote({
+      ballotId: election.ballotId,
+      ballotPartyId: election.ballotPartyId,
+      credentialId: 'f'.repeat(64),
+      credentialSignature: 'a'.repeat(512),
+    })
 
     const everythingLogged = captured.join('\n')
     expect(everythingLogged).not.toContain('199001011234')
     expect(everythingLogged).not.toContain(voterId)
-    expect(everythingLogged).not.toContain(session.id)
   })
 })
 
@@ -80,26 +87,24 @@ describe.skipIf(!databaseAvailable)('token visas bara en gång', () => {
     await resetElectionData()
   })
 
-  it('sessionen går inte att återanvända för att få ut token igen', async () => {
+  it('ett förbrukat röstintyg kan inte framkalla en ny token', async () => {
+    const election = await createTestElection()
     const voterId = await createVoter('199001011234')
-    const session = await createVotingSession(voterId)
-    const partyId = await firstPartyId()
 
-    const first = await castVote(session, partyId)
-    expect(first.status).toBe('success')
+    const first = await voteOnce(voterId, election)
+    expect(first.status).toBe('voted')
 
-    // Sessionen är raderad. Samma session kan inte lägga en ny röst och kan
-    // därmed inte heller framkalla en ny token.
-    expect(await getValidVotingSession(session.id)).toBeNull()
-
-    const second = await castVote(session, partyId)
-    expect(second.status).toBe('already_voted')
+    // Väljaren är markerad som röstande på valsedeln och får inget nytt intyg.
+    // Utan intyg finns ingen väg till en ny token.
+    const second = await voteOnce(voterId, election)
+    expect(second.status).toBe('blocked')
   })
 
   it('token går inte att hämta ur databasen i efterhand', async () => {
+    const election = await createTestElection()
     const voterId = await createVoter('199001011234')
-    const outcome = await castVote(await createVotingSession(voterId), await firstPartyId())
-    if (outcome.status !== 'success') throw new Error('Röstningen misslyckades')
+    const outcome = await voteOnce(voterId, election)
+    if (outcome.status !== 'voted') throw new Error('Röstningen misslyckades')
 
     const { votesDb } = await import('@/modules/anonymous-vote/db')
     const votes = await votesDb.anonymousVote.findMany()

@@ -73,6 +73,14 @@ model ElectionBallot {
   /// Om väljaren får kryssa en kandidat utöver partiet (personröst).
   allowsCandidateVote Boolean @default(false) @map("allows_candidate_vote")
 
+  /// Valsedelns publika signeringsnyckel.
+  ///
+  /// Publiceras öppet. Den är det som gör valet oberoende verifierbart: en
+  /// observatör kan hämta nyckeln, gå igenom samtliga registrerade röster och
+  /// själv avgöra att var och en bär ett äkta röstintyg — utan att fråga
+  /// systemet och utan att behöva lita på det.
+  signingPublicKeyPem String @map("signing_public_key_pem")
+
   displayOrder Int @map("display_order")
 
   parties BallotParty[]
@@ -186,6 +194,29 @@ model AnonymousVote {
   /// Unikt index: gör en tokenkollision till ett databasfel i stället för
   /// en tyst överskrivning av någon annans röst.
   tokenHash String @unique @map("token_hash")
+
+  /// Det inlösta röstintygets identitet.
+  ///
+  /// Väljaren valde värdet själv och blindade det innan myndigheten signerade,
+  /// så myndigheten har aldrig sett det. Det finns alltså ingen tabell någonstans
+  /// som kan säga vem intyget utfärdades till.
+  ///
+  /// UNIKT INDEX = ENGÅNGSANVÄNDNING, OCH DÄRMED IDEMPOTENS.
+  ///
+  /// Ett andra försök att lösa in samma intyg blir en unikhetskonflikt i
+  /// databasen, oavsett när det sker och oavsett hur många parallella
+  /// begäranden som kommer samtidigt. Det är därför ordningen mellan
+  /// röstlängdens och röstdatabasens skrivningar inte längre spelar någon
+  /// roll: en avbruten röstning kan göras om utan risk för dubbelröstning, och
+  /// utan att rösten går förlorad.
+  credentialId String @unique @map("credential_id")
+
+  /// Signaturen över credentialId, utfärdad av valsedelns privata nyckel.
+  ///
+  /// Lagras med rösten så att vem som helst kan verifiera den i efterhand.
+  /// Detta är beviset på att rösten skapats genom den auktoriserade processen
+  /// — ett bevis som inte vilar på att databasen är ärlig.
+  credentialSignature String @map("credential_signature")
 
   ballotId String         @map("ballot_id")
   ballot   ElectionBallot @relation(fields: [ballotId], references: [id])

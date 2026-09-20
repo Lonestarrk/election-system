@@ -26,26 +26,51 @@ describe('validering av personnummer', () => {
   })
 })
 
-describe('validering av parti-id', () => {
-  it('kräver ett UUID', () => {
-    expect(castVoteSchema.safeParse({ partyId: 'Socialdemokraterna' }).success).toBe(false)
-    expect(
-      castVoteSchema.safeParse({ partyId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301' }).success,
-    ).toBe(true)
+describe('validering av en röst', () => {
+  const validVote = {
+    ballotId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+    ballotPartyId: '3f2504e0-4f89-11d3-9a0c-0305e82c3302',
+    credentialId: 'a'.repeat(64),
+    credentialSignature: 'b'.repeat(512),
+  }
+
+  it('godtar en röst med valsedel, parti och röstintyg', () => {
+    expect(castVoteSchema.safeParse(validVote).success).toBe(true)
   })
 
-  it('avvisar extra fält som inte hör hemma i en röst', () => {
-    const result = castVoteSchema.parse({
-      partyId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
-      voterId: 'något-som-inte-ska-med',
-      personalNumber: '199001011234',
-    })
+  it('kräver ett röstintyg', () => {
+    const { credentialId: _omitted, ...utanIntyg } = validVote
+    expect(castVoteSchema.safeParse(utanIntyg).success).toBe(false)
+  })
 
-    // Zod plockar bort okända nycklar. Det är en extra spärr mot att
-    // identitetsuppgifter slinker in i röstvägen via begärans kropp.
-    expect(result).toEqual({ partyId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301' })
-    expect(result).not.toHaveProperty('voterId')
-    expect(result).not.toHaveProperty('personalNumber')
+  it('avvisar ett röstintyg med fel längd', () => {
+    // Intyget är exakt 32 byte och signaturen exakt modulusens bredd. Allt
+    // annat är antingen ett fel eller ett försök att pröva sig fram.
+    expect(castVoteSchema.safeParse({ ...validVote, credentialId: 'a'.repeat(63) }).success).toBe(
+      false,
+    )
+    expect(
+      castVoteSchema.safeParse({ ...validVote, credentialSignature: 'b'.repeat(511) }).success,
+    ).toBe(false)
+  })
+
+  it('avvisar både parti och svarsalternativ i samma röst', () => {
+    expect(
+      castVoteSchema.safeParse({
+        ...validVote,
+        optionId: '3f2504e0-4f89-11d3-9a0c-0305e82c3303',
+      }).success,
+    ).toBe(false)
+  })
+
+  it('avvisar en personröst utan parti', () => {
+    const { ballotPartyId: _omitted, ...utanParti } = validVote
+    expect(
+      castVoteSchema.safeParse({
+        ...utanParti,
+        candidateId: '3f2504e0-4f89-11d3-9a0c-0305e82c3304',
+      }).success,
+    ).toBe(false)
   })
 })
 
@@ -65,9 +90,13 @@ describe('validering av token', () => {
   })
 })
 
-describe('validering av adminlösenord', () => {
-  it('kräver ett värde', () => {
-    expect(adminLoginSchema.safeParse({ password: '' }).success).toBe(false)
-    expect(adminLoginSchema.safeParse({ password: 'admin' }).success).toBe(true)
+describe('validering av adminlogin', () => {
+  it('tar emot en BankID-referens, inte ett lösenord', () => {
+    // Det finns ingen delad adminhemlighet kvar i systemet. Behörigheten
+    // avgörs av is_admin på personens rad i röstlängden.
+    expect(adminLoginSchema.safeParse({ password: 'admin' }).success).toBe(false)
+    expect(
+      adminLoginSchema.safeParse({ orderRef: '3f2504e0-4f89-11d3-9a0c-0305e82c3301' }).success,
+    ).toBe(true)
   })
 })

@@ -47,6 +47,7 @@ describe('API-ytan', () => {
       'src/app/api/verify/route.ts',
       'src/app/api/vote/ballot/route.ts',
       'src/app/api/vote/cast/route.ts',
+      'src/app/api/vote/credential/route.ts',
           ])
   })
 
@@ -171,8 +172,29 @@ describe('skydd på tillståndsändrande rutter', () => {
     }
   })
 
-  it('röstläggningen kräver dessutom CSRF-token', () => {
+  it('utfärdandet av röstintyg kräver dessutom CSRF-token', () => {
+    /**
+     * KRAVET FLYTTADE, DET FÖRSVANN INTE.
+     *
+     * CSRF-skyddet bygger på en hemlighet knuten till röstsessionen. Sedan
+     * röstintygen infördes har röstläggningen ingen session alls — den
+     * auktoriseras av ett kryptografiskt intyg i stället, vilket är ett
+     * starkare skydd än en cookie: en angripande sajt kan inte framkalla en
+     * giltig signatur.
+     *
+     * Den sessionsbärande rutten är nu utfärdandet, och det är där CSRF-kravet
+     * hör hemma.
+     */
+    const issue = routes.find((route) => route.path === 'src/app/api/vote/credential/route.ts')!
+    expect(issue.content).toMatch(/isValidCsrfToken/)
+  })
+
+  it('röstläggningen läser ingen sessionscookie', () => {
+    // Det här är vinsten med röstintygen: rutten KAN inte veta vem som röstar.
     const cast = routes.find((route) => route.path === 'src/app/api/vote/cast/route.ts')!
-    expect(cast.content).toMatch(/isValidCsrfToken/)
+
+    expect(cast.content).not.toMatch(/SESSION_COOKIE/)
+    expect(cast.content).not.toMatch(/getValidVotingSession/)
+    expect(cast.content).not.toMatch(/@\/modules\/eligibility/)
   })
 })

@@ -62,7 +62,15 @@ export type MirrorElectionInput = {
   kind: string
   opensAt: Date
   closesAt: Date
-  ballots: Array<{ id: string; kind: string; label: string; areaCode: string | null }>
+  ballots: Array<{
+    id: string
+    kind: string
+    label: string
+    areaCode: string | null
+    /** Valsedelns signeringsnyckel. Den privata halvan lämnar aldrig den här databasen. */
+    signingPrivateKeyPem: string
+    signingPublicKeyPem: string
+  }>
 }
 
 /**
@@ -93,6 +101,8 @@ export async function mirrorElection(input: MirrorElectionInput): Promise<void> 
           kind: ballot.kind,
           label: ballot.label,
           areaCode: ballot.areaCode,
+          signingPrivateKeyPem: ballot.signingPrivateKeyPem,
+          signingPublicKeyPem: ballot.signingPublicKeyPem,
           displayOrder: index + 1,
         },
       })
@@ -145,6 +155,29 @@ export async function ballotsForVoter(
       return true
     })
     .map((ballot) => ({ ...ballot, hasVoted: votedBallotIds.has(ballot.id) }))
+}
+
+/**
+ * Valsedelns privata signeringsnyckel.
+ *
+ * Lämnar aldrig röstlängdsmodulen. Den används för att signera blindade
+ * röstintyg medan väljaren är legitimerad, och den som har den kan skapa
+ * röstintyg som ser auktoriserade ut.
+ */
+export async function getBallotSigningKey(
+  ballotId: string,
+): Promise<{ privateKeyPem: string; publicKeyPem: string } | null> {
+  const ballot = await votersDb.electionBallot.findUnique({
+    where: { id: ballotId },
+    select: { signingPrivateKeyPem: true, signingPublicKeyPem: true },
+  })
+
+  if (!ballot) return null
+
+  return {
+    privateKeyPem: ballot.signingPrivateKeyPem,
+    publicKeyPem: ballot.signingPublicKeyPem,
+  }
 }
 
 /**

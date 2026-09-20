@@ -31,6 +31,15 @@ export const AUDIT_EVENTS = {
   DOUBLE_VOTE_BLOCKED: 'DOUBLE_VOTE_BLOCKED',
   VOTING_SESSION_CREATED: 'VOTING_SESSION_CREATED',
   VOTING_SESSION_EXPIRED: 'VOTING_SESSION_EXPIRED',
+  /**
+   * Ett röstintyg utfärdades — alltså en godkänd röstning.
+   *
+   * Ersätter VOTE_RECORDED som markör för "någon röstade". Den händelsen kan
+   * inte längre loggas här: själva röstläggningen sker anonymt mot en annan
+   * databas, och en revisionsrad därifrån skulle kräva just den koppling
+   * mellan sidorna som systemet är byggt för att undvika.
+   */
+  CREDENTIAL_ISSUED: 'CREDENTIAL_ISSUED',
   VOTE_RECORDED: 'VOTE_RECORDED',
   VOTE_RECORDING_FAILED: 'VOTE_RECORDING_FAILED',
   CSRF_REJECTED: 'CSRF_REJECTED',

@@ -20,6 +20,7 @@ CREATE TABLE "election_ballot" (
     "label" TEXT NOT NULL,
     "area_code" TEXT,
     "allows_candidate_vote" BOOLEAN NOT NULL DEFAULT false,
+    "signing_public_key_pem" TEXT NOT NULL,
     "display_order" INTEGER NOT NULL,
 
     CONSTRAINT "election_ballot_pkey" PRIMARY KEY ("id")
@@ -70,6 +71,8 @@ CREATE TABLE "ballot_option" (
 CREATE TABLE "anonymous_vote" (
     "id" TEXT NOT NULL,
     "token_hash" TEXT NOT NULL,
+    "credential_id" TEXT NOT NULL,
+    "credential_signature" TEXT NOT NULL,
     "ballot_id" TEXT NOT NULL,
     "ballot_party_id" TEXT,
     "candidate_id" TEXT,
@@ -102,6 +105,9 @@ CREATE INDEX "ballot_option_ballot_id_idx" ON "ballot_option"("ballot_id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "anonymous_vote_token_hash_key" ON "anonymous_vote"("token_hash");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "anonymous_vote_credential_id_key" ON "anonymous_vote"("credential_id");
 
 -- CreateIndex
 CREATE INDEX "anonymous_vote_ballot_id_idx" ON "anonymous_vote"("ballot_id");

@@ -48,6 +48,8 @@ export type Ballot = {
   label: string
   areaCode: string | null
   allowsCandidateVote: boolean
+  /** Publiceras öppet — observatörer verifierar röstintyg med den. */
+  signingPublicKeyPem: string
   displayOrder: number
 }
 
@@ -72,6 +74,7 @@ function toElection(row: {
     label: string
     areaCode: string | null
     allowsCandidateVote: boolean
+    signingPublicKeyPem: string
     displayOrder: number
   }>
 }): Election {
@@ -87,6 +90,7 @@ function toElection(row: {
       label: ballot.label,
       areaCode: ballot.areaCode,
       allowsCandidateVote: ballot.allowsCandidateVote,
+      signingPublicKeyPem: ballot.signingPublicKeyPem,
       displayOrder: ballot.displayOrder,
     })),
   }
@@ -105,6 +109,7 @@ const electionSelect = {
       label: true,
       areaCode: true,
       allowsCandidateVote: true,
+      signingPublicKeyPem: true,
       displayOrder: true,
     },
     orderBy: { displayOrder: 'asc' },
@@ -215,7 +220,7 @@ export type BallotChoiceInput = {
  */
 export async function validateBallotChoice(
   input: BallotChoiceInput,
-  expectedElectionId: string,
+  expectedElectionId?: string,
 ): Promise<{ valid: true } | { valid: false; reason: string }> {
   const ballot = await votesDb.electionBallot.findUnique({
     where: { id: input.ballotId },
@@ -229,10 +234,16 @@ export async function validateBallotChoice(
 
   if (!ballot) return { valid: false, reason: 'Okänd valsedel.' }
 
-  // Valsedeln måste höra till den omröstning sessionen gäller. Annars skulle
-  // den som legitimerat sig för en omröstning kunna lägga sin röst i en helt
-  // annan som råkar vara öppen samtidigt.
-  if (ballot.electionId !== expectedElectionId) {
+  /**
+   * Vid röstning anges ingen förväntad omröstning, och behöver inte anges:
+   * röstintyget är signerat med valsedelns egen nyckel och binder därmed
+   * rösten till exakt den valsedeln — och därmed till dess omröstning.
+   *
+   * Vid utfärdande av intyg anges den däremot, för att den som legitimerat sig
+   * för en omröstning inte ska kunna begära intyg i en annan som råkar vara
+   * öppen samtidigt.
+   */
+  if (expectedElectionId && ballot.electionId !== expectedElectionId) {
     return { valid: false, reason: 'Valsedeln hör inte till den här omröstningen.' }
   }
 
@@ -289,6 +300,14 @@ export type CreateElectionInput = {
     label: string
     areaCode?: string | null
     allowsCandidateVote?: boolean
+    /**
+     * Valsedelns publika signeringsnyckel.
+     *
+     * Skapas av orkestreringslagret, som håller ihop nyckelparet: den privata
+     * halvan går till röstlängden, den publika hit. Modulen genererar den inte
+     * själv — då skulle den privata nyckeln behöva passera röstdatabasen.
+     */
+    signingPublicKeyPem: string
     /** Partier med kandidater. Bara för KOMMUN, LANDSTING och RIKSDAG. */
     parties?: Array<{ partyId: string; candidates?: string[] }>
     /** Svarsalternativ. Bara för FRAGA. */
@@ -334,6 +353,7 @@ export async function createElection(input: CreateElectionInput): Promise<Create
           label: ballot.label,
           areaCode: ballot.areaCode ?? null,
           allowsCandidateVote: ballot.allowsCandidateVote ?? false,
+          signingPublicKeyPem: ballot.signingPublicKeyPem,
           displayOrder: index + 1,
         },
         select: { id: true, kind: true, label: true, areaCode: true },
@@ -376,6 +396,20 @@ export async function createElection(input: CreateElectionInput): Promise<Create
 
     return { id: election.id, name: election.name, ballotIds }
   })
+}
+
+/**
+ * Valsedelns publika signeringsnyckel.
+ *
+ * Används vid inlösen för att verifiera att röstintyget utfärdats av
+ * valmyndigheten för just den här valsedeln.
+ */
+export async function getBallotPublicKey(ballotId: string): Promise<string | null> {
+  const ballot = await votesDb.electionBallot.findUnique({
+    where: { id: ballotId },
+    select: { signingPublicKeyPem: true },
+  })
+  return ballot?.signingPublicKeyPem ?? null
 }
 
 /** Tar bort en omröstning. Finns för att orkestreringen ska kunna backa. */

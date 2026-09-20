@@ -1,4 +1,5 @@
 import { truncateToHour } from '@/lib/time'
+import { verify } from '@/lib/blind-signature'
 import { logger } from '@/lib/logger'
 import { votesDb } from './db'
 import { generateVoteToken, hashToken } from './token.service'
@@ -30,6 +31,19 @@ const MAX_TOKEN_ATTEMPTS = 5
 
 export class VoteRecordingError extends Error {}
 
+export type RedeemedCredential = {
+  /** Väljarens eget intygsvärde, aldrig sett av myndigheten före inlösen. */
+  credentialId: string
+  /** Myndighetens signatur över intyget, avblindad av väljaren. */
+  signature: string
+}
+
+export type RecordVoteOutcome =
+  | { status: 'recorded'; token: string }
+  | { status: 'invalid_credential' }
+  | { status: 'credential_already_used' }
+  | { status: 'failed' }
+
 /**
  * Registrerar en anonym röst på en valsedel och returnerar token i klartext.
  *
@@ -40,7 +54,35 @@ export class VoteRecordingError extends Error {}
  * sista spärr — den här funktionen är den enda vägen in i tabellen och ska
  * inte förlita sig på att anroparen gjort rätt.
  */
-export async function recordAnonymousVote(choice: BallotChoiceInput): Promise<{ token: string }> {
+export async function recordAnonymousVote(
+  choice: BallotChoiceInput,
+  credential: RedeemedCredential,
+): Promise<RecordVoteOutcome> {
+  const ballot = await votesDb.electionBallot.findUnique({
+    where: { id: choice.ballotId },
+    select: { signingPublicKeyPem: true },
+  })
+
+  if (!ballot) return { status: 'invalid_credential' }
+
+  /**
+   * INTYGET VERIFIERAS KRYPTOGRAFISKT, INTE MOT EN TABELL.
+   *
+   * Det är skillnaden mellan ett system som kan bevisa sin riktighet och ett
+   * som bara påstår den. Signaturen kan bara ha skapats av den som har
+   * valsedelns privata nyckel, och det kan vem som helst kontrollera i
+   * efterhand med den publika nyckeln — utan att fråga systemet och utan att
+   * behöva lita på det.
+   *
+   * Att nyckeln är valsedelns egen är också det som binder intyget till rätt
+   * valsedel. Myndigheten signerade blint och såg aldrig vilken valsedel det
+   * gällde; bindningen kommer från VILKEN nyckel som användes. Ett intyg för
+   * kommunvalsedeln verifierar därför inte här om detta är riksdagsvalsedeln.
+   */
+  if (!verify(credential.credentialId, credential.signature, ballot.signingPublicKeyPem)) {
+    return { status: 'invalid_credential' }
+  }
+
   for (let attempt = 1; attempt <= MAX_TOKEN_ATTEMPTS; attempt += 1) {
     const { token, tokenHash } = generateVoteToken()
 
@@ -48,6 +90,8 @@ export async function recordAnonymousVote(choice: BallotChoiceInput): Promise<{ 
       await votesDb.anonymousVote.create({
         data: {
           tokenHash,
+          credentialId: credential.credentialId,
+          credentialSignature: credential.signature,
           ballotId: choice.ballotId,
           ballotPartyId: choice.ballotPartyId ?? null,
           candidateId: choice.candidateId ?? null,
@@ -62,20 +106,37 @@ export async function recordAnonymousVote(choice: BallotChoiceInput): Promise<{ 
       // partiet, inte ens ett "röst registrerad"-meddelande med tidsstämpel:
       // en rad i applikationsloggen med millisekundsprecision vore samma
       // tidskorrelationsproblem som exakta tidsstämplar i databasen.
-      return { token }
+      return { status: 'recorded', token }
     } catch (error) {
-      const isUniqueViolation =
-        typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error ? error.code : null
 
-      if (!isUniqueViolation || attempt === MAX_TOKEN_ATTEMPTS) {
-        logger.error('Kunde inte registrera anonym röst', { attempt })
-        throw new VoteRecordingError('Rösten kunde inte registreras.')
+      if (code === 'P2002') {
+        /**
+         * ENGÅNGSANVÄNDNING, GARANTERAD AV DATABASEN.
+         *
+         * Konflikten kan gälla två olika kolumner. Är det intyget som redan
+         * använts har någon försökt lösa in samma intyg två gånger — det är
+         * dubbelröstningsförsöket, och det avvisas oavsett hur många
+         * parallella begäranden som kommer samtidigt. Är det token har vi
+         * råkat på en kollision och försöker igen med en ny.
+         */
+        const alreadyUsed =
+          await votesDb.anonymousVote.count({
+            where: { credentialId: credential.credentialId },
+          })
+
+        if (alreadyUsed > 0) return { status: 'credential_already_used' }
+
+        if (attempt < MAX_TOKEN_ATTEMPTS) continue
       }
-      // Kollision: försök igen med en ny token.
+
+      logger.error('Kunde inte registrera anonym röst', { attempt })
+      return { status: 'failed' }
     }
   }
 
-  throw new VoteRecordingError('Rösten kunde inte registreras.')
+  return { status: 'failed' }
 }
 
 export type VerificationResult =

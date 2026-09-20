@@ -31,6 +31,8 @@ CREATE TABLE "election_ballot" (
     "kind" TEXT NOT NULL,
     "label" TEXT NOT NULL,
     "area_code" TEXT,
+    "signing_private_key_pem" TEXT NOT NULL,
+    "signing_public_key_pem" TEXT NOT NULL,
     "display_order" INTEGER NOT NULL,
 
     CONSTRAINT "election_ballot_pkey" PRIMARY KEY ("id")

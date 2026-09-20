@@ -80,17 +80,19 @@ describe('modulgränser', () => {
 
   it('endast godkända filer ser båda sidorna', () => {
     /**
-     * Tillåtna undantag, med motivering:
+     * Listan KRYMPTE när röstintygen infördes.
      *
-     *  – cast-vote.usecase.ts: orkestreringen. Enda stället där en identifierad
-     *    väljare och ett partival finns i samma anropsstack.
+     * Röstläggningen behöver ingen session längre och orkestreras därför inte
+     * — rutten anropar bara den anonyma modulen. Ingen fil i systemet ser
+     * numera båda sidorna i samband med att en röst läggs.
+     *
+     * Kvarvarande undantag:
      *  – admin/stats: hämtar två aggregat, ett från varje databas. Ser antal,
      *    aldrig rader.
      *  – demo/database-state: demosidans underlag. Visar båda tabellerna med
      *    avkortade värden, sorterade så att skrivordningen inte röjs.
      */
     const allowed = [
-      'src/orchestration/cast-vote.usecase.ts',
       // Skapar omröstningen i båda databaserna. Rör bara offentlig metadata —
       // namn, valsedlar, öppettider. Vid den tidpunkten finns varken en
       // väljare eller en röst att koppla ihop.
@@ -143,7 +145,14 @@ describe('röstmodulens publika kontrakt', () => {
 
     // Exakt den här mängden, varken mer eller mindre. Ett nytt fält i
     // kontraktet ska tvinga fram ett medvetet beslut här, inte glida igenom.
-    expect(fields.sort()).toEqual(['ballotId', 'ballotPartyId', 'candidateId', 'optionId'])
+    expect(fields.sort()).toEqual([
+      'ballotId',
+      'ballotPartyId',
+      'candidateId',
+      'credentialId',
+      'credentialSignature',
+      'optionId',
+    ])
   })
 
   it('har ingen parameter som knyter ihop flera röster', () => {

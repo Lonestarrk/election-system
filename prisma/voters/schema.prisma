@@ -118,6 +118,22 @@ model ElectionBallot {
   /// valsedeln gäller. Matchas mot väljarens folkbokföring.
   areaCode String? @map("area_code")
 
+  /// Valmyndighetens signeringsnyckel för valsedelns röstintyg.
+  ///
+  /// EGET NYCKELPAR PER VALSEDEL, INTE PER OMRÖSTNING.
+  ///
+  /// Myndigheten signerar blint och ser alltså aldrig vilken valsedel intyget
+  /// gäller. Bindningen måste därför komma från VILKEN NYCKEL som signerade:
+  /// ett intyg för kommunvalsedeln verifierar helt enkelt inte mot
+  /// riksdagsvalsedelns publika nyckel. Utan det skulle en väljare kunna
+  /// begära tre intyg och lösa in alla tre på samma valsedel.
+  ///
+  /// Läcker den privata nyckeln kan vem som helst skapa röstintyg som ser
+  /// auktoriserade ut. Den angriper alltså valets RIKTIGHET, till skillnad
+  /// från IDENTITY_PEPPER som bär valhemligheten.
+  signingPrivateKeyPem String @map("signing_private_key_pem")
+  signingPublicKeyPem  String @map("signing_public_key_pem")
+
   displayOrder Int @map("display_order")
 
   voterStatuses VoterBallotStatus[]

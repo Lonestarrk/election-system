@@ -1,8 +1,8 @@
+import { generateElectionKeyPair } from '@/lib/blind-signature'
 import { logger } from '@/lib/logger'
 import {
   createElection as createElectionInVotesDb,
   deleteElection,
-  type CreateElectionInput,
   type CreatedElection,
 } from '@/modules/anonymous-vote'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
@@ -39,18 +39,56 @@ export type CreateElectionOutcome =
  * röstlängden inte känner till — väljarna skulle avvisas med "ingen valsedel
  * gäller dig", och rösterna skulle aldrig kunna markeras.
  *
- * Till skillnad från röstläggningen GÅR det att backa här, och vi gör det:
- * ingen har hunnit rösta i en omröstning som just misslyckades med att skapas,
- * så borttagningen kan inte radera någons röst. Det är hela skillnaden mot
- * cast-vote.usecase.ts, där en återställning skulle riskera dubbelröstning.
+ * Det GÅR att backa här, och vi gör det: ingen har hunnit rösta i en omröstning
+ * som just misslyckades med att skapas, så borttagningen kan inte radera någons
+ * röst.
  */
+
+/**
+ * Omröstningen som administratören beskrivit den.
+ *
+ * Skiljer sig från modulens CreateElectionInput genom att sakna
+ * signeringsnycklarna — de skapas här, inte av den som fyller i formuläret.
+ */
+export type CreateElectionRequest = {
+  name: string
+  kind: 'RIKSDAGSVAL' | 'ALLMAN_OMROSTNING'
+  opensAt: Date
+  closesAt: Date
+  ballots: Array<{
+    kind: 'KOMMUN' | 'LANDSTING' | 'RIKSDAG' | 'FRAGA'
+    label: string
+    areaCode?: string | null
+    allowsCandidateVote?: boolean
+    parties?: Array<{ partyId: string; candidates?: string[] }>
+    options?: string[]
+  }>
+}
+
 export async function createElection(
-  input: CreateElectionInput,
+  input: CreateElectionRequest,
 ): Promise<CreateElectionOutcome> {
+  /**
+   * ETT NYCKELPAR PER VALSEDEL, SKAPAT HÄR.
+   *
+   * Orkestreringen är enda stället som håller båda halvorna samtidigt: den
+   * publika går till röstdatabasen så att vem som helst kan verifiera
+   * röstintyg, den privata till röstlängden där intygen signeras. Ingen av
+   * modulerna genererar nyckeln själv — då skulle den privata halvan behöva
+   * passera röstdatabasen för att nå röstlängden.
+   */
+  const keyPairs = input.ballots.map(() => generateElectionKeyPair())
+
   let created: CreatedElection
 
   try {
-    created = await createElectionInVotesDb(input)
+    created = await createElectionInVotesDb({
+      ...input,
+      ballots: input.ballots.map((ballot, index) => ({
+        ...ballot,
+        signingPublicKeyPem: keyPairs[index]!.publicKeyPem,
+      })),
+    })
   } catch (error) {
     logger.error('Kunde inte skapa omröstningen i röstdatabasen', { error: String(error) })
     await recordAuditEvent(AUDIT_EVENTS.ELECTION_CREATION_FAILED)
@@ -64,7 +102,11 @@ export async function createElection(
       kind: input.kind,
       opensAt: input.opensAt,
       closesAt: input.closesAt,
-      ballots: created.ballotIds,
+      ballots: created.ballotIds.map((ballot, index) => ({
+        ...ballot,
+        signingPrivateKeyPem: keyPairs[index]!.privateKeyPem,
+        signingPublicKeyPem: keyPairs[index]!.publicKeyPem,
+      })),
     })
   } catch (error) {
     logger.error('Kunde inte spegla omröstningen till röstlängden', { error: String(error) })

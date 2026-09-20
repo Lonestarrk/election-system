@@ -51,6 +51,10 @@ export const castVoteSchema = z
     ballotPartyId: z.string().uuid('Ogiltigt parti.').optional(),
     candidateId: z.string().uuid('Ogiltig kandidat.').optional(),
     optionId: z.string().uuid('Ogiltigt alternativ.').optional(),
+    /** Röstintyget. 32 slumpbytes som väljaren valt själv. */
+    credentialId: z.string().regex(/^[0-9a-f]{64}$/, 'Ogiltigt röstintyg.'),
+    /** Avblindad signatur, 2048 bitar som hex. */
+    credentialSignature: z.string().regex(/^[0-9a-f]{512}$/, 'Ogiltig signatur.'),
   })
   .refine((value) => Boolean(value.ballotPartyId) !== Boolean(value.optionId), {
     message: 'Ange antingen ett parti eller ett svarsalternativ, inte båda.',
@@ -58,6 +62,18 @@ export const castVoteSchema = z
   .refine((value) => !(value.candidateId && !value.ballotPartyId), {
     message: 'En personröst kräver att du också valt ett parti.',
   })
+
+/**
+ * Begäran om ett röstintyg.
+ *
+ * `blinded` är väljarens intyg multiplicerat med en slumpfaktor. Servern kan
+ * inte utläsa något ur det, och validerar därför bara formatet: 2048 bitar
+ * som hex, alltså exakt modulusens bredd.
+ */
+export const issueCredentialSchema = z.object({
+  ballotId: z.string().uuid('Ogiltig valsedel.'),
+  blinded: z.string().regex(/^[0-9a-f]{512}$/, 'Ogiltigt blindat värde.'),
+})
 
 /** Statistikbegäran. Utan omröstning svarar rutten bara med listan. */
 export const statsRequestSchema = z.object({
