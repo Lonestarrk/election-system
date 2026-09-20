@@ -49,11 +49,12 @@ describe('API-ytan', () => {
       'src/app/api/elections/route.ts',
       'src/app/api/observer/election/route.ts',
       'src/app/api/observer/votes/route.ts',
+      'src/app/api/push/subscribe/route.ts',
       'src/app/api/verify/route.ts',
       'src/app/api/vote/ballot/route.ts',
       'src/app/api/vote/cast/route.ts',
       'src/app/api/vote/credential/route.ts',
-          ])
+    ])
   })
 
   it('endast röstläggningen returnerar en token', () => {

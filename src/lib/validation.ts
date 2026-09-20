@@ -75,6 +75,11 @@ export const issueCredentialSchema = z.object({
   blinded: z.string().regex(/^[0-9a-f]{512}$/, 'Ogiltigt blindat värde.'),
 })
 
+/** Avslutad prenumeration. Bara endpointen behövs för att hitta raden. */
+export const pushUnsubscribeSchema = z.object({
+  endpoint: z.string().url('Ogiltig endpoint.').max(2000),
+})
+
 /** Observatörens sidindelade hämtning av röstunderlaget. */
 export const observerVotesSchema = z.object({
   electionId: z.string().uuid('Ogiltig omröstning.'),

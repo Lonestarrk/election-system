@@ -9,6 +9,13 @@ var skyddet tar slut.
 
 ---
 
+> **Se även [VERIFIABILITY.md](VERIFIABILITY.md)** för hur valet kan granskas av
+> oberoende observatörer utan att valhemligheten bryts: blinda röstintyg,
+> Merkleåtaganden, den automatiska slutkontrollen och observatörsgränssnittet.
+>
+> Flera avvägningar i det här dokumentet har ändrats av den konstruktionen — mest
+> påtagligt ordningsproblemet i avsnitt 5, som är löst.
+
 ## 1. Vad systemet skyddar
 
 En enda egenskap bär hela konstruktionen:
@@ -303,6 +310,15 @@ något till en tredje part ens om kod för det smugit sig in.
 ---
 
 ## 5. Dubbelröstningsspärr och ordningsproblemet
+
+> **Detta avsnitt är delvis överspelat.** Ordningsproblemet nedan gällde när
+> rösten skrevs direkt efter markeringen. Med blinda röstintyg sker markering och
+> utfärdande i en enda transaktion, och inlösen är idempotent — varken
+> dubbelröstning eller förlorad röst kan längre uppstå av att något kraschar
+> mellan stegen. Se [VERIFIABILITY.md](VERIFIABILITY.md), avsnitt 1.
+>
+> Resonemanget står kvar eftersom det förklarar varför konstruktionen ser ut som
+> den gör.
 
 ### Spärren
 

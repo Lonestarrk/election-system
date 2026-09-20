@@ -227,6 +227,9 @@ därför med **POST** och token i begärans kropp. Svarsformatet följer specen 
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — komponenter, dataflöde, modulkontrakt,
   datamodell, testarkitektur
+- **[VERIFIABILITY.md](VERIFIABILITY.md)** — oberoende verifierbarhet: blinda
+  röstintyg, Merkleåtaganden, automatisk slutkontroll, observatörsgränssnitt och
+  vad som fortfarande kräver tillit
 - **[SECURITY.md](SECURITY.md)** — hotmodell, anonymitetsmodell, tokendesign,
   metadatarisker, och varför detta inte duger för ett riktigt val
 
