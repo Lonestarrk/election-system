@@ -9,6 +9,14 @@
 //
 // Databasen ligger i en annan PostgreSQL-databas än röstlängden. En foreign
 // key till voter_status är därför inte bara oskriven — den är omöjlig.
+//
+// OM VALSEDLAR OCH FÖRSKAPADE PARTIER
+//
+// Partiregistret är gemensamt och förskapat. Skälet är praktiskt snarare än
+// kryptografiskt: skrevs partinamnet fritt per omröstning skulle
+// "Socialdemokraterna" och "Socialdemokraterna " bli två partier i
+// rösträkningen, och felet skulle upptäckas först när resultatet är fel.
+// Vilka partier som faktiskt står på en viss valsedel avgörs av BallotParty.
 // ---------------------------------------------------------------------------
 
 generator client {
@@ -21,6 +29,61 @@ datasource db {
   url      = env("VOTES_DATABASE_URL")
 }
 
+/// En omröstning. Samma UUID som speglingen i röstlängden.
+model Election {
+  id String @id @default(uuid())
+
+  name String
+
+  /// RIKSDAGSVAL | ALLMAN_OMROSTNING
+  ///
+  /// Ett riksdagsval skapas med tre valsedlar — kommun, landsting, riksdag —
+  /// där valen görs bland förskapade partier. En allmän omröstning skapas med
+  /// de frågor administratören själv formulerar.
+  kind String
+
+  opensAt  DateTime @map("opens_at")
+  closesAt DateTime @map("closes_at")
+
+  ballots ElectionBallot[]
+
+  @@map("election")
+}
+
+/// En valsedel.
+model ElectionBallot {
+  id String @id @default(uuid())
+
+  electionId String   @map("election_id")
+  election   Election @relation(fields: [electionId], references: [id], onDelete: Cascade)
+
+  /// KOMMUN | LANDSTING | RIKSDAG | FRAGA
+  kind String
+
+  label String
+
+  /// Bara satt för KOMMUN och LANDSTING.
+  ///
+  /// Notera att koden står på VALSEDELN, inte på rösten. Vilken kommun en
+  /// valsedel gäller är offentligt; vilken kommun en enskild röst kom från
+  /// vore en geografisk markering bredvid ett partival, och i en liten kommun
+  /// räcker det långt mot att peka ut någon.
+  areaCode String? @map("area_code")
+
+  /// Om väljaren får kryssa en kandidat utöver partiet (personröst).
+  allowsCandidateVote Boolean @default(false) @map("allows_candidate_vote")
+
+  displayOrder Int @map("display_order")
+
+  parties BallotParty[]
+  options BallotOption[]
+  votes   AnonymousVote[]
+
+  @@index([electionId])
+  @@map("election_ballot")
+}
+
+/// Förskapat parti. Gemensamt register för alla omröstningar.
 model Party {
   id           String @id @default(uuid())
   name         String @unique
@@ -29,32 +92,124 @@ model Party {
   color        String
   displayOrder Int    @map("display_order")
 
-  votes AnonymousVote[]
+  ballots BallotParty[]
 
   @@map("party")
 }
 
-/// En anonym röst.
+/// Ett parti som står på en viss valsedel.
+///
+/// Samma parti kan stå på flera valsedlar, och ett lokalt parti kan stå på
+/// kommunvalsedeln utan att finnas i riksdagsvalet.
+model BallotParty {
+  id String @id @default(uuid())
+
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+
+  partyId String @map("party_id")
+  party   Party  @relation(fields: [partyId], references: [id])
+
+  displayOrder Int @map("display_order")
+
+  candidates Candidate[]
+  votes      AnonymousVote[]
+
+  @@unique([ballotId, partyId])
+  @@index([partyId])
+  @@map("ballot_party")
+}
+
+/// En kandidat att kryssa för personröst.
+///
+/// PERSONRÖSTEN ÄR DEN KÄNSLIGASTE UPPGIFTEN I HELA SYSTEMET.
+///
+/// Ett partival delas med hundratusentals andra. Ett kryss på en kandidat som
+/// fick elva röster i en kommun delas med tio. Kombinationen valsedel +
+/// kandidat kan i praktiken vara nästan unik, och den som vet att en viss
+/// person brukar kryssa en viss kandidat har därmed en gissning som är långt
+/// bättre än slumpen.
+///
+/// Systemet lagrar därför aldrig kandidatkryss tillsammans med något som
+/// smalnar av mängden ytterligare: ingen tidsstämpel finare än timme, ingen
+/// geografisk markering på rösten, ingen ordningsföljd som går att sortera på.
+/// Se SECURITY.md.
+model Candidate {
+  id String @id @default(uuid())
+
+  ballotPartyId String      @map("ballot_party_id")
+  ballotParty   BallotParty @relation(fields: [ballotPartyId], references: [id], onDelete: Cascade)
+
+  name String
+
+  displayOrder Int @map("display_order")
+
+  votes AnonymousVote[]
+
+  @@index([ballotPartyId])
+  @@map("candidate")
+}
+
+/// Ett svarsalternativ på en FRAGA-valsedel i en allmän omröstning.
+model BallotOption {
+  id String @id @default(uuid())
+
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+
+  label String
+
+  displayOrder Int @map("display_order")
+
+  votes AnonymousVote[]
+
+  @@index([ballotId])
+  @@map("ballot_option")
+}
+
+/// En anonym röst på en valsedel.
 model AnonymousVote {
   id String @id @default(uuid())
 
   /// SHA-256 av den token väljaren fick. Klartext-token lagras aldrig.
   ///
-  /// Konsekvens: den som dumpar databasen kan inte härma en väljare eller
-  /// slå upp någons röst utan att först ha token. Och token finns bara hos
-  /// väljaren, som fick se den en enda gång.
+  /// EN TOKEN PER VALSEDEL, INTE EN PER VÄLJARE.
+  ///
+  /// Det är ett medvetet val. En gemensam token över kommun-, landstings- och
+  /// riksdagsvalsedeln skulle binda ihop de tre till en profil, och en
+  /// kombination av tre partival är betydligt mer identifierande än något
+  /// enskilt av dem. Med separata tokens finns ingen kolumn någonstans som
+  /// säger att de tre rösterna kom från samma person.
+  ///
+  /// Priset är att väljaren får tre kvittokoder i stället för en.
   ///
   /// Unikt index: gör en tokenkollision till ett databasfel i stället för
   /// en tyst överskrivning av någon annans röst.
   tokenHash String @unique @map("token_hash")
 
-  partyId String @map("party_id")
-  party   Party  @relation(fields: [partyId], references: [id])
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id])
+
+  /// Satt på KOMMUN, LANDSTING och RIKSDAG. Null på FRAGA.
+  ballotPartyId String?      @map("ballot_party_id")
+  ballotParty   BallotParty? @relation(fields: [ballotPartyId], references: [id])
+
+  /// Personröst. Alltid frivillig — null betyder att väljaren röstade på
+  /// partiet utan att kryssa någon.
+  candidateId String?    @map("candidate_id")
+  candidate   Candidate? @relation(fields: [candidateId], references: [id])
+
+  /// Satt på FRAGA. Null på partivalsedlar.
+  optionId String?       @map("option_id")
+  option   BallotOption? @relation(fields: [optionId], references: [id])
 
   /// AVSIKTLIGT GROVKORNIG: avrundad till hel timme.
   /// Se kommentaren om tidskorrelation i prisma/voters/schema.prisma.
   createdAt DateTime @map("created_at")
 
-  @@index([partyId])
+  @@index([ballotId])
+  @@index([ballotPartyId])
+  @@index([candidateId])
+  @@index([optionId])
   @@map("anonymous_vote")
 }

@@ -1,11 +1,25 @@
 // ---------------------------------------------------------------------------
 // RÖSTLÄNGDSDATABASEN (voters_db)
 //
-// Denna databas vet VEM som är röstberättigad och VEM som har röstat.
-// Den vet aldrig VAD någon röstat på.
+// Denna databas vet VEM som är röstberättigad och VEM som har röstat i vilken
+// omröstning. Den vet aldrig VAD någon röstat på.
 //
 // Det finns ingen kolumn här som kan kopplas till en rad i AnonymousVote.
-// Ingen token, inget token-hash, ingen röst-id, ingen parti-id.
+// Ingen token, inget token-hash, ingen röst-id, ingen parti-id, ingen
+// kandidat-id.
+//
+// OM OMRÖSTNINGENS SPEGLING
+//
+// Election och ElectionBallot finns i BÅDA databaserna, med samma UUID. Det är
+// en medveten dubblering, inte ett misstag: en foreign key mellan databaserna
+// är fysiskt omöjlig, och alternativet — att röstlängden frågar röstdatabasen
+// vilka omröstningar som finns — skulle kräva att den ena sidan kan läsa den
+// andra. Speglingen gör att varje foreign key stannar inom sin egen databas.
+//
+// Vad speglingen kostar i anonymitet står i SECURITY.md, avsnittet om
+// omröstnings-id som delad identifierare. Kort: med en enda omröstning ändrar
+// den ingenting, med flera partitioneras rösterna och anonymitetsmängden
+// krymper per omröstning.
 // ---------------------------------------------------------------------------
 
 generator client {
@@ -27,10 +41,102 @@ model VoterStatus {
   /// inte räcker för att brute-forca fram personnummer — utfallsrummet för
   /// svenska personnummer är litet nog att en ren SHA-256 skulle falla på
   /// sekunder.
-  externalIdentityHash String  @unique @map("external_identity_hash")
+  externalIdentityHash String @unique @map("external_identity_hash")
 
   isEligible Boolean @default(true) @map("is_eligible")
-  hasVoted   Boolean @default(false) @map("has_voted")
+
+  /// Administratörsflagga.
+  ///
+  /// Adminbehörighet hänger på identiteten, inte på ett delat lösenord: den
+  /// som ska kunna skapa en omröstning legitimerar sig med BankID precis som
+  /// en väljare, och får adminvyn först om raden har flaggan satt.
+  ///
+  /// Flaggan sätts bara genom seed eller direkt i databasen. Det finns
+  /// medvetet ingen väg i applikationen att ge sig själv eller någon annan
+  /// admin — en sådan funktion vore den enskilt farligaste knappen i
+  /// systemet.
+  ///
+  /// Notera vad flaggan INTE ger: adminvyn kan fortfarande inte se vem som
+  /// röstat på vad, eftersom underlaget inte finns i någon databas den når.
+  isAdmin Boolean @default(false) @map("is_admin")
+
+  /// Var personen är folkbokförd. Avgör vilka kommun- och landstingsvalsedlar
+  /// som gäller i ett riksdagsval — man röstar i sin egen kommun, inte i
+  /// alla.
+  ///
+  /// Koderna ligger här och inte i röstdatabasen, just för att en geografisk
+  /// markering bredvid en röst skulle krympa anonymitetsmängden dramatiskt i
+  /// en liten kommun.
+  municipalityCode String? @map("municipality_code")
+  regionCode       String? @map("region_code")
+
+  sessions       VotingSession[]
+  ballotStatuses VoterBallotStatus[]
+
+  @@map("voter_status")
+}
+
+/// Spegling av en omröstning. Publik metadata, ingen rösträkning.
+model Election {
+  id String @id
+
+  name String
+
+  /// RIKSDAGSVAL | ALLMAN_OMROSTNING
+  kind String
+
+  opensAt  DateTime @map("opens_at")
+  closesAt DateTime @map("closes_at")
+
+  ballots ElectionBallot[]
+
+  @@map("election")
+}
+
+/// En valsedel i en omröstning.
+///
+/// I ett riksdagsval är det tre: kommun, landsting, riksdag. I en allmän
+/// omröstning är det en per fråga administratören ställt.
+///
+/// Röstlängden speglar valsedlarna för att kunna hålla "har röstat" per
+/// valsedel. Att ha röstat i riksdagsvalet men inte i kommunvalet är ett
+/// fullt giltigt tillstånd i ett svenskt val, och en enda boolean per person
+/// kan inte uttrycka det.
+model ElectionBallot {
+  id String @id
+
+  electionId String   @map("election_id")
+  election   Election @relation(fields: [electionId], references: [id], onDelete: Cascade)
+
+  /// KOMMUN | LANDSTING | RIKSDAG | FRAGA
+  kind String
+
+  label String
+
+  /// Bara satt för KOMMUN och LANDSTING: vilken kommun respektive region
+  /// valsedeln gäller. Matchas mot väljarens folkbokföring.
+  areaCode String? @map("area_code")
+
+  displayOrder Int @map("display_order")
+
+  voterStatuses VoterBallotStatus[]
+
+  @@index([electionId])
+  @@map("election_ballot")
+}
+
+/// "Har röstat", per person och valsedel.
+///
+/// Detta ersätter den tidigare booleanen på VoterStatus. Raden skapas först
+/// när personen faktiskt röstat — frånvaro av rad betyder "har inte röstat".
+model VoterBallotStatus {
+  id String @id @default(uuid())
+
+  voterStatusId String      @map("voter_status_id")
+  voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Cascade)
+
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
 
   /// AVSIKTLIGT GROVKORNIG: avrundad till dygn.
   ///
@@ -38,24 +144,33 @@ model VoterStatus {
   /// angripare med båda databaserna kunna matcha rad mot rad på tid och
   /// därmed återskapa kopplingen mellan väljare och röst. Hela separationen
   /// vore då meningslös. Se SECURITY.md, avsnittet om tidskorrelation.
-  votedAt DateTime? @map("voted_at")
+  votedAt DateTime @map("voted_at")
 
-  sessions VotingSession[]
-
-  @@map("voter_status")
+  /// Dubbelröstningsspärren. Att den ligger i databasen och inte i koden är
+  /// avgörande: två samtidiga begäranden kan inte båda skapa raden.
+  @@unique([voterStatusId, ballotId])
+  @@index([ballotId])
+  @@map("voter_ballot_status")
 }
 
 /// Kortlivad session mellan lyckad legitimering och lagd röst.
 ///
 /// Detta är den ENDA punkt i systemet där en identitet och ett pågående
-/// röstningsförsök existerar samtidigt. Raden raderas i samma transaktion som
-/// rösten markeras som lagd — efter att rösten är lagd finns inget
-/// sessions-id kvar som kan koppla ihop de två sidorna.
+/// röstningsförsök existerar samtidigt. Raden raderas när alla valsedlar i
+/// omröstningen är avklarade — efter det finns inget sessions-id kvar som kan
+/// koppla ihop de två sidorna.
 model VotingSession {
   id String @id @default(uuid())
 
   voterStatusId String      @map("voter_status_id")
   voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Cascade)
+
+  /// Vilken omröstning legitimeringen gäller.
+  ///
+  /// En session är knuten till en omröstning. Den som legitimerat sig för
+  /// Valet 2026 kan inte återanvända sessionen för att rösta i en annan
+  /// omröstning som råkar vara öppen samtidigt.
+  electionId String @map("election_id")
 
   expiresAt DateTime @map("expires_at")
 
@@ -66,10 +181,43 @@ model VotingSession {
   @@map("voting_session")
 }
 
+/// En enhet som prenumererar på notiser om nya omröstningar.
+///
+/// INGEN KOPPLING TILL IDENTITET. Tabellen har medvetet ingen foreign key
+/// till VoterStatus och inget identitetshash.
+///
+/// Skälet: en push-endpoint är i praktiken en enhetsidentifierare. Låg den
+/// bredvid en identitet skulle en databasdump avslöja vilken telefon som hör
+/// till vilken person — en helt ny avanonymiseringsyta, införd för en
+/// bekvämlighetsfunktion. Notisen är därför en ren broadcast: systemet vet
+/// att någon vill bli meddelad, inte vem.
+///
+/// Konsekvensen är att notiser går till alla prenumeranter, även icke
+/// röstberättigade. Det är ett accepterat pris — meddelandet säger bara att en
+/// omröstning öppnat, vilket är offentlig information ändå.
+model PushSubscription {
+  id String @id @default(uuid())
+
+  endpoint String @unique
+
+  /// Nycklarna från webbläsarens PushSubscription. De krypterar nyttolasten
+  /// mot just den här enheten och är värdelösa för någon annan.
+  p256dh String
+  auth   String
+
+  /// AVSIKTLIGT GROVKORNIG: avrundad till dygn, av samma skäl som votedAt.
+  /// En exakt prenumerationstidpunkt skulle kunna korreleras mot en
+  /// legitimeringstidpunkt om samma person gör båda strax efter varandra.
+  createdAt DateTime @map("created_at")
+
+  @@map("push_subscription")
+}
+
 /// Revisionslogg för säkerhetshändelser.
 ///
-/// Innehåller ALDRIG: identitet, parti, token, IP-adress, request-id.
-/// Tidsstämpeln är avrundad till hel timme av samma skäl som votedAt.
+/// Innehåller ALDRIG: identitet, parti, kandidat, token, IP-adress,
+/// request-id. Tidsstämpeln är avrundad till hel timme av samma skäl som
+/// votedAt.
 ///
 /// Detta är en medveten avvägning: en revisionslogg detaljerad nog att
 /// utreda ett enskilt fall vore också detaljerad nog att avanonymisera en
