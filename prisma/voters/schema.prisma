@@ -275,6 +275,29 @@ model AuditEvent {
   eventType  String   @map("event_type")
   occurredAt DateTime @map("occurred_at")
 
+  /// Löpnummer i den append-only kedjan, från 1.
+  ///
+  /// HÄR ÄR EN ORDNING OFARLIG, TILL SKILLNAD FRÅN BLAND RÖSTERNA.
+  ///
+  /// En ordnad revisionslogg avslöjar i vilken följd händelser inträffade —
+  /// exempelvis att sex röstintyg utfärdades. Men rösterna är INTE ordnade:
+  /// deras Merkleträd sorteras på innehåll och deras tidsstämplar är avrundade
+  /// till timme. Att para ihop de två sidorna kräver ordning på BÅDA, och den
+  /// finns inte att få.
+  sequence Int @unique
+
+  /// Föregående rads hash. Null bara för den första.
+  previousHash String? @map("previous_hash")
+
+  /// Den här radens hash, över löpnummer, händelsetyp, tidpunkt och
+  /// föregående hash.
+  ///
+  /// Kedjan gör att en borttagen eller ändrad rad upptäcks: alla senare hashar
+  /// slutar stämma. Den hindrar inte någon med databasåtkomst från att räkna om
+  /// hela kedjan — skyddet mot det är att kedjans spets publiceras, se
+  /// ElectionCommitment i röstdatabasen och observatörsgränssnittet.
+  entryHash String @unique @map("entry_hash")
+
   @@index([eventType])
   @@map("audit_event")
 }

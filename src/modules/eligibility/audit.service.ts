@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { truncateToHour } from '@/lib/time'
 import { logger } from '@/lib/logger'
 import { votersDb } from './db'
@@ -73,17 +74,144 @@ export const AUDIT_EVENTS = {
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]
 
+/**
+ * Hashen för en rad i kedjan.
+ *
+ * Över löpnummer, händelsetyp, tidpunkt och föregående rads hash. Ändras något
+ * av det slutar alla senare hashar stämma.
+ */
+export function auditEntryHash(input: {
+  sequence: number
+  eventType: string
+  occurredAt: Date
+  previousHash: string | null
+}): string {
+  return createHash('sha256')
+    .update(
+      [
+        input.sequence,
+        input.eventType,
+        input.occurredAt.toISOString(),
+        input.previousHash ?? 'GENESIS',
+      ].join('|'),
+      'utf8',
+    )
+    .digest('hex')
+}
+
+/**
+ * Antal försök att få ett ledigt löpnummer.
+ *
+ * Två samtidiga händelser kan råka läsa samma "senaste löpnummer" och båda
+ * försöka skriva nästa. Det unika indexet avvisar den andra, som då får läsa om
+ * och försöka igen. Att låta databasen avgöra är avsiktligt: en räknare i
+ * applikationen skulle gå sönder så fort systemet kör i mer än en process.
+ */
+const MAX_SEQUENCE_ATTEMPTS = 5
+
 export async function recordAuditEvent(eventType: AuditEventType): Promise<void> {
-  try {
-    await votersDb.auditEvent.create({
-      data: {
-        eventType,
-        occurredAt: truncateToHour(new Date()),
-      },
-    })
-  } catch (error) {
-    // En revisionslogg som inte går att skriva får inte stoppa en väljare från
-    // att rösta. Felet loggas, men rösträtten går före.
-    logger.error('Kunde inte skriva revisionshändelse', { eventType, error: String(error) })
+  const occurredAt = truncateToHour(new Date())
+
+  for (let attempt = 1; attempt <= MAX_SEQUENCE_ATTEMPTS; attempt += 1) {
+    try {
+      const previous = await votersDb.auditEvent.findFirst({
+        orderBy: { sequence: 'desc' },
+        select: { sequence: true, entryHash: true },
+      })
+
+      const sequence = (previous?.sequence ?? 0) + 1
+      const previousHash = previous?.entryHash ?? null
+
+      await votersDb.auditEvent.create({
+        data: {
+          eventType,
+          occurredAt,
+          sequence,
+          previousHash,
+          entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash }),
+        },
+      })
+
+      return
+    } catch (error) {
+      const isUniqueViolation =
+        typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
+
+      if (isUniqueViolation && attempt < MAX_SEQUENCE_ATTEMPTS) continue
+
+      // En revisionslogg som inte går att skriva får inte stoppa en väljare
+      // från att rösta. Felet loggas, men rösträtten går före.
+      logger.error('Kunde inte skriva revisionshändelse', { eventType, attempt })
+      return
+    }
   }
+}
+
+export type AuditChainVerdict =
+  | { intact: true; entries: number }
+  | { intact: false; reason: string; brokenAtSequence: number }
+
+/**
+ * Kontrollerar att revisionskedjan är obruten.
+ *
+ * Upptäcker en borttagen rad (hål i löpnumren), en ändrad rad (hashen stämmer
+ * inte med innehållet) och en omskriven historik (pekaren bakåt stämmer inte).
+ *
+ * VAD DEN INTE UPPTÄCKER
+ *
+ * Att någon med skrivrättigheter räknar om hela kedjan från en viss punkt. Mot
+ * det hjälper bara att kedjans spets publiceras externt och löpande — vilket är
+ * vad observatörsgränssnittet finns till för.
+ */
+export async function verifyAuditChain(): Promise<AuditChainVerdict> {
+  const entries = await votersDb.auditEvent.findMany({
+    orderBy: { sequence: 'asc' },
+    select: { sequence: true, eventType: true, occurredAt: true, previousHash: true, entryHash: true },
+  })
+
+  let previousHash: string | null = null
+
+  for (const [index, entry] of entries.entries()) {
+    const expectedSequence = index + 1
+
+    if (entry.sequence !== expectedSequence) {
+      return {
+        intact: false,
+        reason: `Löpnummer ${entry.sequence} bryter följden — ${expectedSequence} väntades.`,
+        brokenAtSequence: expectedSequence,
+      }
+    }
+
+    if (entry.previousHash !== previousHash) {
+      return {
+        intact: false,
+        reason: 'Raden pekar inte på den föregående.',
+        brokenAtSequence: entry.sequence,
+      }
+    }
+
+    const recomputed = auditEntryHash({
+      sequence: entry.sequence,
+      eventType: entry.eventType,
+      occurredAt: entry.occurredAt,
+      previousHash: entry.previousHash,
+    })
+
+    if (recomputed !== entry.entryHash) {
+      return {
+        intact: false,
+        reason: 'Radens hash stämmer inte med dess innehåll.',
+        brokenAtSequence: entry.sequence,
+      }
+    }
+
+    previousHash = entry.entryHash
+  }
+
+  return { intact: true, entries: entries.length }
+}
+
+/** Antal händelser av en viss typ. Används av slutkontrollen. */
+export async function countAuditEvents(eventType: AuditEventType): Promise<number> {
+  return votersDb.auditEvent.count({ where: { eventType } })
 }

@@ -37,6 +37,9 @@ describe('API-ytan', () => {
   it('hittar samtliga rutter', () => {
     const paths = routes.map((route) => route.path).sort()
     expect(paths).toEqual([
+      'src/app/api/admin/elections/certify/route.ts',
+      'src/app/api/admin/elections/check/route.ts',
+      'src/app/api/admin/elections/commit/route.ts',
       'src/app/api/admin/elections/route.ts',
       'src/app/api/admin/login/route.ts',
       'src/app/api/admin/stats/route.ts',
@@ -44,6 +47,8 @@ describe('API-ytan', () => {
       'src/app/api/auth/bankid/start/route.ts',
       'src/app/api/demo/database-state/route.ts',
       'src/app/api/elections/route.ts',
+      'src/app/api/observer/election/route.ts',
+      'src/app/api/observer/votes/route.ts',
       'src/app/api/verify/route.ts',
       'src/app/api/vote/ballot/route.ts',
       'src/app/api/vote/cast/route.ts',

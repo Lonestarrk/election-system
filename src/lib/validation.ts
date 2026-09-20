@@ -75,6 +75,13 @@ export const issueCredentialSchema = z.object({
   blinded: z.string().regex(/^[0-9a-f]{512}$/, 'Ogiltigt blindat värde.'),
 })
 
+/** Observatörens sidindelade hämtning av röstunderlaget. */
+export const observerVotesSchema = z.object({
+  electionId: z.string().uuid('Ogiltig omröstning.'),
+  offset: z.number().int().min(0).max(10_000_000).optional(),
+  pageSize: z.number().int().min(1).max(2000).optional(),
+})
+
 /** Statistikbegäran. Utan omröstning svarar rutten bara med listan. */
 export const statsRequestSchema = z.object({
   electionId: z.string().uuid('Ogiltig omröstning.').optional(),

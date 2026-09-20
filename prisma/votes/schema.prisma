@@ -35,6 +35,16 @@ model Election {
 
   name String
 
+  /// OPEN | UNDER_REVIEW | CERTIFIED
+  ///
+  /// Ett resultat kan bara fastställas från OPEN och bara om samtliga
+  /// automatiska kontroller gått igenom. Misslyckas någon kontroll hamnar
+  /// omröstningen i UNDER_REVIEW och kan inte fastställas alls via
+  /// gränssnittet — se modules/verification.
+  status String @default("OPEN")
+
+  certifiedAt DateTime? @map("certified_at")
+
   /// RIKSDAGSVAL | ALLMAN_OMROSTNING
   ///
   /// Ett riksdagsval skapas med tre valsedlar — kommun, landsting, riksdag —
@@ -45,9 +55,57 @@ model Election {
   opensAt  DateTime @map("opens_at")
   closesAt DateTime @map("closes_at")
 
-  ballots ElectionBallot[]
+  ballots     ElectionBallot[]
+  commitments ElectionCommitment[]
 
   @@map("election")
+}
+
+/// Ett publicerat åtagande om röstunderlaget vid en viss tidpunkt.
+///
+/// VAD ETT ÅTAGANDE ÄR
+///
+/// Merkleroten över samtliga röster i omröstningen, plus antalet röster. Den
+/// som publicerat en rot har bundit sig vid exakt den mängden röster: ändras,
+/// tas bort eller läggs till en enda röst i efterhand blir roten en annan, och
+/// avvikelsen syns direkt.
+///
+/// Kedjan gör att historiken inte heller går att skriva om. Varje åtagande
+/// hashar in det föregående, så ett utbytt gammalt åtagande gör alla senare
+/// ogiltiga.
+///
+/// Tabellen är append-only i praktiken: ingenting i applikationen uppdaterar
+/// eller raderar rader här. Att den ändå skulle kunna ändras direkt i databasen
+/// är hela skälet till att rötterna ska publiceras externt — ett åtagande som
+/// bara finns i samma databas som det skyddar är inte värt mycket.
+model ElectionCommitment {
+  id String @id @default(uuid())
+
+  electionId String   @map("election_id")
+  election   Election @relation(fields: [electionId], references: [id], onDelete: Cascade)
+
+  /// Löpnummer i kedjan, från 1.
+  sequence Int
+
+  /// Merkleroten över rösterna, sorterade på innehåll — inte på tid.
+  root String
+
+  voteCount Int @map("vote_count")
+
+  /// Föregående åtagandes hash. Null bara för det första.
+  previousHash String? @map("previous_hash")
+
+  /// Det här åtagandets hash, över löpnummer, rot, antal och föregående hash.
+  entryHash String @unique @map("entry_hash")
+
+  /// Här är en exakt tidsstämpel ofarlig och nödvändig: åtagandet säger något
+  /// om MÄNGDEN röster, inte om en enskild röst, och när ett åtagande gjordes
+  /// måste gå att fastställa för att det ska ha något bevisvärde.
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([electionId, sequence])
+  @@index([electionId])
+  @@map("election_commitment")
 }
 
 /// En valsedel.

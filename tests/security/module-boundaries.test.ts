@@ -91,14 +91,22 @@ describe('modulgränser', () => {
      *    aldrig rader.
      *  – demo/database-state: demosidans underlag. Visar båda tabellerna med
      *    avkortade värden, sorterade så att skrivordningen inte röjs.
+     *  – final-check.usecase: slutkontrollen. Jämför ANTAL godkända röstningar
+     *    mot ANTAL registrerade röster. Läser aldrig en enskild väljare, och
+     *    kan inte para ihop sidorna — det finns ingen gemensam identifierare.
+     *  – observer/election: samma siffra, publicerad. Utan den kan en
+     *    observatör inte kontrollera att antalet godkända röstningar motsvarar
+     *    antalet registrerade röster, vilket är ett uttryckligt krav.
      */
     const allowed = [
       // Skapar omröstningen i båda databaserna. Rör bara offentlig metadata —
       // namn, valsedlar, öppettider. Vid den tidpunkten finns varken en
       // väljare eller en röst att koppla ihop.
       'src/orchestration/create-election.usecase.ts',
+      'src/orchestration/final-check.usecase.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
+      'src/app/api/observer/election/route.ts',
     ]
 
     const filesSeeingBoth = sourceFiles
