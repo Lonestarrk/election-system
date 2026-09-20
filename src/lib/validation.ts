@@ -22,10 +22,102 @@ export const startAuthSchema = z.object({
 
 export const collectAuthSchema = z.object({
   orderRef: z.string().uuid('Ogiltig referens.'),
+  /**
+   * Vilken omröstning legitimeringen gäller.
+   *
+   * Följer med hit i stället för att sparas vid start, eftersom BankID-ordern
+   * inte ska behöva bära applikationens tillstånd. Att den kontrolleras här
+   * spelar roll: sessionen som skapas knyts till omröstningen, och en session
+   * för en omröstning kan inte användas för att rösta i en annan.
+   */
+  electionId: z.string().uuid('Ogiltig omröstning.'),
 })
 
-export const castVoteSchema = z.object({
-  partyId: z.string().uuid('Ogiltigt parti.'),
+/**
+ * En röst på en valsedel.
+ *
+ * Exakt ett av `ballotPartyId` och `optionId` måste vara satt: en
+ * partivalsedel besvaras med ett parti, en fråga med ett alternativ. Att
+ * skicka båda eller inget är inte en glömska utan en indikation på att
+ * anroparen missförstått valsedeln, och avvisas därför vid gränsen i stället
+ * för att tolkas välvilligt.
+ *
+ * `candidateId` är alltid frivillig — personröst är en rättighet, inte ett
+ * krav.
+ */
+export const castVoteSchema = z
+  .object({
+    ballotId: z.string().uuid('Ogiltig valsedel.'),
+    ballotPartyId: z.string().uuid('Ogiltigt parti.').optional(),
+    candidateId: z.string().uuid('Ogiltig kandidat.').optional(),
+    optionId: z.string().uuid('Ogiltigt alternativ.').optional(),
+  })
+  .refine((value) => Boolean(value.ballotPartyId) !== Boolean(value.optionId), {
+    message: 'Ange antingen ett parti eller ett svarsalternativ, inte båda.',
+  })
+  .refine((value) => !(value.candidateId && !value.ballotPartyId), {
+    message: 'En personröst kräver att du också valt ett parti.',
+  })
+
+/** Uppslag av en valsedels innehåll. Id:t ligger i kroppen, inte i sökvägen. */
+export const ballotLookupSchema = z.object({
+  ballotId: z.string().uuid('Ogiltig valsedel.'),
+})
+
+/** Omröstning att legitimera sig för. */
+export const startAuthForElectionSchema = z.object({
+  personalNumber: personalNumberSchema,
+  electionId: z.string().uuid('Ogiltig omröstning.'),
+})
+
+const ballotInputSchema = z
+  .object({
+    kind: z.enum(['KOMMUN', 'LANDSTING', 'RIKSDAG', 'FRAGA']),
+    label: z.string().trim().min(1, 'Valsedeln behöver ett namn.').max(200),
+    areaCode: z.string().trim().max(20).optional(),
+    allowsCandidateVote: z.boolean().optional(),
+    parties: z
+      .array(
+        z.object({
+          // Partierna är förskapade och väljs ur registret. Fritext här vore
+          // hur "Socialdemokraterna" och "Socialdemokraterna " blir två
+          // partier i rösträkningen.
+          partyId: z.string().uuid('Okänt parti.'),
+          candidates: z.array(z.string().trim().min(1).max(120)).max(200).optional(),
+        }),
+      )
+      .max(60)
+      .optional(),
+    options: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+  })
+  .refine(
+    (value) => (value.kind === 'FRAGA' ? (value.options?.length ?? 0) >= 2 : true),
+    { message: 'En fråga behöver minst två svarsalternativ.' },
+  )
+  .refine(
+    (value) => (value.kind === 'FRAGA' ? !value.parties?.length : (value.parties?.length ?? 0) > 0),
+    { message: 'En partivalsedel behöver minst ett parti, en fråga inga.' },
+  )
+
+export const createElectionSchema = z
+  .object({
+    name: z.string().trim().min(1, 'Omröstningen behöver ett namn.').max(200),
+    kind: z.enum(['RIKSDAGSVAL', 'ALLMAN_OMROSTNING']),
+    opensAt: z.coerce.date(),
+    closesAt: z.coerce.date(),
+    ballots: z.array(ballotInputSchema).min(1, 'Minst en valsedel krävs.').max(50),
+  })
+  .refine((value) => value.closesAt > value.opensAt, {
+    message: 'Omröstningen måste stänga efter att den öppnat.',
+  })
+
+/** En enhets prenumeration på notiser. Innehåller ingenting om vem enheten tillhör. */
+export const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url('Ogiltig endpoint.').max(2000),
+  keys: z.object({
+    p256dh: z.string().min(1).max(200),
+    auth: z.string().min(1).max(200),
+  }),
 })
 
 /**

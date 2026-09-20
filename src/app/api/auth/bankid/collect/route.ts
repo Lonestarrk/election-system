@@ -57,7 +57,10 @@ export async function POST(request: Request) {
     })
   }
 
-  const decision = await evaluateEligibility(result.completionData.personalNumber)
+  const decision = await evaluateEligibility(
+    result.completionData.personalNumber,
+    body.data.electionId,
+  )
 
   if (decision.outcome === 'not_in_roll') {
     await recordAuditEvent(AUDIT_EVENTS.NOT_IN_ELECTORAL_ROLL)
@@ -77,6 +80,16 @@ export async function POST(request: Request) {
     })
   }
 
+  if (decision.outcome === 'no_ballots') {
+    return jsonResponse({
+      status: 'rejected',
+      reason: 'not_eligible',
+      // Inträffar när omröstningen bara innehåller valsedlar för andra
+      // kommuner än där personen är folkbokförd.
+      message: 'Ingen valsedel i den här omröstningen gäller dig.',
+    })
+  }
+
   if (decision.outcome === 'already_voted') {
     await recordAuditEvent(AUDIT_EVENTS.DOUBLE_VOTE_BLOCKED)
     return jsonResponse({
@@ -88,7 +101,7 @@ export async function POST(request: Request) {
     })
   }
 
-  const session = await createVotingSession(decision.voterStatusId)
+  const session = await createVotingSession(decision.voterStatusId, body.data.electionId)
   await recordAuditEvent(AUDIT_EVENTS.AUTH_COMPLETED)
   await recordAuditEvent(AUDIT_EVENTS.VOTING_SESSION_CREATED)
 
@@ -97,6 +110,14 @@ export async function POST(request: Request) {
     // Namnet visas för väljaren som bekräftelse på vem som legitimerats. Det
     // lagras inte och kommer från BankID-svaret, inte från röstlängden.
     name: result.completionData.name,
+    // Valsedlarna som gäller just den här väljaren, med status per valsedel.
+    // Innehåller ingenting om vad som står på dem — bara vilka de är.
+    ballots: decision.ballots.map((ballot) => ({
+      id: ballot.id,
+      kind: ballot.kind,
+      label: ballot.label,
+      hasVoted: ballot.hasVoted,
+    })),
   })
 
   setSessionCookie(response, session.id)

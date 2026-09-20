@@ -37,6 +37,29 @@ export const AUDIT_EVENTS = {
   RATE_LIMITED: 'RATE_LIMITED',
   ADMIN_LOGIN_SUCCEEDED: 'ADMIN_LOGIN_SUCCEEDED',
   ADMIN_LOGIN_FAILED: 'ADMIN_LOGIN_FAILED',
+  /**
+   * Någon legitimerade sig framgångsrikt men saknade adminflaggan.
+   *
+   * Skild från ADMIN_LOGIN_FAILED, som betyder att legitimeringen i sig inte
+   * gick igenom. Skillnaden spelar roll vid en granskning: många
+   * ADMIN_ACCESS_DENIED betyder att någon prövar sig fram med giltiga BankID,
+   * vilket är ett helt annat mönster än misslyckade signeringar.
+   *
+   * Raden säger fortfarande inte VEM. Den säger att det hände, och vilken
+   * timme.
+   */
+  ADMIN_ACCESS_DENIED: 'ADMIN_ACCESS_DENIED',
+  ELECTION_CREATED: 'ELECTION_CREATED',
+  ELECTION_CREATION_FAILED: 'ELECTION_CREATION_FAILED',
+  /**
+   * En notis om en ny omröstning skickades ut.
+   *
+   * Notera att antalet mottagare INTE loggas. Ett antal prenumeranter är i sig
+   * harmlöst, men tillsammans med en tidsstämpel blir det en signal om hur
+   * många enheter som är aktiva just då — och den sortens sidoinformation är
+   * precis vad revisionsloggen ska hålla sig ifrån.
+   */
+  ELECTION_NOTIFICATION_SENT: 'ELECTION_NOTIFICATION_SENT',
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]

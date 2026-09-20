@@ -67,16 +67,24 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }
 
-  const outcome = await castVote(session, body.data.partyId)
+  const outcome = await castVote(session, body.data)
 
   if (outcome.status === 'already_voted') {
-    const response = errorResponse('ALREADY_VOTED', 'Du har redan röstat i det här valet.', 409)
-    clearVotingCookies(response)
-    return response
+    // Sessionen rensas INTE här. Väljaren kan ha valsedlar kvar att rösta på
+    // i samma omröstning, och att kasta ut hen för att en valsedel redan var
+    // lagd skulle tvinga fram en ny legitimering i onödan.
+    return errorResponse('ALREADY_VOTED', 'Du har redan röstat på den här valsedeln.', 409)
   }
 
-  if (outcome.status === 'invalid_party') {
-    return errorResponse('INVALID_PARTY', 'Ogiltigt parti.', 400)
+  if (outcome.status === 'ballot_not_for_voter') {
+    // Samma svar oavsett om valsedeln gäller en annan kommun eller inte finns
+    // alls. Skilda svar skulle göra endpointen till ett uppslagsverk över
+    // vilka valsedlar som finns var.
+    return errorResponse('INVALID_BALLOT', 'Valsedeln gäller inte dig.', 400)
+  }
+
+  if (outcome.status === 'invalid_choice') {
+    return errorResponse('INVALID_CHOICE', outcome.reason, 400)
   }
 
   if (outcome.status === 'recording_failed') {
@@ -91,14 +99,23 @@ export async function POST(request: Request) {
 
   const response = jsonResponse({
     token: outcome.token,
+    electionComplete: outcome.electionComplete,
     warning:
       'Detta är enda gången din token visas. Spara den om du vill kunna kontrollera din röst senare.',
   })
 
-  // Sessionen är redan raderad ur databasen av orkestreringslagret. Här
-  // rensas motsvarande spår i webbläsaren, så att inget kvarvarande
-  // sessions-id kan kopplas till den nyss lagda rösten.
-  clearVotingCookies(response)
+  // EN TOKEN PER VALSEDEL. Väljaren i ett riksdagsval får tre — en för
+  // kommunvalet, en för landstingsvalet, en för riksdagsvalet. En gemensam
+  // token skulle binda ihop de tre partivalen till en profil, som är
+  // väsentligt mer identifierande än något enskilt av dem.
+  //
+  // Cookies rensas först när sista valsedeln är lagd. Fram till dess behöver
+  // sessionen finnas kvar för att väljaren ska kunna fortsätta. Orkestreringen
+  // har redan raderat sessionsraden ur databasen i samma ögonblick den blev
+  // överflödig; här rensas motsvarande spår i webbläsaren.
+  if (outcome.electionComplete) {
+    clearVotingCookies(response)
+  }
 
   return response
 }

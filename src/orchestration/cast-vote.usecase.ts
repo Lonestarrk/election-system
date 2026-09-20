@@ -1,17 +1,25 @@
 import { secureRandomBytes } from '@/lib/crypto'
 import { logger } from '@/lib/logger'
-import { castAnonymousVote, isKnownParty, VoteRecordingError } from '@/modules/anonymous-vote'
+import { castAnonymousVote, validateBallotChoice } from '@/modules/anonymous-vote'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
-import { markAsVotedAndConsumeSession } from '@/modules/eligibility/voter-status.service'
-import type { VotingSession } from '@/modules/eligibility/voting-session.service'
+import { ballotsForVoter } from '@/modules/eligibility/election.service'
+import {
+  hasCompletedElection,
+  markBallotAsVoted,
+} from '@/modules/eligibility/voter-status.service'
+import {
+  destroyVotingSession,
+  type VotingSession,
+} from '@/modules/eligibility/voting-session.service'
 
 /**
  * ORKESTRERINGSLAGRET
  *
  * Detta är den enda filen i systemet där en identifierad väljare och ett
- * partival finns i samma anropsstack. Två andra filer importerar från båda
- * modulerna — adminstatistiken och demosidans databasvy — men de rör bara
- * aggregat respektive avkortade värden och ser aldrig en enskild väljares val.
+ * partival finns i samma anropsstack. Tre andra filer importerar från båda
+ * modulerna — omröstningsskapandet, adminstatistiken och demosidans
+ * databasvy — men de rör metadata, aggregat respektive avkortade värden och
+ * ser aldrig en enskild väljares val.
  *
  * Ett arkitekturtest (tests/security/module-boundaries.test.ts) läser
  * källkoden och misslyckas om någon fil utanför den listan börjar importera
@@ -42,14 +50,28 @@ async function jitter(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
+export type BallotChoice = {
+  ballotId: string
+  ballotPartyId?: string
+  candidateId?: string
+  optionId?: string
+}
+
 export type CastVoteOutcome =
-  | { status: 'success'; token: string }
+  | { status: 'success'; token: string; electionComplete: boolean }
   | { status: 'already_voted' }
-  | { status: 'invalid_party' }
+  | { status: 'invalid_choice'; reason: string }
+  | { status: 'ballot_not_for_voter' }
   | { status: 'recording_failed' }
 
 /**
- * Genomför en röstning.
+ * Lägger en röst på EN valsedel.
+ *
+ * I ett riksdagsval anropas funktionen tre gånger under samma session — en
+ * gång per valsedel — och varje anrop ger en egen token. De tre rösterna har
+ * ingenting gemensamt som lagras. Det är avsiktligt: en gemensam identifierare
+ * skulle binda ihop kommun-, landstings- och riksdagsvalet till en profil, och
+ * tre partival tillsammans är betydligt mer identifierande än ett.
  *
  * ORDNINGEN ÄR ETT MEDVETET VAL MED EN KÄND SVAGHET.
  *
@@ -73,20 +95,36 @@ export type CastVoteOutcome =
  */
 export async function castVote(
   session: VotingSession,
-  partyId: string,
+  choice: BallotChoice,
 ): Promise<CastVoteOutcome> {
-  // Steg 0: avvisa ogiltigt parti INNAN väljaren markeras som röstande.
-  // Annars skulle en felformad begäran kunna bränna någons rösträtt utan att
-  // en röst registrerades. Kontrollen ställer bara frågan "finns det här
-  // partiet?" och skickar ingenting om väljaren vidare.
-  if (!(await isKnownParty(partyId))) {
-    return { status: 'invalid_party' }
+  // Steg 0: avvisa ett ogiltigt val INNAN väljaren markeras som röstande.
+  // Annars skulle en felformad begäran kunna bränna någons rösträtt på en
+  // valsedel utan att en röst registrerades. Kontrollen ställer bara frågor om
+  // valsedeln och skickar ingenting om väljaren vidare.
+  const validation = await validateBallotChoice(choice, session.electionId)
+  if (!validation.valid) {
+    return { status: 'invalid_choice', reason: validation.reason }
   }
 
-  // Steg 1: markera som röstad och konsumera sessionen, atomiskt.
-  // Villkorat på hasVoted = false, vilket gör steget till dubbelröstningsspärr
-  // även vid parallella begäranden.
-  const marked = await markAsVotedAndConsumeSession(session.voterStatusId, session.id)
+  // Steg 1: gäller valsedeln över huvud taget den här väljaren?
+  //
+  // En kommunvalsedel gäller bara den som är folkbokförd i kommunen. Utan den
+  // här kontrollen skulle vem som helst kunna rösta i vilken kommun som helst
+  // genom att skicka ett annat valsedels-id än det som visades.
+  const applicable = await ballotsForVoter(session.voterStatusId, session.electionId)
+  const ballot = applicable.find((entry) => entry.id === choice.ballotId)
+
+  if (!ballot) return { status: 'ballot_not_for_voter' }
+  if (ballot.hasVoted) {
+    await recordAuditEvent(AUDIT_EVENTS.DOUBLE_VOTE_BLOCKED)
+    return { status: 'already_voted' }
+  }
+
+  // Steg 2: markera valsedeln som röstad.
+  //
+  // Spärren ligger i databasens unika index, inte i kontrollen ovan: två
+  // samtidiga begäranden kan båda passera steg 1, men bara en kan skapa raden.
+  const marked = await markBallotAsVoted(session.voterStatusId, choice.ballotId)
 
   if (!marked) {
     await recordAuditEvent(AUDIT_EVENTS.DOUBLE_VOTE_BLOCKED)
@@ -95,27 +133,42 @@ export async function castVote(
 
   await jitter()
 
-  // Steg 2: registrera den anonyma rösten.
+  // Steg 3: registrera den anonyma rösten.
   //
-  // Härifrån och framåt finns ingen väg tillbaka till väljaren. `session` är
-  // borta ur databasen och skickas medvetet inte vidare — anropet nedan får
-  // bara ett parti-id, vilket är allt som behövs och allt som typen tillåter.
+  // Härifrån och framåt finns ingen väg tillbaka till väljaren. Anropet nedan
+  // får bara valsedels- och alternativ-id, vilket är allt som behövs och allt
+  // som typen tillåter.
   try {
-    const { token } = await castAnonymousVote({ partyId })
+    const { token } = await castAnonymousVote({
+      ballotId: choice.ballotId,
+      ballotPartyId: choice.ballotPartyId,
+      candidateId: choice.candidateId,
+      optionId: choice.optionId,
+    })
 
     await recordAuditEvent(AUDIT_EVENTS.VOTE_RECORDED)
 
-    return { status: 'success', token }
-  } catch (error) {
+    // Sessionen lever bara så länge det finns valsedlar kvar. När sista
+    // valsedeln är lagd raderas den omedelbart — varje extra sekund är en
+    // extra sekund då identitet och pågående röstning finns samtidigt.
+    const electionComplete = await hasCompletedElection(
+      session.voterStatusId,
+      session.electionId,
+    )
+
+    if (electionComplete) {
+      await destroyVotingSession(session.id)
+    }
+
+    return { status: 'success', token, electionComplete }
+  } catch {
     await recordAuditEvent(AUDIT_EVENTS.VOTE_RECORDING_FAILED)
 
     // Loggen innehåller ingen identitet, inget parti och ingen token — bara
-    // att ett fel av den här typen inträffat.
+    // att ett fel av den här typen inträffat. Felobjektet loggas medvetet
+    // inte: ett Prisma-fel kan bära med sig radvärden, och här är raden en
+    // röst.
     logger.error('Röstregistrering misslyckades efter att väljaren markerats som röstande')
-
-    if (error instanceof VoteRecordingError && error.message === 'Okänt parti.') {
-      return { status: 'invalid_party' }
-    }
 
     return { status: 'recording_failed' }
   }

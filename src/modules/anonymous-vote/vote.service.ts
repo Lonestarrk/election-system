@@ -2,6 +2,7 @@ import { truncateToHour } from '@/lib/time'
 import { logger } from '@/lib/logger'
 import { votesDb } from './db'
 import { generateVoteToken, hashToken } from './token.service'
+import type { BallotChoiceInput } from './election.service'
 
 /**
  * Registrering och verifiering av anonyma röster.
@@ -9,26 +10,13 @@ import { generateVoteToken, hashToken } from './token.service'
  * Ingen funktion i den här filen tar emot något som identifierar en person.
  * Det är inte en konvention utan ett typkontrakt: se `index.ts`, där modulens
  * publika yta är avsiktligt smal.
+ *
+ * EN RÖST PER VALSEDEL. I ett riksdagsval lägger samma väljare tre röster —
+ * kommun, landsting, riksdag — och de registreras som tre fristående rader
+ * med var sin token. Det finns ingen kolumn någonstans som säger att de hör
+ * ihop, och det är avsiktligt: tre partival tillsammans är betydligt mer
+ * identifierande än ett.
  */
-
-export type Party = {
-  id: string
-  name: string
-  abbreviation: string
-  color: string
-}
-
-export async function listParties(): Promise<Party[]> {
-  return votesDb.party.findMany({
-    orderBy: { displayOrder: 'asc' },
-    select: { id: true, name: true, abbreviation: true, color: true },
-  })
-}
-
-export async function partyExists(partyId: string): Promise<boolean> {
-  const count = await votesDb.party.count({ where: { id: partyId } })
-  return count === 1
-}
 
 /**
  * Antal försök att generera en unik token innan vi ger upp.
@@ -43,15 +31,16 @@ const MAX_TOKEN_ATTEMPTS = 5
 export class VoteRecordingError extends Error {}
 
 /**
- * Registrerar en anonym röst och returnerar token i klartext.
+ * Registrerar en anonym röst på en valsedel och returnerar token i klartext.
  *
  * Klartexten returneras en enda gång, till anroparen, och lagras aldrig.
+ *
+ * Giltigheten hos valet ska redan vara kontrollerad av `validateBallotChoice`
+ * innan väljaren markerades som röstande. Kontrollen görs ändå igen här, som
+ * sista spärr — den här funktionen är den enda vägen in i tabellen och ska
+ * inte förlita sig på att anroparen gjort rätt.
  */
-export async function recordAnonymousVote(partyId: string): Promise<{ token: string }> {
-  if (!(await partyExists(partyId))) {
-    throw new VoteRecordingError('Okänt parti.')
-  }
-
+export async function recordAnonymousVote(choice: BallotChoiceInput): Promise<{ token: string }> {
   for (let attempt = 1; attempt <= MAX_TOKEN_ATTEMPTS; attempt += 1) {
     const { token, tokenHash } = generateVoteToken()
 
@@ -59,7 +48,10 @@ export async function recordAnonymousVote(partyId: string): Promise<{ token: str
       await votesDb.anonymousVote.create({
         data: {
           tokenHash,
-          partyId,
+          ballotId: choice.ballotId,
+          ballotPartyId: choice.ballotPartyId ?? null,
+          candidateId: choice.candidateId ?? null,
+          optionId: choice.optionId ?? null,
           // Timupplösning. Se lib/time.ts om varför exakta tidsstämplar här
           // skulle göra hela separationen verkningslös.
           createdAt: truncateToHour(new Date()),
@@ -87,21 +79,38 @@ export async function recordAnonymousVote(partyId: string): Promise<{ token: str
 }
 
 export type VerificationResult =
-  | { registered: true; party: string }
+  | {
+      registered: true
+      election: string
+      ballot: string
+      /** Parti eller svarsalternativ, beroende på valsedelns typ. */
+      choice: string
+      /** Kryssad kandidat, om väljaren personröstade. */
+      candidate: string | null
+    }
   | { registered: false }
 
 /**
  * Verifierar en token.
  *
- * Svaret innehåller partinamnet och ingenting annat. Det finns medvetet ingen
- * motsvarande funktion som går åt andra hållet — det går inte att fråga
- * systemet "vilken token hör till den här personen?", eftersom den här
- * modulen inte vet vad en person är.
+ * Svaret beskriver EN valsedel — den som token gäller. Väljaren som röstat på
+ * tre valsedlar har tre tokens och får fråga en i taget.
+ *
+ * Det finns medvetet ingen funktion som går åt andra hållet: det går inte att
+ * fråga systemet "vilka tokens hör till den här personen?", eftersom modulen
+ * inte vet vad en person är. Det går inte heller att fråga "vilka andra röster
+ * lades av samma väljare som den här token?", eftersom den kopplingen inte
+ * finns lagrad.
  */
 export async function verifyToken(rawToken: string): Promise<VerificationResult> {
   const vote = await votesDb.anonymousVote.findUnique({
     where: { tokenHash: hashToken(rawToken) },
-    select: { party: { select: { name: true } } },
+    select: {
+      ballot: { select: { label: true, election: { select: { name: true } } } },
+      ballotParty: { select: { party: { select: { name: true } } } },
+      option: { select: { label: true } },
+      candidate: { select: { name: true } },
+    },
   })
 
   if (!vote) return { registered: false }
@@ -110,29 +119,123 @@ export async function verifyToken(rawToken: string): Promise<VerificationResult>
   // löpnummer eller en exakt tidsstämpel i svaret skulle låta den som samlat
   // in flera kvitton ordna rösterna i tid och därmed korrelera mot
   // legitimeringstidpunkter.
-  return { registered: true, party: vote.party.name }
+  return {
+    registered: true,
+    election: vote.ballot.election.name,
+    ballot: vote.ballot.label,
+    choice: vote.ballotParty?.party.name ?? vote.option?.label ?? 'Okänt val',
+    candidate: vote.candidate?.name ?? null,
+  }
 }
 
-/** Aggregat för adminvyn. Inga enskilda röster, inga tokens. */
-export async function getVoteStatistics(): Promise<{
+export type BallotResult = {
+  ballotId: string
+  ballot: string
+  kind: string
   totalVotes: number
-  perParty: Array<{ party: string; abbreviation: string; color: string; votes: number }>
-}> {
-  const [totalVotes, parties, grouped] = await Promise.all([
-    votesDb.anonymousVote.count(),
-    listParties(),
-    votesDb.anonymousVote.groupBy({ by: ['partyId'], _count: { _all: true } }),
-  ])
+  rows: Array<{
+    label: string
+    abbreviation: string | null
+    color: string | null
+    votes: number
+    /**
+     * Personröster per kandidat. Tom lista när valsedeln inte tillåter
+     * personröst.
+     */
+    candidates: Array<{ name: string; votes: number }>
+  }>
+}
 
-  const countByParty = new Map(grouped.map((row) => [row.partyId, row._count._all]))
+/**
+ * Aggregat för adminvyn, per valsedel. Inga enskilda röster, inga tokens.
+ *
+ * ETT MEDVETET UTELÄMNANDE: det finns ingen funktion som korsar valsedlar.
+ * "Hur röstade de som röstade på parti X i kommunvalet i riksdagsvalet?" går
+ * inte att svara på — inte för att frågan filtreras bort i gränssnittet, utan
+ * för att kopplingen aldrig lagrats.
+ */
+export async function getElectionResults(electionId: string): Promise<BallotResult[]> {
+  const ballots = await votesDb.electionBallot.findMany({
+    where: { electionId },
+    orderBy: { displayOrder: 'asc' },
+    select: {
+      id: true,
+      label: true,
+      kind: true,
+      allowsCandidateVote: true,
+      parties: {
+        orderBy: { displayOrder: 'asc' },
+        select: {
+          id: true,
+          party: { select: { name: true, abbreviation: true, color: true } },
+          candidates: { select: { id: true, name: true }, orderBy: { displayOrder: 'asc' } },
+        },
+      },
+      options: { orderBy: { displayOrder: 'asc' }, select: { id: true, label: true } },
+    },
+  })
 
-  return {
-    totalVotes,
-    perParty: parties.map((party) => ({
-      party: party.name,
-      abbreviation: party.abbreviation,
-      color: party.color,
-      votes: countByParty.get(party.id) ?? 0,
-    })),
+  const results: BallotResult[] = []
+
+  for (const ballot of ballots) {
+    const [totalVotes, byParty, byOption, byCandidate] = await Promise.all([
+      votesDb.anonymousVote.count({ where: { ballotId: ballot.id } }),
+      votesDb.anonymousVote.groupBy({
+        by: ['ballotPartyId'],
+        where: { ballotId: ballot.id },
+        _count: { _all: true },
+      }),
+      votesDb.anonymousVote.groupBy({
+        by: ['optionId'],
+        where: { ballotId: ballot.id },
+        _count: { _all: true },
+      }),
+      votesDb.anonymousVote.groupBy({
+        by: ['candidateId'],
+        where: { ballotId: ballot.id, candidateId: { not: null } },
+        _count: { _all: true },
+      }),
+    ])
+
+    const partyCounts = new Map(byParty.map((row) => [row.ballotPartyId, row._count._all]))
+    const optionCounts = new Map(byOption.map((row) => [row.optionId, row._count._all]))
+    const candidateCounts = new Map(byCandidate.map((row) => [row.candidateId, row._count._all]))
+
+    const rows =
+      ballot.kind === 'FRAGA'
+        ? ballot.options.map((option) => ({
+            label: option.label,
+            abbreviation: null,
+            color: null,
+            votes: optionCounts.get(option.id) ?? 0,
+            candidates: [],
+          }))
+        : ballot.parties.map((entry) => ({
+            label: entry.party.name,
+            abbreviation: entry.party.abbreviation,
+            color: entry.party.color,
+            votes: partyCounts.get(entry.id) ?? 0,
+            candidates: ballot.allowsCandidateVote
+              ? entry.candidates.map((candidate) => ({
+                  name: candidate.name,
+                  votes: candidateCounts.get(candidate.id) ?? 0,
+                }))
+              : [],
+          }))
+
+    results.push({
+      ballotId: ballot.id,
+      ballot: ballot.label,
+      kind: ballot.kind,
+      totalVotes,
+      rows,
+    })
   }
+
+  return results
+}
+
+/** Totalt antal registrerade röster i en omröstning. Används av integritetskontrollen. */
+export async function countVotes(electionId: string): Promise<number> {
+  return votesDb.anonymousVote.count({ where: { ballot: { electionId } } })
 }

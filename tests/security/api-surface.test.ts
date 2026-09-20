@@ -42,10 +42,11 @@ describe('API-ytan', () => {
       'src/app/api/auth/bankid/collect/route.ts',
       'src/app/api/auth/bankid/start/route.ts',
       'src/app/api/demo/database-state/route.ts',
+      'src/app/api/elections/route.ts',
       'src/app/api/verify/route.ts',
+      'src/app/api/vote/ballot/route.ts',
       'src/app/api/vote/cast/route.ts',
-      'src/app/api/vote/parties/route.ts',
-    ])
+          ])
   })
 
   it('endast röstläggningen returnerar en token', () => {
@@ -155,6 +156,7 @@ describe('skydd på tillståndsändrande rutter', () => {
     (route) =>
       /export async function POST/.test(route.content) &&
       route.path !== 'src/app/api/verify/route.ts',
+      'src/app/api/vote/ballot/route.ts',
   )
 
   it('kontrollerar Origin', () => {

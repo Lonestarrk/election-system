@@ -91,6 +91,10 @@ describe('modulgränser', () => {
      */
     const allowed = [
       'src/orchestration/cast-vote.usecase.ts',
+      // Skapar omröstningen i båda databaserna. Rör bara offentlig metadata —
+      // namn, valsedlar, öppettider. Vid den tidpunkten finns varken en
+      // väljare eller en röst att koppla ihop.
+      'src/orchestration/create-election.usecase.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
     ]
@@ -131,8 +135,39 @@ describe('modulgränser', () => {
 describe('röstmodulens publika kontrakt', () => {
   const moduleApi = readFileSync(join(SRC, 'modules/anonymous-vote/index.ts'), 'utf8')
 
-  it('tar bara emot ett parti-id', () => {
-    expect(moduleApi).toMatch(/export type CastAnonymousVoteInput = \{\s*partyId: string\s*\}/)
+  it('tar bara emot identifierare som pekar på rader i röstdatabasen', () => {
+    const inputType = moduleApi.match(/export type CastAnonymousVoteInput = \{[^}]*\}/)?.[0] ?? ''
+    expect(inputType).toBeTruthy()
+
+    const fields = [...inputType.matchAll(/^\s{2}(\w+)\??:/gm)].map((match) => match[1])
+
+    // Exakt den här mängden, varken mer eller mindre. Ett nytt fält i
+    // kontraktet ska tvinga fram ett medvetet beslut här, inte glida igenom.
+    expect(fields.sort()).toEqual(['ballotId', 'ballotPartyId', 'candidateId', 'optionId'])
+  })
+
+  it('har ingen parameter som knyter ihop flera röster', () => {
+    /**
+     * Väljaren i ett riksdagsval anropar modulen tre gånger, en gång per
+     * valsedel. De tre anropen får inte ha något gemensamt som lagras: en
+     * kombination av kommun-, landstings- och riksdagsval är betydligt mer
+     * identifierande än något enskilt av dem.
+     *
+     * Det räcker alltså inte att kontraktet saknar identitet — det måste också
+     * sakna varje fält som skulle kunna gruppera rösterna i efterhand.
+     */
+    const inputType = moduleApi.match(/export type CastAnonymousVoteInput = \{[^}]*\}/)?.[0] ?? ''
+
+    for (const forbidden of [
+      'receiptId',
+      'groupId',
+      'batchId',
+      'electionId',
+      'correlationId',
+      'sequence',
+    ]) {
+      expect(inputType, `${forbidden} finns i kontraktet`).not.toContain(forbidden)
+    }
   })
 
   it('har inga parametrar som kan bära identitet', () => {

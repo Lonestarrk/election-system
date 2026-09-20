@@ -36,6 +36,14 @@ export const RATE_LIMITS = {
    * gissa — gränsen finns för att stoppa uppräkning som lastangrepp.
    */
   verify: { limit: 10, windowMs: 60_000 },
+
+  /**
+   * Uppslag av en valsedels innehåll. Generös gräns — det är offentlig
+   * information och en väljare slår upp tre valsedlar i rad. Gränsen finns för
+   * att uppräkning inte ska bli ett billigt lastangrepp, inte för att skydda
+   * innehållet.
+   */
+  ballotLookup: { limit: 60, windowMs: 60_000 },
   /** Admininloggning. */
   adminLogin: { limit: 5, windowMs: 300_000 },
 } as const satisfies Record<string, RateLimitRule>

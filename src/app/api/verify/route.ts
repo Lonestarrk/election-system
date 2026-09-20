@@ -55,9 +55,16 @@ export async function POST(request: Request) {
     })
   }
 
+  // Svaret beskriver EN valsedel — den som token gäller. Väljaren som röstat
+  // på tre valsedlar har tre tokens och frågar en i taget. Det finns medvetet
+  // ingen väg att fråga efter "de andra rösterna från samma person": den
+  // kopplingen är aldrig lagrad.
   return jsonResponse({
     registered: true,
-    party: result.party,
+    election: result.election,
+    ballot: result.ballot,
+    choice: result.choice,
+    candidate: result.candidate,
     message: 'Din röst är registrerad.',
   })
 }
