@@ -14,7 +14,10 @@ import { useState } from 'react'
 type Result =
   | { state: 'idle' }
   | { state: 'loading' }
-  | { state: 'registered'; party: string }
+  | { state: 'registered'; election: string
+  ballot: string
+  choice: string
+  candidate: string | null }
   | { state: 'not_found' }
   | { state: 'error'; message: string }
 
@@ -39,7 +42,17 @@ export default function VerifieraPage() {
         return
       }
 
-      setResult(data.registered ? { state: 'registered', party: data.party } : { state: 'not_found' })
+      setResult(
+        data.registered
+          ? {
+              state: 'registered',
+              election: data.election,
+              ballot: data.ballot,
+              choice: data.choice,
+              candidate: data.candidate,
+            }
+          : { state: 'not_found' },
+      )
     } catch {
       setResult({ state: 'error', message: 'Kunde inte nå tjänsten. Försök igen.' })
     }
@@ -82,7 +95,17 @@ export default function VerifieraPage() {
           {result.state === 'registered' && (
             <div className="notice success" role="status" style={{ marginTop: '1.25rem' }}>
               <strong>Din röst är registrerad.</strong>
-              <div style={{ marginTop: '0.35rem' }}>Rösten avsåg: {result.party}</div>
+              <div style={{ marginTop: '0.35rem' }}>
+                <div>
+                  {result.election} — {result.ballot}
+                </div>
+                <div>Rösten avsåg: {result.choice}</div>
+                {result.candidate && <div>Personröst: {result.candidate}</div>}
+              </div>
+              <p className="muted small" style={{ marginTop: '0.75rem' }}>
+                Kvittot gäller en valsedel. Har du röstat på flera har du en kod per valsedel —
+                de är medvetet åtskilda, så att dina val inte kan läggas ihop till en profil.
+              </p>
             </div>
           )}
 

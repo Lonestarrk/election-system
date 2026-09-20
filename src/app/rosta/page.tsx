@@ -1,255 +1,419 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
+import { Suspense, useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { createBlindedCredential, unblindSignature, verifySignature } from '@/lib/blind-client'
 
 /**
- * Partival, bekräftelse och kvitto.
+ * Röstningssidan.
  *
- * Kvittot visas på SAMMA sida som röstningen, utan navigering.
+ * DEN HÄR SIDAN GÖR NÅGOT OVANLIGT: DEN UTFÖR KRYPTOGRAFI.
  *
- * Det är ett medvetet val. Alternativet — att skicka token vidare till en
- * separat kvittosida — skulle kräva att klartexten transporteras genom en URL,
- * sessionStorage eller ett tillstånd som överlever en sidladdning. Alla tre är
- * precis vad specifikationen förbjuder. Genom att rendera kvittot direkt från
- * svaret lämnar token aldrig komponentens minne, och en omladdning av sidan
- * gör den oåterkalleligt borta — vilket är exakt vad som ska hända.
+ * Röstintyget skapas och blindas här, i väljarens webbläsare, och
+ * blindningsfaktorn lämnar aldrig enheten. Det är det enda som hindrar
+ * valmyndigheten från att koppla ihop ett utfärdat intyg med en inlämnad röst.
+ * Gjordes blindningen på servern skulle den ha sett båda sidorna, och hela
+ * mekanismen vore verkningslös.
+ *
+ * Flödet per valsedel:
+ *
+ *   1. Hämta valsedelns alternativ och dess publika nyckel.
+ *   2. Skapa ett hemligt röstintyg och blinda det.
+ *   3. Skicka det blindade värdet med sessionen. Servern markerar rösträtten
+ *      som använd och signerar — utan att se vad den signerar.
+ *   4. Avblinda signaturen och kontrollera att den faktiskt är giltig.
+ *   5. Skicka rösten UTAN session. Bara intyget auktoriserar den.
+ *   6. Visa kvittokoden. En per valsedel.
  */
 
-type Party = { id: string; name: string; abbreviation: string; color: string }
-type Stage = 'select' | 'confirm' | 'submitting' | 'receipt' | 'error'
-
-function readCsrfToken(): string {
-  const match = document.cookie.match(/(?:^|;\s*)valcsrf=([^;]+)/)
-  return match?.[1] ?? ''
+type Ballot = {
+  id: string
+  kind: string
+  label: string
+  hasVoted: boolean
 }
 
-export default function RostaPage() {
-  const [parties, setParties] = useState<Party[]>([])
-  const [selected, setSelected] = useState<Party | null>(null)
-  const [stage, setStage] = useState<Stage>('select')
-  const [token, setToken] = useState<string | null>(null)
-  const [errorMessage, setErrorMessage] = useState('')
-  const [acknowledged, setAcknowledged] = useState(false)
-  const [copied, setCopied] = useState(false)
+type PartyChoice = {
+  ballotPartyId: string
+  name: string
+  abbreviation: string
+  color: string
+  candidates: Array<{ id: string; name: string }>
+}
 
-  useEffect(() => {
-    fetch('/api/vote/parties')
-      .then((response) => response.json())
-      .then((data) => setParties(data.parties ?? []))
-      .catch(() => {
-        setStage('error')
-        setErrorMessage('Kunde inte hämta partilistan.')
-      })
-  }, [])
+type BallotChoices =
+  | { kind: 'PARTY'; allowsCandidateVote: boolean; parties: PartyChoice[] }
+  | { kind: 'QUESTION'; options: Array<{ id: string; label: string }> }
 
-  // Varnar om väljaren råkar lämna sidan medan token fortfarande visas. Efter
-  // det går den inte att få tillbaka.
-  useEffect(() => {
-    if (!token || acknowledged) return
+type Receipt = { ballot: string; token: string }
 
-    function warn(event: BeforeUnloadEvent) {
-      event.preventDefault()
-      event.returnValue = ''
+function csrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)valcsrf=([^;]+)/)
+  return match ? decodeURIComponent(match[1]!) : ''
+}
+
+function RostaContent() {
+  const params = useSearchParams()
+  const electionId = params.get('val') ?? ''
+
+  const [electionName, setElectionName] = useState('')
+  const [ballots, setBallots] = useState<Ballot[]>([])
+  const [activeBallot, setActiveBallot] = useState<Ballot | null>(null)
+  const [choices, setChoices] = useState<BallotChoices | null>(null)
+  const [selectedChoice, setSelectedChoice] = useState<string>('')
+  const [selectedCandidate, setSelectedCandidate] = useState<string>('')
+  const [receipts, setReceipts] = useState<Receipt[]>([])
+  const [status, setStatus] = useState<'loading' | 'ready' | 'working' | 'done' | 'error'>('loading')
+  const [message, setMessage] = useState('')
+
+  /** Hämtar omröstningen och vilka valsedlar som gäller. */
+  const load = useCallback(async () => {
+    if (!electionId) {
+      setStatus('error')
+      setMessage('Ingen omröstning vald. Börja med att legitimera dig.')
+      return
     }
 
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [token, acknowledged])
-
-  async function submitVote() {
-    if (!selected) return
-    setStage('submitting')
-
     try {
-      const response = await fetch('/api/vote/cast', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': readCsrfToken(),
-        },
-        body: JSON.stringify({ partyId: selected.id }),
-      })
+      const response = await fetch('/api/elections')
       const data = await response.json()
 
-      if (!response.ok) {
-        setStage('error')
-        setErrorMessage(data.error?.message ?? 'Rösten kunde inte registreras.')
+      const election = (data.elections ?? []).find(
+        (candidate: { id: string }) => candidate.id === electionId,
+      )
+
+      if (!election) {
+        setStatus('error')
+        setMessage('Omröstningen är inte öppen.')
         return
       }
 
-      setToken(data.token)
-      setStage('receipt')
+      setElectionName(election.name)
+      setBallots(
+        election.ballots.map((ballot: Ballot) => ({ ...ballot, hasVoted: false })),
+      )
+      setStatus('ready')
     } catch {
-      setStage('error')
-      setErrorMessage('Kunde inte nå tjänsten. Din röst registrerades inte.')
+      setStatus('error')
+      setMessage('Kunde inte hämta omröstningen.')
     }
+  }, [electionId])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  async function openBallot(ballot: Ballot) {
+    setActiveBallot(ballot)
+    setChoices(null)
+    setSelectedChoice('')
+    setSelectedCandidate('')
+    setMessage('')
+
+    const response = await fetch('/api/vote/ballot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ballotId: ballot.id }),
+    })
+
+    const data = await response.json()
+
+    if (!response.ok) {
+      setMessage(data.error?.message ?? 'Kunde inte hämta valsedeln.')
+      return
+    }
+
+    setChoices(data.choices)
   }
 
-  async function copyToken() {
-    if (!token) return
+  async function castVote() {
+    if (!activeBallot || !selectedChoice) return
+
+    setStatus('working')
+    setMessage('Skapar röstintyg …')
+
     try {
-      // Kopiering sker bara när väljaren själv klickar. Token skrivs aldrig
-      // till urklipp, localStorage eller sessionStorage automatiskt.
-      await navigator.clipboard.writeText(token)
-      setCopied(true)
+      // --- 1. Valsedelns publika nyckel -----------------------------------
+      const keyResponse = await fetch('/api/observer/election', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ electionId }),
+      })
+      const keyData = await keyResponse.json()
+
+      const publicKeyPem: string | undefined = keyData.ballots?.find(
+        (ballot: { id: string }) => ballot.id === activeBallot.id,
+      )?.signingPublicKeyPem
+
+      if (!publicKeyPem) throw new Error('Valsedelns nyckel saknas.')
+
+      // --- 2. Skapa och blinda intyget, här på enheten --------------------
+      const credential = await createBlindedCredential(publicKeyPem)
+
+      setMessage('Hämtar signatur …')
+
+      // --- 3. Låt myndigheten signera det blindade värdet -----------------
+      const issueResponse = await fetch('/api/vote/credential', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
+        body: JSON.stringify({ ballotId: activeBallot.id, blinded: credential.blinded }),
+      })
+      const issued = await issueResponse.json()
+
+      if (!issueResponse.ok) {
+        setStatus('ready')
+        setMessage(issued.error?.message ?? 'Kunde inte hämta röstintyg.')
+        return
+      }
+
+      // --- 4. Avblinda och kontrollera ------------------------------------
+      const signature = await unblindSignature(
+        issued.blindSignature,
+        credential.blindingFactor,
+        publicKeyPem,
+      )
+
+      // Kontrolleras HÄR, innan rösten lämnas in. Utan det skulle en server
+      // kunna svara med skräp, och felet upptäckas först när rösträtten redan
+      // är förbrukad.
+      if (!(await verifySignature(credential.credentialId, signature, publicKeyPem))) {
+        setStatus('error')
+        setMessage(
+          'Röstintyget som utfärdades är inte giltigt. Rösten har inte lagts. ' +
+            'Kontakta valmyndigheten.',
+        )
+        return
+      }
+
+      setMessage('Lägger rösten …')
+
+      // --- 5. Lägg rösten, utan session -----------------------------------
+      const isQuestion = choices?.kind === 'QUESTION'
+
+      const castResponse = await fetch('/api/vote/cast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ballotId: activeBallot.id,
+          ...(isQuestion
+            ? { optionId: selectedChoice }
+            : { ballotPartyId: selectedChoice, ...(selectedCandidate ? { candidateId: selectedCandidate } : {}) }),
+          credentialId: credential.credentialId,
+          credentialSignature: signature,
+        }),
+      })
+
+      const cast = await castResponse.json()
+
+      if (!castResponse.ok) {
+        setStatus('error')
+        setMessage(cast.error?.message ?? 'Rösten kunde inte registreras.')
+        return
+      }
+
+      // --- 6. Kvittot -----------------------------------------------------
+      setReceipts((current) => [...current, { ballot: activeBallot.label, token: cast.token }])
+      setBallots((current) =>
+        current.map((ballot) =>
+          ballot.id === activeBallot.id ? { ...ballot, hasVoted: true } : ballot,
+        ),
+      )
+
+      setActiveBallot(null)
+      setChoices(null)
+      setSelectedChoice('')
+      setSelectedCandidate('')
+      setStatus('ready')
+      setMessage('')
     } catch {
-      setCopied(false)
+      setStatus('error')
+      setMessage('Något gick fel. Din röst lades inte.')
     }
   }
 
-  // --- Kvitto --------------------------------------------------------------
-  if (stage === 'receipt' && token) {
-    return (
-      <main className="narrow">
-        <div className="stack">
-          <div>
-            <h1>Din röst är registrerad</h1>
-            <p className="muted">Rösten har lagts anonymt. Din identitet finns inte kvar i den.</p>
-          </div>
+  const remaining = ballots.filter((ballot) => !ballot.hasVoted)
 
-          <div className="card">
-            <div className="notice warning" role="alert" style={{ marginBottom: '1.25rem' }}>
-              <strong>
-                Detta är enda gången din token visas. Spara den om du vill kunna kontrollera din
-                röst senare.
-              </strong>
-            </div>
-
-            <label htmlFor="token">Din token</label>
-            <div className="token-display" id="token">
-              {token}
-            </div>
-
-            <div className="button-row">
-              <button type="button" className="secondary" onClick={copyToken}>
-                {copied ? 'Kopierad' : 'Kopiera token'}
-              </button>
-              <button type="button" onClick={() => setAcknowledged(true)}>
-                Jag har sparat min token
-              </button>
-            </div>
-
-            {acknowledged && (
-              <div className="notice success" style={{ marginTop: '1.25rem' }}>
-                Klart. Gå till <Link href="/verifiera">Verifiera röst</Link> när du vill kontrollera
-                att rösten finns registrerad.
-              </div>
-            )}
-          </div>
-
-          <div className="card">
-            <h3>Vad hände nyss</h3>
-            <p className="muted small">
-              Du markerades som röstande i röstlängden. Sedan registrerades en röst på{' '}
-              {selected?.name} i en helt separat databas, tillsammans med en avtryck av din token.
-              Den registreringen innehåller ingenting om dig — inget personnummer, inget väljar-id,
-              ingen IP-adress, ingen sessionsuppgift. Din röstsession raderades i samma ögonblick.
-            </p>
-            <p className="muted small">
-              Token lagras inte i klartext hos oss, bara som ett kryptografiskt avtryck. Vi kan
-              alltså bekräfta en token du visar upp, men aldrig räkna fram den åt någon som inte
-              redan har den.
-            </p>
-          </div>
-        </div>
-      </main>
-    )
-  }
-
-  // --- Fel -----------------------------------------------------------------
-  if (stage === 'error') {
-    return (
-      <main className="narrow">
-        <div className="card">
-          <div className="notice danger" role="alert">
-            {errorMessage}
-          </div>
-          <div className="button-row" style={{ marginTop: '1rem' }}>
-            <Link href="/legitimera">
-              <button type="button" className="secondary">
-                Tillbaka till legitimering
-              </button>
-            </Link>
-          </div>
-        </div>
-      </main>
-    )
-  }
-
-  // --- Bekräftelse ---------------------------------------------------------
-  if (stage === 'confirm' || stage === 'submitting') {
-    return (
-      <main className="narrow">
-        <div className="stack">
-          <h1>Bekräfta din röst</h1>
-
-          <div className="card">
-            <p className="muted">Du är på väg att rösta på:</p>
-            <div className="party-option" aria-pressed="true" style={{ cursor: 'default' }}>
-              <span className="party-swatch" style={{ background: selected?.color }}>
-                {selected?.abbreviation}
-              </span>
-              {selected?.name}
-            </div>
-
-            <div className="notice info" style={{ marginTop: '1.25rem' }}>
-              När du bekräftar kan rösten inte ändras eller ångras.
-            </div>
-
-            <div className="button-row" style={{ marginTop: '1.25rem' }}>
-              <button type="button" onClick={submitVote} disabled={stage === 'submitting'}>
-                {stage === 'submitting' ? 'Registrerar …' : 'Bekräfta och rösta'}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => setStage('select')}
-                disabled={stage === 'submitting'}
-              >
-                Ändra val
-              </button>
-            </div>
-          </div>
-        </div>
-      </main>
-    )
-  }
-
-  // --- Partival ------------------------------------------------------------
   return (
     <main className="narrow">
       <div className="stack">
         <div>
-          <h1>Välj parti</h1>
-          <p className="muted">Du kan bara rösta på ett parti.</p>
+          <h1>{electionName || 'Rösta'}</h1>
+          <p className="muted">
+            Ditt röstintyg skapas och blindas i din webbläsare. Valmyndigheten signerar det utan
+            att se vad den signerar, vilket gör att din röst inte kan kopplas till dig — inte ens
+            av den som driver systemet.
+          </p>
         </div>
 
-        <div className="card">
-          <div className="party-list">
-            {parties.map((party) => (
-              <button
-                key={party.id}
-                type="button"
-                className="party-option"
-                aria-pressed={selected?.id === party.id}
-                onClick={() => setSelected(party)}
-              >
-                <span className="party-swatch" style={{ background: party.color }}>
-                  {party.abbreviation}
-                </span>
-                {party.name}
-              </button>
+        {message && status !== 'error' && (
+          <div className="notice info" role="status" aria-live="polite">
+            {message}
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div className="notice danger" role="alert">
+            {message}
+          </div>
+        )}
+
+        {receipts.length > 0 && (
+          <div className="card">
+            <h2>Dina kvittokoder</h2>
+            <div className="notice warning">
+              Detta är enda gången koderna visas. Spara dem om du vill kunna kontrollera dina
+              röster senare.
+            </div>
+            <p className="muted small">
+              En kod per valsedel. De är medvetet åtskilda: en gemensam kod skulle binda ihop dina
+              val till en profil, och en kombination av flera partival är betydligt mer
+              identifierande än ett enskilt.
+            </p>
+            {receipts.map((receipt) => (
+              <div key={receipt.token} style={{ marginTop: '1rem' }}>
+                <strong>{receipt.ballot}</strong>
+                <div className="mono" style={{ wordBreak: 'break-all' }}>
+                  {receipt.token}
+                </div>
+              </div>
             ))}
           </div>
+        )}
 
-          <div className="button-row" style={{ marginTop: '1.5rem' }}>
-            <button type="button" disabled={!selected} onClick={() => setStage('confirm')}>
-              Fortsätt
-            </button>
+        {!activeBallot && remaining.length > 0 && status !== 'working' && (
+          <div className="card">
+            <h2>Valsedlar</h2>
+            <p className="muted small">Du röstar på en valsedel i taget.</p>
+            {ballots.map((ballot) => (
+              <div key={ballot.id} className="button-row" style={{ marginTop: '0.75rem' }}>
+                <button
+                  type="button"
+                  disabled={ballot.hasVoted}
+                  onClick={() => void openBallot(ballot)}
+                >
+                  {ballot.hasVoted ? `${ballot.label} — röstad` : ballot.label}
+                </button>
+              </div>
+            ))}
           </div>
-        </div>
+        )}
+
+        {!activeBallot && remaining.length === 0 && ballots.length > 0 && (
+          <div className="card">
+            <h2>Klart</h2>
+            <p>Du har röstat på samtliga valsedlar som gäller dig.</p>
+            <p className="muted small">
+              Din röstsession är avslutad och raderad. Det finns nu ingen rad någonstans som kopplar
+              dig till dina röster.
+            </p>
+          </div>
+        )}
+
+        {activeBallot && choices && (
+          <div className="card">
+            <h2>{activeBallot.label}</h2>
+
+            {choices.kind === 'PARTY' && (
+              <>
+                {choices.parties.map((party) => (
+                  <div key={party.ballotPartyId} style={{ marginTop: '0.5rem' }}>
+                    <label>
+                      <input
+                        type="radio"
+                        name="val"
+                        value={party.ballotPartyId}
+                        checked={selectedChoice === party.ballotPartyId}
+                        onChange={() => {
+                          setSelectedChoice(party.ballotPartyId)
+                          setSelectedCandidate('')
+                        }}
+                      />{' '}
+                      <span style={{ color: party.color }}>■</span> {party.name} (
+                      {party.abbreviation})
+                    </label>
+
+                    {choices.allowsCandidateVote &&
+                      selectedChoice === party.ballotPartyId &&
+                      party.candidates.length > 0 && (
+                        <div style={{ marginLeft: '1.5rem', marginTop: '0.5rem' }}>
+                          <p className="muted small">
+                            Personröst är frivillig. Ett kryss på en kandidat är den känsligaste
+                            uppgiften i systemet — en kandidat med få röster delas med få personer.
+                          </p>
+                          {party.candidates.map((candidate) => (
+                            <label key={candidate.id} style={{ display: 'block' }}>
+                              <input
+                                type="radio"
+                                name="kandidat"
+                                value={candidate.id}
+                                checked={selectedCandidate === candidate.id}
+                                onChange={() => setSelectedCandidate(candidate.id)}
+                              />{' '}
+                              {candidate.name}
+                            </label>
+                          ))}
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => setSelectedCandidate('')}
+                            style={{ marginTop: '0.5rem' }}
+                          >
+                            Ingen personröst
+                          </button>
+                        </div>
+                      )}
+                  </div>
+                ))}
+              </>
+            )}
+
+            {choices.kind === 'QUESTION' && (
+              <>
+                {choices.options.map((option) => (
+                  <label key={option.id} style={{ display: 'block', marginTop: '0.5rem' }}>
+                    <input
+                      type="radio"
+                      name="val"
+                      value={option.id}
+                      checked={selectedChoice === option.id}
+                      onChange={() => setSelectedChoice(option.id)}
+                    />{' '}
+                    {option.label}
+                  </label>
+                ))}
+              </>
+            )}
+
+            <div className="button-row" style={{ marginTop: '1rem' }}>
+              <button
+                type="button"
+                disabled={!selectedChoice || status === 'working'}
+                onClick={() => void castVote()}
+              >
+                {status === 'working' ? 'Arbetar …' : 'Lägg röst'}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setActiveBallot(null)
+                  setChoices(null)
+                }}
+              >
+                Tillbaka
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </main>
+  )
+}
+
+export default function RostaPage() {
+  return (
+    <Suspense fallback={<main className="narrow"><p className="muted">Laddar …</p></main>}>
+      <RostaContent />
+    </Suspense>
   )
 }
