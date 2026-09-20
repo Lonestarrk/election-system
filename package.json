@@ -2,6 +2,7 @@
   "name": "election-system",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Proof-of-concept: digitalt valsystem med separerad identitet och röst",
   "scripts": {
     "dev": "next dev",
