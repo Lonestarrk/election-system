@@ -20,36 +20,62 @@ export function hmacSha256Hex(input: string, key: string): string {
 /**
  * scrypt-parametrar för identitetshashning.
  *
- * N = 2^15, r = 8, p = 1 ger 128 · N · r = 32 MiB minne och ungefär 100 ms per
- * hashning på en modern kärna.
+ * N = 2^14, r = 8, p = 1 ger 128 · N · r = 16 MiB minne och uppmätt 37 ms per
+ * hashning. Med åtta samtidiga (se lib/admission-queue.ts) blir det ~217
+ * legitimeringar per sekund och 128 MiB som minnestopp.
  *
- * VARFÖR MINNESHÅRDHET ÄR HELA POÄNGEN
+ * UPPRÄKNING *ÄR* INVERSIONEN, NÄR INDATAN ÄR LÅGENTROPISK
  *
- * Ett svenskt personnummer har ett litet utfallsrum: födelsedatum över ~110 år
- * är omkring 40 000 dagar, och de fyra sista siffrorna ger 1 000 giltiga
- * kombinationer eftersom kontrollsiffran är bestämd. Det blir cirka 4 · 10^7
- * kandidater — ingenting för SHA-256, som går igenom hela mängden på sekunder
- * på en GPU.
+ * "En hash går inte att vända" gäller en slumpad nyckel, inte ett personnummer.
+ * Födelsedatum över ~110 år är omkring 40 000 dagar, och de fyra sista siffrorna
+ * ger 1 000 kombinationer eftersom kontrollsiffran är beräknad ur de nio
+ * föregående. Cirka 4 · 10^7 kandidater — alltså vänder man hashen genom att
+ * pröva dem alla, och parametern bestämmer bara vad det kostar:
  *
- * scrypt tvingar varje försök att allokera 32 MiB. Det dödar GPU-parallellisering,
- * eftersom en GPU har mycket beräkningskraft men lite minne per kärna.
+ *   HMAC-SHA256      ~4 sekunder        (det vi hade)
+ *   scrypt 2^13       8 kärndygn
+ *   scrypt 2^14      17 kärndygn        (nu)
+ *   scrypt 2^15      35 kärndygn
  *
- * VAD DET INTE SKYDDAR MOT
+ * Minneshårdheten är det som gör siffrorna meningsfulla: en GPU har gott om
+ * beräkningskraft men lite minne per kärna, så 16 MiB per försök tar bort
+ * parallelliseringen som annars gör hela tabellen irrelevant.
  *
- * En riktad kontroll — "finns den här personen i röstlängden?" — är ett enda
- * anrop och kostar 100 ms oavsett parametrar. Skyddet gäller MASSREVERSERING,
- * alltså det som förvandlar spridda offentliga uppgifter till en enda farlig
- * fil med varje väljares personnummer och folkbokföringskommun.
+ * VAR SKYDDET FAKTISKT KOMMER IFRÅN
  *
- * KOSTNADEN LIGGER PÅ OSS OCKSÅ
+ * Inte härifrån. Det kommer från att pepparn inte finns i databasen och
+ * därmed inte i en databasdump — det vanligaste läckaget. Utan pepper går
+ * ingen kandidathash att beräkna, och då är uppräkning inte dyr utan omöjlig,
+ * vid varje parameterval ända ner till SHA-256.
  *
- * 32 MiB per samtidig hashning. Tusen samtidiga legitimeringar blir 32 GB.
- * Anropet är därför asynkront och körs på libuv:s trådpool, som med sina fyra
- * trådar ger en naturlig gräns — och ett tak på ungefär 40 legitimeringar per
- * sekund. Ett riktigt val måste välja parametrar mot förväntad topplast, som
- * infaller exakt när man minst har råd med det.
+ * VARFÖR PARAMETERN ÄNDÅ INTE ÄR NOLL
+ *
+ * Miljövariabler läcker på sätt databaser inte gör: en loggrad, en stacktrace,
+ * en CI-logg, /proc/self/environ, en skärmdump. En sådan läcka är tyst och
+ * träffar bara pepparn. Kombineras den med en äldre backup är HMAC fyra
+ * sekunder och det här flera veckor. Parametern är försäkring mot precis det
+ * scenariot — inte huvudskyddet.
+ *
+ * VARFÖR INTE LÄGRE, NÄR RESONEMANGET TILLÅTER DET
+ *
+ * 16 MiB ligger vid OWASP:s golv för minneshårda funktioner (deras Argon2id-
+ * rekommendation är 19 MiB), och valet är enkelriktat: vi lagrar inte
+ * personnummer i klartext, så ändrade parametrar ogiltigförklarar varje
+ * befintlig hash och kräver en ny import från källan.
+ *
+ * VAD DET ALDRIG SKYDDADE
+ *
+ * En riktad kontroll — "finns den här personen?" — är ett anrop och kostar
+ * 37 ms oavsett parametrar. Och personnummret i sig är sällan hemligt. Det
+ * känsliga i röstlängdsraden är attributen BREDVID hashen: isAdmin är en
+ * urvalslista över dem som kan skapa omröstningar, och municipalityCode är
+ * folkbokföringsort kopplad till identitet. Ingen hashparameter försvarar de
+ * två — se known-limitations.ts.
+ *
+ * Valhemligheten berörs inte av något av detta. Den sköts av blindsigneringen,
+ * i en annan databas, där ingen identitet finns.
  */
-const SCRYPT_PARAMS = { N: 2 ** 15, r: 8, p: 1, maxmem: 96 * 1024 * 1024 } as const
+const SCRYPT_PARAMS = { N: 2 ** 14, r: 8, p: 1, maxmem: 48 * 1024 * 1024 } as const
 
 /**
  * Minneshård härledning med fast salt.

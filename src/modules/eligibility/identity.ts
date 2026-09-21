@@ -19,7 +19,7 @@ import { env } from '@/lib/env'
  * praktiken en röstlängd i klartext, komplett med folkbokföringskommun — vilket
  * för någon med skyddad identitet är precis den uppgift som inte får finnas.
  *
- * scrypt tvingar varje försök att allokera 32 MiB och tar ungefär 100 ms.
+ * scrypt tvingar varje försök att allokera 16 MiB och tar uppmätt 37 ms.
  * Samma uttömmande sökning går från sekunder till storleksordningen månader av
  * processortid, och minneshårdheten gör den svår att parallellisera på GPU.
  *
@@ -31,13 +31,13 @@ import { env } from '@/lib/env'
  *
  * ASYNKRON MED FLIT
  *
- * `scryptSync` skulle blockera event-loopen i 100 ms per legitimering och
+ * `scryptSync` skulle blockera event-loopen i 37 ms per legitimering och
  * serialisera hela servern. Den asynkrona varianten kör på libuv:s trådpool.
  *
  * KÖN LIGGER HÄR, INTE I RUTTERNA
  *
  * Varje anrop går genom antagningskön, som begränsar antalet samtidiga
- * hashningar till åtta — alltså 256 MiB som minnestopp i stället för obegränsat.
+ * hashningar till åtta — alltså 128 MiB som minnestopp i stället för obegränsat.
  *
  * Placeringen är avsiktlig. Låg begränsningen i rutterna kunde en ny anropare
  * glömma den, och felet skulle visa sig som minnesbrist under topplast på

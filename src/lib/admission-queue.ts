@@ -1,10 +1,10 @@
 /**
  * ANTAGNINGSKÖ FÖR MINNESHÅRD HASHNING
  *
- * Identitetshashningen använder scrypt med 32 MiB per anrop. Det är hela
+ * Identitetshashningen använder scrypt med 16 MiB per anrop. Det är hela
  * skyddet — minneshårdheten dödar GPU-parallellisering hos en angripare som
  * försöker vända på röstlängden. Men kostnaden gäller oss också: tusen
- * samtidiga legitimeringar vore 32 GB.
+ * samtidiga legitimeringar vore 16 GB.
  *
  * VARFÖR EN KÖ OCH INTE EN HASTIGHETSGRÄNS
  *
@@ -22,12 +22,12 @@
  *
  * RÄKNINGEN
  *
- * 8 samtidiga hashningar à ~78 ms ger ungefär 100 legitimeringar per sekund.
- * En kö med 300 platser töms därför på omkring tre sekunder, vilket betyder
+ * 8 samtidiga hashningar à ~37 ms ger ungefär 217 legitimeringar per sekund.
+ * En kö med 300 platser töms därför på under två sekunder, vilket betyder
  * att avvisning i praktiken aldrig inträffar — och när den gör det är systemet
  * verkligen överlastat, inte bara ojämnt belastat.
  *
- * Minnestoppen blir 8 · 32 MiB = 256 MiB. Väntande kostar bara en promise.
+ * Minnestoppen blir 8 · 16 MiB = 128 MiB. Väntande kostar bara en promise.
  *
  * KÖN ÄR FIFO, OCH DET ÄR ETT RÄTTVISEKRAV
  *

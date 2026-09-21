@@ -76,10 +76,16 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     id: 'municipality-beside-identity-hash',
     title: 'Folkbokföringskoden ligger bredvid identitetshashen',
     why:
-      'Vänds identitetshashen får man inte bara vem som står i röstlängden, utan också var ' +
-      'personen är folkbokförd — de ligger i samma rad. För någon med skyddad identitet är det ' +
-      'precis den uppgift som inte får finnas. Hashningen är numera minneshård med scrypt, vilket ' +
-      'gör massreversering dyr, men en riktad kontroll av EN person kostar fortfarande ett anrop.',
+      'Folkbokföringsorten står i samma rad som identitetshashen. Ett personnummer är sällan ' +
+      'hemligt, så den som har pepparn bekräftar en utpekad person med ett anrop och läser av ' +
+      'orten — och för någon med skyddad folkbokföring är numret ofta redan känt av just den hen ' +
+      'skyddas från, medan orten är det som ska vara hemlig. Ingen hashparameter hjälper mot en ' +
+      'riktad kontroll. Lösningen är att inte lagra uppgiften: orten behövs bara för att välja ' +
+      'kommunvalsedel och ska slås upp mot folkbokföringen vid inloggning, så att värdet lever i ' +
+      'den ena begäran. Tre vägar är redan uteslutna — en egen tabell byter bara kolumnnamn ' +
+      'eftersom joinet ger tillbaka kopplingen, lagrade valsedelsrättigheter avslöjar samma sak ' +
+      '(rätten till Faluns kommunvalsedel ÄR kommunen), och BankID kan inte leverera den: ' +
+      'completionData innehåller personnummer och namn, ingen adress.',
     stillTrueIf: { file: 'prisma/voters/schema.prisma', contains: 'municipalityCode' },
   },
   {
