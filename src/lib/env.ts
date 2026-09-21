@@ -69,8 +69,24 @@ export const env = {
     }
   },
 
-  get appOrigin(): string {
-    return process.env.APP_ORIGIN ?? 'http://localhost:3000'
+  /**
+   * Tillåtna origins, kommaseparerade i APP_ORIGIN.
+   *
+   * En lista och inte ett enda värde, eftersom appen på riktigt nås på flera
+   * adresser samtidigt: localhost under utveckling, maskinens LAN-adress när
+   * man provar från en telefon, och domänen i drift. Med ett enda värde blir
+   * varje POST från de andra avvisad med 403, och felet ser ut som en bugg i
+   * inloggningen i stället för en felkonfiguration.
+   *
+   * Det är fortfarande en spärrlista med exakt matchning — inte en
+   * uppluckring. Varje origin måste vara uppräknad.
+   */
+  get appOrigins(): string[] {
+    const raw = process.env.APP_ORIGIN ?? 'http://localhost:3000'
+    return raw
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0)
   },
 
   get cookieSecure(): boolean {

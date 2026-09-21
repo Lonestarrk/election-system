@@ -68,5 +68,5 @@ export function hasValidOrigin(request: Request): boolean {
   // webbläsare. Då förlitar vi oss på double-submit-token och SameSite=Strict.
   if (!origin) return true
 
-  return origin === env.appOrigin
+  return env.appOrigins.includes(origin)
 }
