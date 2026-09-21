@@ -227,6 +227,17 @@ därför med **POST** och token i begärans kropp. Svarsformatet följer specen 
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — komponenter, dataflöde, modulkontrakt,
   datamodell, testarkitektur
+> **Kör inte `npm run build` medan `npm run dev` är igång.**
+>
+> Båda använder samma `.next`-katalog. Produktionsbygget skriver över de filer
+> dev-servern har i sitt minnesmanifest, och resultatet är svårtolkat: sidan
+> svarar 200 men stilmallen ger 404, och webbläsaren vägrar tillämpa den som
+> `text/plain` eftersom `X-Content-Type-Options: nosniff` hindrar den från att
+> gissa. Det ser ut som ett CSS-fel men är ett trasigt bygge.
+>
+> Starta om dev-servern efter ett produktionsbygge, eller rensa med
+> `rm -rf .next` först.
+
 ### E2E-tester
 
 Playwright kör mot appen i en riktig webbläsare. Det prövar det som ingen annan
