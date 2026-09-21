@@ -125,6 +125,32 @@ export function BankIdLogin({
           return
         }
 
+        /**
+         * KÖ, INTE FEL — OCH DÄRFÖR FÅR POLLNINGEN INTE STOPPAS.
+         *
+         * Identitetshashningen är minneshård och går genom en antagningskö.
+         * Är kön full svarar rutten `queued`, och då ska klienten bete sig
+         * precis som vid `pending`: fortsätta fråga.
+         *
+         * Faller svaret i stället igenom till `failed` nedan får väljaren
+         * "Legitimeringen misslyckades" och börjar om — vilket startar en ny
+         * BankID-order och ökar lasten precis när den redan är för hög. Kön
+         * skulle då göra läget värre än ingen kö alls.
+         *
+         * BankID-ordern lever kvar under väntan, så det finns ingenting att
+         * göra om. Väntan räknas i sekunder, inte minuter: se räkningen i
+         * lib/admission-queue.ts.
+         */
+        if (data.status === 'queued') {
+          const wait = Number(data.estimatedWaitSeconds)
+          setMessage(
+            Number.isFinite(wait) && wait > 0
+              ? `Många legitimerar sig samtidigt. Du står i kö, cirka ${wait} sekunder kvar.`
+              : String(data.message ?? 'Du står i kö. Sidan försöker igen automatiskt.'),
+          )
+          return
+        }
+
         stopTimers()
         orderRef.current = null
 

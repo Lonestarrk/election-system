@@ -4,6 +4,7 @@ import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { collectAuthSchema, parseJsonBody } from '@/lib/validation'
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AdmissionQueueFull, admissionStats } from '@/lib/admission-queue'
 import { evaluateEligibility } from '@/modules/eligibility/voter-status.service'
 import { createVotingSession } from '@/modules/eligibility/voting-session.service'
 
@@ -57,10 +58,37 @@ export async function POST(request: Request) {
     })
   }
 
-  const decision = await evaluateEligibility(
-    result.completionData.personalNumber,
-    body.data.electionId,
-  )
+  /**
+   * Identitetshashningen går genom antagningskön och kan avvisas när systemet
+   * är verkligen överlastat.
+   *
+   * Svaret blir då `queued` och inte ett fel. Skillnaden spelar roll: rutten
+   * pollas redan, så klienten kan visa "du står i kö" och fortsätta fråga.
+   * Ett felmeddelande hade fått väljaren att börja om, vilket ökar lasten
+   * precis när den redan är för hög.
+   *
+   * BankID-ordern lever kvar under väntan, så ingenting behöver göras om.
+   */
+  let decision
+  try {
+    decision = await evaluateEligibility(
+      result.completionData.personalNumber,
+      body.data.electionId,
+    )
+  } catch (error) {
+    if (error instanceof AdmissionQueueFull) {
+      const stats = admissionStats()
+
+      return jsonResponse({
+        status: 'queued',
+        message:
+          'Många legitimerar sig samtidigt just nu. Du står i kö — sidan fortsätter ' +
+          'att försöka automatiskt.',
+        estimatedWaitSeconds: stats.estimatedWaitSeconds,
+      })
+    }
+    throw error
+  }
 
   if (decision.outcome === 'not_in_roll') {
     await recordAuditEvent(AUDIT_EVENTS.NOT_IN_ELECTORAL_ROLL)

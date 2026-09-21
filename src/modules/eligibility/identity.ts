@@ -1,3 +1,4 @@
+import { runAdmitted } from '@/lib/admission-queue'
 import { scryptHex } from '@/lib/crypto'
 import { env } from '@/lib/env'
 
@@ -32,8 +33,18 @@ import { env } from '@/lib/env'
  *
  * `scryptSync` skulle blockera event-loopen i 100 ms per legitimering och
  * serialisera hela servern. Den asynkrona varianten kör på libuv:s trådpool.
+ *
+ * KÖN LIGGER HÄR, INTE I RUTTERNA
+ *
+ * Varje anrop går genom antagningskön, som begränsar antalet samtidiga
+ * hashningar till åtta — alltså 256 MiB som minnestopp i stället för obegränsat.
+ *
+ * Placeringen är avsiktlig. Låg begränsningen i rutterna kunde en ny anropare
+ * glömma den, och felet skulle visa sig som minnesbrist under topplast på
+ * valdagen. Här är den omöjlig att kringgå: det finns ingen annan väg till
+ * hashningen.
  */
 export async function hashPersonalNumber(personalNumber: string): Promise<string> {
   const normalised = personalNumber.replace(/\D/g, '')
-  return scryptHex(normalised, env.identityPepper)
+  return runAdmitted(() => scryptHex(normalised, env.identityPepper))
 }

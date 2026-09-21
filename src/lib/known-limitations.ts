@@ -114,6 +114,21 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       contains: 'votesDb.anonymousVote.create',
     },
   },
+  {
+    id: 'admission-queue-per-process',
+    title: 'Nummerlappen gäller bara en serverinstans',
+    why:
+      'Antagningskön som skyddar den minneshårda identitetshashningen håller sitt tillstånd i ' +
+      'processminnet. Två följder: med flera instanser bakom en lastbalanserare blir det faktiska ' +
+      'taket åtta gånger antalet instanser, alltså inte det tak minnesberäkningen utgår från. Och ' +
+      'köplatsen är inte en riktig nummerlapp — den lever bara så länge begäran lever, så en ' +
+      'väljare som tappar nätet eller vars begäran tar timeout hamnar sist igen. En valdag behöver ' +
+      'delad kö med bestående platser, så att den som väntat längst behåller sin plats i kön.',
+    stillTrueIf: {
+      file: 'src/lib/admission-queue.ts',
+      contains: 'const waiting: Waiter[] = []',
+    },
+  },
 ]
 
 /** Begränsningar som går att kontrollera automatiskt. */
