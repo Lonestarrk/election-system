@@ -40,7 +40,7 @@ export async function evaluateEligibility(
   personalNumber: string,
   electionId: string,
 ): Promise<EligibilityDecision> {
-  const identityHash = hashPersonalNumber(personalNumber)
+  const identityHash = await hashPersonalNumber(personalNumber)
 
   const voter = await votersDb.voterStatus.findUnique({
     where: { externalIdentityHash: identityHash },
@@ -85,7 +85,7 @@ export type AdminIdentification =
  * den enskilt farligaste knappen i systemet.
  */
 export async function identifyAdmin(personalNumber: string): Promise<AdminIdentification> {
-  const identityHash = hashPersonalNumber(personalNumber)
+  const identityHash = await hashPersonalNumber(personalNumber)
 
   const voter = await votersDb.voterStatus.findUnique({
     where: { externalIdentityHash: identityHash },

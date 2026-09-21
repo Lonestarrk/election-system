@@ -1,4 +1,4 @@
-import { hmacSha256Hex } from '../src/lib/crypto'
+import { scryptHex } from '../src/lib/crypto'
 import { generateElectionKeyPair } from '../src/lib/blind-signature'
 import { PrismaClient as VotersClient } from '.prisma/voters'
 import { PrismaClient as VotesClient } from '.prisma/votes'
@@ -33,8 +33,18 @@ import { PrismaClient as VotesClient } from '.prisma/votes'
 const votersDb = new VotersClient()
 const votesDb = new VotesClient()
 
-function hashPersonalNumber(personalNumber: string, pepper: string): string {
-  return hmacSha256Hex(personalNumber.replace(/\D/g, ''), pepper)
+/**
+ * MÅSTE VARA IDENTISK MED src/modules/eligibility/identity.ts.
+ *
+ * En seedad identitetshash som räknats fram på annat sätt matchar inte när
+ * väljaren sedan legitimerar sig — och felet visar sig som "du finns inte i
+ * röstlängden" mitt i en demonstration, utan någon ledtråd om varför.
+ *
+ * Därför importeras scryptHex från samma modul som applikationen använder, i
+ * stället för att implementeras om här.
+ */
+async function hashPersonalNumber(personalNumber: string, pepper: string): Promise<string> {
+  return scryptHex(personalNumber.replace(/\D/g, ''), pepper)
 }
 
 /** Riksdagens åtta partier. */
@@ -212,7 +222,7 @@ async function main() {
 
   // --- Röstlängd -----------------------------------------------------------
   for (const voter of VOTERS) {
-    const externalIdentityHash = hashPersonalNumber(voter.personalNumber, pepper)
+    const externalIdentityHash = await hashPersonalNumber(voter.personalNumber, pepper)
 
     /**
      * `update` MÅSTE sätta fälten, inte vara tomt.

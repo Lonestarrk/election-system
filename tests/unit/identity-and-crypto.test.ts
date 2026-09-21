@@ -4,33 +4,33 @@ import { hashPersonalNumber } from '@/modules/eligibility/identity'
 import { truncateToDay, truncateToHour } from '@/lib/time'
 
 describe('identitetshashning', () => {
-  it('är deterministisk', () => {
-    expect(hashPersonalNumber('199001011234')).toBe(hashPersonalNumber('199001011234'))
+  it('är deterministisk', async () => {
+    expect(await hashPersonalNumber('199001011234')).toBe(await hashPersonalNumber('199001011234'))
   })
 
-  it('ger samma hash med och utan bindestreck', () => {
-    expect(hashPersonalNumber('19900101-1234')).toBe(hashPersonalNumber('199001011234'))
+  it('ger samma hash med och utan bindestreck', async () => {
+    expect(await hashPersonalNumber('19900101-1234')).toBe(await hashPersonalNumber('199001011234'))
   })
 
-  it('innehåller inte personnumret', () => {
-    const hash = hashPersonalNumber('199001011234')
+  it('innehåller inte personnumret', async () => {
+    const hash = await hashPersonalNumber('199001011234')
     expect(hash).not.toContain('199001011234')
     expect(hash).not.toContain('1234')
     expect(hash).toMatch(/^[a-f0-9]{64}$/)
   })
 
-  it('beror på peppret', () => {
+  it('beror på peppret', async () => {
     const withoutPepper = sha256Hex('199001011234')
-    expect(hashPersonalNumber('199001011234')).not.toBe(withoutPepper)
+    expect(await hashPersonalNumber('199001011234')).not.toBe(withoutPepper)
 
     // Ett annat pepper ger ett annat värde: det är det som gör en stulen
     // röstlängd oanvändbar utan applikationens konfiguration.
     const otherPepper = hmacSha256Hex('199001011234', 'ett-annat-pepper-minst-trettiotva-tecken')
-    expect(hashPersonalNumber('199001011234')).not.toBe(otherPepper)
+    expect(await hashPersonalNumber('199001011234')).not.toBe(otherPepper)
   })
 
-  it('skiljer olika personer åt', () => {
-    expect(hashPersonalNumber('199001011234')).not.toBe(hashPersonalNumber('199001011235'))
+  it('skiljer olika personer åt', async () => {
+    expect(await hashPersonalNumber('199001011234')).not.toBe(await hashPersonalNumber('199001011235'))
   })
 })
 

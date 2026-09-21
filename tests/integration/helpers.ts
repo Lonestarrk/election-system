@@ -60,7 +60,7 @@ export async function createVoter(
 ): Promise<string> {
   const voter = await votersDb.voterStatus.create({
     data: {
-      externalIdentityHash: hashPersonalNumber(personalNumber),
+      externalIdentityHash: await hashPersonalNumber(personalNumber),
       isEligible: options.isEligible ?? true,
       isAdmin: options.isAdmin ?? false,
       municipalityCode: options.municipalityCode ?? null,

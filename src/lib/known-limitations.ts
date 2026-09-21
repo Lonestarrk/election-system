@@ -73,6 +73,16 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     stillTrueIf: { file: 'src/modules/anonymous-vote/vote.service.ts', contains: 'choice: string' },
   },
   {
+    id: 'municipality-beside-identity-hash',
+    title: 'Folkbokföringskoden ligger bredvid identitetshashen',
+    why:
+      'Vänds identitetshashen får man inte bara vem som står i röstlängden, utan också var ' +
+      'personen är folkbokförd — de ligger i samma rad. För någon med skyddad identitet är det ' +
+      'precis den uppgift som inte får finnas. Hashningen är numera minneshård med scrypt, vilket ' +
+      'gör massreversering dyr, men en riktad kontroll av EN person kostar fortfarande ett anrop.',
+    stillTrueIf: { file: 'prisma/voters/schema.prisma', contains: 'municipalityCode' },
+  },
+  {
     id: 'commitments-internal-only',
     title: 'Åtaganden publiceras bara internt',
     why:
