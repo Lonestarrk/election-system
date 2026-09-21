@@ -1,49 +1,554 @@
 # Arkitektur
 
-Teknisk beskrivning av systemets uppbyggnad och dataflöde.
+Teknisk beskrivning av hur systemet är byggt och varför.
 
-Säkerhetsresonemangen finns i [SECURITY.md](SECURITY.md); här beskrivs konstruktionen.
-
----
-
-## 1. Grundidé
-
-Systemet består av två delar som avsiktligt inte kan nå varandras data:
-
-```
-┌─────────────────────────────────┐   ┌─────────────────────────────────┐
-│  VÄLJARSYSTEM                   │   │  ANONYMT RÖSTSYSTEM             │
-│  src/modules/eligibility/       │   │  src/modules/anonymous-vote/    │
-│                                 │   │                                 │
-│  Vet:  vem du är                │   │  Vet:  vad som röstats          │
-│        om du får rösta          │   │        hur många röster         │
-│        om du har röstat         │   │                                 │
-│                                 │   │  Vet inte: vem som röstat       │
-│  Vet inte: vad du röstat på     │   │                                 │
-│                                 │   │                                 │
-│  Databas: voters_db             │   │  Databas: votes_db              │
-└─────────────────────────────────┘   └─────────────────────────────────┘
-              │                                       │
-              └───────────────┬───────────────────────┘
-                              │
-                  src/orchestration/cast-vote.usecase.ts
-                  Enda stället där båda finns i samma anropsstack.
-                  Skickar vidare exakt ett värde: partyId.
-```
-
-Separationen upprätthålls i tre lager, oberoende av varandra:
-
-1. **Topologiskt** — två PostgreSQL-databaser. En foreign key mellan dem är omöjlig.
-2. **Typmässigt** — röstmodulens publika kontrakt har ingen parameter som kan bära
-   identitet. Kompilatorn stoppar försöket.
-3. **Genom test** — arkitekturtester läser källkoden och misslyckas om modulerna börjar
-   importera varandra, eller om en ny fil börjar se båda sidorna.
-
-Ett lager kan gå sönder utan att de andra gör det. Det är poängen med att ha tre.
+Säkerhetsresonemangen finns i [SECURITY.md](SECURITY.md). Den oberoende
+verifierbarheten beskrivs i [VERIFIABILITY.md](VERIFIABILITY.md). Här beskrivs
+konstruktionen.
 
 ---
 
-## 2. Projektstruktur
+## 1. Grundidén i en bild
+
+Systemet består av två delar som avsiktligt inte kan nå varandras data.
+
+```
+┌──────────────────────────────────┐        ┌──────────────────────────────────┐
+│  VÄLJARSYSTEMET                  │        │  DET ANONYMA RÖSTSYSTEMET        │
+│  src/modules/eligibility/        │        │  src/modules/anonymous-vote/     │
+│                                  │        │                                  │
+│  Vet:  vem du är                 │        │  Vet:  vad som röstats           │
+│        om du får rösta           │        │        hur många röster          │
+│        vilka valsedlar du röstat │        │        vilka intyg som lösts in  │
+│        på                        │        │                                  │
+│                                  │        │  Vet inte: vem som röstat        │
+│  Vet inte: vad du röstat på      │        │                                  │
+│                                  │        │                                  │
+│  Databas: voters_db              │        │  Databas: votes_db               │
+└──────────────────────────────────┘        └──────────────────────────────────┘
+                 │                                          │
+                 │            INGEN KODVÄG                  │
+                 │      ───────────────────────             │
+                 │      Röstläggningen importerar           │
+                 │      ingenting från väljarsidan.         │
+                 │      Väljaren bär själv över             │
+                 │      gränsen — se avsnitt 4.             │
+                 ▼                                          ▼
+          Blint signerat                              Anonym röst
+            röstintyg      ──── väljarens webbläsare ────►  + token
+```
+
+Separationen upprätthålls i **fyra oberoende lager**:
+
+| Lager | Vad det gör | Går sönder om |
+|---|---|---|
+| **Topologiskt** | Två PostgreSQL-databaser. En foreign key mellan dem är fysiskt omöjlig. | någon slår ihop databaserna |
+| **Typmässigt** | Röstmodulens kontrakt har ingen parameter som kan bära identitet. | någon lägger till ett fält |
+| **Kryptografiskt** | Blindningen gör utfärdande och inlösen statistiskt oberoende. | klientkoden manipuleras |
+| **Genom test** | Arkitekturtester läser källkoden och failar vid överträdelse. | någon tar bort testet |
+
+Ett lager kan brista utan att de andra gör det. Det är hela poängen med fyra.
+
+---
+
+## 2. Vad som ändrades, och varför det är värt att veta
+
+Systemet har byggts om i grunden en gång. Den gamla konstruktionen hade en
+**session** som följde väljaren ända in i röstläggningen:
+
+```
+FÖRE:   legitimera ──► session ──► [session + partival] ──► skriv röst
+                                    ▲
+                                    └─ identitet och partival i samma
+                                       anropsstack under några millisekunder
+```
+
+```
+EFTER:  legitimera ──► session ──► blint signerat intyg ──► väljarens webbläsare
+                                                                    │
+        [intyg + val, INGEN session] ◄──────────────────────────────┘
+                     │
+                     ▼
+                skriv röst
+```
+
+Tre saker följde av det:
+
+**Röstläggningen har ingen session.** Rutten läser ingen cookie och importerar
+ingenting från väljarsidan. Den *kan* inte veta vem som röstar.
+
+**Orkestreringslagret för röstläggning försvann.** Det hade inget att
+orkestrera längre.
+
+**Ordningsproblemet försvann.** Tidigare kunde en krasch mellan de två
+skrivningarna ge en förlorad röst eller en dubbelröst. Nu sker markering och
+utfärdande i *en* transaktion, och inlösen är idempotent.
+
+---
+
+## 3. Blinda signaturer, förklarat enkelt
+
+Det här är mekanismen som bär hela systemet. Den är enklare än den låter.
+
+### Liknelsen
+
+Föreställ dig ett **kuvert med kolpapper på insidan**.
+
+```
+   1. Du skriver                2. Du lägger det              3. Myndigheten
+      din lott                     i kuvertet                    signerar KUVERTET
+                                                                 (ser aldrig lotten)
+
+   ┌─────────┐                  ╔═══════════╗                  ╔═══════════╗
+   │ LOTT    │                  ║ ┌───────┐ ║                  ║ ┌───────┐ ║
+   │ nr 4711 │      ──────►     ║ │ LOTT  │ ║      ──────►     ║ │ LOTT  │ ║
+   │         │                  ║ │ 4711  │ ║                  ║ │ 4711  │ ║
+   └─────────┘                  ║ └───────┘ ║                  ║ └───────┘ ║
+                                ╚═══════════╝                  ╚═══✍═══════╝
+                                 kolpapper                      signatur på kuvertet
+                                                                → trycks igenom
+                                                                  till lotten
+
+   4. Du river upp kuvertet och kastar det. Kvar har du din lott
+      MED myndighetens signatur på — och myndigheten har aldrig sett
+      vilket nummer den signerade.
+
+                                 ┌─────────┐
+                                 │ LOTT    │
+                                 │ nr 4711 │
+                                 │    ✍    │  ← giltig signatur
+                                 └─────────┘
+```
+
+Myndigheten kan intyga *att* den signerat en lott till dig. Den kan inte säga
+*vilken*. När lotten senare lämnas in går det att verifiera signaturen — men
+inte att se vem som fick den.
+
+### Samma sak i matematik
+
+Kuvertet är en multiplikation med ett slumptal.
+
+```
+    Din webbläsare                          Myndigheten
+    ──────────────                          ───────────
+
+ 1. c  = 32 slumpbytes                    (intyget — ditt hemliga nummer)
+    r  = slumptal                          (blindningsfaktorn — kuvertet)
+
+ 2. m  = FDH(c)                            (hasha intyget över hela domänen)
+
+ 3. m' = m · rᵉ mod n        ──────────►   ser bara m'
+                                           ▲
+                                           │  m' är LIKFORMIGT slumpad,
+                                           │  alltså statistiskt oberoende
+                                           │  av m. Ingen information alls.
+                                           │
+ 4.                          ◄──────────   s' = (m')ᵈ mod n   (signerar blint)
+
+ 5. s  = s' · r⁻¹ mod n                    (riv upp kuvertet)
+
+ 6. Nu gäller: sᵉ ≡ m (mod n)              ← en giltig signatur över c
+```
+
+Steg 3 är kärnan. `rᵉ mod n` är likformigt fördelad när `r` är likformigt
+slumpad, så `m'` avslöjar ingenting om `m`. Det är **inte** svårt att koppla
+ihop utfärdande och inlösen — det är informationsteoretiskt omöjligt, även för
+den som sparat allt servern någonsin sett.
+
+Steg 5 fungerar för att RSA är multiplikativ: `(m · rᵉ)ᵈ = mᵈ · r`, och att
+dividera bort `r` lämnar `mᵈ` kvar.
+
+### Varför hashen måste täcka hela domänen
+
+Just för att RSA är multiplikativ finns en attack. Med två signaturer i handen
+kan man räkna fram en tredje:
+
+```
+    sig(a) · sig(b) = sig(a · b)
+```
+
+Signerades en kort hash direkt kunde en väljare med två utfärdade intyg prägla
+ett tredje som aldrig utfärdats — en extra röst som ser fullt auktoriserad ut.
+
+`FDH` (full-domain hash, via MGF1-SHA256) expanderar hashen över hela
+modulusens bredd. Produkten av två sådana värden är med överväldigande
+sannolikhet inte en giltig hash för *något* meddelande, och attacken faller.
+
+Ett test i `tests/unit/blind-signature.test.ts` utför attacken och kontrollerar
+att den misslyckas.
+
+### Ett nyckelpar per valsedel
+
+Myndigheten signerar blint och ser alltså inte vilken valsedel intyget gäller.
+Bindningen måste därför komma från **vilken nyckel som signerade**:
+
+```
+    Kommunvalsedeln  ──► nyckelpar K₁ ──► intyg giltigt BARA i kommunvalet
+    Landstingsvalet  ──► nyckelpar K₂ ──► intyg giltigt BARA i landstingsvalet
+    Riksdagsvalet    ──► nyckelpar K₃ ──► intyg giltigt BARA i riksdagsvalet
+```
+
+Utan det kunde en väljare begära tre intyg och lösa in alla tre på samma
+valsedel.
+
+---
+
+## 4. Röstningsflödet, steg för steg
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Väljarens webbläsare
+    participant B as BankID
+    participant E as Väljarsystemet<br/>(voters_db)
+    participant A as Röstsystemet<br/>(votes_db)
+
+    Note over W,B: 1. Legitimering — inget personnummer skrivs in
+    W->>E: POST /api/auth/bankid/start (purpose)
+    E->>B: auth(endUserIp)
+    B-->>E: orderRef, autoStartToken, qrStartToken, qrStartSecret
+    E-->>W: orderRef, autostart-URL, QR-bild
+
+    loop varje sekund
+        W->>E: POST /api/auth/bankid/qr
+        E-->>W: ny QR-bild (qrStartSecret lämnar aldrig servern)
+    end
+
+    W->>B: skanna QR eller öppna appen, signera
+    W->>E: POST /api/auth/bankid/collect (orderRef, electionId)
+    B-->>E: complete + personnummer
+    E->>E: hasha personnummer, slå upp i röstlängden
+    E-->>W: session (HttpOnly-cookie) + vilka valsedlar som gäller
+
+    Note over W,E: 2. Röstintyg — enda identifierade steget
+    W->>W: skapa intyg c, blinda det → m'
+    W->>E: POST /api/vote/credential (ballotId, m')
+    E->>E: EN TRANSAKTION:<br/>markera valsedeln som röstad<br/>+ signera m' blint
+    E-->>W: s' (blind signatur) + publik nyckel
+    W->>W: avblinda → s, verifiera att s gäller c
+
+    Note over W,A: 3. Rösten — INGEN session, ingen cookie
+    W->>A: POST /api/vote/cast (ballotId, val, c, s)
+    A->>A: verifiera s mot valsedelns publika nyckel
+    A->>A: EN TRANSAKTION:<br/>skriv rösten, unikt index på c
+    A-->>W: kvittotoken (visas en gång)
+```
+
+### Var identiteten slutar
+
+```
+  ┌────────────────────────────────────────────────────────────────┐
+  │  IDENTIFIERAT                                                  │
+  │  BankID → röstberättigande → markering → blind signering       │
+  │                                                                │
+  │  Systemet vet vem du är. Det vet inte vilket intyg du fick.    │
+  └────────────────────────────────────────────────────────────────┘
+                              ║
+                     ═════════╬═════════  väljarens webbläsare
+                              ║           bär intyget över
+                              ▼
+  ┌────────────────────────────────────────────────────────────────┐
+  │  ANONYMT                                                       │
+  │  intyg + val → verifiera signatur → skriv röst → token         │
+  │                                                                │
+  │  Systemet vet vad som röstats. Det kan inte veta av vem.       │
+  └────────────────────────────────────────────────────────────────┘
+```
+
+### Varför ordningen inte längre spelar roll
+
+```
+  Utfärdandet:   ┌─ markera valsedel som röstad ─┐
+                 │                                │  EN transaktion, EN databas
+                 └─ signera det blindade värdet ──┘
+
+  Inlösen:       ┌─ skriv rösten ────────────────┐  EN transaktion, EN databas
+                 └─ unikt index på credential_id ┘  → idempotent
+```
+
+Ingen skrivning korsar databasgränsen. Kraschar något mellan stegen har
+väljaren antingen inget intyg (kan börja om) eller ett oförbrukat intyg (kan
+lösa in det senare). **Varken dubbelröstning eller förlorad röst kan uppstå.**
+
+Ett utfärdat men aldrig inlöst intyg syns som en avvikelse i slutkontrollen, så
+en avbruten röstning försvinner inte tyst.
+
+---
+
+## 5. Datamodell
+
+### voters_db — vet vem, aldrig vad
+
+```
+  voter_status                      election  (spegling)
+  ├─ id                             ├─ id            ← samma UUID som votes_db
+  ├─ external_identity_hash         ├─ name
+  │    HMAC(personnummer, pepper)   ├─ kind
+  ├─ is_eligible                    ├─ opens_at
+  ├─ is_admin                       └─ closes_at
+  ├─ municipality_code                     │
+  └─ region_code                           ▼
+        │                           election_ballot  (spegling)
+        │                           ├─ id            ← samma UUID
+        │                           ├─ kind          KOMMUN|LANDSTING|RIKSDAG|FRAGA
+        │                           ├─ area_code
+        ▼                           ├─ signing_private_key_pem   ⚠ se avsnitt 10
+  voter_ballot_status  ◄────────────┤ signing_public_key_pem
+  ├─ voter_status_id                └─ ...
+  ├─ ballot_id
+  └─ voted_at    (dygnsupplösning)
+     UNIQUE(voter_status_id, ballot_id)  ← dubbelröstningsspärren
+
+  voting_session     kortlivad, raderas när omröstningen är avklarad
+  admin_session      egen tabell, aldrig en flagga på röstsessionen
+  push_subscription  INGEN foreign key — en push-endpoint är en enhetsidentifierare
+  audit_event        hashkedja med löpnummer
+```
+
+### votes_db — vet vad, aldrig vem
+
+```
+  election                election_ballot           party  (förskapat register)
+  ├─ id                   ├─ id                     ├─ name        UNIQUE
+  ├─ name                 ├─ kind                   ├─ abbreviation
+  ├─ kind                 ├─ allows_candidate_vote   └─ color
+  ├─ status               ├─ signing_public_key_pem         │
+  ├─ opens_at             └─ ...                            │
+  └─ closes_at                   │                          │
+        │                        ├──────────────┬───────────┘
+        ▼                        ▼              ▼
+  election_commitment      ballot_option    ballot_party
+  ├─ sequence              └─ label         └─ ...
+  ├─ root    Merklerot                            │
+  ├─ vote_count                                   ▼
+  ├─ previous_hash   ← kedja                 candidate
+  └─ entry_hash                              └─ name
+
+  anonymous_vote
+  ├─ token_hash            UNIQUE   SHA-256 av väljarens kvitto
+  ├─ credential_id         UNIQUE   ← engångsanvändning = idempotens
+  ├─ credential_signature           myndighetens blinda signatur
+  ├─ ballot_id
+  ├─ ballot_party_id / option_id
+  ├─ candidate_id                   personröst, frivillig
+  └─ created_at            timupplösning
+```
+
+### Vad som medvetet inte finns
+
+| I voters_db saknas | I votes_db saknas |
+|---|---|
+| parti, kandidat, svarsalternativ | identitet, identitetshash |
+| token, token-hash | väljar-id, sessions-id |
+| röst-id | IP-adress, request-id |
+| | geografisk markering på rösten |
+
+Ett säkerhetstest läser båda schemana och failar om något av det dyker upp.
+
+---
+
+## 6. Verifierbarhet — Merkleträd, inte hashkedja
+
+Kravet är att en ändrad eller borttagen röst ska upptäckas. Den självklara
+lösningen vore en hashkedja — men den går inte att använda här.
+
+```
+  HASHKEDJA (går inte)                MERKLETRÄD SORTERAT PÅ INNEHÅLL (fungerar)
+
+  röst₁ ──► röst₂ ──► röst₃            hash(röst₁)  hash(röst₂)  hash(röst₃)
+    #1       #2       #3                    │            │            │
+                                            └──── sorterade på hash ──┘
+  Löpnummer ÄR en ordning.                          │        │
+  Tillsammans med röstlängden                       └───┬────┘
+  går rösterna att para ihop                             ▼
+  med väljarna i tidsföljd.                            ROT
+
+                                       Ordningen kommer ur INNEHÅLLET.
+                                       Trädet ser likadant ut oavsett
+                                       när rösterna kom in.
+```
+
+En kedja i insättningsordning hade **rivit ned tidsskyddet för att bygga upp
+manipulationsskyddet**. Hela skälet till att tidsstämplarna är grova är att
+rösterna inte ska gå att sortera i samma följd som väljarna legitimerade sig.
+
+Tre detaljer i trädet stänger varsin känd attack:
+
+```
+  hash(löv)  = SHA256( 0x00 ‖ innehåll )      ← prefix skiljer löv från nod
+  hash(nod)  = SHA256( 0x01 ‖ vänster ‖ höger )
+  rot        = SHA256( 0x02 ‖ antal ‖ topp )  ← domänseparerad, binder antalet
+```
+
+Utan lövprefixet kan en intern nod presenteras som ett löv. Utan rotprefixet
+blir roten för ett träd med *ett* löv identisk med lövet självt — den svagheten
+hittades av ett test under utvecklingen. Och udda noder lyfts upp i stället för
+att dubbleras, eftersom `hash(x, x)` låter två olika mängder ge samma rot.
+
+### Åtagandekedjan
+
+```
+  åtagande #1        åtagande #2        åtagande #3
+  ├─ rot A           ├─ rot B           ├─ rot C
+  ├─ 5 röster        ├─ 12 röster       ├─ 31 röster
+  ├─ prev: null      ├─ prev: hash(#1)  ├─ prev: hash(#2)
+  └─ hash(#1)  ──────┴─ hash(#2)  ──────┴─ hash(#3)
+```
+
+Varje åtagande binder in det föregående, så historiken går inte att skriva om.
+**Här är ordningen oproblematisk** — åtagandena är få, publicerade och innehåller
+inga röster. Det är rösterna som inte får gå att ordna, inte åtagandena om dem.
+
+> Ett åtagande som bara finns i samma databas som det skyddar kan skrivas om
+> tillsammans med rösterna. Rötterna måste publiceras externt för att ha fullt
+> bevisvärde — se avsnitt 10.
+
+---
+
+## 7. Slutkontroll och fastställande
+
+```
+                    ┌─────────────────────────────┐
+                    │  POST /admin/elections/check │
+                    │  Kör nio kontroller          │
+                    └──────────────┬──────────────┘
+                                   ▼
+        ┌──────────────────────────────────────────────────┐
+        │  KRITISK          underlaget stämmer inte        │
+        │  PRECONDITION     inte klart än                  │
+        │  WARNING          värt att veta, inget hinder    │
+        └──────────────────────────────────────────────────┘
+                                   │
+                    ┌──────────────┴──────────────┐
+                    ▼                             ▼
+        ┌───────────────────────┐    ┌────────────────────────────┐
+        │ POST /certify         │    │ Kritisk kontroll fallerade │
+        │ kör kontrollen OM     │    │ → status UNDER_REVIEW      │
+        │ ingen force-parameter │    │ → går inte att lämna via   │
+        │ finns                 │    │   applikationen            │
+        └───────────┬───────────┘    └────────────────────────────┘
+                    ▼
+        publicera sista åtagandet → status CERTIFIED
+```
+
+**Skillnaden mellan KRITISK och PRECONDITION är inte kosmetisk.** Att
+omröstningen fortfarande är öppen är ingen avvikelse — det är bara för tidigt.
+Räknades det som en avvikelse hade en administratör som klickade en dag för
+tidigt gjort valet permanent omöjligt att fastställa, eftersom `UNDER_REVIEW`
+inte går att lämna via applikationen.
+
+Kontroll 2 — *har varje röst skapats genom den auktoriserade processen?* — är den
+enda som inte kan förfalskas inifrån. De övriga jämför siffror i databaser, som
+den med skrivrättigheter kan ändra. Den verifierar en signatur, och samma
+kontroll kan köras av vem som helst med den publika nyckeln.
+
+---
+
+## 8. Modulkontrakt
+
+### `src/modules/anonymous-vote/index.ts`
+
+```ts
+export type CastAnonymousVoteInput = {
+  ballotId: string
+  ballotPartyId?: string
+  candidateId?: string
+  optionId?: string
+  credentialId: string
+  credentialSignature: string
+}
+```
+
+Sex identifierare som alla pekar på rader i röstdatabasen. **Ingen parameter kan
+bära identitet**, och inget fält kan gruppera flera röster — väljaren i ett
+riksdagsval anropar funktionen tre gånger, och de tre anropen har ingenting
+gemensamt som lagras.
+
+Ett test kontrollerar att fältmängden är exakt denna. Ett nytt fält ska kräva
+ett medvetet beslut, inte glida igenom.
+
+### Filer som ser båda sidorna
+
+| Fil | Varför det är försvarbart |
+|---|---|
+| `orchestration/create-election.usecase.ts` | offentlig metadata; ingen väljare och ingen röst finns ännu |
+| `orchestration/final-check.usecase.ts` | rena antal; kan inte para ihop sidorna |
+| `api/admin/stats/route.ts` | aggregat, aldrig rader |
+| `api/observer/election/route.ts` | samma siffra, publicerad |
+| `api/demo/database-state/route.ts` | avkortade värden, sorterade |
+
+Listan **krympte** när röstintygen infördes: röstläggningen behöver ingen
+session och orkestreras därför inte längre.
+
+---
+
+## 9. BankID v6 (Secure Start)
+
+Det finns **ingen ruta för personnummer**, och det är inget val vi gjort.
+
+```
+  ANNAN ENHET                          SAMMA ENHET
+  ───────────                          ───────────
+  animerad QR-kod                      autostart-token
+
+  qrAuthCode = HMAC-SHA256(            bankid:///?autostarttoken=…
+      qrStartSecret, sekunder)             &redirect=null
+  qrData = bankid.<token>.
+      <sekunder>.<qrAuthCode>          iOS: https://app.bankid.com/?…
+
+  ny kod VARJE SEKUND                  redirect=null är hårdkodat
+  hemligheten stannar på servern       → ingen påverkbar omdirigering
+```
+
+BankID tillåter inte längre inmatade personnummer: en illasinnad app kan annars
+förmå någon att signera genom att mata in ett personnummer den kommit över.
+
+**För det här systemet är det en förbättring.** Den gamla inmatningsrutan
+svarade medvetet likadant oavsett om personnumret fanns i röstlängden — men tog
+ändå emot godtyckliga personnummer från vem som helst. Nu kommer personnumret
+först i BankID:s svar, efter att personen legitimerat sig på sin egen enhet.
+
+Att koden byts varje sekund är inte kosmetik: en statisk kod går att fotografera
+och skicka till någon som luras att skanna den. En kod som dör inom en sekund
+hinner inte vidarebefordras.
+
+---
+
+## 10. Vad arkitekturen ska vara, och var koden avviker
+
+Det här avsnittet är **specifikationen**, inte en beskrivning. Avvikelser är
+buggar tills de uttryckligen godkänts som något annat.
+
+Listan över kända avvikelser ligger i `src/lib/known-limitations.ts` och läses
+av både arkitektursidan och ett säkerhetstest. Varje avvikelse pekar ut en
+markör i källkoden som är sann **så länge problemet finns kvar** — löser någon
+problemet försvinner markören, testet failar, och bygget står still tills
+posten tagits bort.
+
+Det är omvänd logik: **ett test som failar när systemet blir bättre.** Skälet är
+erfarenhet. Ordningsproblemet mellan de två databasskrivningarna löstes av
+röstintygen men stod kvar som ett kvarvarande problem i prosa på tre ställen
+långt efteråt — och en demonstration som påstår att systemet är sämre än det är
+underminerar tilliten lika säkert som en som påstår motsatsen.
+
+De tre viktigaste avvikelserna:
+
+**Klientkoden levereras av servern.** Blindningen sker i webbläsaren, men koden
+kommer från den som ska granskas. Det här är en **teoretisk gräns för webbaserad
+kryptografi**, inte en bugg — den går bara att flytta, till en separat
+distribuerad och signerad klient.
+
+**Signeringsnycklarna ligger i databasen.** En backup i fel händer räcker för att
+prägla giltiga röstintyg. Nycklarna hör hemma i en HSM. Det *är* en bugg, och
+den är åtgärdbar.
+
+**Kvittot bevisar hur du röstat.** Verifieringen visar vilket alternativ token
+gäller, vilket gör röstköp praktiskt genomförbart. Målet är kvittofrihet plus
+cast-or-audit — se [VERIFIABILITY.md](VERIFIABILITY.md).
+
+---
+
+## 11. Projektstruktur
 
 ```
 election-system/
@@ -51,331 +556,83 @@ election-system/
 │   ├── postgres/init.sql          Skapar votes_db vid första uppstart
 │   └── entrypoint.sh              Migrerar båda databaserna, seedar, startar
 ├── prisma/
-│   ├── voters/                    Schema + migrationer för voters_db
-│   ├── votes/                     Schema + migrationer för votes_db
-│   └── seed.ts                    Demodata
+│   ├── voters/                    Schema + migration för voters_db
+│   ├── votes/                     Schema + migration för votes_db
+│   ├── seed.ts                    Demodata
+│   └── reset-votes.ts             Nollställer röstdata inför E2E
+├── tools/
+│   └── verify-election.mjs        OBEROENDE verifiering — importerar
+│                                  ingenting från src/
 ├── src/
 │   ├── app/
-│   │   ├── page.tsx               Start
-│   │   ├── legitimera/            BankID-flöde
-│   │   ├── rosta/                 Partival, bekräftelse, kvitto
+│   │   ├── _components/
+│   │   │   └── BankIdLogin.tsx    QR och autostart, delad av väljare och admin
+│   │   ├── legitimera/            Välj omröstning, legitimera
+│   │   ├── rosta/                 Valsedlar, blindning i webbläsaren, kvitton
 │   │   ├── verifiera/             Tokenverifiering
-│   │   ├── admin/                 Aggregerad statistik
-│   │   ├── demo/                  Arkitekturdemonstration
+│   │   ├── admin/                 BankID-inloggning, slutkontroll, fastställande
+│   │   ├── demo/                  Arkitektursidan
 │   │   └── api/
-│   │       ├── auth/bankid/       start, collect
-│   │       ├── vote/              parties, cast
-│   │       ├── verify/            POST
-│   │       ├── admin/             login, stats
-│   │       └── demo/              database-state
+│   │       ├── auth/bankid/       start, qr, collect
+│   │       ├── vote/              session, ballot, credential, cast
+│   │       ├── verify/
+│   │       ├── admin/             login, stats, elections{,/check,/certify,/commit}
+│   │       ├── observer/          election, votes  — öppna utan inloggning
+│   │       ├── push/subscribe/
+│   │       └── demo/              database-state, bankid-scan
 │   ├── modules/
 │   │   ├── eligibility/           Identitetssidan
-│   │   │   ├── bankid/            IBankIdService + MockBankIdService
+│   │   │   ├── bankid/            IBankIdService, MockBankIdService, qr.ts
 │   │   │   ├── identity.ts        Personnummer → HMAC
+│   │   │   ├── credential.service.ts     Utfärdande av röstintyg
 │   │   │   ├── voter-status.service.ts
+│   │   │   ├── election.service.ts       Speglingen
 │   │   │   ├── voting-session.service.ts
-│   │   │   ├── audit.service.ts
-│   │   │   └── db.ts              Prisma-klient mot voters_db
-│   │   └── anonymous-vote/        Röstsidan
-│   │       ├── index.ts           Publikt kontrakt — hela modulens yta
-│   │       ├── token.service.ts
-│   │       ├── vote.service.ts
-│   │       └── db.ts              Prisma-klient mot votes_db
+│   │   │   ├── admin-session.service.ts
+│   │   │   └── audit.service.ts          Hashkedja
+│   │   ├── anonymous-vote/        Röstsidan
+│   │   │   ├── index.ts           Publikt kontrakt — hela modulens yta
+│   │   │   ├── election.service.ts
+│   │   │   ├── vote.service.ts    Inlösen, verifiering, resultat
+│   │   │   ├── commitment.service.ts     Merkleåtaganden
+│   │   │   └── token.service.ts
+│   │   └── notifications/         Web Push, utan koppling till identitet
 │   ├── orchestration/
-│   │   └── cast-vote.usecase.ts   Den enda kopplingspunkten
-│   ├── lib/                       Krypto, logg, validering, CSRF, cookies, tid
-│   └── middleware.ts              Säkerhetsheaders och CORS
+│   │   ├── create-election.usecase.ts    Skapar i båda databaserna
+│   │   └── final-check.usecase.ts        Slutkontroll och fastställande
+│   ├── lib/
+│   │   ├── blind-signature.ts     Server: signering och verifiering
+│   │   ├── blind-client.ts        Klient: blindning med WebCrypto
+│   │   ├── merkle.ts              Träd och åtagandehashar
+│   │   ├── known-limitations.ts   Godkända avvikelser — läses av test och sida
+│   │   └── …                      krypto, logg, validering, CSRF, cookies, tid
+│   └── middleware.ts              Säkerhetsheaders, CSP med nonce, CORS
 └── tests/
-    ├── unit/                      Token, krypto, logg, BankID, validering
+    ├── unit/                      Blinda signaturer, Merkle, token, BankID
     ├── integration/               Mot riktig databas
-    └── security/                  Arkitektur- och API-ytegranskning
+    ├── security/                  Arkitektur, API-yta, kända avvikelser
+    └── e2e/                       Playwright mot en riktig webbläsare
 ```
 
 ---
 
-## 3. Datamodell
-
-### voters_db
-
-```
-voter_status
-├── id                      uuid, slumpad
-├── external_identity_hash  HMAC-SHA256(personnummer, pepper), unik
-├── is_eligible             boolean
-├── has_voted               boolean
-└── voted_at                timestamp, avrundad till DYGN
-
-voting_session                       ← raderas vid röstläggning
-├── id                      uuid
-├── voter_status_id         FK → voter_status
-├── expires_at              timestamp
-└── csrf_secret             text
-
-audit_event
-├── id                      uuid
-├── event_type              text
-└── occurred_at             timestamp, avrundad till TIMME
-```
-
-### votes_db
-
-```
-party
-├── id                      uuid
-├── name, abbreviation      text, unika
-├── color                   text
-└── display_order           int
-
-anonymous_vote
-├── id                      uuid, slumpad
-├── token_hash              SHA-256, UNIKT INDEX
-├── party_id                FK → party
-└── created_at              timestamp, avrundad till TIMME
-```
-
-### Vad som inte finns
-
-Det viktiga i modellen är frånvaron:
-
-- ingen foreign key mellan `voter_status` och `anonymous_vote` — de ligger i olika
-  databaser, så relationen är inte bara oskriven utan omöjlig
-- ingen token eller token-hash i `voter_status`
-- ingen identitet, session eller IP i `anonymous_vote`
-- inget sessions-id som överlever röstningen
-- inga sekvensnummer som exponeras — alla id är slumpade UUID:er
-
-Tidsstämplarnas grovkornighet är en del av datamodellen, inte en presentationsdetalj. Se
-[SECURITY.md, 4.1](SECURITY.md#41-tidskorrelation).
-
----
-
-## 4. Dataflöde vid röstning
-
-```
-Väljare                Väljarsystem              Orkestrering         Röstsystem
-   │                        │                         │                    │
-   │──personnummer─────────▶│                         │                    │
-   │                   MockBankID auth                │                    │
-   │◀─────orderRef──────────│                         │                    │
-   │                        │                         │                    │
-   │──collect (polling)────▶│                         │                    │
-   │                   evaluateEligibility()          │                    │
-   │                   personnummer → HMAC            │                    │
-   │                   uppslag i voters_db            │                    │
-   │                        │                         │                    │
-   │                   ┌────┴─────┐                   │                    │
-   │                   │ i röstlängden?               │                    │
-   │                   │ röstberättigad?              │                    │
-   │                   │ har inte röstat?             │                    │
-   │                   └────┬─────┘                   │                    │
-   │                   createVotingSession()          │                    │
-   │◀──HttpOnly-cookie──────│                         │                    │
-   │                        │                         │                    │
-   │──välj parti───────────▶│                         │                    │
-   │  + CSRF-header         │──────castVote(session, partyId)──▶│          │
-   │                        │                         │                    │
-   │                        │                    ┌────┴────┐               │
-   │                        │                    │ 1. finns partiet?       │
-   │                        │                    │ 2. markera som röstad   │
-   │                        │                    │    + radera session     │
-   │                        │                    │    ATOMISKT             │
-   │                        │                    │ 3. slumpad fördröjning  │
-   │                        │                    └────┬────┘               │
-   │                        │                         │                    │
-   │                        │                         │──{ partyId }──────▶│
-   │                        │                         │                    │
-   │                        │                         │   ╔════════════════╧═══╗
-   │                        │                         │   ║ HÄR SLUTAR IDENTITETEN
-   │                        │                         │   ║ Endast partyId passerar
-   │                        │                         │   ╚════════════════╤═══╝
-   │                        │                         │                    │
-   │                        │                         │         generateVoteToken()
-   │                        │                         │         240 slumpbitar
-   │                        │                         │         lagra SHA-256(token)
-   │                        │                         │                    │
-   │                        │                         │◀──────token────────│
-   │◀──token (en gång)──────│◀────────────────────────│                    │
-   │  cookies raderas       │                         │                    │
-```
-
-Det streckade partiet är hela systemets kärna. Funktionen som anropas där har signaturen:
-
-```ts
-castAnonymousVote(input: { partyId: string }): Promise<{ token: string }>
-```
-
-Det finns ingen parameter för väljar-id, personnummer, sessions-id, IP-adress eller
-request-id. En utvecklare som ville skicka med sådant skulle behöva ändra kontraktet
-först — och då misslyckas arkitekturtestet.
-
-### Ordningen mellan de två skrivningarna
-
-Steg 2 (markera väljaren) sker **före** steg 3 (registrera rösten), och de kan inte ingå i
-samma transaktion eftersom de går till olika databaser. Valet och dess konsekvenser är
-utförligt beskrivet i [SECURITY.md, avsnitt 5](SECURITY.md#5-dubbelröstningsspärr-och-ordningsproblemet).
-
----
-
-## 5. Dataflöde vid verifiering
-
-```
-Väljare ──POST /api/verify { token } ──▶ Röstsystem
-                                            │
-                                     normalisera token
-                                     SHA-256
-                                     uppslag på token_hash i votes_db
-                                            │
-        ◀── { registered: true, party } ────┘
-```
-
-Verifieringsvägen rör aldrig `voters_db`. Rutten importerar inte ens väljarmodulen,
-vilket ett test kontrollerar.
-
-**Avvikelse från specifikationen:** specen beskriver `GET /api/verify/{token}` men kräver
-samtidigt att token aldrig hamnar i en URL. Kraven är oförenliga — en token i sökvägen
-skrivs till accessloggar, proxyloggar, webbläsarhistorik och följer med i Referer-headern.
-Kravet som skyddar väljaren fick styra, så verifieringen sker med POST och token i
-begärans kropp. `GET` finns kvar men svarar `405` med en förklaring.
-
----
-
-## 6. Modulkontrakt
-
-### `src/modules/anonymous-vote/index.ts`
-
-Hela modulens publika yta:
-
-```ts
-castAnonymousVote({ partyId }): Promise<{ token }>   // registrera röst
-isKnownParty(partyId): Promise<boolean>              // validera före markering
-listParties(): Promise<Party[]>                      // partilistan
-verifyToken(token): Promise<VerificationResult>      // verifiering
-getVoteStatistics(): Promise<{ totalVotes, perParty }>  // aggregat
-```
-
-Ingen av dem tar emot eller returnerar något som identifierar en person.
-
-### `src/modules/eligibility/`
-
-```ts
-evaluateEligibility(personalNumber): Promise<EligibilityDecision>
-markAsVotedAndConsumeSession(voterStatusId, sessionId): Promise<boolean>
-createVotingSession(voterStatusId): Promise<VotingSession>
-getValidVotingSession(sessionId): Promise<VotingSession | null>
-getVoterStatistics(): Promise<{ totalEligible, totalVoted }>
-```
-
-Ingen av dem tar emot eller returnerar något om partier eller röster.
-
-### Varför `isKnownParty` finns
-
-Orkestreringen måste kunna avvisa ett ogiltigt parti **innan** väljaren markeras som
-röstande. Utan den kontrollen skulle en felformad begäran kunna bränna någons rösträtt
-utan att en röst registrerades. Funktionen frågar bara "finns det här partiet?" och
-skickar ingenting om väljaren vidare.
-
----
-
-## 7. BankID-abstraktionen
-
-```ts
-interface IBankIdService {
-  auth(request: { personalNumber?: string }): Promise<BankIdAuthOrder>
-  collect(orderRef: string): Promise<BankIdCollectResult>
-  cancel(orderRef: string): Promise<void>
-}
-```
-
-Signaturerna följer det riktiga BankID-API:ets form: en order startas, klienten pollar
-`collect` tills status blir `complete` eller `failed`. `MockBankIdService` håller
-ordertillståndet i processminne och blir klar efter ett konfigurerbart antal pollningar.
-
-Implementationen väljs på ett enda ställe, `src/modules/eligibility/bankid/index.ts`. Ett
-byte till skarp BankID kräver en ny klass som implementerar gränssnittet plus
-certifikathantering — ingen annan fil behöver ändras.
-
-**Det mockade tillståndet ligger i processminne.** Rätt för en POC, fel för drift: en
-omstart tappar pågående legitimeringar, och med flera instanser hamnar polling-anropen på
-fel process.
-
----
-
-## 8. Applikationslager
-
-### Middleware (`src/middleware.ts`)
-
-Sätter CSP, HSTS, `X-Frame-Options`, `nosniff`, `Referrer-Policy` och
-`Permissions-Policy` på alla svar. Hanterar CORS-preflight och avvisar främmande origin.
-API-svar får `no-store`.
-
-CSP:n sätter `connect-src 'self'`, vilket gör att sidan inte kan skicka data till en
-tredje part ens om kod för det smugit sig in.
-
-### Logg (`src/lib/logger.ts`)
-
-All utskrift går genom loggern, som maskerar token-, personnummer- och hashmönster på väg
-ut. Maskeringen är ett skyddsnät för det som råkar slinka igenom — inte en ursäkt för att
-logga slarvigt vid anropsstället.
-
-Ett arkitekturtest misslyckas om någon källfil anropar `console.*` direkt. Prismas
-frågeloggning är avstängd i båda klienterna; påslagen skulle den skriva ut
-identitetshashar respektive token-hashar.
-
-### Hastighetsbegränsning (`src/lib/rate-limit.ts`)
-
-Token bucket i processminne, med hashade nycklar. Tillräckligt för en POC, fel för drift:
-tillståndet är per process och nollställs vid omstart. Produktionsmiljö behöver Redis
-eller en WAF framför applikationen.
-
----
-
-## 9. Frontend
-
-Next.js App Router. Serverkomponenter där inget tillstånd behövs, klientkomponenter för
-BankID-polling, partival, verifiering, admin och demo.
-
-**Kvittot renderas på samma sida som röstningen, utan navigering.** Alternativet — att
-skicka token vidare till en separat kvittosida — skulle kräva att klartexten
-transporteras genom en URL, sessionStorage eller ett tillstånd som överlever en
-sidladdning. Alla tre är precis vad specifikationen förbjuder. Genom att rendera kvittot
-direkt från svaret lämnar token aldrig komponentens minne, och en omladdning gör den
-oåterkalleligt borta — vilket är avsikten.
-
-Kopiering till urklipp sker bara på väljarens eget klick. Sidan varnar vid navigering
-medan token fortfarande visas.
-
----
-
-## 10. Demonstrationssidan
-
-`/demo` visar dataflödet, båda databasernas innehåll sida vid sida, en kolumnjämförelse
-som visar att inget fält är gemensamt, samtliga foreign keys hämtade ur
-`information_schema`, och en genomgång av metadatariskerna.
-
-`/api/demo/database-state` **ska inte finnas i ett skarpt system.** Den är med för att
-POC:ens hela poäng är att gå att granska. Tre saker görs ändå rätt, eftersom ett dåligt
-exempel är sämre än inget exempel: hashvärden kortas av, raderna sorteras på id i stället
-för insättningsordning (som skulle röja kronologin), och foreign keys hämtas ur
-databasen så att påståendet går att kontrollera i stället för att behöva tros på.
-
----
-
-## 11. Testarkitektur
-
-| Nivå | Vad som granskas |
-|---|---|
-| `tests/unit/` | Tokenentropi och format, hashning, identitets-HMAC, tidsavrundning, logg-maskering, BankID-mock, validering |
-| `tests/integration/` | Fullständiga röstningsflöden mot riktig PostgreSQL, med inspektion av faktiskt databastillstånd |
-| `tests/security/` | Modulgränser, schemaseparation, API-yta, token i loggar |
-
-Integrationstesterna kontrollerar inte bara att flödet fungerar utan att **kopplingen
-saknas**: de läser ut raderna ur båda databaserna och verifierar att inget värde från den
-ena förekommer i den andra, att foreign keys aldrig pekar över gränsen, och att en tömd
-röstlängd inte påverkar de anonyma rösterna.
-
-De statiska testerna i `tests/security/` granskar källkoden i stället för att köra den. De
-svarar på en annan fråga: inte "saknas kopplingen just nu?" utan "kan den införas av
-misstag?".
-
-Testerna hoppas över automatiskt om ingen databas är tillgänglig, så att enhets- och
-arkitekturtesterna kan köras utan Docker.
+## 12. Applikationslager
+
+**Middleware** sätter säkerhetsheaders och en CSP med **nonce per begäran**.
+Nonce, inte `unsafe-inline`: Next.js levererar sin hydreringsbootstrap som
+inline-skript, och en policy med enbart `script-src 'self'` blockerar dem — då
+hydrerar React aldrig och ingen interaktiv sida fungerar. Det upptäcks inte av
+något test som inte startar en riktig webbläsare.
+
+**Loggen** maskerar kända hemlighetsmönster. Ett test failar om någon fil loggar
+direkt till `console`.
+
+**Hastighetsbegränsningen** är per IP och nyckeln hashas. Gränsen för
+legitimeringsstart är medvetet generös: ett bibliotek eller en mobiloperatörs NAT
+delar adress mellan hundratals personer, och en stram gräns hade låst ut den
+sjätte väljaren. Den verkliga risken kräver en gräns **per personnummer** — se
+avsnitt 10.
+
+**Tidsstämplar** avrundas i `lib/time.ts`: dygn i röstlängden, timme i
+röstdatabasen. Ingenting i systemet lagrar en exakt tidpunkt för en enskild
+väljare eller röst.

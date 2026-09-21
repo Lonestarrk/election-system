@@ -448,6 +448,30 @@ th {
   letter-spacing: 0.05em;
 }
 
+/**
+ * Tabeller med löpande text.
+ *
+ * Grundregeln `white-space: nowrap` finns för datatabellerna: en identitetshash
+ * eller en token som bryts mitt i är oläslig, och att den i stället tvingar
+ * fram vågrät rullning är rätt avvägning.
+ *
+ * Förklarande tabeller har motsatt behov. Utan radbrytning klipps texten vid
+ * kortets kant och läsaren ser "Vem som helst v…" i stället för meningen.
+ */
+.prose-table td {
+  white-space: normal;
+  line-height: 1.5;
+  vertical-align: top;
+  padding-top: 0.7rem;
+  padding-bottom: 0.7rem;
+}
+
+.prose-table td:first-child {
+  font-weight: 500;
+  width: 30%;
+  min-width: 11rem;
+}
+
 /* Demo ------------------------------------------------------------------ */
 
 .split {
