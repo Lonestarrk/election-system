@@ -6,6 +6,25 @@ const projectRoot = dirname(fileURLToPath(import.meta.url))
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+
+  /**
+   * Skilda byggkataloger för utveckling och produktion.
+   *
+   * `next dev` och `next build` skriver annars till samma `.next`. Kör man ett
+   * produktionsbygge medan dev-servern är uppe skriver bygget över de filer
+   * dev-servern har i sitt minnesmanifest, och symptomen pekar åt helt fel
+   * håll: sidan svarar 200 men stilmallen ger 404, och webbläsaren vägrar
+   * tillämpa svaret som `text/plain` eftersom `X-Content-Type-Options: nosniff`
+   * hindrar den från att gissa MIME-typ. Det ser ut som ett CSS-fel.
+   *
+   * Det stod som en varning i README ett tag. Varningen räckte inte — jag gick
+   * i fällan igen en commit senare. Konfiguration som gör felet omöjligt är
+   * bättre än dokumentation som beskriver det.
+   *
+   * `next dev` sätter NODE_ENV till development; `next build` och `next start`
+   * sätter production. Ingen skriptändring och inget nytt beroende behövs.
+   */
+  distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
   reactStrictMode: true,
 
   // Låser filspårningens rot till projektmappen i stället för att låta Next

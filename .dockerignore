@@ -4,7 +4,8 @@
 # Två skäl, och det andra är det viktiga:
 #
 #   1. Hastighet. Docker skickar hela kontexten till motorn innan bygget ens
-#      börjar. Utan node_modules och .next går 940 MB ner till ungefär 1 MB.
+#      börjar. Utan node_modules och byggkatalogerna går 940 MB ner till
+#      ungefär 1 MB.
 #
 #   2. SÄKERHET. Allt i kontexten kan hamna i ett imagelager, och ett lager går
 #      inte att ta bort i efterhand — den som har imagen kan läsa varje lager
@@ -27,6 +28,7 @@
 # en Windows-maskin följer binärer för fel operativsystem med.
 node_modules
 .next
+.next-dev
 out
 build
 *.tsbuildinfo

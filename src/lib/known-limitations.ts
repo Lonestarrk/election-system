@@ -104,19 +104,6 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       contains: 'votesDb.anonymousVote.create',
     },
   },
-  {
-    id: 'no-personal-number-rate-limit',
-    title: 'Hastighetsgränsen är per IP, inte per person',
-    why:
-      'Med en skarp BankID-integration startar varje anrop en signeringsbegäran i någons ' +
-      'BankID-app. Det gör legitimeringsrutten till ett verktyg för att trakassera en enskild ' +
-      'person med upprepade förfrågningar, och mot det hjälper ingen IP-baserad gräns — en ' +
-      'angripare byter adress, medan offret är samma person.',
-    stillTrueIf: {
-      file: 'src/app/api/auth/bankid/start/route.ts',
-      contains: "checkRateLimit('auth-start'",
-    },
-  },
 ]
 
 /** Begränsningar som går att kontrollera automatiskt. */

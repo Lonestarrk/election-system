@@ -40,15 +40,20 @@ export const RATE_LIMITS = {
    * medvetet ingenting: svaret ser likadant ut oavsett om personnumret finns i
    * röstlängden eller inte, så den går inte att använda som uppslagsverk.
    *
-   * DEN VERKLIGA RISKEN LIGGER NÅGON ANNANSTANS, OCH ÄR INTE LÖST.
+   * VAD GRÄNSEN FAKTISKT SKYDDAR MOT
    *
-   * Med en skarp BankID-integration startar varje anrop en signeringsbegäran i
-   * någons BankID-app. Det gör rutten till ett verktyg för att trakassera en
-   * enskild person med upprepade signeringsförfrågningar, och mot det hjälper
-   * ingen IP-baserad gräns — en angripare byter adress, medan offret är samma
-   * person. Ett riktigt system behöver en gräns PER PERSONNUMMER, med
-   * hashvärdet som nyckel. Det kräver att rutten hashar personnumret innan
-   * begränsningen, vilket den inte gör i dag. Se SECURITY.md.
+   * Inte riktad trakasseri. Den här kommentaren påstod tidigare att varje
+   * anrop startar en signeringsbegäran i någons BankID-app, och att en gräns
+   * per personnummer därför behövdes. Det stämde för den gamla konstruktionen,
+   * där rutten tog emot ett personnummer.
+   *
+   * Med BankID v6 (Secure Start) gör den inte det. `auth` tar `endUserIp` och
+   * en text att visa i appen — ingenting som pekar ut en person. En angripare
+   * kan alltså inte rikta en förfrågan mot ett offer; hen skulle behöva få
+   * offret att själv skanna QR-koden eller trycka autostart.
+   *
+   * Kvar finns resursskyddet: varje anrop skapar en order hos BankID, och med
+   * en skarp integration kostar det. Gränsen finns för det.
    */
   authStart: { limit: 20, windowMs: 60_000 },
   /** Polling av legitimeringsstatus: sker ofta, mjukare gräns. */
