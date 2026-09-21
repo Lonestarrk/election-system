@@ -116,33 +116,51 @@ describe('den animerade QR-koden', () => {
 })
 
 describe('start-URL för samma enhet', () => {
+  const RETUR = 'http://localhost:3000/legitimera'
+
   it('använder app-schemat för andra plattformar än iOS', () => {
-    const url = launchUrl('token-abc', 'other')
+    const url = launchUrl('token-abc', 'other', RETUR)
 
     expect(url).toBe('bankid:///?autostarttoken=token-abc&redirect=null')
   })
 
-  it('använder universal link på iOS', () => {
-    // Safari följer inte app-schemat i alla sammanhang.
-    const url = launchUrl('token-abc', 'ios')
+  it('iOS får en riktig returadress, inte null', () => {
+    /**
+     * Skillnaden är inte kosmetisk. Android återgår till webbläsaren av sig
+     * själv efter `redirect=null`, men Safari gör inte det — med null blir
+     * väljaren kvar på app.bankid.com och ser aldrig att legitimeringen gick
+     * igenom. Det ser ut som att systemet hängt sig.
+     */
+    const url = launchUrl('token-abc', 'ios', RETUR)
 
-    expect(url).toBe('https://app.bankid.com/?autostarttoken=token-abc&redirect=null')
+    expect(url).toBe(
+      'https://app.bankid.com/?autostarttoken=token-abc' +
+        '&redirect=http%3A%2F%2Flocalhost%3A3000%2Flegitimera',
+    )
+    expect(url).not.toContain('redirect=null')
   })
 
-  it('redirect är alltid null och går inte att styra utifrån', () => {
+  it('returadressen kan inte styras från begärans kropp', () => {
     /**
-     * En påverkbar redirect i ett flöde som just legitimerat någon är en
-     * omdirigeringssårbarhet med särskilt dålig tajming. `redirect=null`
-     * avslutar appen utan att öppna någon URL, så att sidan som startade
-     * legitimeringen hamnar i fokus igen.
+     * Den ursprungliga invarianten var "redirect är alltid null". Den håller
+     * inte längre för iOS, men den EGENSKAP den skyddade gäller fortfarande:
+     * en påverkbar redirect i ett flöde som just legitimerat någon är en
+     * omdirigeringssårbarhet med särskilt dålig tajming.
+     *
+     * Skyddet ligger nu i att anroparen bygger adressen av en origin ur
+     * spärrlistan plus en fast sökväg — se auth/bankid/start/route.ts. Det
+     * här testet vaktar andra halvan: att ingenting som skickas in kan bryta
+     * ut ur URL:en.
      */
-    for (const platform of ['ios', 'other'] as const) {
-      expect(launchUrl('token-abc', platform)).toContain('redirect=null')
-    }
+    const url = launchUrl('token-abc', 'ios', 'https://angripare.example/&extra=1')
+
+    // Adressen hamnar kodad i EN parameter och kan inte lägga till fler.
+    expect(url).not.toContain('&extra=1')
+    expect(url.match(/&/g)).toHaveLength(1)
   })
 
   it('kodar token så att den inte kan bryta ut ur URL:en', () => {
-    const url = launchUrl('token&redirect=https://angripare.example', 'other')
+    const url = launchUrl('token&redirect=https://angripare.example', 'other', RETUR)
 
     expect(url).not.toContain('&redirect=https://angripare.example')
     expect(url).toContain('redirect=null')

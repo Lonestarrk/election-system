@@ -89,15 +89,30 @@ export const QR_ORDER_LIFETIME_SECONDS = 30
  * app-schemat. Skillnaden ligger i att Safari inte följer ett okänt schema
  * från en länk användaren klickat i vissa sammanhang.
  *
- * `redirect=null` avslutar appen utan att öppna någon URL, så att sidan som
- * startade legitimeringen hamnar i fokus igen. Att inte låta värdet styras
- * utifrån är medvetet: en påverkbar redirect i ett flöde som just legitimerat
- * någon är en omdirigeringssårbarhet med särskilt dålig tajming.
+ * PLATTFORMARNA SKILJER SIG I VAD `redirect` MÅSTE VARA, OCH DET ÄR INTE
+ * KOSMETIK.
+ *
+ * Android: `redirect=null`. Appen avslutas utan att öppna någon URL, och
+ * webbläsaren som startade legitimeringen får tillbaka fokus av sig själv.
+ *
+ * iOS: en riktig adress. Safari återgår inte automatiskt — med `null` blir
+ * väljaren kvar på app.bankid.com efter signeringen och ser aldrig att
+ * legitimeringen gick igenom. Den sortsen återvändsgränd ser ut som att
+ * systemet hängt sig.
+ *
+ * ADRESSEN BYGGS PÅ SERVERN OCH KOMMER ALDRIG FRÅN KLIENTEN. En påverkbar
+ * redirect i ett flöde som just legitimerat någon är en
+ * omdirigeringssårbarhet med särskilt dålig tajming — anroparen skickar in
+ * en origin ur spärrlistan och en fast sökväg, inget annat.
  */
-export function launchUrl(autoStartToken: string, platform: 'ios' | 'other'): string {
+export function launchUrl(
+  autoStartToken: string,
+  platform: 'ios' | 'other',
+  returnUrl: string,
+): string {
   const token = encodeURIComponent(autoStartToken)
 
   return platform === 'ios'
-    ? `https://app.bankid.com/?autostarttoken=${token}&redirect=null`
+    ? `https://app.bankid.com/?autostarttoken=${token}&redirect=${encodeURIComponent(returnUrl)}`
     : `bankid:///?autostarttoken=${token}&redirect=null`
 }

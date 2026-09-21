@@ -239,13 +239,24 @@ export function BankIdLogin({
 
     if (mode === 'other-device') {
       startQrRefresh(reference)
-    } else {
-      // Samma enhet: öppna appen direkt. Sker i samma anropsstack som
-      // knapptrycket, annars blockerar webbläsaren schemaöppningen som ett
-      // popup-försök.
-      const urls = data.launchUrls as { ios: string; other: string }
-      window.location.href = isIos() ? urls.ios : urls.other
     }
+
+    /**
+     * SAMMA ENHET ÖPPNAR INTE APPEN HÄRIFRÅN, OCH KAN INTE GÖRA DET.
+     *
+     * Här stod tidigare en navigering till `bankid://`, med en kommentar som
+     * påstod att den skedde i samma anropsstack som knapptrycket. Det gjorde
+     * den inte: `await post(...)` ovan avslutar gesten, och en webbläsare
+     * följer inte ett app-schema utan användaraktivering. Resultatet var att
+     * ingenting hände när man tryckte — tyst, utan felmeddelande, eftersom en
+     * blockerad schemanavigering inte kastar.
+     *
+     * Token kan inte finnas före serveranropet, så gesten går inte att bevara.
+     * Öppningen ligger därför på en egen knapp i vyn nedan, vars tryck ÄR en
+     * gest. BankID:s egen vägledning rekommenderar ändå alltid en manuell
+     * startväg, eftersom autostart fallerar på tillräckligt många
+     * enhetsuppsättningar.
+     */
   }
 
   /** Demogenväg: står för att någon skannar koden med sin BankID-app. */
@@ -312,10 +323,30 @@ export function BankIdLogin({
           )}
 
           {phase === 'same-device' && launchUrls && (
-            <p className="muted small">
-              BankID-appen ska ha öppnats. Händer inget kan du{' '}
-              <a href={isIos() ? launchUrls.ios : launchUrls.other}>öppna den manuellt</a>.
-            </p>
+            <>
+              <p className="muted small">
+                Tryck på knappen för att öppna BankID-appen på den här enheten.
+              </p>
+              <div style={{ margin: '1rem 0' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Navigeringen ligger i en klickhanterare just för att
+                    // tryckningen räknas som användaraktivering. Samma rad
+                    // efter ett `await` blockeras utan felmeddelande.
+                    window.location.href = isIos() ? launchUrls.ios : launchUrls.other
+                  }}
+                >
+                  Öppna BankID
+                </button>
+              </div>
+              {demoIdentities.length > 0 && (
+                <p className="muted small">
+                  I demoläget finns ingen order registrerad hos BankID, så appen avvisar token om
+                  den öppnas. Välj i stället en identitet nedan.
+                </p>
+              )}
+            </>
           )}
 
           <div className="notice info" role="status" aria-live="polite">
@@ -324,8 +355,9 @@ export function BankIdLogin({
 
           {demoIdentities.length > 0 && !scanned && (
             <div className="notice warning" style={{ marginTop: '1rem' }}>
-              <strong>Demonstration:</strong> ingen riktig BankID-app finns. Välj vem som
-              &quot;skannar koden&quot; — i verkligheten sker det här steget i din telefon.
+              <strong>Demonstration:</strong> ingen riktig BankID-app finns. Välj vem som{' '}
+              {phase === 'other-device' ? '"skannar koden"' : 'legitimerar sig'} — i verkligheten
+              sker det här steget i din telefon.
               <div style={{ marginTop: '0.75rem' }}>
                 {demoIdentities.map((identity) => (
                   <button

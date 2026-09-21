@@ -1,3 +1,4 @@
+import { env } from '@/lib/env'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, startAuthSchema } from '@/lib/validation'
@@ -75,6 +76,21 @@ export async function POST(request: Request) {
 
   await recordAuditEvent(AUDIT_EVENTS.AUTH_STARTED)
 
+  /**
+   * Adressen BankID-appen skickar väljaren tillbaka till på iOS.
+   *
+   * Byggs av en origin ur spärrlistan plus en fast sökväg som `purpose` väljer.
+   * Ingenting här kommer från begärans kropp, så flödet kan inte användas för
+   * att skicka en nyss legitimerad person till en adress angriparen valt.
+   *
+   * Origin-headern är redan kontrollerad ovan, men den saknas i vissa
+   * webbläsare vid navigering från samma sajt — därför faller den tillbaka på
+   * den först uppräknade origin i stället för att lita på headern.
+   */
+  const origin = request.headers.get('origin')
+  const baseOrigin = origin && env.appOrigins.includes(origin) ? origin : env.appOrigins[0]!
+  const returnUrl = `${baseOrigin}${body.data.purpose === 'admin' ? '/admin' : '/legitimera'}`
+
   const initialQr = await bankIdService.qrData(order.orderRef)
 
   return jsonResponse({
@@ -86,8 +102,8 @@ export async function POST(request: Request) {
      * inte behöva gissa enhet utifrån en header som går att sätta fritt.
      */
     launchUrls: {
-      ios: launchUrl(order.autoStartToken, 'ios'),
-      other: launchUrl(order.autoStartToken, 'other'),
+      ios: launchUrl(order.autoStartToken, 'ios', returnUrl),
+      other: launchUrl(order.autoStartToken, 'other', returnUrl),
     },
     /** Första QR-koden. Därefter hämtas nya från /api/auth/bankid/qr. */
     qrImage: initialQr ? await renderQrPng(initialQr.qrData) : null,
