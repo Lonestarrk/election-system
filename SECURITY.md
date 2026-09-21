@@ -451,20 +451,56 @@ besökaren kom från kvittosidan.
 
 ## 8. Varför detta inte duger för ett riktigt val
 
-De tre strukturella bristerna, i ordning:
+### Kodnivån: se den enda källan
 
-1. **Serverkompromiss bryter anonymiteten.** Båda delarna kör i samma process. Under de
-   sekunder en röstning pågår finns identitet och partival i samma minne.
+De strukturella bristerna i koden **listas inte här**, och det är ett medvetet val.
 
-2. **Databasernas WAL kan korreleras.** Båda databaserna kör i samma PostgreSQL-instans.
-   Den som kommer åt transaktionsloggarna kan para ihop skrivningarna på millisekundnivå.
+Listan stod tidigare i prosa på tre ställen: här, i arkitektursidan och i
+VERIFIABILITY.md. Följden blev förutsägbar. Ordningsproblemet mellan de två
+databasskrivningarna löstes av röstintygen men stod kvar som olöst länge
+efteråt. Och punkt 1 i den tidigare versionen av det här avsnittet påstod att
+"identitet och partival finns i samma minne under de sekunder en röstning
+pågår" — vilket slutade vara sant den dag röstläggningen tappade sin session,
+men stod kvar ändå.
 
-3. **Token är ett kvitto, och kvitton möjliggör röstköp.** Verifierbarhet och
-   kvittofrihet drar åt olika håll, och POC:en väljer verifierbarhet utan att lösa
-   konflikten.
+**En demonstration som påstår att systemet är sämre än det är underminerar
+tilliten lika säkert som en som påstår motsatsen.**
 
-Utöver det saknas allt det som gör skillnaden mellan en fungerande demonstration och ett
-system man kan lita på med ett val:
+Avvikelserna finns därför i `src/lib/known-limitations.ts`, läst av både
+arkitektursidan och ett säkerhetstest. Varje post pekar ut en markör i
+källkoden som är sann så länge problemet finns kvar. Löser någon problemet
+försvinner markören, testet failar, och bygget står still tills posten tagits
+bort.
+
+Se [ARCHITECTURE.md avsnitt 10](ARCHITECTURE.md) för specifikationen och
+skillnaden mellan en **bugg** (signeringsnycklarna i databasen — åtgärdbar) och
+en **teoretisk gräns** (klientkoden levereras av servern — går bara att flytta,
+inte lösa, i en webbapp).
+
+Anonymitetsavvägningar som tillkom med flera valsedlar och omröstningar —
+omröstnings-id som delad identifierare, sessionen som lever över tre valsedlar,
+push-prenumerationer — står i [VERIFIABILITY.md avsnitt 7](VERIFIABILITY.md).
+
+### Två brister som inte syns i koden
+
+Dessa går inte att peka ut med en markör i en källfil, och står därför här:
+
+**Databasernas WAL kan korreleras.** Båda databaserna kör i samma
+PostgreSQL-instans. Den som kommer åt transaktionsloggarna kan para ihop
+skrivningarna på millisekundnivå, oavsett hur grova tidsstämplarna i tabellerna
+är. Separata instanser med separata driftansvariga är det enda som stänger det
+— och det är en driftsfråga, inte en kodfråga.
+
+**Nyckelceremonin.** Den som genererade valsedlarnas nyckelpar kunde ha behållit
+en kopia. Nya nycklar i drift tar bort risken från platshållarna i repot, men
+inte behovet av att lita på den som genererade dem. Svaret för ett riktigt val
+är tröskelnycklar: nyckeln delas mellan flera parter så att ingen ensam håller
+hela, och det krävs exempelvis tre av fem för att signera.
+
+### Vad som saknas utöver kod
+
+Det här är skillnaden mellan en fungerande demonstration och ett system man kan
+lita på med ett val. Inget av det går att programmera sig till:
 
 - oberoende säkerhetsgranskning och penetrationstestning
 - formell hotmodellering och kryptografisk verifiering av protokollet
@@ -474,13 +510,17 @@ system man kan lita på med ett val:
 - oberoende valmyndigheter med flerpartskontroll, där ingen ensam aktör kan avgöra något
 - driftsäkerhet: nyckelhantering, hårdvarusäkerhetsmoduler, separation av driftmiljöer
 - offentlig insyn och möjlighet för vem som helst att granska och räkna om
-- riktig BankID-integration med certifikathantering och avtal
+- riktig BankID-integration med certifikathantering, avtal och bevakade utgångsdatum
 - beredskap för överbelastningsangrepp och för att valet ska kunna genomföras ändå
 
-Syftet med projektet är att visa **en princip**:
+### Vad projektet visar
 
-> Legitimera väljaren separat. Registrera rösten anonymt. Ge väljaren en engångstoken som
-> låter hen kontrollera sin egen röst.
+> Legitimera väljaren separat. Låt väljaren själv bära ett blint signerat intyg
+> över gränsen. Registrera rösten anonymt. Publicera underlaget så att vem som
+> helst kan räkna om valet.
 
-Principen är sund. Implementationen är en demonstration av principen, inte av ett
-valsystem.
+Principen är sund, och den är starkare än den ursprungliga formuleringen:
+blindningen gör kopplingen mellan utfärdande och inlösen informationsteoretiskt
+omöjlig, inte bara oskriven.
+
+Implementationen är en demonstration av principen, inte av ett valsystem.

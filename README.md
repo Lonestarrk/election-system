@@ -255,26 +255,41 @@ npm run test:e2e
   röstintyg, Merkleåtaganden, automatisk slutkontroll, observatörsgränssnitt och
   vad som fortfarande kräver tillit
 - **[SECURITY.md](SECURITY.md)** — hotmodell, anonymitetsmodell, tokendesign,
-  metadatarisker, och varför detta inte duger för ett riktigt val
+  metadatarisker, och vad som saknas utöver kod för ett riktigt val
 
 ---
 
 ## Begränsningar
 
-De tre som betyder mest:
+**Listan står inte här, och det är ett medvetet val.**
 
-1. **Serverkompromiss bryter anonymiteten.** Båda delarna kör i samma process. Under de
-   sekunder en röstning pågår finns identitet och partival i samma minne.
-2. **Databasernas transaktionsloggar kan korreleras.** Båda databaserna kör i samma
-   PostgreSQL-instans. Den som kommer åt WAL kan para ihop skrivningarna på
-   millisekundnivå — trots de avrundade tidsstämplarna i tabellerna.
-3. **Token är ett kvitto, och kvitton möjliggör röstköp.** En väljare som kan visa upp
-   sin token kan bevisa hur hen röstat. Verifierbarhet och kvittofrihet drar åt olika
-   håll, och den här POC:en väljer verifierbarhet utan att lösa konflikten.
+Den fanns tidigare i prosa på fyra ställen: här, i SECURITY.md, i
+arkitektursidan och i VERIFIABILITY.md. Följden blev att den blev fel. Den här
+filen beskrev ända fram till nyligen blinda signaturer som något "ett riktigt
+system skulle göra i stället" — de är implementerade och bär nu hela
+konstruktionen. Och påståendet att identitet och partival finns i samma minne
+under röstningen slutade vara sant den dag röstläggningen tappade sin session.
 
-Alla tre är beskrivna i [SECURITY.md](SECURITY.md), tillsammans med vad ett riktigt
-system skulle göra i stället — bland annat blinda signaturer, som löser både
-ordningsproblemet mellan de två databasskrivningarna och kopplingsproblemet på en gång.
+En demonstration som påstår att systemet är sämre än det är underminerar
+tilliten lika säkert som en som påstår motsatsen.
 
-Syftet är att visa **en princip**: legitimera väljaren separat, registrera rösten
-anonymt, och ge väljaren en engångstoken som låter hen kontrollera sin egen röst.
+Kända avvikelser finns därför i **`src/lib/known-limitations.ts`**, som läses av
+både arkitektursidan och ett säkerhetstest. Varje post pekar ut en markör i
+källkoden som är sann så länge problemet finns kvar — löser någon problemet
+failar testet tills posten tagits bort.
+
+| Läs om | I |
+|---|---|
+| Specifikationen och var koden avviker | [ARCHITECTURE.md](ARCHITECTURE.md), avsnitt 10 |
+| Brister som inte syns i koden — WAL, nyckelceremoni | [SECURITY.md](SECURITY.md), avsnitt 8 |
+| Vad som saknas utöver kod — granskning, juridik, WCAG | [SECURITY.md](SECURITY.md), avsnitt 8 |
+| Anonymitetsavvägningar med flera valsedlar | [VERIFIABILITY.md](VERIFIABILITY.md), avsnitt 7 |
+
+De tre som betyder mest just nu: klientkoden levereras av servern,
+signeringsnycklarna ligger i databasen, och kvittot bevisar hur du röstat.
+
+---
+
+Syftet är att visa **en princip**: legitimera väljaren separat, låt väljaren
+själv bära ett blint signerat intyg över gränsen, registrera rösten anonymt, och
+publicera underlaget så att vem som helst kan räkna om valet.

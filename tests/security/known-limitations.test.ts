@@ -74,6 +74,65 @@ describe('kända begränsningar', () => {
   )
 })
 
+describe('ingen dokumentation upprepar listan', () => {
+  /**
+   * FYRA KOPIOR EXISTERADE, OCH DE HADE HUNNIT BLI OLIKA.
+   *
+   * Listan stod i prosa i README, SECURITY.md, VERIFIABILITY.md och på
+   * arkitektursidan. Två av dem hade blivit direkt felaktiga:
+   *
+   *   – README beskrev blinda signaturer som något "ett riktigt system skulle
+   *     göra i stället". De var implementerade och bar hela konstruktionen.
+   *
+   *   – SECURITY.md påstod att identitet och partival finns i samma minne under
+   *     röstningen. Det slutade vara sant den dag röstläggningen tappade sin
+   *     session.
+   *
+   * Ingenting hindrade det, eftersom ingenting kontrollerade det. Nu gör det.
+   *
+   * Dokumenten får beskriva PROBLEMOMRÅDET och peka på källan. De får inte
+   * numrera avvikelserna som en egen lista — det är då kopiorna glider isär.
+   */
+  const docs = ['README.md', 'SECURITY.md', 'VERIFIABILITY.md']
+
+  it.each(docs)('%s numrerar inte avvikelserna som en egen lista', (doc) => {
+    const content = readFileSync(join(process.cwd(), doc), 'utf8')
+
+    /**
+     * Mönstret som gick fel: en numrerad punkt som inleds med en fetmarkerad
+     * rubrik, alltså "1. **Serverkompromiss bryter…**". Det är formen en
+     * handunderhållen avvikelselista tar.
+     *
+     * Löpande text som nämner ett problem är tillåten och önskvärd — det är
+     * upprepningen av LISTAN som är felet, inte att ämnet diskuteras.
+     */
+    const numreradLista = content.match(/^\d+\. \*\*[^*]{15,}\*\*/gm) ?? []
+
+    const rapport = [
+      '',
+      `  ${doc} innehåller en numrerad avvikelselista:`,
+      ...numreradLista.map((rad) => `    ${rad}`),
+      '',
+      '  Listan hör i src/lib/known-limitations.ts. Peka dit i stället —',
+      '  fyra handunderhållna kopior hade redan hunnit bli olika.',
+      '',
+    ].join('\n')
+
+    expect(numreradLista, rapport).toEqual([])
+  })
+
+  it.each(docs)('%s pekar på den enda källan', (doc) => {
+    const content = readFileSync(join(process.cwd(), doc), 'utf8')
+
+    // Varje dokument som berör begränsningar ska hänvisa vidare, så att läsaren
+    // hittar den aktuella listan i stället för att tro att den står där.
+    expect(
+      /known-limitations|ARCHITECTURE\.md|VERIFIABILITY\.md|SECURITY\.md/.test(content),
+      `${doc} nämner varken den enda källan eller de andra dokumenten`,
+    ).toBe(true)
+  })
+})
+
 describe('arkitektursidan läser listan i stället för att upprepa den', () => {
   const page = readFileSync(join(process.cwd(), 'src/app/demo/page.tsx'), 'utf8')
 
