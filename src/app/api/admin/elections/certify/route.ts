@@ -62,6 +62,24 @@ export async function POST(request: Request) {
     return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
   }
 
+  if (outcome.status === 'not_ready') {
+    /**
+     * Förutsättningarna är inte uppfyllda — omröstningen pågår, eller inget
+     * åtagande är publicerat. Ingenting har markerats som avvikande, och
+     * administratören kan komma tillbaka när valet stängt.
+     */
+    return jsonResponse(
+      {
+        status: 'not_ready',
+        message:
+          'Resultatet kan inte fastställas än. Se vilka förutsättningar som saknas i ' +
+          'rapporten. Ingenting har markerats som avvikande.',
+        report: outcome.report,
+      },
+      409,
+    )
+  }
+
   if (outcome.status === 'blocked') {
     // 409, inte 403: begäran var behörig, men systemets tillstånd tillåter den
     // inte. Rapporten följer med så att administratören ser exakt vad som

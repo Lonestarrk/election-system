@@ -37,7 +37,26 @@ import { verifyAuditChain } from '@/modules/eligibility/audit.service'
  * motivering som adminstatistiken.
  */
 
-export type CheckSeverity = 'CRITICAL' | 'WARNING'
+/**
+ * TRE KLASSER, OCH SKILLNADEN ÄR AVGÖRANDE.
+ *
+ *  – CRITICAL: något stämmer inte i underlaget. Röster utan intyg, en bruten
+ *    kedja, en rot som inte matchar. Det är tecken på fel eller manipulation,
+ *    och omröstningen ska då markeras som avvikande.
+ *
+ *  – PRECONDITION: valet är inte klart att fastställas än. Omröstningen är
+ *    fortfarande öppen, eller inget åtagande har publicerats. Ingenting är fel
+ *    — det är bara för tidigt.
+ *
+ *  – WARNING: värt att förstå innan man fastställer, men inte ett hinder.
+ *
+ * Distinktionen mellan de två första finns för att ett förhastat klick inte
+ * ska förstöra valet. UNDER_REVIEW går inte att lämna via applikationen, och
+ * skulle "omröstningen är öppen" räknas som en avvikelse hade en administratör
+ * som tryckte en dag för tidigt gjort valet omöjligt att fastställa över
+ * huvud taget.
+ */
+export type CheckSeverity = 'CRITICAL' | 'PRECONDITION' | 'WARNING'
 
 export type CheckResult = {
   id: string
@@ -53,8 +72,13 @@ export type FinalCheckReport = {
   electionName: string
   status: string
   checks: CheckResult[]
-  /** Sant bara om samtliga KRITISKA kontroller gått igenom. */
+  /** Sant bara om samtliga kritiska kontroller OCH förutsättningar är uppfyllda. */
   canCertify: boolean
+  /**
+   * Sant om någon KRITISK kontroll fallerat — alltså om underlaget inte
+   * stämmer. Falskt när det bara är för tidigt att fastställa.
+   */
+  anomalous: boolean
   /** Kontroller som fallerat, kritiska först. */
   failures: CheckResult[]
   merkleRoot: string
@@ -183,22 +207,40 @@ export async function runFinalCheck(electionId: string): Promise<FinalCheckRepor
     const root = merkleRoot(leaves)
     const commitment = await latestCommitment(electionId)
 
-    checks.push({
-      id: 'matches_commitment',
-      question: 'Har någon röst ändrats eller tagits bort sedan det senaste åtagandet?',
-      severity: 'CRITICAL',
-      passed: commitment !== null && commitment.root === root,
-      detail:
-        commitment === null
-          ? 'Inget åtagande har publicerats. Utan ett åtagande finns ingenting att ' +
-            'jämföra mot, och manipulation av röstunderlaget kan inte uteslutas.'
-          : commitment.root === root
+    /**
+     * Två olika utfall, två olika klasser.
+     *
+     * Saknas ett åtagande helt är det en FÖRUTSÄTTNING som inte är uppfylld —
+     * ingen har gjort något fel, det finns bara inget att jämföra mot än.
+     * Finns ett åtagande men roten skiljer sig är det en AVVIKELSE: underlaget
+     * har ändrats efter att åtagandet publicerades.
+     */
+    if (commitment === null) {
+      checks.push({
+        id: 'matches_commitment',
+        question: 'Har någon röst ändrats eller tagits bort sedan det senaste åtagandet?',
+        severity: 'PRECONDITION',
+        passed: false,
+        detail:
+          'Inget åtagande har publicerats. Utan ett åtagande finns ingenting att ' +
+          'jämföra mot, och manipulation av röstunderlaget kan inte uteslutas. ' +
+          'Publicera ett åtagande och kör kontrollen igen.',
+      })
+    } else {
+      checks.push({
+        id: 'matches_commitment',
+        question: 'Har någon röst ändrats eller tagits bort sedan det senaste åtagandet?',
+        severity: 'CRITICAL',
+        passed: commitment.root === root,
+        detail:
+          commitment.root === root
             ? `Merkleroten stämmer med åtagande #${commitment.sequence} ` +
               `(${commitment.voteCount} röster).`
             : `Merkleroten ${root.slice(0, 16)}… stämmer inte med åtagande ` +
               `#${commitment.sequence} (${commitment.root.slice(0, 16)}…). ` +
               'Röstunderlaget har ändrats efter att åtagandet publicerades.',
-    })
+      })
+    }
   }
 
   // --- 5. Åtagandekedjan är obruten ---------------------------------------
@@ -281,7 +323,8 @@ export async function runFinalCheck(electionId: string): Promise<FinalCheckRepor
     checks.push({
       id: 'election_closed',
       question: 'Är omröstningen stängd?',
-      severity: 'CRITICAL',
+      // FÖRUTSÄTTNING, inte avvikelse. Att valet pågår är normalt.
+      severity: 'PRECONDITION',
       passed: closed,
       detail: closed
         ? `Omröstningen stängde ${election.closesAt.toISOString()}.`
@@ -328,16 +371,21 @@ export async function runFinalCheck(electionId: string): Promise<FinalCheckRepor
   }
 
   const leaves = votes.map((vote) => hashLeaf(canonicalVoteRecord(vote)))
+  const order: Record<CheckSeverity, number> = { CRITICAL: 0, PRECONDITION: 1, WARNING: 2 }
+
   const failures = checks
     .filter((check) => !check.passed)
-    .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'CRITICAL' ? -1 : 1))
+    .sort((a, b) => order[a.severity] - order[b.severity])
+
+  const anomalous = checks.some((check) => check.severity === 'CRITICAL' && !check.passed)
 
   return {
     electionId,
     electionName: election.name,
     status: await currentStatus(electionId),
     checks,
-    canCertify: checks.every((check) => check.severity !== 'CRITICAL' || check.passed),
+    canCertify: checks.every((check) => check.severity === 'WARNING' || check.passed),
+    anomalous,
     failures,
     merkleRoot: merkleRoot(leaves),
     voteCount: votes.length,
@@ -355,7 +403,10 @@ async function currentStatus(electionId: string): Promise<string> {
 
 export type CertifyOutcome =
   | { status: 'certified'; report: FinalCheckReport; commitmentSequence: number }
+  /** En kritisk kontroll fallerade. Omröstningen är nu markerad som avvikande. */
   | { status: 'blocked'; report: FinalCheckReport }
+  /** Förutsättningarna är inte uppfyllda än. Ingenting har markerats. */
+  | { status: 'not_ready'; report: FinalCheckReport }
   | { status: 'unknown_election' }
   | { status: 'already_certified'; report: FinalCheckReport }
 
@@ -395,15 +446,29 @@ export async function certifyElection(electionId: string): Promise<CertifyOutcom
   }
 
   if (!report.canCertify) {
-    // Markeras som avvikande, inte bara avvisad. Ett val vars kontroller
-    // fallerat ska synas som avvikande för alla som tittar efteråt — inte bara
-    // för den administratör som råkade trycka på knappen.
-    await votesDb.election.update({
-      where: { id: electionId },
-      data: { status: 'UNDER_REVIEW' },
-    })
+    /**
+     * BARA EN VERKLIG AVVIKELSE MARKERAR OMRÖSTNINGEN.
+     *
+     * Har en KRITISK kontroll fallerat stämmer inte underlaget, och det ska
+     * synas som avvikande för alla som tittar efteråt — inte bara för den
+     * administratör som råkade trycka på knappen.
+     *
+     * Är det däremot bara en FÖRUTSÄTTNING som inte är uppfylld — omröstningen
+     * pågår, eller inget åtagande är publicerat — avvisas begäran utan att
+     * något markeras. UNDER_REVIEW går inte att lämna via applikationen, och en
+     * administratör som trycker en dag för tidigt ska inte kunna göra valet
+     * omöjligt att fastställa.
+     */
+    if (report.anomalous) {
+      await votesDb.election.update({
+        where: { id: electionId },
+        data: { status: 'UNDER_REVIEW' },
+      })
 
-    return { status: 'blocked', report: { ...report, status: 'UNDER_REVIEW' } }
+      return { status: 'blocked', report: { ...report, status: 'UNDER_REVIEW' } }
+    }
+
+    return { status: 'not_ready', report }
   }
 
   const commitment = await commitCurrentState(electionId)

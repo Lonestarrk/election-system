@@ -39,11 +39,24 @@ export async function POST(request: Request) {
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
-  const rate = checkRateLimit('admin-login', getClientIp(request), RATE_LIMITS.adminLogin)
-  if (!rate.allowed) {
+  /**
+   * TVÅ OLIKA GRÄNSER FÖR TVÅ OLIKA SAKER.
+   *
+   * Den här rutten POLLAR BankID-statusen — den anropas flera gånger per
+   * inloggning, inte en gång. En gräns avsedd för inloggningsförsök gör då att
+   * andra inloggningen låses ut, eftersom den första redan förbrukat
+   * utrymmet på att fråga "är du klar?".
+   *
+   * Pollningen får därför en generös gräns, precis som väljarsidans
+   * /api/auth/bankid/collect. Den strama gränsen flyttas till att räkna
+   * FALLERADE inloggningar längre ner, vilket är det som faktiskt ska
+   * begränsas: den som prövar sig fram mot adminvyn.
+   */
+  const pollRate = checkRateLimit('admin-poll', getClientIp(request), RATE_LIMITS.authCollect)
+  if (!pollRate.allowed) {
     await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
-    return errorResponse('RATE_LIMITED', 'För många försök.', 429, {
-      'Retry-After': String(rate.retryAfterSeconds),
+    return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
+      'Retry-After': String(pollRate.retryAfterSeconds),
     })
   }
 
@@ -72,6 +85,27 @@ export async function POST(request: Request) {
   const identification = await identifyAdmin(result.completionData.personalNumber)
 
   if (identification.outcome !== 'admin') {
+    /**
+     * Här, och bara här, räknas försöket.
+     *
+     * Gränsen förbrukas av MISSLYCKADE inloggningar. Den som legitimerar sig
+     * med ett giltigt BankID och saknar adminflaggan kan alltså pröva fem
+     * personnummer på fem minuter — inte hundra. Den som lyckas påverkas inte
+     * alls, eftersom raden nedan aldrig nås vid ett godkänt försök.
+     */
+    const attemptRate = checkRateLimit(
+      'admin-login-failed',
+      getClientIp(request),
+      RATE_LIMITS.adminLogin,
+    )
+
+    if (!attemptRate.allowed) {
+      await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+      return errorResponse('RATE_LIMITED', 'För många försök.', 429, {
+        'Retry-After': String(attemptRate.retryAfterSeconds),
+      })
+    }
+
     // SAMMA SVAR OAVSETT ORSAK.
     //
     // "Du finns inte i röstlängden" och "du är inte administratör" skulle

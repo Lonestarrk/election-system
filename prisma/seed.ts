@@ -214,9 +214,27 @@ async function main() {
   for (const voter of VOTERS) {
     const externalIdentityHash = hashPersonalNumber(voter.personalNumber, pepper)
 
+    /**
+     * `update` MÅSTE sätta fälten, inte vara tomt.
+     *
+     * Ett tomt update gör skriptet idempotent i den svaga meningen "skapar
+     * inga dubbletter" — men det rättar inte en rad som redan finns i ett
+     * annat skick. Integrationstesterna lämnar kvar väljare utan
+     * folkbokföringskod, och en omseedning som hoppar över dem ger en
+     * demoväljare som inte kan rösta på kommunvalsedeln. Felet visar sig först
+     * som "valsedeln gäller inte dig" mitt i en demonstration.
+     *
+     * Notera att identitetshashen är oförändrad — raden identifieras av den,
+     * så det som skrivs är bara det deklarerade demotillståndet.
+     */
     await votersDb.voterStatus.upsert({
       where: { externalIdentityHash },
-      update: {},
+      update: {
+        isEligible: voter.isEligible ?? true,
+        isAdmin: voter.isAdmin ?? false,
+        municipalityCode: voter.municipalityCode ?? MUNICIPALITY,
+        regionCode: voter.regionCode ?? REGION,
+      },
       create: {
         externalIdentityHash,
         isEligible: voter.isEligible ?? true,

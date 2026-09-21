@@ -11,6 +11,19 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 }
 
+/**
+ * Ingen statisk förrendering.
+ *
+ * CSP:n innehåller ett nonce som är unikt per begäran. En statiskt genererad
+ * sida skulle bära ett nonce från byggtillfället, medan svarsheadern har ett
+ * nytt — de matchar inte, och skripten blockeras.
+ *
+ * Att sidorna renderas per begäran är dessutom rimligt i sig för ett
+ * valsystem: ingenting här vinner på att cachas, och en cachad sida är en sida
+ * som kan visa gammal information om en pågående omröstning.
+ */
+export const dynamic = 'force-dynamic'
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="sv">

@@ -5,11 +5,27 @@ CREATE SCHEMA IF NOT EXISTS "public";
 CREATE TABLE "election" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'OPEN',
+    "certified_at" TIMESTAMP(3),
     "kind" TEXT NOT NULL,
     "opens_at" TIMESTAMP(3) NOT NULL,
     "closes_at" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "election_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "election_commitment" (
+    "id" TEXT NOT NULL,
+    "election_id" TEXT NOT NULL,
+    "sequence" INTEGER NOT NULL,
+    "root" TEXT NOT NULL,
+    "vote_count" INTEGER NOT NULL,
+    "previous_hash" TEXT,
+    "entry_hash" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "election_commitment_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -83,6 +99,15 @@ CREATE TABLE "anonymous_vote" (
 );
 
 -- CreateIndex
+CREATE UNIQUE INDEX "election_commitment_entry_hash_key" ON "election_commitment"("entry_hash");
+
+-- CreateIndex
+CREATE INDEX "election_commitment_election_id_idx" ON "election_commitment"("election_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "election_commitment_election_id_sequence_key" ON "election_commitment"("election_id", "sequence");
+
+-- CreateIndex
 CREATE INDEX "election_ballot_election_id_idx" ON "election_ballot"("election_id");
 
 -- CreateIndex
@@ -120,6 +145,9 @@ CREATE INDEX "anonymous_vote_candidate_id_idx" ON "anonymous_vote"("candidate_id
 
 -- CreateIndex
 CREATE INDEX "anonymous_vote_option_id_idx" ON "anonymous_vote"("option_id");
+
+-- AddForeignKey
+ALTER TABLE "election_commitment" ADD CONSTRAINT "election_commitment_election_id_fkey" FOREIGN KEY ("election_id") REFERENCES "election"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "election_ballot" ADD CONSTRAINT "election_ballot_election_id_fkey" FOREIGN KEY ("election_id") REFERENCES "election"("id") ON DELETE CASCADE ON UPDATE CASCADE;

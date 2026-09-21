@@ -85,6 +85,9 @@ CREATE TABLE "audit_event" (
     "id" TEXT NOT NULL,
     "event_type" TEXT NOT NULL,
     "occurred_at" TIMESTAMP(3) NOT NULL,
+    "sequence" INTEGER NOT NULL,
+    "previous_hash" TEXT,
+    "entry_hash" TEXT NOT NULL,
 
     CONSTRAINT "audit_event_pkey" PRIMARY KEY ("id")
 );
@@ -109,6 +112,12 @@ CREATE INDEX "admin_session_voter_status_id_idx" ON "admin_session"("voter_statu
 
 -- CreateIndex
 CREATE UNIQUE INDEX "push_subscription_endpoint_key" ON "push_subscription"("endpoint");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "audit_event_sequence_key" ON "audit_event"("sequence");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "audit_event_entry_hash_key" ON "audit_event"("entry_hash");
 
 -- CreateIndex
 CREATE INDEX "audit_event_event_type_idx" ON "audit_event"("event_type");

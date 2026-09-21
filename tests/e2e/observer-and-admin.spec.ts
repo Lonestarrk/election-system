@@ -22,7 +22,9 @@ test.describe('observatörsgränssnittet', () => {
     const elections = (await list.json()).elections
     expect(elections.length).toBeGreaterThan(0)
 
-    const electionId = elections[0].id
+    const electionId = elections.find(
+      (election: { name: string }) => election.name === 'Valet 2026',
+    ).id
 
     const detail = await request.post(`${baseURL}/api/observer/election`, {
       data: { electionId },
@@ -50,7 +52,9 @@ test.describe('observatörsgränssnittet', () => {
       data: {},
       headers: { Origin: baseURL! },
     })
-    const electionId = (await list.json()).elections[0].id
+    const electionId = (await list.json()).elections.find(
+      (election: { name: string }) => election.name === 'Valet 2026',
+    ).id
 
     const response = await request.post(`${baseURL}/api/observer/votes`, {
       data: { electionId },
@@ -106,7 +110,9 @@ test.describe('adminens slutverifiering', () => {
     await page.getByLabel('Personnummer').fill(NOT_ADMIN)
     await page.getByRole('button', { name: 'Logga in med BankID' }).click()
 
-    await expect(page.getByText(/inte behörighet/i)).toBeVisible({ timeout: 30_000 })
+    // .first(): meddelandet renderas både som statusrad och i avvisningskortet,
+    // så en omodifierad lokator matchar två element.
+    await expect(page.getByText(/inte behörighet/i).first()).toBeVisible({ timeout: 30_000 })
     await expect(page.getByRole('heading', { name: 'Slutkontroll' })).toHaveCount(0)
   })
 
@@ -119,6 +125,7 @@ test.describe('adminens slutverifiering', () => {
       timeout: 30_000,
     })
 
+    await page.getByRole('combobox').selectOption({ label: 'Valet 2026' })
     await page.getByRole('button', { name: 'Kör slutkontroll' }).click()
 
     await expect(page.getByRole('heading', { name: /Slutkontroll/ })).toBeVisible({
@@ -161,7 +168,9 @@ test.describe('adminens slutverifiering', () => {
       data: {},
       headers: { Origin: baseURL! },
     })
-    const electionId = (await list.json()).elections[0].id
+    const electionId = (await list.json()).elections.find(
+      (election: { name: string }) => election.name === 'Valet 2026',
+    ).id
 
     const response = await request.post(`${baseURL}/api/admin/elections/certify`, {
       data: {

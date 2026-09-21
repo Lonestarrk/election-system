@@ -10,12 +10,31 @@ import { NextResponse, type NextRequest } from 'next/server'
 
 const APP_ORIGIN = process.env.APP_ORIGIN ?? 'http://localhost:3000'
 
-const CONTENT_SECURITY_POLICY = [
+/**
+ * CSP med NONCE för skript.
+ *
+ * VARFÖR NONCE OCH INTE BARA 'self'
+ *
+ * Next.js levererar sin hydreringsbootstrap som inline-skript. En policy med
+ * enbart `script-src 'self'` blockerar dem, vilket i praktiken betyder att
+ * React aldrig hydrerar: sidorna renderas men ingen klientkod körs, ingen
+ * knapp fungerar och ingen hämtning sker. Det upptäcks inte av något test som
+ * inte startar en riktig webbläsare.
+ *
+ * Alternativet 'unsafe-inline' hade löst det genom att tillåta VARJE
+ * inline-skript, alltså också ett som en angripare lyckats injicera. Nonce ger
+ * samma funktion utan den eftergiften: bara skript som bär just den här
+ * begärans slumpade värde får köras, och värdet är omöjligt att gissa i förväg.
+ *
+ * 'strict-dynamic' låter de nonce-märkta skripten i sin tur ladda sina egna
+ * moduler, vilket Next.js chunk-laddning kräver.
+ */
+function contentSecurityPolicy(nonce: string): string {
+  return [
   "default-src 'self'",
   // 'unsafe-inline' för stilar krävs av Next.js inbyggda stilinjektion.
-  // Skript tillåts inte inline — det är där risken faktiskt ligger.
   "style-src 'self' 'unsafe-inline'",
-  "script-src 'self'",
+  `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
   "img-src 'self' data:",
   "font-src 'self'",
   // Inga utgående anrop: ingen analytics, ingen felrapportering till tredje
@@ -25,10 +44,19 @@ const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "object-src 'none'",
-].join('; ')
+  ].join('; ')
+}
 
 export function middleware(request: NextRequest) {
   const origin = request.headers.get('origin')
+
+  /**
+   * Ett nytt nonce per begäran.
+   *
+   * Återanvändes värdet mellan begäranden vore det gissningsbart för den som
+   * sett en tidigare sida, och skyddet skulle falla.
+   */
+  const nonce = Buffer.from(crypto.randomUUID()).toString('base64')
 
   // Preflight: svara aldrig med tillåtelse till främmande origin.
   if (request.method === 'OPTIONS') {
@@ -47,9 +75,14 @@ export function middleware(request: NextRequest) {
     })
   }
 
-  const response = NextResponse.next()
+  // Nonce skickas vidare på BEGÄRAN, inte bara i svarsheadern. Next.js läser
+  // `x-nonce` och märker sina egna skripttaggar med det.
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-nonce', nonce)
 
-  response.headers.set('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+  const response = NextResponse.next({ request: { headers: requestHeaders } })
+
+  response.headers.set('Content-Security-Policy', contentSecurityPolicy(nonce))
   response.headers.set('X-Content-Type-Options', 'nosniff')
   response.headers.set('X-Frame-Options', 'DENY')
   // no-referrer: annars kan en utgående länk läcka vilken sida väljaren kom

@@ -25,8 +25,32 @@ export type RateLimitRule = {
 }
 
 export const RATE_LIMITS = {
-  /** Legitimeringsstart: dyr operation, tajt gräns. */
-  authStart: { limit: 5, windowMs: 60_000 },
+  /**
+   * Legitimeringsstart.
+   *
+   * GRÄNSEN HÖJDES FRÅN 5 TILL 20 PER MINUT, OCH SKÄLET ÄR VIKTIGT.
+   *
+   * Fem per minut och IP-adress låter strikt och säkert, men det bryter mot
+   * hur väljare faktiskt sitter på nätet: ett bibliotek, en arbetsplats eller
+   * en mobiloperatörs NAT delar en utgående adress mellan hundratals personer.
+   * Med den gamla gränsen hade den sjätte väljaren på biblioteket blivit
+   * utelåst från att rösta — ett allvarligare fel än det gränsen skyddade mot.
+   *
+   * Vad gränsen faktiskt köper är dessutom begränsat. Rutten avslöjar
+   * medvetet ingenting: svaret ser likadant ut oavsett om personnumret finns i
+   * röstlängden eller inte, så den går inte att använda som uppslagsverk.
+   *
+   * DEN VERKLIGA RISKEN LIGGER NÅGON ANNANSTANS, OCH ÄR INTE LÖST.
+   *
+   * Med en skarp BankID-integration startar varje anrop en signeringsbegäran i
+   * någons BankID-app. Det gör rutten till ett verktyg för att trakassera en
+   * enskild person med upprepade signeringsförfrågningar, och mot det hjälper
+   * ingen IP-baserad gräns — en angripare byter adress, medan offret är samma
+   * person. Ett riktigt system behöver en gräns PER PERSONNUMMER, med
+   * hashvärdet som nyckel. Det kräver att rutten hashar personnumret innan
+   * begränsningen, vilket den inte gör i dag. Se SECURITY.md.
+   */
+  authStart: { limit: 20, windowMs: 60_000 },
   /** Polling av legitimeringsstatus: sker ofta, mjukare gräns. */
   authCollect: { limit: 60, windowMs: 60_000 },
   /** Röstläggning. */

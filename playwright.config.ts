@@ -24,6 +24,15 @@ import { defineConfig, devices } from '@playwright/test'
 export default defineConfig({
   testDir: './tests/e2e',
 
+  /**
+   * Nollställer röstdata och seedar om före sviten.
+   *
+   * Testerna röstar på riktigt och förbrukar rösträtt. Utan detta blockeras
+   * andra körningen av dubbelröstningsspärren — korrekt beteende, värdelöst
+   * testresultat.
+   */
+  globalSetup: './tests/e2e/global-setup.ts',
+
   // Röstning är tillståndsändrande: två tester som röstar som samma person
   // samtidigt skulle störa varandra genom dubbelröstningsspärren.
   fullyParallel: false,
@@ -34,6 +43,15 @@ export default defineConfig({
   retries: 0,
 
   reporter: [['list']],
+
+  /**
+   * Generös tidsgräns per förväntan.
+   *
+   * Sidorna gör riktig kryptografi: blindning, avblindning och verifiering av
+   * en 2048-bitars RSA-signatur med BigInt i webbläsaren. Det tar hundratals
+   * millisekunder per valsedel, och på en långsam maskin mer.
+   */
+  expect: { timeout: 20_000 },
 
   use: {
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:3000',

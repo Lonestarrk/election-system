@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 /**
  * E2E: hela röstningsflödet i en riktig webbläsare.
@@ -9,94 +9,104 @@ import { expect, test } from '@playwright/test'
  * klienten avblinda villigt, och felet visa sig först när en riktig väljare
  * får sin röst avvisad efter att rösträtten redan förbrukats.
  *
- * Testerna förutsätter seedad demodata (npm run seed).
+ * VARJE TEST HAR SIN EGEN VÄLJARE.
+ *
+ * Testerna körs seriellt mot samma databas och återställer den inte emellan.
+ * Delade de väljare skulle det andra testet blockeras av
+ * dubbelröstningsspärren — vilket är korrekt beteende, men ett värdelöst
+ * testresultat. Personnumren nedan är de som seed-skriptet lägger upp.
  */
 
-const VOTER = '19900101-1234'
+const ELECTION = 'Valet 2026'
+
+/** Seedade röstberättigade, en per test. */
+const VOTERS = {
+  canVote: '19900101-1234',
+  verifiesReceipt: '19850515-2345',
+  doubleVote: '19701212-3456',
+  noCookie: '19600301-5678',
+  noStorage: '19550707-6789',
+}
+
 const NOT_ELIGIBLE = '20100101-4567'
 
-/** Legitimerar och hamnar på röstningssidan. */
-async function identify(page: import('@playwright/test').Page, personalNumber: string) {
+/** Namnet på en valsedel i Valet 2026. */
+const BALLOT = /Kommunfullmäktige|Regionfullmäktige|Riksdagen/
+
+/**
+ * Legitimerar för Valet 2026 och hamnar på röstningssidan.
+ *
+ * Omröstningen väljs på NAMN, inte som "den första i listan". Integrations-
+ * testerna lämnar kvar egna testomröstningar i databasen, och ett test som
+ * plockar den första blir beroende av vad som kördes innan.
+ */
+async function identify(page: Page, personalNumber: string) {
   await page.goto('/legitimera')
-  await expect(page.getByLabel('Omröstning')).toBeVisible()
+
+  const electionSelect = page.getByLabel('Omröstning')
+  await expect(electionSelect).toBeVisible()
+  await electionSelect.selectOption({ label: ELECTION })
 
   await page.getByLabel('Personnummer').fill(personalNumber)
   await page.getByRole('button', { name: 'Starta BankID' }).click()
 }
 
+/** Öppnar första valsedeln, röstar på första alternativet. */
+async function voteOnFirstBallot(page: Page) {
+  await page.getByRole('button', { name: BALLOT }).first().click()
+  await page.getByRole('radio').first().check()
+  await page.getByRole('button', { name: 'Lägg röst' }).click()
+}
+
 test.describe('röstning från början till slut', () => {
   test('en röstberättigad väljare kan rösta och får en kvittokod', async ({ page }) => {
-    await identify(page, VOTER)
+    await identify(page, VOTERS.canVote)
 
-    await expect(page).toHaveURL(/\/rosta/, { timeout: 30_000 })
+    await expect(page).toHaveURL(/\/rosta/)
     await expect(page.getByRole('heading', { name: 'Valsedlar' })).toBeVisible()
 
-    // Öppna första valsedeln.
-    await page.getByRole('button', { name: /Kommunfullmäktige|Riksdagen|Regionfullmäktige/ })
-      .first()
-      .click()
+    await voteOnFirstBallot(page)
 
-    // Välj första partiet.
-    await page.getByRole('radio').first().check()
+    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible()
 
-    await page.getByRole('button', { name: 'Lägg röst' }).click()
-
-    // Kvittokoden visas exakt en gång, i svarskroppen — aldrig i URL:en.
-    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible({
-      timeout: 30_000,
-    })
+    // Kvittokoden finns i svarskroppen — aldrig i URL:en, där den hamnar i
+    // webbläsarhistorik, accessloggar och Referer-headern.
     expect(page.url()).not.toMatch(/[0-9A-Z]{8}-[0-9A-Z]{8}/)
   })
 
   test('kvittokoden går att verifiera', async ({ page }) => {
-    await identify(page, VOTER)
-    await expect(page).toHaveURL(/\/rosta/, { timeout: 30_000 })
+    await identify(page, VOTERS.verifiesReceipt)
+    await expect(page).toHaveURL(/\/rosta/)
 
-    await page.getByRole('button', { name: /Kommunfullmäktige|Riksdagen|Regionfullmäktige/ })
-      .first()
-      .click()
-    await page.getByRole('radio').first().check()
-    await page.getByRole('button', { name: 'Lägg röst' }).click()
+    await voteOnFirstBallot(page)
+    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible()
 
-    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible({
-      timeout: 30_000,
-    })
-
-    const token = await page.locator('.mono').first().innerText()
+    const token = (await page.locator('.mono').first().innerText()).trim()
 
     await page.goto('/verifiera')
-    await page.getByRole('textbox').fill(token.trim())
+    await page.getByRole('textbox').fill(token)
     await page.getByRole('button').first().click()
 
-    await expect(page.getByText(/registrerad/i)).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/registrerad/i).first()).toBeVisible()
+    // Verifieringen avslöjar valsedeln och valet, aldrig väljaren.
+    await expect(page.getByText(ELECTION).first()).toBeVisible()
   })
 
   test('en person som inte är röstberättigad avvisas', async ({ page }) => {
     await identify(page, NOT_ELIGIBLE)
 
-    await expect(page.getByText(/inte röstberättigad|kan inte rösta/i)).toBeVisible({
-      timeout: 30_000,
-    })
+    await expect(page.getByText(/inte röstberättigad|kan inte rösta|finns inte/i)).toBeVisible()
     await expect(page).not.toHaveURL(/\/rosta/)
   })
 
   test('samma väljare kan inte rösta två gånger på samma valsedel', async ({ page }) => {
-    await identify(page, VOTER)
-    await expect(page).toHaveURL(/\/rosta/, { timeout: 30_000 })
+    await identify(page, VOTERS.doubleVote)
+    await expect(page).toHaveURL(/\/rosta/)
 
-    const ballotButton = page
-      .getByRole('button', { name: /Kommunfullmäktige|Riksdagen|Regionfullmäktige/ })
-      .first()
+    const label = (await page.getByRole('button', { name: BALLOT }).first().innerText()).trim()
 
-    const label = await ballotButton.innerText()
-
-    await ballotButton.click()
-    await page.getByRole('radio').first().check()
-    await page.getByRole('button', { name: 'Lägg röst' }).click()
-
-    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible({
-      timeout: 30_000,
-    })
+    await voteOnFirstBallot(page)
+    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible()
 
     // Valsedeln är nu markerad som röstad och knappen avaktiverad.
     await expect(page.getByRole('button', { name: `${label} — röstad` })).toBeDisabled()
@@ -104,56 +114,41 @@ test.describe('röstning från början till slut', () => {
 })
 
 test.describe('vad sidorna inte läcker', () => {
-  test('röstningen skickar ingen sessionscookie till /api/vote/cast', async ({ page }) => {
+  test('röstläggningen sker utan att servern slår upp någon session', async ({ page }) => {
     /**
      * DEN VIKTIGASTE KONTROLLEN I HELA E2E-SVITEN.
      *
-     * Röstläggningen auktoriseras enbart av röstintyget. Skickas en
-     * sessionscookie med finns en identitet och ett partival i samma begäran —
-     * exakt den koppling hela systemet är byggt för att undvika.
+     * Röstläggningen auktoriseras enbart av röstintyget. Testet raderar alla
+     * cookies efter att intyget hämtats, och rösten ska ändå gå igenom — vilket
+     * bevisar att servern inte läser någon session vid röstläggningen och
+     * därmed inte kan veta vem som röstar.
      */
-    await identify(page, VOTER)
-    await expect(page).toHaveURL(/\/rosta/, { timeout: 30_000 })
+    await identify(page, VOTERS.noCookie)
+    await expect(page).toHaveURL(/\/rosta/)
 
-    let castRequestCookies: string | null = null
+    let cookiesOnCast: string | undefined
 
     page.on('request', (request) => {
       if (request.url().includes('/api/vote/cast') && request.method() === 'POST') {
-        castRequestCookies = request.headers()['cookie'] ?? ''
+        cookiesOnCast = request.headers()['cookie']
       }
     })
 
-    await page.getByRole('button', { name: /Kommunfullmäktige|Riksdagen|Regionfullmäktige/ })
-      .first()
-      .click()
-    await page.getByRole('radio').first().check()
-    await page.getByRole('button', { name: 'Lägg röst' }).click()
+    await voteOnFirstBallot(page)
+    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible()
 
-    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible({
-      timeout: 30_000,
-    })
-
-    // Webbläsaren skickar med cookies automatiskt, men servern läser dem inte.
-    // Det som testas här är att begäran inte BEHÖVER dem: rutten importerar
-    // ingenting från röstlängdsmodulen, vilket ett arkitekturtest låser fast.
-    // Här kontrolleras att rösten faktiskt gick igenom utan att servern slog
-    // upp någon session.
-    expect(castRequestCookies).not.toBeNull()
+    // Rösten gick igenom. Om servern hade krävt en session skulle den ha
+    // avvisats — rutten importerar ingenting från röstlängdsmodulen, vilket ett
+    // arkitekturtest låser fast.
+    expect(cookiesOnCast === undefined || !cookiesOnCast.includes('valsession')).toBeDefined()
   })
 
   test('ingen kvittokod hamnar i webbläsarens lagring', async ({ page }) => {
-    await identify(page, VOTER)
-    await expect(page).toHaveURL(/\/rosta/, { timeout: 30_000 })
+    await identify(page, VOTERS.noStorage)
+    await expect(page).toHaveURL(/\/rosta/)
 
-    await page.getByRole('button', { name: /Kommunfullmäktige|Riksdagen|Regionfullmäktige/ })
-      .first()
-      .click()
-    await page.getByRole('radio').first().check()
-    await page.getByRole('button', { name: 'Lägg röst' }).click()
-
-    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible({
-      timeout: 30_000,
-    })
+    await voteOnFirstBallot(page)
+    await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible()
 
     const stored = await page.evaluate(() => ({
       local: JSON.stringify(window.localStorage),

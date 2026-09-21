@@ -23,7 +23,9 @@
     "test:integration": "vitest run tests/integration",
     "test:security": "vitest run tests/security",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "reset:votes": "tsx prisma/reset-votes.ts",
+    "verify": "node tools/verify-election.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

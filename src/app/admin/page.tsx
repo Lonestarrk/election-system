@@ -26,7 +26,7 @@ type ElectionSummary = { id: string; name: string; kind: string; closesAt: strin
 type CheckResult = {
   id: string
   question: string
-  severity: 'CRITICAL' | 'WARNING'
+  severity: 'CRITICAL' | 'PRECONDITION' | 'WARNING'
   passed: boolean
   detail: string
 }
@@ -36,6 +36,7 @@ type FinalCheckReport = {
   status: string
   checks: CheckResult[]
   canCertify: boolean
+  anomalous: boolean
   failures: CheckResult[]
   merkleRoot: string
   voteCount: number
@@ -263,8 +264,10 @@ export default function AdminPage() {
                   role="status"
                 >
                   {report.canCertify
-                    ? 'Samtliga kritiska kontroller är godkända. Resultatet kan fastställas.'
-                    : `${report.failures.length} kontroll(er) har fallerat. Resultatet kan inte fastställas.`}
+                    ? 'Samtliga kontroller är godkända. Resultatet kan fastställas.'
+                    : report.anomalous
+                      ? `AVVIKELSE: ${report.failures.length} kontroll(er) visar att underlaget inte stämmer. Kräver granskning.`
+                      : 'Inte klart att fastställas än — se vilka förutsättningar som saknas nedan. Ingenting är fel.'}
                 </div>
 
                 <p className="muted small">
@@ -287,7 +290,13 @@ export default function AdminPage() {
                           <div className="muted small">{check.detail}</div>
                         </td>
                         <td style={{ verticalAlign: 'top', whiteSpace: 'nowrap' }}>
-                          {check.passed ? '✓ Godkänd' : check.severity === 'CRITICAL' ? '✗ Kritisk' : '! Varning'}
+                          {check.passed
+                            ? '✓ Godkänd'
+                            : check.severity === 'CRITICAL'
+                              ? '✗ Avvikelse'
+                              : check.severity === 'PRECONDITION'
+                                ? '– Inte klart än'
+                                : '! Varning'}
                         </td>
                       </tr>
                     ))}

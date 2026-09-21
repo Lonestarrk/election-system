@@ -21,3 +21,7 @@ coverage/
 
 # Ursprunglig uppgiftsbeskrivning, hålls utanför publika repot.
 digitalt_valsystem_prompt.txt
+
+# Playwrights körresultat och spår.
+test-results/
+playwright-report/
