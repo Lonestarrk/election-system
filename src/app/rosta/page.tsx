@@ -54,8 +54,15 @@ function csrfToken(): string {
 
 function RostaContent() {
   const params = useSearchParams()
-  const electionId = params.get('val') ?? ''
 
+  /**
+   * Omröstningen kommer från sessionen, inte från URL:en.
+   *
+   * Parametern i URL:en finns kvar som en bekvämlighet vid felsökning men
+   * styr ingenting: sessionen avgör vilken omröstning väljaren legitimerat sig
+   * för, och ett annat värde i adressfältet ska inte kunna flytta rösten.
+   */
+  const [electionId, setElectionId] = useState(params.get('val') ?? '')
   const [electionName, setElectionName] = useState('')
   const [ballots, setBallots] = useState<Ballot[]>([])
   const [activeBallot, setActiveBallot] = useState<Ballot | null>(null)
@@ -66,38 +73,43 @@ function RostaContent() {
   const [status, setStatus] = useState<'loading' | 'ready' | 'working' | 'done' | 'error'>('loading')
   const [message, setMessage] = useState('')
 
-  /** Hämtar omröstningen och vilka valsedlar som gäller. */
+  /**
+   * Hämtar de valsedlar som gäller JUST DEN HÄR väljaren.
+   *
+   * Går mot /api/vote/session och inte mot den publika omröstningslistan. Den
+   * publika listan innehåller alla valsedlar i omröstningen, inte de som
+   * gäller en viss person — en väljare folkbokförd i Falun skulle då se
+   * Stockholms kommunvalsedel och få ett felmeddelande först när hon försökte
+   * rösta på den.
+   *
+   * Svaret bär också status per valsedel, så en omladdning mitt i röstningen
+   * visar rätt: de redan lagda rösterna är markerade i stället för att se
+   * olagda ut.
+   */
   const load = useCallback(async () => {
-    if (!electionId) {
-      setStatus('error')
-      setMessage('Ingen omröstning vald. Börja med att legitimera dig.')
-      return
-    }
-
     try {
-      const response = await fetch('/api/elections')
+      const response = await fetch('/api/vote/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
       const data = await response.json()
 
-      const election = (data.elections ?? []).find(
-        (candidate: { id: string }) => candidate.id === electionId,
-      )
-
-      if (!election) {
+      if (!response.ok) {
         setStatus('error')
-        setMessage('Omröstningen är inte öppen.')
+        setMessage(data.error?.message ?? 'Din röstsession har upphört. Legitimera dig igen.')
         return
       }
 
-      setElectionName(election.name)
-      setBallots(
-        election.ballots.map((ballot: Ballot) => ({ ...ballot, hasVoted: false })),
-      )
+      setElectionId(String(data.electionId))
+      setElectionName(data.electionName ?? '')
+      setBallots(data.ballots ?? [])
       setStatus('ready')
     } catch {
       setStatus('error')
-      setMessage('Kunde inte hämta omröstningen.')
+      setMessage('Kunde inte hämta dina valsedlar.')
     }
-  }, [electionId])
+  }, [])
 
   useEffect(() => {
     void load()
