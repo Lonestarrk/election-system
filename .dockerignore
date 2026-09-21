@@ -1,9 +1,75 @@
+# ---------------------------------------------------------------------------
+# Vad som INTE ska med i byggkontexten.
+#
+# Två skäl, och det andra är det viktiga:
+#
+#   1. Hastighet. Docker skickar hela kontexten till motorn innan bygget ens
+#      börjar. Utan node_modules och .next går 940 MB ner till ungefär 1 MB.
+#
+#   2. SÄKERHET. Allt i kontexten kan hamna i ett imagelager, och ett lager går
+#      inte att ta bort i efterhand — den som har imagen kan läsa varje lager
+#      den består av. En .env som kopierats in i misstag bakar in
+#      IDENTITY_PEPPER permanent, och med peppret i handen blir en hashad
+#      röstlängd trivial att vända på.
+# ---------------------------------------------------------------------------
+
+# --- Hemligheter -----------------------------------------------------------
+#
+# Först, och med bred pensel. Konfigurationen sätts som miljövariabler i
+# driftsmiljön, aldrig genom filer i imagen.
+.env
+.env.*
+!.env.example
+
+# --- Beroenden och byggutdata ----------------------------------------------
+#
+# node_modules installeras om i bygget för målplattformen. Kopieras den från
+# en Windows-maskin följer binärer för fel operativsystem med.
 node_modules
 .next
-.git
-.env
-.env.local
+out
+build
+*.tsbuildinfo
+
+# --- Tester och verktyg ----------------------------------------------------
+#
+# Produktionsimagen kör inga tester. Playwright-beroendena är dessutom stora,
+# och en webbläsare har ingenting att göra i en serverimage.
 tests
+test-results
+playwright-report
+playwright.config.ts
+vitest.config.ts
 coverage
+
+# tools/verify-election.mjs är ett granskningsverktyg som körs utifrån, mot ett
+# publikt API. Det behöver inte ligga i servern det granskar.
+tools
+
+# --- Versionshantering och redigerarfiler ----------------------------------
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+.claude
+
+# --- Docker-filer själva ---------------------------------------------------
+#
+# En image behöver inte innehålla anvisningarna för hur den byggdes.
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# --- Dokumentation ---------------------------------------------------------
+#
+# README behålls: den som hittar imagen ska kunna se vad det är. Att systemet
+# är en demonstration och inte ett riktigt valsystem framgår där.
 *.md
 !README.md
+
+# --- Övrigt ----------------------------------------------------------------
+*.log
+.DS_Store
+npm-debug.log*

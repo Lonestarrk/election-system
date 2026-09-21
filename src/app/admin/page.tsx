@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
+import { BankIdLogin, type DemoIdentity } from '../_components/BankIdLogin'
 
 /**
  * Adminvyn.
@@ -19,7 +20,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * Underlaget finns inte i någon databas den når.
  */
 
-type Phase = 'login' | 'polling' | 'rejected' | 'ready'
+type Phase = 'login' | 'ready'
+
+/**
+ * Demoidentiteter för adminvyn.
+ *
+ * Båda finns med på samma lista med flit: den som prövar att logga in som en
+ * vanlig väljare ska se att svaret blir detsamma oavsett om personen saknas i
+ * röstlängden eller bara saknar adminflaggan. Skilda svar skulle göra rutten
+ * till ett uppslagsverk över vilka som är administratörer.
+ */
+const DEMO_IDENTITIES: DemoIdentity[] = [
+  { personalNumber: '19800101-9876', label: 'Alex — administratör' },
+  { personalNumber: '19900101-1234', label: 'Anna — vanlig väljare' },
+]
 
 type ElectionSummary = { id: string; name: string; kind: string; closesAt: string }
 
@@ -43,8 +57,6 @@ type FinalCheckReport = {
   ranAt: string
 }
 
-const POLL_INTERVAL_MS = 1200
-
 function csrfToken(): string {
   const match = document.cookie.match(/(?:^|;\s*)valcsrf=([^;]+)/)
   return match ? decodeURIComponent(match[1]!) : ''
@@ -61,21 +73,11 @@ async function post(path: string, body: unknown) {
 
 export default function AdminPage() {
   const [phase, setPhase] = useState<Phase>('login')
-  const [personalNumber, setPersonalNumber] = useState('')
   const [message, setMessage] = useState('')
   const [elections, setElections] = useState<ElectionSummary[]>([])
   const [selected, setSelected] = useState('')
   const [report, setReport] = useState<FinalCheckReport | null>(null)
   const [busy, setBusy] = useState(false)
-
-  const orderRef = useRef<string | null>(null)
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (pollTimer.current) clearTimeout(pollTimer.current)
-    }
-  }, [])
 
   const loadElections = useCallback(async () => {
     const { ok, data } = await post('/api/admin/stats', {})
@@ -84,48 +86,6 @@ export default function AdminPage() {
       setSelected(data.elections?.[0]?.id ?? '')
     }
   }, [])
-
-  const poll = useCallback(async () => {
-    if (!orderRef.current) return
-
-    const { data } = await post('/api/admin/login', { orderRef: orderRef.current })
-
-    if (data.status === 'pending') {
-      setMessage(data.message ?? 'Väntar på BankID …')
-      pollTimer.current = setTimeout(poll, POLL_INTERVAL_MS)
-      return
-    }
-
-    if (data.status === 'complete') {
-      setPhase('ready')
-      setMessage(`Inloggad som ${data.name ?? 'administratör'}.`)
-      await loadElections()
-      return
-    }
-
-    // Samma svar oavsett om personen saknas i röstlängden eller bara saknar
-    // adminflaggan — annars blir rutten ett uppslagsverk över vilka som är
-    // administratörer.
-    setPhase('rejected')
-    setMessage(data.message ?? 'Legitimeringen misslyckades.')
-  }, [loadElections])
-
-  async function startLogin(event: React.FormEvent) {
-    event.preventDefault()
-    setPhase('polling')
-    setMessage('Startar BankID …')
-
-    const { ok, data } = await post('/api/auth/bankid/start', { personalNumber })
-
-    if (!ok) {
-      setPhase('rejected')
-      setMessage(data.error?.message ?? 'Kunde inte starta legitimeringen.')
-      return
-    }
-
-    orderRef.current = data.orderRef
-    pollTimer.current = setTimeout(poll, POLL_INTERVAL_MS)
-  }
 
   async function runCheck() {
     if (!selected) return
@@ -187,44 +147,16 @@ export default function AdminPage() {
         )}
 
         {phase === 'login' && (
-          <form className="card" onSubmit={startLogin}>
-            <label htmlFor="pnr">Personnummer</label>
-            <input
-              id="pnr"
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="ÅÅÅÅMMDD-NNNN"
-              value={personalNumber}
-              onChange={(event) => setPersonalNumber(event.target.value)}
-              required
-            />
-            <p className="muted small" style={{ marginTop: '0.75rem' }}>
-              Demoadministratör: <span className="mono">19800101-9876</span>
-            </p>
-            <div className="button-row" style={{ marginTop: '1rem' }}>
-              <button type="submit">Logga in med BankID</button>
-            </div>
-          </form>
-        )}
-
-        {phase === 'polling' && (
-          <div className="card">
-            <p className="muted">Legitimeringen sker automatiskt i demonstrationen …</p>
-          </div>
-        )}
-
-        {phase === 'rejected' && (
-          <div className="card">
-            <div className="notice danger" role="alert">
-              {message}
-            </div>
-            <div className="button-row" style={{ marginTop: '1rem' }}>
-              <button type="button" className="secondary" onClick={() => setPhase('login')}>
-                Försök igen
-              </button>
-            </div>
-          </div>
+          <BankIdLogin
+            purpose="admin"
+            collectPath="/api/admin/login"
+            demoIdentities={DEMO_IDENTITIES}
+            onComplete={async (data) => {
+              setPhase('ready')
+              setMessage(`Inloggad som ${String(data.name ?? 'administratör')}.`)
+              await loadElections()
+            }}
+          />
         )}
 
         {phase === 'ready' && (

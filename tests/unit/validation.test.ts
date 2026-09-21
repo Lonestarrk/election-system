@@ -100,3 +100,45 @@ describe('validering av adminlogin', () => {
     ).toBe(true)
   })
 })
+
+describe('start av legitimering', () => {
+  it('tar inte emot något personnummer', async () => {
+    /**
+     * BANKID V6 TILLÅTER INTE ATT ANVÄNDAREN SKRIVER IN SITT PERSONNUMMER.
+     *
+     * Testet finns för att fältet inte ska smyga tillbaka. Den gamla rutten
+     * svarade medvetet likadant oavsett om personnumret fanns i röstlängden
+     * eller inte — men den tog ändå emot godtyckliga personnummer från vem som
+     * helst, och det är precis det angreppssätt Secure Start designats bort.
+     *
+     * Personnumret ska bara kunna komma in i systemet genom BankID:s eget
+     * svar, efter att personen legitimerat sig med sin egen app.
+     */
+    const { startAuthSchema } = await import('@/lib/validation')
+
+    const parsed = startAuthSchema.safeParse({
+      purpose: 'vote',
+      personalNumber: '199001011234',
+    })
+
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+
+    // Zod plockar bort okända fält. Personnumret når alltså aldrig rutten,
+    // ens om någon skickar med det.
+    expect(parsed.data).toEqual({ purpose: 'vote' })
+    expect('personalNumber' in parsed.data).toBe(false)
+  })
+
+  it('kräver ett känt ändamål, eftersom texten visas i BankID-appen', async () => {
+    // Texten som visas i appen är ett skydd mot att bli lurad att signera
+    // något annat än man tror. Ett okänt ändamål ska därför avvisas, inte
+    // tolkas välvilligt.
+    const { startAuthSchema } = await import('@/lib/validation')
+
+    expect(startAuthSchema.safeParse({ purpose: 'admin' }).success).toBe(true)
+    expect(startAuthSchema.safeParse({ purpose: 'nagot-annat' }).success).toBe(false)
+    // Utan angivet ändamål antas röstning.
+    expect(startAuthSchema.parse({})).toEqual({ purpose: 'vote' })
+  })
+})

@@ -8,8 +8,18 @@ import { expect, test } from '@playwright/test'
  * inloggning, och att fastställandet inte går att tvinga fram.
  */
 
-const ADMIN = '19800101-9876'
-const NOT_ADMIN = '19900101-1234'
+// Etiketter på demoknapparna, inte personnummer: BankID v6 har ingen
+// inmatningsruta för personnummer.
+const ADMIN = 'Alex — administratör'
+const NOT_ADMIN = 'Anna — vanlig väljare'
+
+/** Startar adminlegitimering via QR-flödet och "skannar" som angiven person. */
+async function adminLogin(page: import('@playwright/test').Page, demoIdentity: string) {
+  await page.goto('/admin')
+  await page.getByRole('button', { name: 'BankID på annan enhet' }).click()
+  await expect(page.getByAltText('QR-kod för BankID')).toBeVisible()
+  await page.getByRole('button', { name: demoIdentity }).click()
+}
 
 test.describe('observatörsgränssnittet', () => {
   test('ger hela röstunderlaget utan inloggning', async ({ request, baseURL }) => {
@@ -106,9 +116,7 @@ test.describe('observatörsgränssnittet', () => {
 
 test.describe('adminens slutverifiering', () => {
   test('en icke-administratör släpps inte in', async ({ page }) => {
-    await page.goto('/admin')
-    await page.getByLabel('Personnummer').fill(NOT_ADMIN)
-    await page.getByRole('button', { name: 'Logga in med BankID' }).click()
+    await adminLogin(page, NOT_ADMIN)
 
     // .first(): meddelandet renderas både som statusrad och i avvisningskortet,
     // så en omodifierad lokator matchar två element.
@@ -117,9 +125,7 @@ test.describe('adminens slutverifiering', () => {
   })
 
   test('administratören ser hela kontrollrapporten före fastställandet', async ({ page }) => {
-    await page.goto('/admin')
-    await page.getByLabel('Personnummer').fill(ADMIN)
-    await page.getByRole('button', { name: 'Logga in med BankID' }).click()
+    await adminLogin(page, ADMIN)
 
     await expect(page.getByRole('heading', { name: 'Omröstning' })).toBeVisible({
       timeout: 30_000,
@@ -153,9 +159,7 @@ test.describe('adminens slutverifiering', () => {
      * En omröstning som fortfarande är öppen får inte fastställas. Försöket
      * nedan skickar med varje tänkbar flagga för att tvinga igenom det.
      */
-    await page.goto('/admin')
-    await page.getByLabel('Personnummer').fill(ADMIN)
-    await page.getByRole('button', { name: 'Logga in med BankID' }).click()
+    await adminLogin(page, ADMIN)
     await expect(page.getByRole('heading', { name: 'Omröstning' })).toBeVisible({
       timeout: 30_000,
     })

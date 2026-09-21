@@ -16,7 +16,35 @@ export const personalNumberSchema = z
   .regex(/^\d{8}-?\d{4}$/, 'Ogiltigt personnummer. Ange formatet ÅÅÅÅMMDD-NNNN.')
   .transform((value) => value.replace('-', ''))
 
+/**
+ * Start av legitimering.
+ *
+ * INGET PERSONNUMMER. BankID v6 tillåter inte flöden där användaren skriver in
+ * det — legitimeringen startas av väljaren själv med QR-kod eller autostart,
+ * och personnumret kommer i BankID:s svar.
+ *
+ * `purpose` styr bara vilken text som visas i BankID-appen, så att den som
+ * legitimerar sig ser om det gäller att rösta eller att administrera. Det är
+ * ett skydd mot att bli lurad att signera något annat än man tror.
+ */
 export const startAuthSchema = z.object({
+  purpose: z.enum(['vote', 'admin']).default('vote'),
+})
+
+/** Hämtning av den animerade QR-kodens aktuella data. */
+export const bankIdQrSchema = z.object({
+  orderRef: z.string().uuid('Ogiltig referens.'),
+})
+
+/**
+ * Demogenvägen som står för "någon skannade QR-koden".
+ *
+ * Personnumret finns HÄR och ingen annanstans i legitimeringsflödet. Rutten
+ * ligger under /api/demo och svarar 404 när BankID inte är en attrapp — se
+ * src/app/api/demo/bankid-scan/route.ts.
+ */
+export const demoScanSchema = z.object({
+  orderRef: z.string().uuid('Ogiltig referens.'),
   personalNumber: personalNumberSchema,
 })
 

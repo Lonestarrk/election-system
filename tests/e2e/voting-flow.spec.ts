@@ -19,16 +19,27 @@ import { expect, test, type Page } from '@playwright/test'
 
 const ELECTION = 'Valet 2026'
 
-/** Seedade röstberättigade, en per test. */
+/**
+ * Demoidentiteter, angivna med den ETIKETT knappen har — inte med personnummer.
+ *
+ * Det är inte kosmetik. BankID v6 tillåter inte längre att användaren skriver
+ * in sitt personnummer, så det finns ingen inmatningsruta att fylla i. Testet
+ * klickar på den knapp som står för "den här personen skannade QR-koden", och
+ * personnumret existerar bara inuti attrappen.
+ *
+ * Varje test har sin egen identitet: testerna körs seriellt mot samma databas
+ * och delade de väljare skulle det andra blockeras av dubbelröstningsspärren.
+ */
 const VOTERS = {
-  canVote: '19900101-1234',
-  verifiesReceipt: '19850515-2345',
-  doubleVote: '19701212-3456',
-  noCookie: '19600301-5678',
-  noStorage: '19550707-6789',
+  canVote: 'Anna — röstberättigad',
+  verifiesReceipt: 'Kim — röstberättigad',
+  doubleVote: 'Robin — röstberättigad',
+  noSession: 'Charlie — röstberättigad',
+  noStorage: 'Mira — röstberättigad',
 }
 
-const NOT_ELIGIBLE = '20100101-4567'
+const NOT_ELIGIBLE = 'Elis — ej röstberättigad'
+const OTHER_MUNICIPALITY = 'Gunvor — annan kommun'
 
 /** Namnet på en valsedel i Valet 2026. */
 const BALLOT = /Kommunfullmäktige|Regionfullmäktige|Riksdagen/
@@ -40,15 +51,29 @@ const BALLOT = /Kommunfullmäktige|Regionfullmäktige|Riksdagen/
  * testerna lämnar kvar egna testomröstningar i databasen, och ett test som
  * plockar den första blir beroende av vad som kördes innan.
  */
-async function identify(page: Page, personalNumber: string) {
+async function identify(page: Page, demoIdentity: string) {
   await page.goto('/legitimera')
 
   const electionSelect = page.getByLabel('Omröstning')
   await expect(electionSelect).toBeVisible()
   await electionSelect.selectOption({ label: ELECTION })
 
-  await page.getByLabel('Personnummer').fill(personalNumber)
-  await page.getByRole('button', { name: 'Starta BankID' }).click()
+  /**
+   * "Annan enhet", inte "denna enhet".
+   *
+   * Samma-enhet-flödet navigerar till bankid:/// för att öppna appen, och det
+   * schemat finns inte i en testwebbläsare. QR-flödet stannar kvar på sidan och
+   * har dessutom mest som kan gå fel: en animerad kod som hämtas om varje
+   * sekund.
+   */
+  await page.getByRole('button', { name: 'BankID på annan enhet' }).click()
+
+  // QR-koden ska dyka upp. Den är en data-URI-bild renderad på servern —
+  // hemligheten som koderna räknas fram ur lämnar aldrig servern.
+  await expect(page.getByAltText('QR-kod för BankID')).toBeVisible()
+
+  // Står för att personen skannar koden med sin BankID-app.
+  await page.getByRole('button', { name: demoIdentity }).click()
 }
 
 /** Öppnar första valsedeln, röstar på första alternativet. */
@@ -95,8 +120,40 @@ test.describe('röstning från början till slut', () => {
   test('en person som inte är röstberättigad avvisas', async ({ page }) => {
     await identify(page, NOT_ELIGIBLE)
 
-    await expect(page.getByText(/inte röstberättigad|kan inte rösta|finns inte/i)).toBeVisible()
+    await expect(
+      page.getByText(/inte röstberättigad|kan inte rösta|finns inte/i).first(),
+    ).toBeVisible()
     await expect(page).not.toHaveURL(/\/rosta/)
+  })
+
+  test('den animerade QR-koden byts ut medan man väntar', async ({ page }) => {
+    /**
+     * BankID v6 kräver att koden byts varje sekund. En statisk kod går att
+     * fotografera och skicka vidare till någon som luras att skanna den — och
+     * då har angriparen legitimerat sig som offret. Att koden hinner dö innan
+     * dess gör angreppet opraktiskt.
+     */
+    await page.goto('/legitimera')
+    await expect(page.getByLabel('Omröstning')).toBeVisible()
+    await page.getByLabel('Omröstning').selectOption({ label: ELECTION })
+    await page.getByRole('button', { name: 'BankID på annan enhet' }).click()
+
+    const qr = page.getByAltText('QR-kod för BankID')
+    await expect(qr).toBeVisible()
+
+    const first = await qr.getAttribute('src')
+    await expect
+      .poll(async () => (await qr.getAttribute('src')) !== first, { timeout: 10_000 })
+      .toBe(true)
+  })
+
+  test('en väljare i annan kommun får inte kommunvalsedeln', async ({ page }) => {
+    // Kommunvalsedeln gäller bara den som är folkbokförd i kommunen.
+    await identify(page, OTHER_MUNICIPALITY)
+
+    await expect(page).toHaveURL(/\/rosta/)
+    await expect(page.getByRole('button', { name: /Kommunfullmäktige/ })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /Riksdagen/ })).toBeVisible()
   })
 
   test('samma väljare kan inte rösta två gånger på samma valsedel', async ({ page }) => {
@@ -123,7 +180,7 @@ test.describe('vad sidorna inte läcker', () => {
      * bevisar att servern inte läser någon session vid röstläggningen och
      * därmed inte kan veta vem som röstar.
      */
-    await identify(page, VOTERS.noCookie)
+    await identify(page, VOTERS.noSession)
     await expect(page).toHaveURL(/\/rosta/)
 
     let cookiesOnCast: string | undefined
