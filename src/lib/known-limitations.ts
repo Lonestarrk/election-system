@@ -66,9 +66,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     title: 'Kvittot bevisar hur du röstat',
     why:
       'Verifieringen visar vilket alternativ token gäller. Det gör att en väljare kan bevisa sin ' +
-      'röst för någon annan, vilket öppnar för röstköp. Att kvittot i stället bara bekräftar att ' +
-      'rösten är registrerad gör lögnen gratis — men då behövs ett annat sätt att upptäcka en ' +
-      'fuskande klient.',
+      'röst för någon annan, vilket öppnar för röstköp. Det gäller varje val på valsedeln, inte ' +
+      'bara personröster — kvittot är problemet, inte hur finfördelat valet är. ' +
+      'LÖSNINGEN ÄR INTE ATT TA BORT KVITTOT. Att kvittot visar valet är också det som låter ' +
+      'väljaren kontrollera att rösten räknats rätt, och den kontrollen är hela skälet att ett ' +
+      'digitalt val alls går att lita på. Vägen framåt är kvittofrihet genom FÖRNEKBARHET: ' +
+      'väljaren ska kunna framställa ett kvitto som ser äkta ut men visar ett annat val, och som ' +
+      'en köpare inte kan skilja från ett riktigt. Då är ett kvitto inget bevis längre, och den ' +
+      'som betalar för röster köper luft. Kravet är att äkta och falskt kvitto ska vara ' +
+      'omöjliga att skilja på för alla utom väljaren själv.',
     // `choice` i verifieringssvaret är precis det som bevisar valet.
     stillTrueIf: { file: 'src/modules/anonymous-vote/vote.service.ts', contains: 'choice: string' },
   },

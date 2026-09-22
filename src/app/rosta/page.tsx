@@ -380,21 +380,24 @@ function RostaContent() {
                       party.candidates.length > 0 && (
                         <div style={{ marginLeft: '1.5rem', marginTop: '0.5rem' }}>
                           {/*
-                            Formuleringen var tidigare "en kandidat med få röster delas med få
-                            personer", vilket läses som att uppgiften lämnas ut till några få.
-                            Det som menas är motsatt riktning: det är DU som delar valet med få
-                            andra, och därför är mängden du göms i liten.
+                            HÄR STOD EN VARNING OM ATT PERSONRÖST ÄR KÄNSLIGT. DEN VAR FELAKTIG.
 
-                            Det är samma sak som begränsningen no-guaranteed-anonymity-set i
-                            known-limitations.ts, uttryckt för väljaren i stället för för den
-                            som granskar systemet.
+                            Resonemanget var att en kandidat med få röster ger en liten
+                            anonymitetsmängd. Men systemet kan inte koppla en röst till en
+                            person över huvud taget — blindsigneringen bryr sig inte om hur
+                            många som valde samma sak, och en kandidat med en röst är exakt
+                            lika olänkbar som ett parti med en miljon.
+
+                            Det som återstod av oron var inte personröstens, utan kvittots:
+                            `verifyToken` returnerar kandidatens namn, så kvittot bevisar vad
+                            väljaren valde. Det gäller partivalet också. Varningen hörde alltså
+                            aldrig hemma på just det här stället, och en varning på fel plats
+                            gör två saker samtidigt — den oroar i onödan och den drar
+                            uppmärksamheten från det verkliga problemet.
+
+                            Kvittofriheten hör hemma där kvittot lämnas ut. Se
+                            `receipt-proves-choice` i lib/known-limitations.ts.
                           */}
-                          <p className="muted small">
-                            Personröst är frivillig, och det är den känsligaste uppgiften du lämnar.
-                            Ett partival delar du med miljoner. Ett kryss på en kandidat som bara
-                            får en handfull röster delar du med en handfull personer — och då är
-                            mängden du är anonym i liten.
-                          </p>
                           {party.candidates.map((candidate) => (
                             <label key={candidate.id} style={{ display: 'block' }}>
                               <input
