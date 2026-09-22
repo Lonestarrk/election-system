@@ -379,9 +379,21 @@ function RostaContent() {
                       selectedChoice === party.ballotPartyId &&
                       party.candidates.length > 0 && (
                         <div style={{ marginLeft: '1.5rem', marginTop: '0.5rem' }}>
+                          {/*
+                            Formuleringen var tidigare "en kandidat med få röster delas med få
+                            personer", vilket läses som att uppgiften lämnas ut till några få.
+                            Det som menas är motsatt riktning: det är DU som delar valet med få
+                            andra, och därför är mängden du göms i liten.
+
+                            Det är samma sak som begränsningen no-guaranteed-anonymity-set i
+                            known-limitations.ts, uttryckt för väljaren i stället för för den
+                            som granskar systemet.
+                          */}
                           <p className="muted small">
-                            Personröst är frivillig. Ett kryss på en kandidat är den känsligaste
-                            uppgiften i systemet — en kandidat med få röster delas med få personer.
+                            Personröst är frivillig, och det är den känsligaste uppgiften du lämnar.
+                            Ett partival delar du med miljoner. Ett kryss på en kandidat som bara
+                            får en handfull röster delar du med en handfull personer — och då är
+                            mängden du är anonym i liten.
                           </p>
                           {party.candidates.map((candidate) => (
                             <label key={candidate.id} style={{ display: 'block' }}>

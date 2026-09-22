@@ -44,6 +44,20 @@ export default function LegitimeringPage() {
   const [electionId, setElectionId] = useState('')
   const [loadError, setLoadError] = useState('')
 
+  /**
+   * "INTE HÄMTAT ÄN" ÄR INTE SAMMA SAK SOM "INGET FINNS".
+   *
+   * Utan den här flaggan är listan tom vid första rendringen, och tomt-läget
+   * hann visas i ett ögonblick innan svaret kom — "Ingen omröstning är öppen
+   * just nu" blinkade förbi vid varje sidladdning. Det är värre än det låter:
+   * beskedet är korrekt formulerat för ett läge som ännu inte är känt, så det
+   * ser ut som ett fel som försvinner av sig själv, och den som felsöker
+   * något annat leds fel.
+   *
+   * Tre tillstånd behövs alltså, inte två: hämtar, tomt, har innehåll.
+   */
+  const [loading, setLoading] = useState(true)
+
   // Vilka omröstningar som är öppna är offentligt och kräver ingen
   // legitimering — se /api/elections.
   useEffect(() => {
@@ -55,6 +69,7 @@ export default function LegitimeringPage() {
         setElectionId(open[0]?.id ?? '')
       })
       .catch(() => setLoadError('Kunde inte hämta pågående omröstningar.'))
+      .finally(() => setLoading(false))
   }, [])
 
   return (
@@ -84,7 +99,13 @@ export default function LegitimeringPage() {
           återvändsgränd en väljare rimligen tolkar som att systemet inte
           fungerar.
         */}
-        {!loadError && elections.length === 0 ? (
+        {loading ? (
+          <div className="card" role="status" aria-live="polite">
+            <p className="muted" style={{ margin: 0 }}>
+              Hämtar pågående omröstningar …
+            </p>
+          </div>
+        ) : !loadError && elections.length === 0 ? (
           <div className="notice info" role="status">
             <strong>Ingen omröstning är öppen just nu.</strong>
             <p className="small" style={{ marginTop: '0.5rem', marginBottom: 0 }}>

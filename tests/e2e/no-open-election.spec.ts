@@ -72,6 +72,39 @@ test.describe('när ingen omröstning är öppen', () => {
   })
 })
 
+test.describe('medan listan hämtas', () => {
+  test('tomt-läget blinkar inte förbi innan svaret kommit', async ({ page }) => {
+    /**
+     * "INTE HÄMTAT ÄN" ÄR INTE SAMMA SAK SOM "INGET FINNS".
+     *
+     * Listan är tom vid första rendringen, så tomt-läget visades i ett
+     * ögonblick vid varje sidladdning. Beskedet är korrekt formulerat för ett
+     * läge som ännu inte är känt, vilket gör det sämre än ingen text alls:
+     * det ser ut som ett fel som försvinner av sig själv, och den som
+     * felsöker något annat leds fel.
+     *
+     * Svaret fördröjs här med 800 ms för att göra fönstret mätbart. Utan
+     * fördröjningen skulle testet passera även med felet kvar, eftersom
+     * blinkningen är kortare än en assertion.
+     */
+    await page.route('**/api/elections', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      await route.continue()
+    })
+
+    await page.goto('/legitimera')
+
+    // Medan hämtningen pågår: varken tomt-läge eller rullgardin, utan besked
+    // om att det hämtas.
+    await expect(page.getByText('Hämtar pågående omröstningar')).toBeVisible()
+    await expect(page.getByText('Ingen omröstning är öppen just nu.')).toHaveCount(0)
+
+    // Och när svaret kommit byts det mot rullgardinen.
+    await expect(page.getByLabel('Omröstning')).toBeVisible()
+    await expect(page.getByText('Hämtar pågående omröstningar')).toHaveCount(0)
+  })
+})
+
 test.describe('när en omröstning är öppen', () => {
   test('då finns både rullgardinen och knapparna', async ({ page }) => {
     // Kontrasten mot ovan. Utan det här testet kunde ett villkor som alltid

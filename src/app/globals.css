@@ -238,7 +238,52 @@ input[type='password'] {
   border-radius: var(--radius);
 }
 
+/*
+ * Rullgardiner hade ingen formgivning alls och ärvde webbläsarens standard,
+ * vilket på en telefon blir en liten kontroll med 13-punktstext.
+ *
+ * Valet av omröstning är sidans viktigaste beslut och ska inte vara det
+ * minsta elementet på den. 1.05rem är dessutom över iOS:ens gräns på 16px —
+ * under den zoomar Safari automatiskt in när fältet får fokus, vilket rycker
+ * layouten ur läge mitt i ett röstningsflöde.
+ *
+ * appearance: none tar bort systempilen så att den egna bakgrunden syns; en
+ * ny pil ritas med en inbäddad SVG och behöver därför plats till höger.
+ */
+select {
+  width: 100%;
+  padding: 0.85rem 2.5rem 0.85rem 0.85rem;
+  font-size: 1.05rem;
+  font-family: inherit;
+  color: var(--text);
+  background-color: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23666' stroke-width='1.8'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.9rem center;
+  background-size: 1rem;
+}
+
+select:hover {
+  border-color: var(--accent);
+}
+
+/*
+ * Alternativen ärver inte fältets färger i alla webbläsare, och en
+ * rullgardin som öppnas med svart text på svart bakgrund i mörkt läge är
+ * oläslig. Sätts explicit.
+ */
+select option {
+  color: var(--text);
+  background: var(--surface);
+}
+
 input:focus-visible,
+select:focus-visible,
 button:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);
