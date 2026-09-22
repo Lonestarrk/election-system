@@ -23,12 +23,14 @@
 
 ## Review Focus
 
-1. **Gruppelement utanför primtalsundergruppen.** En klient som skickar `c1` av ordning 2 kan läcka en bit av nyckeln vid partiell dekryptering. Varje inkommande `c1`/`c2` måste avvisas om `y^q ≢ 1`. *(Uppgift 1, test i uppgift 8)*
-2. **Röst som anländer efter `closesAt`.** Måste avvisas med tydligt besked, inte tyst sparas — en röst som accepteras efter skalningen hamnar aldrig i räkningen och väljaren tror att hon röstat. *(Uppgift 8)*
-3. **Skalningen körs två gånger.** Ett avbrott mellan infogning och radering får inte ge dubbletter eller förlorade röster vid omkörning. *(Uppgift 9)*
-4. **Partiellt dekrypteringsbevis från ett annat chiffer.** En förtroendeman som återanvänder ett tidigare bevis måste avvisas, annars kan k-1 ärliga kombineras med ett falskt bidrag. *(Uppgift 3, test i uppgift 10)*
-5. **Enhetsvektor som summerar till 2.** Varje komponent kan vara giltigt 0-eller-1 och ändå ge två röster. Summabeviset är enda skyddet. *(Uppgift 2)*
-6. **Noll röster på en valsedel.** Dekrypteringen ger `g^0 = 1` och diskreta logaritmen måste svara `0`, inte loopa. *(Uppgift 1)*
+1. **Gruppelement utanfor primtalsundergruppen.** En klient som skickar `c1` av ordning 2 kan lacka en bit av nyckeln vid partiell dekryptering. Varje inkommande `c1`/`c2` maste avvisas om `y^q` inte ar 1. *(Uppgift 1, test i uppgift 9)*
+2. **Rost som anlander efter `closesAt`.** Maste avvisas med tydligt besked, inte tyst sparas — en rost som accepteras efter skalningen hamnar aldrig i rakningen och valjaren tror att hon rostat. *(Uppgift 9)*
+3. **Skalningen kors tva ganger.** Ett avbrott mellan infogning och radering far inte ge dubbletter eller forlorade roster vid omkorning. *(Uppgift 11)*
+4. **Partiellt dekrypteringsbevis fran ett annat chiffer.** En fortroendeman som ateranvander ett tidigare bevis maste avvisas, annars kan k-1 arliga kombineras med ett falskt bidrag. *(Uppgift 3, test i uppgift 12)*
+5. **Enhetsvektor som summerar till 2.** Varje komponent kan vara giltigt 0-eller-1 och anda ge tva roster. Summabeviset ar enda skyddet. *(Uppgift 2)*
+6. **Noll roster pa en valsedel.** Dekrypteringen ger `g^0 = 1` och diskreta logaritmen maste svara `0`, inte loopa. *(Uppgift 1 och 12)*
+7. **Rost lagd i nagon annans namn.** En rad som skrivs direkt i databasen pekar pa en verklig, rostberattigad valjare och passerar varje relationell kontroll. Bara signaturen avslojar att valjaren aldrig godkant innehallet. *(Uppgift 8, test i uppgift 10)*
+8. **Ateruppspelat aldre kuvert.** Den som fangat valjarens forsta signerade kuvert skickar in det igen efter att hon andrat sig, och rosten atergar till den kopta — ett rostkop som overlever hela andringsmojligheten. Raknaren maste ligga inuti det signerade. *(Uppgift 8, test i uppgift 10)*
 
 ---
 
@@ -1832,7 +1834,306 @@ git commit -m "Klienten krypterar valsedeln och kastar slumptalen"
 
 ---
 
-## Task 8: Lägg och ändra röst
+## Task 8: BankID-signering av det yttre kuvertet
+
+**Files:**
+- Modify: `src/modules/eligibility/bankid/IBankIdService.ts`, `src/modules/eligibility/bankid/MockBankIdService.ts`
+- Create: `src/modules/eligibility/bankid/envelope-signature.ts`
+- Test: `tests/unit/envelope-signature.test.ts`
+
+**Interfaces:**
+- Consumes: `hashCiphertext` från uppgift 7
+- Produces:
+  ```ts
+  export type SignRequest = {
+    endUserIp: string
+    userVisibleData: string
+    userNonVisibleData: string
+  }
+  export type EnvelopePayload = {
+    electionId: string
+    ballotId: string
+    ciphertextHash: string
+    castSequence: number
+  }
+  export function envelopePayload(payload: EnvelopePayload): string
+  export function verifyEnvelopeSignature(
+    signature: string, certificate: string,
+    expectedPayload: EnvelopePayload, expectedPersonalNumber: string,
+  ): boolean
+  // IBankIdService utökas med: sign(request: SignRequest): Promise<BankIdAuthOrder>
+  ```
+
+- [ ] **Steg 1: Skriv de fallerande testerna**
+
+```ts
+// tests/unit/envelope-signature.test.ts
+import { describe, expect, it } from 'vitest'
+import { MockBankIdService } from '@/modules/eligibility/bankid/MockBankIdService'
+import {
+  envelopePayload,
+  verifyEnvelopeSignature,
+} from '@/modules/eligibility/bankid/envelope-signature'
+
+const PAYLOAD = {
+  electionId: 'val-1',
+  ballotId: 'vs-1',
+  ciphertextHash: 'a'.repeat(64),
+  castSequence: 1,
+}
+
+async function signAs(personalNumber: string, payload = PAYLOAD) {
+  const service = new MockBankIdService()
+  const order = await service.sign({
+    endUserIp: '127.0.0.1',
+    userVisibleData: 'Rösta i Valet 2026',
+    userNonVisibleData: envelopePayload(payload),
+  })
+  service.selectDemoIdentity(order.orderRef, personalNumber)
+
+  let result = await service.collect(order.orderRef)
+  while (result.status === 'pending') result = await service.collect(order.orderRef)
+  if (result.status !== 'complete') throw new Error('signeringen blev inte klar')
+
+  return result.completionData
+}
+
+describe('signaturen binder rösten till väljaren', () => {
+  it('en ärlig signatur går igenom', async () => {
+    const data = await signAs('199001011234')
+
+    expect(verifyEnvelopeSignature(data.signature, data.certificate, PAYLOAD, '199001011234')).toBe(
+      true,
+    )
+  })
+
+  it('en signatur från en annan person avvisas', async () => {
+    /**
+     * HÅLET SOM STÄNGS.
+     *
+     * Utan den här kontrollen är det SERVERN som påstår att Anna lade rösten.
+     * Vem som helst med skrivrättighet till röstlängden kan påstå det om vilken
+     * väljare som helst som ännu inte röstat, och den relationella kontrollen i
+     * uppgift 10 fångar det inte — väljaren är ju verklig.
+     */
+    const data = await signAs('198505152345')
+
+    expect(verifyEnvelopeSignature(data.signature, data.certificate, PAYLOAD, '199001011234')).toBe(
+      false,
+    )
+  })
+
+  it('en signatur för en annan valsedel avvisas', async () => {
+    const data = await signAs('199001011234')
+
+    expect(
+      verifyEnvelopeSignature(
+        data.signature,
+        data.certificate,
+        { ...PAYLOAD, ballotId: 'vs-9' },
+        '199001011234',
+      ),
+    ).toBe(false)
+  })
+
+  it('en signatur för ett annat chiffer avvisas', async () => {
+    const data = await signAs('199001011234')
+
+    expect(
+      verifyEnvelopeSignature(
+        data.signature,
+        data.certificate,
+        { ...PAYLOAD, ciphertextHash: 'b'.repeat(64) },
+        '199001011234',
+      ),
+    ).toBe(false)
+  })
+
+  it('en återuppspelad signatur med lägre räknare avvisas', async () => {
+    /**
+     * ÅTERUPPSPELNINGEN.
+     *
+     * Den som fångat väljarens FÖRSTA signerade kuvert kan annars skicka in det
+     * igen efter att hon ändrat sig, och rösten återgår till den köpta. Det vore
+     * ett röstköp som överlever hela ändringsmöjligheten — alltså precis det
+     * modellen finns för att förhindra.
+     *
+     * Räknaren måste ligga INUTI det signerade, annars byts den bara ut.
+     */
+    const data = await signAs('199001011234', { ...PAYLOAD, castSequence: 1 })
+
+    expect(
+      verifyEnvelopeSignature(
+        data.signature,
+        data.certificate,
+        { ...PAYLOAD, castSequence: 2 },
+        '199001011234',
+      ),
+    ).toBe(false)
+  })
+
+  it('nyttolasten är entydig och går inte att förväxla', () => {
+    // Med enbart avgränsare kan "vs-12" + "abc" och "vs-1" + "2abc" ge samma
+    // sträng, och då flyttas en signatur mellan valsedlar utan att något ser
+    // fel ut. Längdprefix stänger det.
+    const a = envelopePayload({ ...PAYLOAD, ballotId: 'vs-12', ciphertextHash: 'c'.repeat(64) })
+    const b = envelopePayload({ ...PAYLOAD, ballotId: 'vs-1', ciphertextHash: '2' + 'c'.repeat(63) })
+
+    expect(a).not.toBe(b)
+  })
+})
+```
+
+- [ ] **Steg 2: Kör testerna och se att de fallerar**
+
+Kör: `npx vitest run tests/unit/envelope-signature.test.ts`
+Förväntat: FAIL, `sign` finns inte på `MockBankIdService`
+
+- [ ] **Steg 3: Utöka `IBankIdService`**
+
+```ts
+export type SignRequest = {
+  endUserIp: string
+  /** Visas i appen. Det väljaren faktiskt godkänner. */
+  userVisibleData: string
+  /**
+   * Signeras men visas inte. Här ligger chifferhashen, valsedelns id och
+   * räknaren — sådant som måste vara bundet men som ingen människa kan granska
+   * på en telefonskärm.
+   */
+  userNonVisibleData: string
+}
+
+export interface IBankIdService {
+  auth(request: BankIdAuthRequest): Promise<BankIdAuthOrder>
+
+  /**
+   * BankID /sign. Används vid röstläggning, aldrig vid inloggning.
+   *
+   * Skillnaden mot auth är inte kosmetisk: en auth bevisar att någon var
+   * närvarande, en sign bevisar att just den personen godkände just det här
+   * innehållet. Det senare är vad som gör en röst oförfalskbar — även för den
+   * som driver systemet.
+   */
+  sign(request: SignRequest): Promise<BankIdAuthOrder>
+
+  qrData(orderRef: string): Promise<BankIdQrData | null>
+  collect(orderRef: string): Promise<BankIdCollectResult>
+  cancel(orderRef: string): Promise<void>
+}
+```
+
+Utöka `BankIdCollectComplete.completionData` med `signature: string` och
+`certificate: string`.
+
+- [ ] **Steg 4: Låt attrappen signera på riktigt**
+
+```ts
+import { createSign, generateKeyPairSync } from 'node:crypto'
+
+/**
+ * Ett nyckelpar per demoidentitet, hållet i minnet.
+ *
+ * Attrappen får inte returnera en påhittad sträng. Skulle den göra det prövas
+ * verifieringen aldrig, och hela signaturkedjan vore otestad ända tills någon
+ * kopplar in skarp BankID — alltså precis när ett fel kostar som mest.
+ */
+private readonly keys = new Map<string, { privateKey: string; publicKey: string }>()
+
+private keysFor(personalNumber: string) {
+  const existing = this.keys.get(personalNumber)
+  if (existing) return existing
+
+  const pair = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  })
+
+  this.keys.set(personalNumber, pair)
+  return pair
+}
+```
+
+När en signeringsorder blir klar i `collect`: signera `userNonVisibleData` med
+identitetens privata nyckel och returnera signaturen tillsammans med den publika nyckeln
+som `certificate`.
+
+- [ ] **Steg 5: Skriv `envelope-signature.ts`**
+
+```ts
+import { createVerify } from 'node:crypto'
+
+export type EnvelopePayload = {
+  electionId: string
+  ballotId: string
+  ciphertextHash: string
+  castSequence: number
+}
+
+/**
+ * Den kanoniska sträng som signeras.
+ *
+ * Längdprefix på varje fält, inte bara avgränsare. Med enbart ett skiljetecken
+ * kan två olika uppsättningar fält ge samma sträng, och då går en signatur att
+ * flytta mellan valsedlar utan att något ser fel ut.
+ */
+export function envelopePayload(payload: EnvelopePayload): string {
+  const parts = [
+    'valsystem/kuvert/v1',
+    payload.electionId,
+    payload.ballotId,
+    payload.ciphertextHash,
+    String(payload.castSequence),
+  ]
+
+  return parts.map((part) => `${part.length}:${part}`).join('')
+}
+
+/**
+ * Verifierar att RÄTT PERSON signerat RÄTT INNEHÅLL.
+ *
+ * Båda halvorna behövs. En giltig signatur över rätt innehåll från fel person
+ * är en röst lagd i någon annans namn. En giltig signatur från rätt person över
+ * fel innehåll är en återuppspelad eller flyttad röst.
+ */
+export function verifyEnvelopeSignature(
+  signature: string,
+  certificate: string,
+  expectedPayload: EnvelopePayload,
+  expectedPersonalNumber: string,
+): boolean {
+  if (!certificateBelongsTo(certificate, expectedPersonalNumber)) return false
+
+  const verifier = createVerify('sha256')
+  verifier.update(envelopePayload(expectedPayload))
+  verifier.end()
+
+  try {
+    return verifier.verify(certificate, signature, 'base64')
+  } catch {
+    // En trasig nyckel eller signatur är inte ett undantag att bubbla upp —
+    // det är ett underkänt kuvert.
+    return false
+  }
+}
+```
+
+- [ ] **Steg 6: Kör testerna**
+
+Kör: `npx vitest run tests/unit/envelope-signature.test.ts`
+Förväntat: PASS, 6 tester
+
+- [ ] **Steg 7: Committa**
+
+```bash
+git add src/modules/eligibility/bankid/ tests/unit/envelope-signature.test.ts
+git commit -m "Väljaren signerar sitt kuvert — en röst går inte att lägga i någon annans namn"
+```
+
+---
+
+## Task 9: Lägg och ändra röst
 
 **Files:**
 - Create: `src/modules/eligibility/pending-vote.service.ts`, `src/app/api/vote/encrypted/route.ts`
@@ -1998,7 +2299,182 @@ git commit -m "Rösten kan läggas och ändras fram till stängning"
 
 ---
 
-## Task 9: Stängning och skalning
+## Task 10: Validering som spärr före skalning
+
+**Files:**
+- Create: `src/orchestration/validate-before-close.usecase.ts`
+- Test: `tests/integration/validate-before-close.test.ts`
+
+**Interfaces:**
+- Consumes: `verifyEnvelopeSignature`, `envelopePayload` från uppgift 8; `verifyEncryptedBallot` från uppgift 7
+- Produces:
+  ```ts
+  export type Anomaly = {
+    kind: 'BAD_SIGNATURE' | 'WRONG_VOTER' | 'STALE_SEQUENCE' | 'NOT_ELIGIBLE' | 'WRONG_BALLOT' | 'BAD_PROOF'
+    pendingVoteId: string
+    /** Bara för administratörens utredning. Publiceras aldrig. */
+    voterStatusId: string
+  }
+  export type ValidationReport = {
+    /** Publiceras. */
+    summary: { votes: number; voters: number; byKind: Record<string, number>; passed: boolean }
+    /** Publiceras inte. */
+    anomalies: Anomaly[]
+  }
+  export function validateBeforeClose(electionId: string): Promise<ValidationReport>
+  ```
+
+- [ ] **Steg 1: Skriv de fallerande testerna**
+
+```ts
+// tests/integration/validate-before-close.test.ts
+describe('validering medan kopplingen finns kvar', () => {
+  it('en ren omröstning ger noll avvikelser', async () => {
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.summary).toMatchObject({ votes: 2, voters: 2, passed: true })
+    expect(report.anomalies).toHaveLength(0)
+  })
+
+  it('upptäcker en röst lagd i någon annans namn', async () => {
+    /**
+     * DET HÅL SOM BARA SIGNATUREN STÄNGER.
+     *
+     * Raden skrivs direkt i databasen och pekar på en verklig, röstberättigad
+     * väljare. Varje relationell kontroll passerar — det är först signaturen
+     * som avslöjar att väljaren aldrig godkänt innehållet.
+     */
+    await stuffVoteFor(kim, 'bp-m') // skriver rad utan giltig signatur
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.summary.passed).toBe(false)
+    expect(report.anomalies).toContainEqual(
+      expect.objectContaining({ kind: 'BAD_SIGNATURE', voterStatusId: kim }),
+    )
+  })
+
+  it('upptäcker en återuppspelad äldre röst', async () => {
+    const first = await castFor(anna, 'bp-s')
+    await castFor(anna, 'bp-m')
+    await replayEnvelope(anna, first) // skriver tillbaka det gamla kuvertet
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.anomalies).toContainEqual(
+      expect.objectContaining({ kind: 'STALE_SEQUENCE', voterStatusId: anna }),
+    )
+  })
+
+  it('upptäcker en valsedel väljaren inte har rätt till', async () => {
+    // Gunvor är folkbokförd i Falun och ska inte kunna ha Stockholms
+    // kommunvalsedel liggande, oavsett om det beror på bugg eller angrepp.
+    await forceBallotFor(gunvor, stockholmMunicipalBallotId)
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.anomalies).toContainEqual(
+      expect.objectContaining({ kind: 'WRONG_BALLOT', voterStatusId: gunvor }),
+    )
+  })
+
+  it('rapportens sammanfattning namnger ingen väljare', async () => {
+    /**
+     * Valideringen kräver att kopplingen läses, alltså precis den förmåga som
+     * gör modellen svagare på valhemlighet. Det som publiceras måste därför
+     * vara antal och kategorier — aldrig vem.
+     */
+    await stuffVoteFor(kim, 'bp-m')
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(JSON.stringify(report.summary)).not.toContain(kim)
+    expect(report.summary.byKind).toMatchObject({ BAD_SIGNATURE: 1 })
+  })
+
+  it('att valideringen körts hamnar i revisionsloggen', async () => {
+    // Att läsa kopplingen ska synas. En tyst läsning är oskiljbar från en
+    // obehörig.
+    await validateBeforeClose(electionId)
+
+    const events = await votersDb.auditEvent.findMany({ orderBy: { id: 'desc' }, take: 1 })
+    expect(events[0]!.type).toBe('PRE_CLOSE_VALIDATION')
+  })
+})
+```
+
+- [ ] **Steg 2: Kör och se att de fallerar**
+
+Kör: `npx vitest run tests/integration/validate-before-close.test.ts`
+Förväntat: FAIL, modulen saknas
+
+- [ ] **Steg 3: Implementera `validate-before-close.usecase.ts`**
+
+```ts
+/**
+ * DET ENDA ÖGONBLICK DÅ VARJE RÖST GÅR ATT KNYTA TILL EN VÄLJARE.
+ *
+ * Före ombyggnaden fanns ingen koppling alls; en felräkning gav ett tal och
+ * ingenting mer. Efter skalningen finns ingen väljare kvar att fråga. Däremellan
+ * — här — går varje avvikelse att peka ut och utreda.
+ *
+ * KONTROLLERNAS KARAKTÄR SKILJER SIG ÅT, och det är värt att förstå:
+ *
+ *   Relationella   säger att raden hänger ihop med resten av databasen. En
+ *                  angripare med skrivrättighet ordnar det lätt.
+ *   Kryptografiska säger att raden bär ett bevis bara väljaren kunde framställa.
+ *                  Ingen med databasåtkomst kan förfalska dem — inte heller vi.
+ *
+ * Signaturkontrollen är den enda som stänger "en röst lagd i någon annans namn",
+ * eftersom en sådan rad passerar varje relationell kontroll: väljaren är verklig,
+ * röstberättigad och har rätt till valsedeln.
+ */
+```
+
+Kontrollerna körs i ordning, billigast först:
+
+1. `NOT_ELIGIBLE` — väljaren finns och är röstberättigad
+2. `WRONG_BALLOT` — valsedeln gäller väljarens kommun och region
+3. `STALE_SEQUENCE` — räknaren i signaturen är den högsta väljaren ställt ut
+4. `BAD_SIGNATURE` — signaturen verifierar mot chifferhash och personnummer
+5. `BAD_PROOF` — valsedelns bevis verifierar
+
+`passed` är sant enbart när `anomalies` är tom. Skriv `PRE_CLOSE_VALIDATION` till
+revisionsloggen med antal, aldrig med identiteter.
+
+- [ ] **Steg 4: Koppla in spärren i stängningen**
+
+I `close-election.usecase.ts`, före allt annat:
+
+```ts
+const report = await validateBeforeClose(electionId)
+
+if (!report.summary.passed) {
+  // Att skala ändå vore att kasta bort bevismaterialet för det problem vi just
+  // hittat. Efter raderingen finns ingen väljare att fråga och ingen signatur
+  // att kontrollera.
+  return { status: 'validation_failed', report: report.summary }
+}
+```
+
+- [ ] **Steg 5: Kör testerna**
+
+Kör: `npx vitest run tests/integration/validate-before-close.test.ts tests/integration/close-election.test.ts`
+Förväntat: PASS
+
+- [ ] **Steg 6: Committa**
+
+```bash
+git add src/orchestration/validate-before-close.usecase.ts tests/integration/validate-before-close.test.ts
+git commit -m "Valideringen är en spärr: skalningen körs inte över en avvikelse"
+```
+
+---
+
+## Task 11: Stängning och skalning
 
 **Files:**
 - Create: `src/orchestration/close-election.usecase.ts`, `src/app/api/admin/elections/close/route.ts`
@@ -2148,7 +2624,7 @@ git commit -m "Stängningen skalar bort identiteten och kontrolleras av slutkont
 
 ---
 
-## Task 10: Summering och tröskeldekryptering
+## Task 12: Summering och tröskeldekryptering
 
 **Files:**
 - Create: `src/orchestration/tally.usecase.ts`, `src/app/api/admin/elections/decrypt/route.ts`
@@ -2243,7 +2719,7 @@ git commit -m "Homomorf räkning: bara summan öppnas, av två förtroendemän"
 
 ---
 
-## Task 11: Publicering och oberoende verifiering
+## Task 13: Publicering och oberoende verifiering
 
 **Files:**
 - Modify: `src/app/api/observer/votes/route.ts`, `tools/verify-election.mjs`
@@ -2293,7 +2769,7 @@ git commit -m "Publicerad mängd och oberoende omräkning av summan"
 
 ---
 
-## Task 12: Slakta blindsigneringen
+## Task 14: Slakta blindsigneringen
 
 **Files:**
 - Delete: `src/lib/blind-signature.ts`, `src/lib/blind-client.ts`, `src/modules/eligibility/credential.service.ts`, `src/app/api/vote/credential/route.ts`, `src/modules/ballot-box/token.service.ts`, och deras tester
@@ -2338,7 +2814,7 @@ git commit -m "Blindsigneringen bort — obundenheten kommer nu från att inga r
 
 ---
 
-## Task 13: Dokumentation och begränsningar
+## Task 15: Dokumentation och begränsningar
 
 **Files:**
 - Modify: `ARCHITECTURE.md`, `SECURITY.md`, `src/lib/known-limitations.ts`, `tests/security/known-limitations.test.ts`
@@ -2391,23 +2867,33 @@ git add -A && git commit -m "Arkitekturen beskriver dubbla kuvert; fyra begräns
 
 ---
 
-## Självgranskning
+## Sjalvgranskning
 
-**Spec-täckning.** Avsnitt 4.1–4.5 → uppgift 1–3. Avsnitt 4.3 → uppgift 4. Avsnitt 5 →
-uppgift 5. Avsnitt 6 steg 1 → uppgift 6, steg 2–5 → uppgift 7–8, steg 6 → uppgift 9,
-steg 7–8 → uppgift 10, steg 9 → uppgift 9 steg 4. Avsnitt 7 → uppgift 12. Avsnitt 8–9 →
-uppgift 13. Ingen lucka.
+**Spec-tackning.** Avsnitt 4.1–4.5 till uppgift 1–3. Avsnitt 4.3 till uppgift 4. Avsnitt
+4.6 till uppgift 8. Avsnitt 5 till uppgift 5. Avsnitt 6 steg 1 till uppgift 6, steg 2–6
+till uppgift 7–9, steg 7 till uppgift 10–11, steg 8–9 till uppgift 12, steg 10 till
+uppgift 11 steg 4. Avsnitt 7 till uppgift 10. Avsnitt 8 till uppgift 14. Avsnitt 9–10
+till uppgift 15. Ingen lucka.
 
-**Typkonsistens.** `Ciphertext` definieras i uppgift 1 och används oförändrad i 2, 3, 7,
-10. `EqualityProof` definieras i uppgift 2 och används i 3. `EncryptedBallot` definieras i
-uppgift 7 (`verify-ballot.ts`) och konsumeras i 8. `BallotOption` definieras i uppgift 4
-och används i 7. `proofContext` delas mellan bevisare och verifierare — den enda
-funktionen som måste vara bitidentisk på båda sidor.
+**Typkonsistens.** `Ciphertext` definieras i uppgift 1 och anvands ooforandrad i 2, 3, 7
+och 12. `EqualityProof` definieras i uppgift 2 och anvands i 3. `EncryptedBallot`
+definieras i uppgift 7 och konsumeras i 9. `BallotOption` definieras i uppgift 4 och
+anvands i 7. `EnvelopePayload` definieras i uppgift 8 och konsumeras i 9 och 10.
+`proofContext` och `envelopePayload` delas mellan bevisare och verifierare — de tva
+funktioner som maste vara bitidentiska pa bada sidor.
 
-**Review Focus-täckning.** 1 → uppgift 1 (`isInSubgroup`) och 8 (avvisat chiffer).
-2 → uppgift 8. 3 → uppgift 9. 4 → uppgift 3 och 10. 5 → uppgift 2. 6 → uppgift 1 och 10.
+**Review Focus-tackning.** 1 till uppgift 1 och 9. 2 till uppgift 9. 3 till uppgift 11.
+4 till uppgift 3 och 12. 5 till uppgift 2. 6 till uppgift 1 och 12. 7 och 8 till uppgift
+8 och 10.
 
-**Öppen fråga som inte hör till någon uppgift:** vem som i praktiken håller de tre
-andelarna. Planen lagrar dem skyddade i databasen, vilket demonstrerar mekaniken men
-inte skyddet. Det står som känd begränsning `trusted-dealer` och bör lyftas till en egen
-etapp om systemet någonsin ska gå längre än en POC.
+**Oppna beslut som inte hor till nagon uppgift, och som star i specen:**
+
+- **Vem som haller de tre andelarna.** Planen lagrar dem skyddade i databasen, vilket
+  demonstrerar mekaniken men inte skyddet. Star som `trusted-dealer`.
+- **Om signaturerna sparas eller forstors vid skalningen.** Forstorda ger starkast
+  valhemlighet men lamnar bara rapportens ord som bevis; ett forseglat arkiv kraver tva
+  oberoende intrang i stallet for ett. Spec avsnitt 7.3.
+- **En valjare som stryks ur rostlangden efter att ha rostat.** Kaskaden raderar hennes
+  liggande rost tyst. Antagligen ratt, men det ska vara ett beslut. Spec avsnitt 7.4.
+- **Ingen preliminar rakning under pagaende rostning.** Spec avsnitt 6.1. Det ar ett
+  avsiktligt bortval, inte en glomd funktion.

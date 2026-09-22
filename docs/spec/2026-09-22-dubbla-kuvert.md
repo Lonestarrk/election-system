@@ -147,6 +147,40 @@ Varje förtroendeman bidrar med en partiell dekryptering `c1^{x_i}` plus ett
 Chaum–Pedersen-bevis att samma `x_i` användes som i hens publika andel. Bidragen
 kombineras med Lagrange-koefficienter.
 
+### 4.6 Väljarens signatur på det yttre kuvertet
+
+**Hålet som stängs.** Servern skriver raden, och därmed är det servern som påstår att
+Anna lade just det här chiffret. Vem som helst med skrivrättighet till `voters_db` — eller
+en komprometterad applikation — kan påstå samma sak om vilken väljare som helst som ännu
+inte röstat. Den relationella kontrollen i avsnitt 7 fångar inte det, eftersom väljaren
+är verklig.
+
+**Mekanismen.** Röstläggningen använder BankID `/sign`, inte `/auth`:
+
+| Fält | Innehåll |
+|---|---|
+| `userVisibleData` | "Rösta i Valet 2026 — Riksdagen". Det väljaren ser och godkänner i appen. |
+| `userNonVisibleData` | `electionId \| ballotId \| ciphertextHash \| castSequence` |
+
+BankID returnerar en XML-signatur ställd med väljarens eget certifikat. Raden lagrar
+signaturen och certifikatet, och valideringen vid stängning kontrollerar varje signatur
+mot chifferhashen och mot personnumret i röstlängden.
+
+Därmed **kan en röst inte förfalskas av någon — inte heller av den som driver systemet.**
+Systemet slutar vara betrott att säga vem som röstat och börjar kunna bevisa det.
+
+**Återuppspelningen som också måste stoppas.** Utan räknaren i den signerade datan kan
+den som fångat väljarens *första* signerade kuvert skicka in det igen efter att hon ändrat
+sig, och rösten återgår till den köpta. Det vore ett röstköp som överlever hela
+ändringsmöjligheten — alltså precis det modellen finns för att förhindra.
+
+`castSequence` ökar för varje läggning, och servern avvisar en signatur vars räknare inte
+är högre än den lagrade. Räknaren måste ligga **inuti** det signerade, annars kan den
+bytas ut.
+
+**Priset:** en BankID-signering per röstläggning, alltså en kodinmatning även för varje
+ändring. Estland betalar samma pris för samma egenskap.
+
 ## 5. Datamodell
 
 ### voters_db — det yttre kuvertet
@@ -159,13 +193,16 @@ PendingVote
   ciphertext        jsonb           M par (c1, c2) som decimalsträngar
   proofs            jsonb           M 0/1-bevis + 1 summabevis
   ciphertextHash    text            SHA-256 över kanonisk serialisering
+  castSequence      int             ökar vid varje läggning, ligger i det signerade
+  bankIdSignature   text            XML-signatur från BankID /sign
+  bankIdCertificate text            väljarens certifikat, ur signaturen
   updatedAt         timestamptz     dygnsupplöst, som övrig tidsdata
   @@unique([voterStatusId, ballotId])
 ```
 
 Raden **ersätts** vid omröstning och **raderas** vid stängning.
 
-`Election` får `linkClearedAt timestamptz?`.
+`Election` får `linkClearedAt timestamptz?` och `phase` enligt avsnitt 6.1.
 
 ### votes_db — det inre kuvertet
 
@@ -208,24 +245,174 @@ BallotTally
    tre andelar sparas krypterade, den ursprungliga privata nyckeln raderas.
 2. **Väljaren legitimerar sig** och ser sina valsedlar samt om hon redan röstat.
 3. **Klienten** hämtar valsedelns kanoniska alternativlista, bygger enhetsvektorn,
-   krypterar, bevisar, och skickar in tillsammans med sessionen.
-4. **Servern** verifierar varje bevis och gör upsert på `(voterStatusId, ballotId)`.
-   Ett ogiltigt bevis avvisas — det är enda stället där det kan fångas billigt.
-5. **Klienten visar chifferhashen** som verifikationskod och **kastar slumptalet**.
-6. **Vid `closesAt`** kör administratören stängningen:
-   verifiera alla bevis → infoga i `votes_db` sorterat på chifferhash (idempotent på
-   `ciphertextHash`) → jämför antal → radera `PendingVote` → sätt `linkClearedAt`.
-7. **k av n förtroendemän** lämnar partiella dekrypteringar av den homomorfa summan.
-8. **Kombinera, räkna, publicera.** Chiffer, bevis, partiella dekrypteringar och resultat
+   krypterar och bevisar.
+4. **Väljaren signerar** chifferhashen med BankID `/sign`. Appen visar vad hon godkänner;
+   räknaren och valsedelns id ligger i det icke synliga fältet. Se avsnitt 4.6.
+5. **Servern** verifierar bevisen, kontrollerar signaturen mot väljarens personnummer och
+   att räknaren är högre än den lagrade, och gör upsert på `(voterStatusId, ballotId)`.
+6. **Klienten visar chifferhashen** som verifikationskod och **kastar slumptalet**.
+7. **Vid `closesAt`** kör administratören stängningen:
+   validera enligt avsnitt 7 → avbryt vid allvarlig avvikelse → annars infoga i
+   `votes_db` sorterat på chifferhash (idempotent på `ciphertextHash`) → jämför antal →
+   radera `PendingVote` → sätt `linkClearedAt`.
+8. **k av n förtroendemän** lämnar partiella dekrypteringar av den homomorfa summan.
+9. **Kombinera, räkna, publicera.** Chiffer, bevis, partiella dekrypteringar och resultat
    blir alla offentliga.
-9. **Slutkontrollen** vägrar fastställa så länge en enda `PendingVote` finns kvar.
+10. **Slutkontrollen** vägrar fastställa så länge en enda `PendingVote` finns kvar.
 
-Steg 6 kan inte vara en transaktion över två databaser — det är fysiskt omöjligt, vilket
+Steg 7 kan inte vara en transaktion över två databaser — det är fysiskt omöjligt, vilket
 är själva poängen med separationen. Idempotensen bär i stället: infogningen är
 nyckelfri på `ciphertextHash`, så en avbruten körning kan köras om utan dubbletter.
 Samma resonemang som röstintygens inlösen använde.
 
-## 7. Vad som raderas
+### 6.1 Faserna är tillstånd, inte bara en ordning i koden
+
+Ordningen måste vara omöjlig att kasta om, inte bara osannolik. `Election.phase` går
+enkelriktat:
+
+```
+  OPEN ──closesAt──► CLOSED ──validering──► VALIDATED ──skalning──► STRIPPED
+                                                                        │
+                        CERTIFIED ◄──slutkontroll── TALLIED ◄──dekryptering
+```
+
+| Fas | Kopplingen finns | Röster tas emot | Vad som får hända härnäst |
+|---|---|---|---|
+| `OPEN` | ja | ja | tiden passerar `closesAt` |
+| `CLOSED` | ja | **nej** | validering |
+| `VALIDATED` | ja | nej | skalning |
+| `STRIPPED` | **nej** | nej | partiella dekrypteringar |
+| `TALLIED` | nej | nej | slutkontroll och fastställande |
+| `CERTIFIED` | nej | nej | ingenting |
+
+Två saker blir explicita av att `CLOSED` och `STRIPPED` är skilda tillstånd. Fönstret
+där kopplingen finns men röstningen är stängd är **valideringsfönstret**, och det syns i
+databasen att man befinner sig i det. Och en dekryptering kan inte beställas förrän
+kopplingen bevisligen är borta, eftersom övergången till `STRIPPED` är villkoret.
+
+Rösten avvisas i varje fas utom `OPEN`. Att den fasen är ett fält och inte en jämförelse
+mot klockan spelar roll: en klocka som går fel eller en tidszon som tolkas om ändrar
+beteendet tyst, medan en fasövergång är en händelse någon utfört.
+
+### 6.2 Ingen preliminär räkning under pågående röstning
+
+Det är frestande att räkna löpande och visa en valvaka. Det går inte, och skälen är tre —
+i fallande ordning av hur avgörande de är.
+
+**Det är inte tillåtet.** Resultat får inte offentliggöras innan röstningen stängt.
+Partiella siffror påverkar dem som ännu inte röstat, och det är därför Sverige förbjuder
+även vallokalsundersökningar före klockan 20. Ingen kryptografi gör det problemet mindre.
+
+**Differensen mellan två publiceringar är rösterna däremellan.** Publiceras summan
+klockan 14:00 och igen 14:01 är skillnaden exakt de röster som lades under minuten. Har
+bara en person röstat *är differensen den personens röst*. Och i den här modellen vet
+systemet vem som röstade när — kopplingen finns ju under röstningen. Uppslaget är en
+enda fråga.
+
+Att kopiera rösterna till en egen tabell för preliminär räkning hjälper inte, och det är
+värt att vara tydlig med varför: **läckan ligger i publiceringstakten, inte i vilken
+tabell siffrorna kommer ifrån.** Originalet förblir orört och krypterat i båda fallen.
+
+Med en tröskel — publicera först när minst några tusen nya röster tillkommit — vore
+differensangreppet hanterbart. Men det första skälet står kvar oavsett.
+
+**Förtroendemännen måste vara online hela dagen.** Varje preliminär siffra kräver att k
+av n utför en tröskeldekryptering. Nyckeln som ska vara svår att sammanföra skulle
+sammanföras hundratals gånger under valdagen, och varje gång är ett tillfälle.
+
+#### Vad som däremot går, och ger en riktig valvaka
+
+**Valdeltagande live.** Antal som röstat, totalt och per kommun, uppdaterat kontinuerligt.
+Kräver **ingen dekryptering alls** — det är en `count(*)` på liggande röster. Deltagande
+är dessutom offentlig uppgift i ett riktigt val. Det är den siffra en valvaka faktiskt
+följer under dagen.
+
+**Resultat per område efterhand, efter stängning.** Det är vad en svensk valvaka är: inte
+en löpande summa av ett öppet val, utan färdigräknade distrikt som rapporterar in ett
+efter ett. Här motsvaras det av att varje valsedel och varje kommunområde dekrypteras och
+publiceras så snart dess summa är klar. Spänningen finns kvar, och varje publicerad
+siffra är en fullständig räkning med hela sin anonymitetsmängd bakom sig.
+
+## 7. Validering medan kopplingen finns kvar
+
+Det finns ett enda ögonblick där varje röst går att knyta till en väljare: strax före
+skalningen. Den möjligheten ska användas, för efteråt finns ingen väljare att fråga och
+före ombyggnaden fanns ingen koppling alls.
+
+| Kontroll | Vad den upptäcker | Gick det i blindsigneringsmodellen? |
+|---|---|---|
+| Varje röst bär väljarens egen BankID-signatur över sitt chiffer | Förfalskad röst, även av den som driver systemet | Nej |
+| Räknaren i signaturen är den högsta väljaren ställt ut | Återuppspelad äldre röst, alltså ett röstköp som överlever ändringen | Nej |
+| Varje liggande röst tillhör en existerande, röstberättigad väljare | Rader som pekar på ingen | Nej |
+| Valsedeln gäller väljaren, alltså rätt kommun och region | Fel valsedel, oavsett om det är bugg eller angrepp | Nej |
+| Högst en liggande röst per väljare och valsedel | Dubbelröstning | Bara som ett antal, aldrig som en rad |
+| Antalet som flyttas är exakt antalet som fanns | Förlust eller tillskott under skalningen | Nej |
+| Varje valsedel verifierar sina bevis | Manipulerat chiffer | — |
+
+Den första raden ändrar kontrollernas karaktär. Utan signaturen är de *relationella* —
+de säger att raden hänger ihop med resten av databasen, vilket en angripare med
+skrivrättighet lätt ordnar. Med signaturen blir de **kryptografiska**: raden måste bära
+ett bevis som bara väljaren kunde framställa.
+
+**Skillnaden är också att avvikelser blir spårbara.** Tidigare gav en felräkning ett tal: fler
+röster än markerade väljare. Ingen kunde säga vilka rösterna var. Nu ger samma kontroll
+exakt vilka rader som avviker och vilken väljare varje hör till, så den går att utreda i
+stället för att bara noteras.
+
+En egenskap faller dessutom ut av datamodellen: **en stoppad röst måste hänga på en
+verklig väljare.** Främmande nyckeln förbjuder en rad som tillhör ingen, och väljaren den
+hängts på ser den nästa gång hen loggar in — och skriver över den genom att rösta.
+Stoppning blir alltså både upptäckbar av systemet och rättningsbar av offret.
+
+### 7.1 Valideringen är en spärr, inte en rapport
+
+Skalningen körs inte om valideringen hittar något allvarligt. Ordningen är:
+
+```
+   validera (kopplingen finns)  ──►  allvarlig avvikelse?  ──► JA: avbryt, ingenting raderas
+                                             │
+                                             NEJ
+                                             ▼
+                                     skala och radera kopplingen
+```
+
+Att köra skalningen ändå vore att kasta bort bevismaterialet för det problem man just
+hittat.
+
+### 7.2 Vad som publiceras och vad som inte gör det
+
+Valideringen kräver att kopplingen läses, alltså precis den förmåga som gör modellen
+svagare på valhemlighet än den föregående. Därför:
+
+- **Publiceras:** antal, kategorier och utfall. "12 483 röster, 12 483 väljare, noll
+  avvikelser" är den sortens uppgift som gör ett resultat trovärdigt.
+- **Publiceras inte:** vilka väljare som helst, i någon form. Detaljen finns för
+  administratören att utreda, och inte längre än så.
+- **Loggas:** att valideringen körts, av vem och när. Att läsa kopplingen ska synas.
+
+### 7.3 Öppet beslut: sparas signaturerna eller förstörs de?
+
+Signaturen bär väljarens certifikat, alltså personnummer och namn. Den får därför aldrig
+följa med till `votes_db`. Men förstörs den vid skalningen försvinner också möjligheten
+att i efterhand bevisa att rösterna var äkta — kvar finns bara valideringsrapportens ord.
+
+| | Vad som krävs för att bryta valhemligheten | Vad som går att bevisa efteråt |
+|---|---|---|
+| **A: förstör vid skalning** | k av n andelar | ingenting utöver rapporten |
+| **B: förseglat arkiv, skilt från rösterna** | arkivet **och** k av n andelar | varje rösts äkthet |
+
+B kräver alltså två oberoende intrång i stället för ett, och Estland har valt den vägen.
+A är strikt starkare på valhemlighet och strikt svagare på granskning. Detta är ett
+beslut om vilken risk som väger tyngst, inte en teknisk fråga, och det ska tas medvetet.
+
+### 7.4 Öppen policyfråga
+
+En väljare som stryks ur röstlängden efter att ha röstat får sin liggande röst raderad av
+kaskaden på `VoterStatus`. Rösten försvinner alltså tyst. Det är antagligen rätt utfall,
+men det ska vara ett beslut och inte en följd av en främmande nyckel. Frågan lämnas
+öppen här och bör avgöras innan systemet används skarpt.
+
+## 8. Vad som raderas
 
 | Fil | Skäl |
 |---|---|
@@ -237,7 +424,7 @@ Samma resonemang som röstintygens inlösen använde.
 | `signingPrivateKeyPem`, `signingPublicKeyPem` | Inga signeringsnycklar finns kvar |
 | `credentialId`, `credentialSignature` på rösten | — |
 
-## 8. Kända begränsningar som försvinner
+## 9. Kända begränsningar som försvinner
 
 - **`signing-keys-in-database`** — det finns inga signeringsnycklar längre.
 - **`receipt-proves-choice`** — klienten kastar slumptalet; hashen bevisar inklusion, inte innehåll.
@@ -245,7 +432,7 @@ Samma resonemang som röstintygens inlösen använde.
 - **`no-guaranteed-anonymity-set`** — alla röster skalas och infogas i en enda sats,
   sorterade på innehåll. Anonymitetsmängden är hela valet.
 
-## 9. Kända begränsningar som tillkommer
+## 10. Kända begränsningar som tillkommer
 
 - **Kopplingen existerar under röstningen.** "Kan inte existera" blir "raderas enligt
   schema". Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen. Detta är
