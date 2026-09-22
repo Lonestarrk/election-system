@@ -333,6 +333,29 @@ efter ett. Här motsvaras det av att varje valsedel och varje kommunområde dekr
 publiceras så snart dess summa är klar. Spänningen finns kvar, och varje publicerad
 siffra är en fullständig räkning med hela sin anonymitetsmängd bakom sig.
 
+**Tröskelceremonin, och det är valvakans kärna.** Dekrypteringen kräver att k av n
+förtroendemän var för sig lämnar sitt bidrag, och varje bidrag publiceras när det kommer
+in. Det går alltså att följa *"2 av 3 förtroendemän har lämnat sitt bidrag"* i realtid.
+
+Fördröjningen är äkta. Människor måste sammanträda, och var och en ska kontrollera
+valideringsrapporten innan hen bidrar med sin andel — det är hela poängen med att dela
+nyckeln. Den går inte att skynda på och inte att fejka.
+
+Det är skillnaden mot en konstlad fördröjning, och skillnaden är inte estetisk:
+**den som kan fördröja ett färdigt resultat kan också titta på det.** En siffra som finns
+men hålls tillbaka är ett förtroendeproblem. En siffra som ännu inte går att räkna fram,
+därför att tillräckligt många nycklar inte förts samman, är en garanti.
+
+Att bidragen publiceras löpande krävs ändå för den universella verifierbarheten. Valvakan
+faller alltså ut av en egenskap systemet behöver av andra skäl, vilket är den enda sortens
+dramaturgi som är värd att bygga in.
+
+**Räkningen har inget mellanliggande tillstånd.** Summan är produkten av alla chiffer som
+ligger just nu, så varje körning är en omräkning från grunden. Att en väljare bytt sitt
+val kräver ingen städning: raden ersattes, och nästa körning ser bara det som ligger där.
+En separat hink för preliminära röster vore därför inte bara osäker utan överflödig —
+den skulle vara en dubblett som måste hållas i synk med originalet vid varje ändring.
+
 ## 7. Validering medan kopplingen finns kvar
 
 Det finns ett enda ögonblick där varje röst går att knyta till en väljare: strax före
