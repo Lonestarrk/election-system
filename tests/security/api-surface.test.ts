@@ -48,6 +48,21 @@ describe('API-ytan', () => {
       'src/app/api/auth/bankid/start/route.ts',
       'src/app/api/demo/bankid-scan/route.ts',
       'src/app/api/demo/database-state/route.ts',
+      /**
+       * Nollställer hastighetsbegränsarens hinkar åt E2E-sviten.
+       *
+       * Hör hemma bland demorutterna av samma skäl som bankid-scan: den är
+       * villkorad på `bankIdIsMocked`, alltså på att `bankIdService` är en
+       * instans av MockBankIdService. Det är ett påstående om koden och inte
+       * en miljövariabel — byts attrappen mot skarp BankID svarar rutten 404
+       * utan att någon behöver komma ihåg att ändra konfigurationen.
+       *
+       * Den rör inga gränser, den tömmer bara hinkarna. Alternativet — att
+       * villkora bort `checkRateLimit` i attrappläge — hade passerat testet
+       * "hastighetsbegränsar" nedan textuellt men urholkat egenskapen det
+       * finns för att garantera.
+       */
+      'src/app/api/demo/reset-rate-limits/route.ts',
       'src/app/api/elections/route.ts',
       'src/app/api/observer/election/route.ts',
       'src/app/api/observer/votes/route.ts',

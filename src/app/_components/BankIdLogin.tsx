@@ -106,10 +106,35 @@ export function BankIdLogin({
   /** Frågar efter status. Startas av båda flödena. */
   const startPolling = useCallback(
     (reference: string) => {
-      const collect = setInterval(async () => {
-        if (orderRef.current !== reference) return
+      /**
+       * EN PÅGÅENDE FRÅGA I TAGET.
+       *
+       * Utan den här flaggan kan två pollningar överlappa: intervallet tickar
+       * medan föregående anrop fortfarande väntar på svar. Vakten på
+       * `orderRef.current` räcker inte, eftersom den nollställs först när det
+       * FÖRSTA svaret kommit — den andra frågan är då redan skickad.
+       *
+       * Följden är att ett korrekt svar skrivs över av ett felaktigt. Ordern
+       * konsumeras av den första frågan, så den andra får "failed" tillbaka,
+       * och väljaren ser "Legitimeringen misslyckades" i stället för det
+       * verkliga beskedet — "Du har inte behörighet till administrationen",
+       * "du har redan röstat", eller att legitimeringen faktiskt lyckades.
+       *
+       * Det syntes först när dev-serverns kompilering gjorde ett svar
+       * långsamt, men kräver ingenting mer än ett segt nät för att inträffa i
+       * drift.
+       */
+      let inFlight = false
 
-        const { data } = await post(collectPath, { orderRef: reference, ...collectBody })
+      const collect = setInterval(async () => {
+        if (orderRef.current !== reference || inFlight) return
+
+        inFlight = true
+        const { data } = await post(collectPath, { orderRef: reference, ...collectBody }).finally(
+          () => {
+            inFlight = false
+          },
+        )
 
         if (data.status === 'pending') {
           // hintCode berättar var i flödet personen är. Att visa det gör

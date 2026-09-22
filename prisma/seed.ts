@@ -1,4 +1,5 @@
 import { scryptHex } from '../src/lib/crypto'
+import { describeElectionSeed } from './election-seed-report'
 import { generateElectionKeyPair } from '../src/lib/blind-signature'
 import { PrismaClient as VotersClient } from '.prisma/voters'
 import { PrismaClient as VotesClient } from '.prisma/votes'
@@ -126,6 +127,10 @@ async function main() {
   // --- Valet 2026 ----------------------------------------------------------
   const existing = await votesDb.election.findFirst({ where: { name: 'Valet 2026' } })
 
+  // Beslutet om vad som ska rapporteras ligger i election-seed-report.ts, och
+  // är testat där. Utskriften nedan får inte påstå något annat.
+  const electionSummary = describeElectionSeed(existing, new Date()).message
+
   if (!existing) {
     const ballotSpecs = [
       { kind: 'KOMMUN', label: 'Kommunfullmäktige, Stockholms kommun', areaCode: MUNICIPALITY },
@@ -218,6 +223,7 @@ async function main() {
         },
       })
     }
+
   }
 
   // --- Röstlängd -----------------------------------------------------------
@@ -260,7 +266,7 @@ async function main() {
 
   process.stdout.write(
     `Seedat: ${PARTIES.length} partier, ${VOTERS.length} personer (${eligible} röstberättigade).\n` +
-      `Omröstning: Valet 2026 med tre valsedlar.\n` +
+      `${electionSummary}\n` +
       `Administratör: ${admin?.personalNumber ?? '—'}\n`,
   )
 }
