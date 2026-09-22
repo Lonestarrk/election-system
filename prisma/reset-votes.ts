@@ -34,7 +34,7 @@ const votesDb = new VotesClient()
 async function main() {
   // Ordningen följer beroendena: rösterna först, eftersom de refererar
   // valsedlarna som behålls.
-  const votes = await votesDb.anonymousVote.deleteMany()
+  const votes = await votesDb.vote.deleteMany()
   const commitments = await votesDb.electionCommitment.deleteMany()
 
   const ballotStatuses = await votersDb.voterBallotStatus.deleteMany()

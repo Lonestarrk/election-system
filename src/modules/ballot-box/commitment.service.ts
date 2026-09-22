@@ -41,7 +41,7 @@ export type Commitment = {
 export async function currentRoot(
   electionId: string,
 ): Promise<{ root: string; voteCount: number }> {
-  const votes = await votesDb.anonymousVote.findMany({
+  const votes = await votesDb.vote.findMany({
     where: { ballot: { electionId } },
     select: {
       tokenHash: true,

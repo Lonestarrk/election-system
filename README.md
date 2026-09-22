@@ -197,7 +197,7 @@ Två Prisma-scheman genererar två klienter mot två databaser. Den anonyma rös
 publika kontrakt är:
 
 ```ts
-castAnonymousVote(input: { partyId: string }): Promise<{ token: string }>
+castVote(input: { partyId: string }): Promise<{ token: string }>
 ```
 
 Ingen parameter kan bära en identitet, så en utvecklare kan inte skicka med sådant ens av

@@ -251,7 +251,7 @@ Ett gemensamt request-id i loggarna på båda sidor skulle koppla ihop dem lika 
 som en foreign key.
 
 **Åtgärder:** inget request-id propageras in i röstmodulen. Modulens publika kontrakt är
-`castAnonymousVote({ partyId })` och har ingen parameter som kan bära det.
+`castVote({ partyId })` och har ingen parameter som kan bära det.
 
 ### 4.5 Applikationsloggar
 

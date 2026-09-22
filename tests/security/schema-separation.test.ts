@@ -48,9 +48,25 @@ describe('databasseparation', () => {
   })
 
   it('röstlängdsschemat känner inte till röster eller partier', () => {
-    expect(votersFields).not.toMatch(/model AnonymousVote/)
-    expect(votersFields).not.toMatch(/model Party/)
-    expect(votersFields).not.toMatch(/@map\("anonymous_vote"\)/)
+    /**
+     * MÖNSTREN MÅSTE MATCHA DEKLARATIONEN, INTE BARA NAMNET.
+     *
+     * När modellen hette AnonymousVote räckte /model AnonymousVote/, eftersom
+     * inget annat började så. Efter namnbytet till Vote gör det inte det:
+     * röstlängden har VoterStatus, VoterBallotStatus och VotingSession, och
+     * /model Vote/ matchar den första av dem.
+     *
+     * Testet gick alltså rött av rätt skäl men på fel grund — det påstod att
+     * röstlängden innehöll röstmodellen när den innehöll VoterStatus. Ett
+     * falskt positivt i ett säkerhetstest är farligt på sikt: det är den
+     * sortens rödhet någon "fixar" genom att slappna av assertionen.
+     *
+     * ` \{` binder mönstret till modellhuvudet och kan inte träffa ett
+     * längre namn.
+     */
+    expect(votersFields).not.toMatch(/model Vote \{/)
+    expect(votersFields).not.toMatch(/model Party \{/)
+    expect(votersFields).not.toMatch(/@map\("vote"\)/)
   })
 
   it('röstschemat känner inte till väljare eller sessioner', () => {
@@ -68,8 +84,8 @@ describe('databasseparation', () => {
     }
   })
 
-  it('AnonymousVote innehåller ingen identitet och ingen session', () => {
-    const model = votesFields.match(/model AnonymousVote \{[\s\S]*?\n\}/)?.[0] ?? ''
+  it('Vote innehåller ingen identitet och ingen session', () => {
+    const model = votesFields.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(model).toBeTruthy()
 
     for (const forbidden of [
@@ -83,7 +99,7 @@ describe('databasseparation', () => {
       'ipAddress',
       'ip_address',
     ]) {
-      expect(model, `AnonymousVote innehåller ${forbidden}`).not.toContain(forbidden)
+      expect(model, `Vote innehåller ${forbidden}`).not.toContain(forbidden)
     }
   })
 
@@ -146,11 +162,11 @@ describe('databasseparation', () => {
      * partival — och i en liten kommun med ett ovanligt parti räcker det
      * långt mot att peka ut någon.
      */
-    const model = votesFields.match(/model AnonymousVote \{[\s\S]*?\n\}/)?.[0] ?? ''
+    const model = votesFields.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(model).toBeTruthy()
 
     for (const forbidden of ['areaCode', 'area_code', 'municipality', 'region']) {
-      expect(model, `AnonymousVote innehåller ${forbidden}`).not.toContain(forbidden)
+      expect(model, `Vote innehåller ${forbidden}`).not.toContain(forbidden)
     }
   })
 
@@ -182,10 +198,10 @@ describe('databasseparation', () => {
     // som gör att en rad aldrig kan delas av flera valsedlar.
     expect(votesMigrations).toMatch(/CREATE UNIQUE INDEX "anonymous_vote_token_hash_key"/)
 
-    const model = votesFields.match(/model AnonymousVote \{[\s\S]*?\n\}/)?.[0] ?? ''
+    const model = votesFields.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? ''
     // Ett fält som grupperar flera röster vore samma profil under annat namn.
     for (const forbidden of ['receiptId', 'receipt_id', 'groupId', 'group_id', 'batchId']) {
-      expect(model, `AnonymousVote innehåller ${forbidden}`).not.toContain(forbidden)
+      expect(model, `Vote innehåller ${forbidden}`).not.toContain(forbidden)
     }
   })
 

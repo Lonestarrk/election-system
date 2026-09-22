@@ -3,7 +3,7 @@ import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
-import { commitCurrentState } from '@/modules/anonymous-vote/commitment.service'
+import { commitCurrentState } from '@/modules/ballot-box/commitment.service'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'

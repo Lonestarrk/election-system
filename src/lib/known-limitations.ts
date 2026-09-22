@@ -76,7 +76,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'som betalar för röster köper luft. Kravet är att äkta och falskt kvitto ska vara ' +
       'omöjliga att skilja på för alla utom väljaren själv.',
     // `choice` i verifieringssvaret är precis det som bevisar valet.
-    stillTrueIf: { file: 'src/modules/anonymous-vote/vote.service.ts', contains: 'choice: string' },
+    stillTrueIf: { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
   },
   {
     id: 'municipality-beside-identity-hash',
@@ -122,8 +122,8 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'blandade satser med en garanterad mängd.',
     // Rösten skrivs direkt vid inlösen. En kö skulle ersätta det anropet.
     stillTrueIf: {
-      file: 'src/modules/anonymous-vote/vote.service.ts',
-      contains: 'votesDb.anonymousVote.create',
+      file: 'src/modules/ballot-box/vote.service.ts',
+      contains: 'votesDb.vote.create',
     },
   },
   {

@@ -1,7 +1,7 @@
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, verifyTokenSchema } from '@/lib/validation'
-import { verifyToken } from '@/modules/anonymous-vote'
+import { verifyToken } from '@/modules/ballot-box'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'

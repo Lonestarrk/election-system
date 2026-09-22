@@ -1,5 +1,5 @@
 import { jsonResponse } from '@/lib/http'
-import { listOpenElections } from '@/modules/anonymous-vote'
+import { listOpenElections } from '@/modules/ballot-box'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'

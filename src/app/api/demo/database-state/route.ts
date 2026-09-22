@@ -1,5 +1,5 @@
 import { jsonResponse } from '@/lib/http'
-import { votesDb } from '@/modules/anonymous-vote/db'
+import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
 
 export const runtime = 'nodejs'
@@ -88,7 +88,7 @@ export async function GET() {
       orderBy: { id: 'asc' },
       select: { id: true, externalIdentityHash: true, isEligible: true, isAdmin: true },
     }),
-    votesDb.anonymousVote.findMany({
+    votesDb.vote.findMany({
       orderBy: { id: 'asc' },
       // Bara valsedeln, inte partiet. Demovyn visar att tabellerna saknar
       // gemensamma värden — den behöver inte avslöja vad någon röstat på för

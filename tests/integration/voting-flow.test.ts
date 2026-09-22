@@ -1,10 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { votersDb } from '@/modules/eligibility/db'
-import { votesDb } from '@/modules/anonymous-vote/db'
+import { votesDb } from '@/modules/ballot-box/db'
 import { evaluateEligibility } from '@/modules/eligibility/voter-status.service'
 import { issueCredential } from '@/modules/eligibility/credential.service'
-import { castAnonymousVote, verifyToken } from '@/modules/anonymous-vote'
-import { hashToken } from '@/modules/anonymous-vote/token.service'
+import { castVote, verifyToken } from '@/modules/ballot-box'
+import { hashToken } from '@/modules/ballot-box/token.service'
 import { createBlindedCredential, unblindSignature } from '@/lib/blind-client'
 import {
   createTestElection,
@@ -44,7 +44,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
     if (outcome.status !== 'voted') return
 
     expect(outcome.token).toMatch(/^[0-9A-Z-]+$/)
-    expect(await votesDb.anonymousVote.count()).toBe(1)
+    expect(await votesDb.vote.count()).toBe(1)
     expect(await votersDb.voterBallotStatus.count({ where: { voterStatusId: voterId } })).toBe(1)
   })
 
@@ -57,7 +57,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
     const second = await voteOnce(voterId, election)
 
     expect(second.status).toBe('blocked')
-    expect(await votesDb.anonymousVote.count()).toBe(1)
+    expect(await votesDb.vote.count()).toBe(1)
   })
 
   it('två samtidiga röstförsök från samma väljare ger bara en röst', async () => {
@@ -76,7 +76,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
     const succeeded = results.filter((result) => result.status === 'voted')
 
     expect(succeeded).toHaveLength(1)
-    expect(await votesDb.anonymousVote.count()).toBe(1)
+    expect(await votesDb.vote.count()).toBe(1)
   })
 
   it('ett redan inlöst röstintyg kan inte lösas in igen', async () => {
@@ -119,10 +119,10 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
       credentialSignature: signature,
     }
 
-    expect((await castAnonymousVote(vote)).status).toBe('recorded')
-    expect((await castAnonymousVote(vote)).status).toBe('credential_already_used')
+    expect((await castVote(vote)).status).toBe('recorded')
+    expect((await castVote(vote)).status).toBe('credential_already_used')
 
-    expect(await votesDb.anonymousVote.count()).toBe(1)
+    expect(await votesDb.vote.count()).toBe(1)
   })
 
   it('en röst utan giltigt röstintyg avvisas', async () => {
@@ -134,7 +134,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
      * parti, ett välformat intyg. Utan myndighetens signatur går det ändå inte
      * igenom — och ingen kan skapa signaturen utan valsedelns privata nyckel.
      */
-    const outcome = await castAnonymousVote({
+    const outcome = await castVote({
       ballotId: election.ballotId,
       ballotPartyId: election.ballotPartyId,
       credentialId: 'f'.repeat(64),
@@ -142,7 +142,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
     })
 
     expect(outcome.status).toBe('invalid_credential')
-    expect(await votesDb.anonymousVote.count()).toBe(0)
+    expect(await votesDb.vote.count()).toBe(0)
   })
 
   it('ett röstintyg för en valsedel gäller inte på en annan', async () => {
@@ -170,7 +170,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
     )
 
     // Samma intyg, men inlämnat på den andra omröstningens valsedel.
-    const outcome = await castAnonymousVote({
+    const outcome = await castVote({
       ballotId: other.ballotId,
       ballotPartyId: other.ballotPartyId,
       credentialId: credential.credentialId,
@@ -232,7 +232,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
     )
 
     // Först ett ogiltigt parti-id.
-    const rejected = await castAnonymousVote({
+    const rejected = await castVote({
       ballotId: election.ballotId,
       ballotPartyId: '00000000-0000-0000-0000-000000000000',
       credentialId: credential.credentialId,
@@ -241,7 +241,7 @@ describe.skipIf(!databaseAvailable)('röstningsflödet mot riktig databas', () =
     expect(rejected.status).toBe('invalid_choice')
 
     // Intyget är oförbrukat och fungerar med ett giltigt val.
-    const accepted = await castAnonymousVote({
+    const accepted = await castVote({
       ballotId: election.ballotId,
       ballotPartyId: election.ballotPartyId,
       credentialId: credential.credentialId,
@@ -326,7 +326,7 @@ describe.skipIf(!databaseAvailable)('separationen mellan identitet och röst', (
     const ballotStatus = await votersDb.voterBallotStatus.findFirstOrThrow({
       where: { voterStatusId: voterId },
     })
-    const vote = await votesDb.anonymousVote.findFirstOrThrow()
+    const vote = await votesDb.vote.findFirstOrThrow()
 
     // Samtliga värden på väljarsidan, mot samtliga värden på röstsidan.
     const voterValues = new Set([
@@ -353,7 +353,7 @@ describe.skipIf(!databaseAvailable)('separationen mellan identitet och röst', (
     const voterId = await createVoter('199001011234')
     await voteOnce(voterId, election)
 
-    const vote = await votesDb.anonymousVote.findFirstOrThrow()
+    const vote = await votesDb.vote.findFirstOrThrow()
 
     const rows = await votersDb.$queryRawUnsafe<Array<{ found: bigint }>>(
       `SELECT count(*) AS found FROM voter_ballot_status
@@ -371,7 +371,7 @@ describe.skipIf(!databaseAvailable)('separationen mellan identitet och röst', (
     await votersDb.voterBallotStatus.deleteMany()
     await votersDb.voterStatus.deleteMany()
 
-    expect(await votesDb.anonymousVote.count()).toBe(1)
+    expect(await votesDb.vote.count()).toBe(1)
   })
 
   it('tidsstämplarna är grovkorniga i båda databaserna', async () => {
@@ -379,7 +379,7 @@ describe.skipIf(!databaseAvailable)('separationen mellan identitet och röst', (
     await voteOnce(voterId, election)
 
     const ballotStatus = await votersDb.voterBallotStatus.findFirstOrThrow()
-    const vote = await votesDb.anonymousVote.findFirstOrThrow()
+    const vote = await votesDb.vote.findFirstOrThrow()
 
     // Dygn respektive timme. Med millisekundsupplösning skulle raderna gå att
     // para ihop på tid, och hela separationen vore verkningslös.
@@ -396,7 +396,7 @@ describe.skipIf(!databaseAvailable)('separationen mellan identitet och röst', (
 
     const tokenHash = hashToken(outcome.token)
 
-    expect(await votesDb.anonymousVote.count({ where: { tokenHash } })).toBe(1)
+    expect(await votesDb.vote.count({ where: { tokenHash } })).toBe(1)
 
     const rows = await votersDb.$queryRawUnsafe<Array<{ found: bigint }>>(
       `SELECT count(*) AS found FROM voter_status WHERE external_identity_hash = $1`,

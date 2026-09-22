@@ -2,7 +2,7 @@ import { isAdminAuthenticated } from '@/lib/admin-auth'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
-import { getElectionResults, listElections } from '@/modules/anonymous-vote'
+import { getElectionResults, listElections } from '@/modules/ballot-box'
 import { getVoterStatistics } from '@/modules/eligibility/voter-status.service'
 
 export const runtime = 'nodejs'

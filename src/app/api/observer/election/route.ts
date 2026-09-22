@@ -1,8 +1,8 @@
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
-import { getElection, getElectionResults, listElections } from '@/modules/anonymous-vote'
-import { listCommitments, currentRoot } from '@/modules/anonymous-vote/commitment.service'
+import { getElection, getElectionResults, listElections } from '@/modules/ballot-box'
+import { listCommitments, currentRoot } from '@/modules/ballot-box/commitment.service'
 import { countIssuedCredentials } from '@/modules/eligibility/credential.service'
 
 export const runtime = 'nodejs'

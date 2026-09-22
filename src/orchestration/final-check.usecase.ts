@@ -1,15 +1,15 @@
 import { verify } from '@/lib/blind-signature'
 import { canonicalVoteRecord, hashLeaf, merkleRoot } from '@/lib/merkle'
-import { votesDb } from '@/modules/anonymous-vote/db'
+import { votesDb } from '@/modules/ballot-box/db'
 import {
   getElection,
   getElectionResults,
-} from '@/modules/anonymous-vote'
+} from '@/modules/ballot-box'
 import {
   commitCurrentState,
   latestCommitment,
   verifyCommitmentChain,
-} from '@/modules/anonymous-vote/commitment.service'
+} from '@/modules/ballot-box/commitment.service'
 import { countIssuedCredentials } from '@/modules/eligibility/credential.service'
 import { verifyAuditChain } from '@/modules/eligibility/audit.service'
 
@@ -101,7 +101,7 @@ export async function runFinalCheck(electionId: string): Promise<FinalCheckRepor
   const checks: CheckResult[] = []
 
   // --- Underlaget --------------------------------------------------------
-  const votes = await votesDb.anonymousVote.findMany({
+  const votes = await votesDb.vote.findMany({
     where: { ballot: { electionId } },
     select: {
       tokenHash: true,

@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { votesDb } from '@/modules/anonymous-vote/db'
-import { listOpenElections } from '@/modules/anonymous-vote/election.service'
+import { votesDb } from '@/modules/ballot-box/db'
+import { listOpenElections } from '@/modules/ballot-box/election.service'
 import { createElection } from '@/orchestration/create-election.usecase'
 import { disconnect, firstPartyId, isDatabaseAvailable, resetElectionData } from './helpers'
 

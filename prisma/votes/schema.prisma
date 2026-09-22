@@ -143,7 +143,7 @@ model ElectionBallot {
 
   parties BallotParty[]
   options BallotOption[]
-  votes   AnonymousVote[]
+  votes   Vote[]
 
   @@index([electionId])
   @@map("election_ballot")
@@ -179,7 +179,7 @@ model BallotParty {
   displayOrder Int @map("display_order")
 
   candidates Candidate[]
-  votes      AnonymousVote[]
+  votes      Vote[]
 
   @@unique([ballotId, partyId])
   @@index([partyId])
@@ -210,7 +210,7 @@ model Candidate {
 
   displayOrder Int @map("display_order")
 
-  votes AnonymousVote[]
+  votes Vote[]
 
   @@index([ballotPartyId])
   @@map("candidate")
@@ -227,14 +227,14 @@ model BallotOption {
 
   displayOrder Int @map("display_order")
 
-  votes AnonymousVote[]
+  votes Vote[]
 
   @@index([ballotId])
   @@map("ballot_option")
 }
 
 /// En anonym röst på en valsedel.
-model AnonymousVote {
+model Vote {
   id String @id @default(uuid())
 
   /// SHA-256 av den token väljaren fick. Klartext-token lagras aldrig.
@@ -300,5 +300,5 @@ model AnonymousVote {
   @@index([ballotPartyId])
   @@index([candidateId])
   @@index([optionId])
-  @@map("anonymous_vote")
+  @@map("vote")
 }

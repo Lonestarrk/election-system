@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { castAnonymousVote } from '@/modules/anonymous-vote'
+import { castVote } from '@/modules/ballot-box'
 import {
   createTestElection,
   createVoter,
@@ -69,7 +69,7 @@ describe.skipIf(!databaseAvailable)('token i loggarna', () => {
     const voterId = await createVoter('199001011234')
 
     // Ett påhittat röstintyg → felvägen genom inlösen.
-    await castAnonymousVote({
+    await castVote({
       ballotId: election.ballotId,
       ballotPartyId: election.ballotPartyId,
       credentialId: 'f'.repeat(64),
@@ -106,8 +106,8 @@ describe.skipIf(!databaseAvailable)('token visas bara en gång', () => {
     const outcome = await voteOnce(voterId, election)
     if (outcome.status !== 'voted') throw new Error('Röstningen misslyckades')
 
-    const { votesDb } = await import('@/modules/anonymous-vote/db')
-    const votes = await votesDb.anonymousVote.findMany()
+    const { votesDb } = await import('@/modules/ballot-box/db')
+    const votes = await votesDb.vote.findMany()
 
     // Endast hashen finns lagrad. Klartexten går inte att räkna fram ur den.
     const serialised = JSON.stringify(votes)

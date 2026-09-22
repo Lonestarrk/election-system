@@ -45,7 +45,7 @@ describe('modulgränser', () => {
 
   it('den anonyma röstmodulen importerar ingenting från väljarmodulen', () => {
     const offenders = sourceFiles
-      .filter((file) => file.path.startsWith('src/modules/anonymous-vote/'))
+      .filter((file) => file.path.startsWith('src/modules/ballot-box/'))
       .filter(
         (file) =>
           importsFrom(file.content, '@/modules/eligibility') ||
@@ -61,8 +61,8 @@ describe('modulgränser', () => {
       .filter((file) => file.path.startsWith('src/modules/eligibility/'))
       .filter(
         (file) =>
-          importsFrom(file.content, '@/modules/anonymous-vote') ||
-          /from ['"]\.\.\/anonymous-vote/.test(file.content),
+          importsFrom(file.content, '@/modules/ballot-box') ||
+          /from ['"]\.\.\/ballot-box/.test(file.content),
       )
       .map((file) => file.path)
 
@@ -112,7 +112,7 @@ describe('modulgränser', () => {
     const filesSeeingBoth = sourceFiles
       .filter(
         (file) =>
-          /from ['"]@\/modules\/anonymous-vote/.test(file.content) &&
+          /from ['"]@\/modules\/ballot-box/.test(file.content) &&
           /from ['"]@\/modules\/eligibility/.test(file.content),
       )
       .map((file) => file.path)
@@ -130,7 +130,7 @@ describe('modulgränser', () => {
     expect(aggregateOnly).toHaveLength(2)
 
     for (const file of aggregateOnly) {
-      expect(file.content, `${file.path} lägger röster`).not.toMatch(/castAnonymousVote/)
+      expect(file.content, `${file.path} lägger röster`).not.toMatch(/castVote/)
       expect(file.content, `${file.path} verifierar tokens`).not.toMatch(/verifyToken/)
       expect(file.content, `${file.path} utvärderar röstberättigande`).not.toMatch(
         /evaluateEligibility/,
@@ -143,10 +143,10 @@ describe('modulgränser', () => {
 })
 
 describe('röstmodulens publika kontrakt', () => {
-  const moduleApi = readFileSync(join(SRC, 'modules/anonymous-vote/index.ts'), 'utf8')
+  const moduleApi = readFileSync(join(SRC, 'modules/ballot-box/index.ts'), 'utf8')
 
   it('tar bara emot identifierare som pekar på rader i röstdatabasen', () => {
-    const inputType = moduleApi.match(/export type CastAnonymousVoteInput = \{[^}]*\}/)?.[0] ?? ''
+    const inputType = moduleApi.match(/export type CastVoteInput = \{[^}]*\}/)?.[0] ?? ''
     expect(inputType).toBeTruthy()
 
     const fields = [...inputType.matchAll(/^\s{2}(\w+)\??:/gm)].map((match) => match[1])
@@ -173,7 +173,7 @@ describe('röstmodulens publika kontrakt', () => {
      * Det räcker alltså inte att kontraktet saknar identitet — det måste också
      * sakna varje fält som skulle kunna gruppera rösterna i efterhand.
      */
-    const inputType = moduleApi.match(/export type CastAnonymousVoteInput = \{[^}]*\}/)?.[0] ?? ''
+    const inputType = moduleApi.match(/export type CastVoteInput = \{[^}]*\}/)?.[0] ?? ''
 
     for (const forbidden of [
       'receiptId',
@@ -188,7 +188,7 @@ describe('röstmodulens publika kontrakt', () => {
   })
 
   it('har inga parametrar som kan bära identitet', () => {
-    const inputType = moduleApi.match(/export type CastAnonymousVoteInput = \{[^}]*\}/)?.[0] ?? ''
+    const inputType = moduleApi.match(/export type CastVoteInput = \{[^}]*\}/)?.[0] ?? ''
 
     for (const forbidden of [
       'voterId',
@@ -218,7 +218,7 @@ describe('loggdisciplin', () => {
   })
 
   it('Prismas frågeloggning är avstängd i båda klienterna', () => {
-    for (const path of ['src/modules/eligibility/db.ts', 'src/modules/anonymous-vote/db.ts']) {
+    for (const path of ['src/modules/eligibility/db.ts', 'src/modules/ballot-box/db.ts']) {
       const content = sourceFiles.find((file) => file.path === path)?.content ?? ''
       expect(content, `${path} saknas`).toBeTruthy()
       // 'query' i loggnivåerna skulle skriva ut identitetshashar respektive

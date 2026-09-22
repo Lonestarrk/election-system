@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { logger, redact } from '@/lib/logger'
-import { generateVoteToken } from '@/modules/anonymous-vote/token.service'
+import { generateVoteToken } from '@/modules/ballot-box/token.service'
 
 /**
  * Testpunkt 10 (enhetsnivå): klartext-token skrivs aldrig till loggen.

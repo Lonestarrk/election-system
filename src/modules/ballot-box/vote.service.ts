@@ -54,7 +54,7 @@ export type RecordVoteOutcome =
  * sista spärr — den här funktionen är den enda vägen in i tabellen och ska
  * inte förlita sig på att anroparen gjort rätt.
  */
-export async function recordAnonymousVote(
+export async function recordVote(
   choice: BallotChoiceInput,
   credential: RedeemedCredential,
 ): Promise<RecordVoteOutcome> {
@@ -87,7 +87,7 @@ export async function recordAnonymousVote(
     const { token, tokenHash } = generateVoteToken()
 
     try {
-      await votesDb.anonymousVote.create({
+      await votesDb.vote.create({
         data: {
           tokenHash,
           credentialId: credential.credentialId,
@@ -122,7 +122,7 @@ export async function recordAnonymousVote(
          * råkat på en kollision och försöker igen med en ny.
          */
         const alreadyUsed =
-          await votesDb.anonymousVote.count({
+          await votesDb.vote.count({
             where: { credentialId: credential.credentialId },
           })
 
@@ -164,7 +164,7 @@ export type VerificationResult =
  * finns lagrad.
  */
 export async function verifyToken(rawToken: string): Promise<VerificationResult> {
-  const vote = await votesDb.anonymousVote.findUnique({
+  const vote = await votesDb.vote.findUnique({
     where: { tokenHash: hashToken(rawToken) },
     select: {
       ballot: { select: { label: true, election: { select: { name: true } } } },
@@ -240,18 +240,18 @@ export async function getElectionResults(electionId: string): Promise<BallotResu
 
   for (const ballot of ballots) {
     const [totalVotes, byParty, byOption, byCandidate] = await Promise.all([
-      votesDb.anonymousVote.count({ where: { ballotId: ballot.id } }),
-      votesDb.anonymousVote.groupBy({
+      votesDb.vote.count({ where: { ballotId: ballot.id } }),
+      votesDb.vote.groupBy({
         by: ['ballotPartyId'],
         where: { ballotId: ballot.id },
         _count: { _all: true },
       }),
-      votesDb.anonymousVote.groupBy({
+      votesDb.vote.groupBy({
         by: ['optionId'],
         where: { ballotId: ballot.id },
         _count: { _all: true },
       }),
-      votesDb.anonymousVote.groupBy({
+      votesDb.vote.groupBy({
         by: ['candidateId'],
         where: { ballotId: ballot.id, candidateId: { not: null } },
         _count: { _all: true },
@@ -298,5 +298,5 @@ export async function getElectionResults(electionId: string): Promise<BallotResu
 
 /** Totalt antal registrerade röster i en omröstning. Används av integritetskontrollen. */
 export async function countVotes(electionId: string): Promise<number> {
-  return votesDb.anonymousVote.count({ where: { ballot: { electionId } } })
+  return votesDb.vote.count({ where: { ballot: { electionId } } })
 }

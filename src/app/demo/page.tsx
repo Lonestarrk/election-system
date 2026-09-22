@@ -114,7 +114,7 @@ export default function DemoPage() {
             Det som passerar gränsen är ett röstintyg och ett valt alternativ. Funktionen som tar
             emot det har signaturen{' '}
             <span className="mono">
-              castAnonymousVote({'{ ballotId, ballotPartyId, candidateId, optionId, credentialId, credentialSignature }'})
+              castVote({'{ ballotId, ballotPartyId, candidateId, optionId, credentialId, credentialSignature }'})
             </span>{' '}
             — sex identifierare som alla pekar på rader i röstdatabasen, och ingen parameter för
             identitet. En utvecklare kan inte skicka med sådant ens av misstag; kompilatorn stoppar

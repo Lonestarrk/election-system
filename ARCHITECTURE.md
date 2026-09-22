@@ -15,7 +15,7 @@ Systemet består av två delar som avsiktligt inte kan nå varandras data.
 ```
 ┌──────────────────────────────────┐        ┌──────────────────────────────────┐
 │  VÄLJARSYSTEMET                  │        │  DET ANONYMA RÖSTSYSTEMET        │
-│  src/modules/eligibility/        │        │  src/modules/anonymous-vote/     │
+│  src/modules/eligibility/        │        │  src/modules/ballot-box/     │
 │                                  │        │                                  │
 │  Vet:  vem du är                 │        │  Vet:  vad som röstats           │
 │        om du får rösta           │        │        hur många röster          │
@@ -446,10 +446,10 @@ kontroll kan köras av vem som helst med den publika nyckeln.
 
 ## 8. Modulkontrakt
 
-### `src/modules/anonymous-vote/index.ts`
+### `src/modules/ballot-box/index.ts`
 
 ```ts
-export type CastAnonymousVoteInput = {
+export type CastVoteInput = {
   ballotId: string
   ballotPartyId?: string
   candidateId?: string

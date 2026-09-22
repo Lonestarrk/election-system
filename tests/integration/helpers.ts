@@ -1,8 +1,8 @@
 import { votersDb } from '@/modules/eligibility/db'
-import { votesDb } from '@/modules/anonymous-vote/db'
+import { votesDb } from '@/modules/ballot-box/db'
 import { hashPersonalNumber } from '@/modules/eligibility/identity'
 import { issueCredential } from '@/modules/eligibility/credential.service'
-import { castAnonymousVote } from '@/modules/anonymous-vote'
+import { castVote } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
 import {
   createBlindedCredential,
@@ -32,7 +32,7 @@ export async function isDatabaseAvailable(): Promise<boolean> {
 
 export async function resetElectionData(): Promise<void> {
   // Ordningen följer beroendena: rösterna först, sedan valsedlarna de pekar på.
-  await votesDb.anonymousVote.deleteMany()
+  await votesDb.vote.deleteMany()
   await votesDb.election.deleteMany()
 
   await votersDb.adminSession.deleteMany()
@@ -160,7 +160,7 @@ export async function voteOnce(
     keys.signingPublicKeyPem,
   )
 
-  const cast = await castAnonymousVote({
+  const cast = await castVote({
     ballotId: election.ballotId,
     ballotPartyId: election.ballotPartyId,
     credentialId: credential.credentialId,

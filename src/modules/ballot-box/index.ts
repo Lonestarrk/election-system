@@ -2,7 +2,7 @@
  * Den anonyma röstmodulens publika yta.
  *
  * Detta är hela kontraktet mot resten av systemet. Lägg märke till vad
- * `castAnonymousVote` tar emot:
+ * `castVote` tar emot:
  *
  *     { ballotId, ballotPartyId?, candidateId?, optionId?,
  *       credentialId, credentialSignature }
@@ -35,7 +35,7 @@
  * pekar på en annan PostgreSQL-databas än röstlängden.
  */
 
-export type CastAnonymousVoteInput = {
+export type CastVoteInput = {
   ballotId: string
   ballotPartyId?: string
   candidateId?: string
@@ -44,7 +44,7 @@ export type CastAnonymousVoteInput = {
   credentialSignature: string
 }
 
-export type CastAnonymousVoteResult =
+export type CastVoteResult =
   | { status: 'recorded'; token: string }
   | { status: 'invalid_credential' }
   | { status: 'credential_already_used' }
@@ -52,7 +52,7 @@ export type CastAnonymousVoteResult =
   | { status: 'failed' }
 
 import {
-  recordAnonymousVote,
+  recordVote,
   verifyToken as verifyTokenInternal,
   getElectionResults as getElectionResultsInternal,
   countVotes as countVotesInternal,
@@ -80,9 +80,9 @@ import {
  * intyget bär valmyndighetens signatur för just den här valsedeln, och att det
  * inte redan är inlöst.
  */
-export async function castAnonymousVote(
-  input: CastAnonymousVoteInput,
-): Promise<CastAnonymousVoteResult> {
+export async function castVote(
+  input: CastVoteInput,
+): Promise<CastVoteResult> {
   // Valet måste passa valsedeln: rätt sorts svar, giltigt parti, kandidat som
   // står för det partiet, och en omröstning som faktiskt är öppen.
   const validation = await validateBallotChoice({
@@ -96,7 +96,7 @@ export async function castAnonymousVote(
     return { status: 'invalid_choice', reason: validation.reason }
   }
 
-  return recordAnonymousVote(
+  return recordVote(
     {
       ballotId: input.ballotId,
       ballotPartyId: input.ballotPartyId,

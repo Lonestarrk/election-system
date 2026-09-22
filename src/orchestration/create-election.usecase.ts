@@ -4,7 +4,7 @@ import {
   createElection as createElectionInVotesDb,
   deleteElection,
   type CreatedElection,
-} from '@/modules/anonymous-vote'
+} from '@/modules/ballot-box'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { mirrorElection, removeMirroredElection } from '@/modules/eligibility/election.service'
 

@@ -2,7 +2,7 @@ import { canonicalVoteRecord } from '@/lib/merkle'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { observerVotesSchema, parseJsonBody } from '@/lib/validation'
-import { votesDb } from '@/modules/anonymous-vote/db'
+import { votesDb } from '@/modules/ballot-box/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -66,8 +66,8 @@ export async function POST(request: Request) {
   const offset = body.data.offset ?? 0
 
   const [total, votes] = await Promise.all([
-    votesDb.anonymousVote.count({ where: { ballot: { electionId: election.id } } }),
-    votesDb.anonymousVote.findMany({
+    votesDb.vote.count({ where: { ballot: { electionId: election.id } } }),
+    votesDb.vote.findMany({
       where: { ballot: { electionId: election.id } },
       // Sortering på innehåll, inte på tid eller insättningsordning.
       orderBy: { credentialId: 'asc' },

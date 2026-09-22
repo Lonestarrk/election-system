@@ -3,7 +3,7 @@ import {
   generateVoteToken,
   hashToken,
   normaliseToken,
-} from '@/modules/anonymous-vote/token.service'
+} from '@/modules/ballot-box/token.service'
 import { sha256Hex } from '@/lib/crypto'
 
 /**

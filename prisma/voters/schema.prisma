@@ -4,7 +4,7 @@
 // Denna databas vet VEM som är röstberättigad och VEM som har röstat i vilken
 // omröstning. Den vet aldrig VAD någon röstat på.
 //
-// Det finns ingen kolumn här som kan kopplas till en rad i AnonymousVote.
+// Det finns ingen kolumn här som kan kopplas till en rad i Vote.
 // Ingen token, inget token-hash, ingen röst-id, ingen parti-id, ingen
 // kandidat-id.
 //
@@ -157,7 +157,7 @@ model VoterBallotStatus {
 
   /// AVSIKTLIGT GROVKORNIG: avrundad till dygn.
   ///
-  /// Med millisekundsupplösning här och i AnonymousVote.createdAt skulle en
+  /// Med millisekundsupplösning här och i Vote.createdAt skulle en
   /// angripare med båda databaserna kunna matcha rad mot rad på tid och
   /// därmed återskapa kopplingen mellan väljare och röst. Hela separationen
   /// vore då meningslös. Se SECURITY.md, avsnittet om tidskorrelation.

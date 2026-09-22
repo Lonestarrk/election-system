@@ -27,7 +27,7 @@ Docker Compose kör en init-SQL som skapar båda databaserna.
 ### 1.2 Modulgräns med avsiktligt smal kontrakt
 
 ```
-modules/eligibility/          modules/anonymous-vote/
+modules/eligibility/          modules/ballot-box/
   – känner till identitet       – känner INTE till identitet
   – vet "X har röstat"          – vet "en röst finns på parti Y"
   – har ALDRIG partival         – får ALDRIG IP, headers, session, request-id
@@ -36,7 +36,7 @@ modules/eligibility/          modules/anonymous-vote/
 Röstmodulens publika API är exakt en funktion:
 
 ```ts
-castAnonymousVote(input: { partyId: string }): Promise<{ token: string }>
+castVote(input: { partyId: string }): Promise<{ token: string }>
 ```
 
 Ingen ytterligare parameter existerar i typsignaturen. Det går alltså inte att
@@ -80,12 +80,12 @@ varning — säg till så gör jag det.)
 
 ### 1.5 Tidskorrelation — den svåraste riktiga läckan
 
-Om `VoterStatus.voted_at` och `AnonymousVote.created_at` båda har
+Om `VoterStatus.voted_at` och `Vote.created_at` båda har
 millisekundsupplösning kan en angripare med båda databaserna matcha rad för rad på
 tid. Då är hela separationen värdelös.
 
 **Motmedel i POC:en:**
-- `AnonymousVote.created_at` lagras **avrundad till hel timme** (grovkornig bucket)
+- `Vote.created_at` lagras **avrundad till hel timme** (grovkornig bucket)
 - `VoterStatus.voted_at` lagras avrundat till hel dag
 - Slumpmässig fördröjning (0–N ms) mellan de två skrivningarna
 
@@ -113,7 +113,7 @@ election-system/
 ├─ .env.example
 ├─ prisma/
 │  ├─ voters/schema.prisma           # VoterStatus, VotingSession, AuditEvent
-│  └─ votes/schema.prisma            # Party, AnonymousVote
+│  └─ votes/schema.prisma            # Party, Vote
 ├─ src/
 │  ├─ app/
 │  │  ├─ (val)/page.tsx              # start
@@ -135,8 +135,8 @@ election-system/
 │  │  │  ├─ voter-status.service.ts
 │  │  │  ├─ voting-session.service.ts
 │  │  │  └─ db.ts                    # Prisma-klient: voters_db
-│  │  └─ anonymous-vote/             # röstsidan
-│  │     ├─ index.ts                 # ENDA publika ytan: castAnonymousVote()
+│  │  └─ ballot-box/                 # röstsidan
+│  │     ├─ index.ts                 # ENDA publika ytan: castVote()
 │  │     ├─ token.service.ts
 │  │     ├─ vote.service.ts
 │  │     └─ db.ts                    # Prisma-klient: votes_db
@@ -166,11 +166,11 @@ AuditEvent       id · event_type · occurred_at(timmesupplösning)
 **votes_db**
 ```
 Party            id(uuid) · name · abbreviation · display_order
-AnonymousVote    id(uuid) · token_hash(unik) · party_id → Party ·
+Vote    id(uuid) · token_hash(unik) · party_id → Party ·
                  created_at(timmesupplösning)
 ```
 
-Ingen kolumn i `AnonymousVote` kan härledas till en väljare. Ingen kolumn i
+Ingen kolumn i `Vote` kan härledas till en väljare. Ingen kolumn i
 `VoterStatus` kan härledas till en röst. Ingen FK korsar databasgränsen —
 PostgreSQL tillåter det inte.
 
@@ -187,7 +187,7 @@ PostgreSQL tillåter det inte.
 6. `/api/vote/parties` → partilista
 7. `/api/vote/cast` med `{ partyId }` + CSRF-token:
    - transaktion i voters_db: konsumera session **och** sätt `has_voted` (atomiskt)
-   - anrop `castAnonymousVote({ partyId })` → token genereras, hash lagras
+   - anrop `castVote({ partyId })` → token genereras, hash lagras
    - sessionscookie rensas
    - token returneras **en gång**, i responsbody
 8. Kvittovyn visar token + varningen:
@@ -236,7 +236,7 @@ hashning, MockBankID, validering, logg-redaction.
 - icke röstberättigad avvisas
 - byte av parti påverkar inte `VoterStatus`
 - tömning av `VoterStatus` → verifiering fungerar fortfarande (röster överlever)
-- tömning av `AnonymousVote` → "har röstat" består (ingen röst avslöjas)
+- tömning av `Vote` → "har röstat" består (ingen röst avslöjas)
 
 **Säkerhet** — hela loggutdata scannas efter klartext-token efter en full
 röstomgång (test 10); verifieringssvar scannas efter identitetsfält;
@@ -250,7 +250,7 @@ Stack: **Vitest** + Testcontainers-liknande uppsättning via compose-profil
 ## 7. Demo-sidan `/demo`
 
 - Arkitekturdiagrammet från specen, renderat
-- Live-vy: `VoterStatus`-tabellen bredvid `AnonymousVote`-tabellen
+- Live-vy: `VoterStatus`-tabellen bredvid `Vote`-tabellen
 - Explicit kolumnjämförelse som visar att inget fält är gemensamt
 - Knapp: "Försök länka en väljare till en röst" → visar att frågan inte går att
   ställa, med den faktiska SQL som skulle behövas och varför den misslyckas

@@ -1,7 +1,7 @@
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { ballotLookupSchema, parseJsonBody } from '@/lib/validation'
-import { getBallotChoices } from '@/modules/anonymous-vote'
+import { getBallotChoices } from '@/modules/ballot-box'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'

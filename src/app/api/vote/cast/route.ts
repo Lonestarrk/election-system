@@ -1,7 +1,7 @@
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { castVoteSchema, parseJsonBody } from '@/lib/validation'
-import { castAnonymousVote } from '@/modules/anonymous-vote'
+import { castVote } from '@/modules/ballot-box'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }
 
-  const outcome = await castAnonymousVote(body.data)
+  const outcome = await castVote(body.data)
 
   if (outcome.status === 'credential_already_used') {
     // Intyget är redan inlöst. Antingen ett dubbelröstningsförsök, eller en
