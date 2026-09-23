@@ -64,7 +64,7 @@
 | `prisma/votes/schema.prisma` | `EncryptedVote`, `TrusteeShare`, `PartialDecryption`, `BallotTally` |
 | `src/orchestration/create-election.usecase.ts` | Generera tröskelnyckel |
 | `src/orchestration/final-check.usecase.ts` | Ny CRITICAL-kontroll: kopplingen är borta |
-| `src/app/rosta/page.tsx` | Visa lagd röst, tillåt ändring, visa chifferhash |
+| `src/app/vote/page.tsx` | Visa lagd röst, tillåt ändring, visa chifferhash |
 | `src/app/api/observer/votes/route.ts` | Publicera chiffer och bevis |
 | `tools/verify-election.mjs` | Räkna om summan oberoende |
 
@@ -3181,6 +3181,121 @@ git commit -m "Stängningen skalar bort identiteten och kontrolleras av slutkont
 
 ---
 
+## Task 11b: Engelska sökvägar i hela appen
+
+**Beslut av användaren 2026-09-23:** *"Kör engelska urls på hela appen."*
+Gränssnittet förblir på svenska; bara sökvägarna byts.
+
+| Från | Till |
+|---|---|
+| `/legitimera` | `/identify` |
+| `/rosta` | `/vote` |
+| `/verifiera` | `/verify` |
+| `/demo` | `/architecture` |
+
+`/admin` och alla API-rutter är redan engelska. `/api/demo/*` behåller sitt namn:
+de rutterna hör till demoläget (attrapp-BankID) och inte till arkitektursidan.
+Att sidan hette `/demo` blandade ihop de två, vilket blir ett verkligt problem när
+uppgift 17 gör demoläget till en egen växel.
+
+**Files:** flytta katalogerna under `src/app` med `git mv`, så att historiken
+följer med. Uppdatera sedan varje referens: menyn i `layout.tsx`, länkar i sidor
+och komponenter, returadressen i BankID:s flöde på samma enhet, länkar i
+pushnotiser, matchare i `middleware.ts`, e2e-testernas `page.goto`, och
+säkerhetstester som läser sidfiler efter sökväg (till exempel
+`known-limitations.test.ts`, som läser `src/app/demo/page.tsx`).
+
+**Omdirigeringarna, och varför de INTE är permanenta**
+
+`next.config.ts` har i dag `{ source: '/verify', destination: '/verifiera',
+permanent: true }`. Vänds den bara om blir det en loop. Det finns också en
+fälla som inte syns i koden: webbläsare cachar permanenta omdirigeringar. En
+enhet som en gång besökt `/verify` minns att den ska till `/verifiera`, och
+möter sedan serverns nya omdirigering tillbaka. Loopen sitter då i
+webbläsaren och överlever en rättning på servern.
+
+Ta därför bort den gamla omdirigeringen och lägg de fyra svenska sökvägarna som
+**tillfälliga** omdirigeringar (`permanent: false`). Ett proof of concept har
+inget sökmotorbehov som motiverar permanenta, och permanenta omdirigeringar
+gör varje framtida namnbyte till en loop på användarnas enheter. Skriv skälet i
+kommentaren. Den nuvarande kommentaren säger att *"gränssnittet är på svenska,
+så verifieringssidan ligger på /verifiera"*, och den ska ersättas.
+
+- [ ] Flytta, uppdatera referenser och omdirigera
+- [ ] Verifiera med `curl`: varje ny sökväg svarar 200, varje gammal svarar 307
+      till den nya, och `curl -L --max-redirs 5` når fram utan loop, även för
+      `/verify`
+- [ ] `grep` i `src/` och `tests/`: inga svenska sidsökvägar kvar utom i
+      omdirigeringstabellen
+- [ ] `npx tsc --noEmit`, `npx vitest run` och `npx playwright test`
+- [ ] Committa
+
+---
+
+## Task 11c: Arkitektursidan beskriver kuvertmodellen
+
+**Prioriterad av användaren 2026-09-23.** Alla fyra innehållsdelarna är valda.
+
+**Files:**
+- Modify: `src/app/architecture/page.tsx` (flyttad i uppgift 11b), `src/app/api/demo/database-state/route.ts`
+- Test: e2e för sidan, och säkerhetstester som läser sidan
+
+**Varför den måste skrivas om, inte lappas**
+
+Sidan beskriver i sin helhet den gamla modellen: röstintyg, blinda signaturer,
+tokens och `anonymous_vote`. Dess bärande demonstration, *"Finns det någon
+koppling?"* med de främmande nycklarna ur `information_schema`, har också blivit
+fel. I kuvertmodellen finns kopplingen med flit medan röstningen pågår. Det som
+skyddar valhemligheten då är att chiffret inte går att läsa utan k av n andelar,
+och vid stängningen raderas kopplingen. Det är en starkare demonstration än den
+gamla, eftersom den visar skyddet ändra form.
+
+**Innehåll**
+
+1. **Kuvertmodellen förklarad.** Analogin först, sedan faserna
+   `OPEN → CLOSED → VALIDATED → STRIPPED → TALLIED → CERTIFIED` med vad varje fas
+   tillåter (spec 6.1:s tabell), sedan vad konstruktionen **inte** ger.
+2. **Livevy av databaserna.** Som i dag, men med `pending_vote`,
+   `encrypted_vote`, `partial_decryption`, `ballot_tally`, valets `phase` och
+   `envelopeRoot`. **Visas bara i demoläge**, med samma predikat som
+   `database-state`-rutten redan använder (`bankIdIsMocked`). Uppgift 17 byter
+   predikatet mot lägesväxeln. I skarpt läge får sidan aldrig visa
+   röstlängdens innehåll.
+3. **Följ en röst.** Före stängningen: väljarens rad i `pending_vote`, där
+   kopplingen syns men chiffret inte går att läsa. Efter stängningen: raden är
+   borta, och chiffret ligger i `encrypted_vote` utan koppling.
+   **Sidan får inte själv återskapa kopplingen.** Ett "följ en röst" som minns
+   vilken chifferhash som hörde till vilken väljare, i databasen, i
+   webbläsarens lagring eller i en cache, och visar det efter stängningen, vore
+   exakt den koppling modellen raderar. Efter stängningen kan en röst bara
+   hittas av den som har verifikationskoden, alltså väljaren själv. Det är så
+   sidan ska visa det: låt besökaren klistra in sin egen kod.
+4. **Risker och begränsningar.** Metadatarisker och *"varför detta inte räcker
+   för ett riktigt val"*, uppdaterade. Minst: kopplingen finns under röstningen;
+   backuper, läsreplikor och WAL-loggen omfattas inte av raderingen; betrodd
+   utdelare av tröskelnyckeln; ingen validering av BankID-certifikatkedjan
+   (spec 4.6). Håll listan i linje med `src/lib/known-limitations.ts`, så att
+   sidan inte lovar mer än begränsningslistan medger.
+
+Beskriv bara det som finns. Tröskeldekrypteringen och publiceringen byggs i
+uppgift 12 och 13. Sidan får förklara dem som design, men livevyn ska visa vad
+databasen faktiskt innehåller och inte påstå att ett steg körts.
+
+- [ ] Skriv om sidan och utöka `database-state`
+- [ ] Öppna sidan i en riktig webbläsare via dev-servern, även på mobilbredd.
+      Ett blockerat skript syns inte i bygget, och projektet har redan förlorat
+      tid på det två gånger.
+- [ ] Tester, hela sviten, committa
+
+---
+
+**Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **14**
+→ 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 14 flyttades upp eftersom "Följ en
+röst" inte kan visas live förrän röstsidan lägger kuvert. Beroendet är
+kontrollerat: uppgift 14 använder bara rutterna från uppgift 7–9, som är klara.
+
+---
+
 ## Task 12: Summering och tröskeldekryptering
 
 **Files:**
@@ -3317,11 +3432,71 @@ git commit -m "Homomorf räkning: bara summan öppnas, av två förtroendemän"
 
 ---
 
+## Task 12b: Slutkontrollen byggs om mot kuvertmodellen
+
+**Files:**
+- Modify: `src/orchestration/final-check.usecase.ts`
+- Test: `tests/integration/final-check.test.ts` (utöka eller skriv om; följ det som finns)
+
+**Varför uppgiften finns**
+
+Slutkontrollen är spärren före fastställandet. Åtta av dess elva kontroller läser den
+gamla röstmodellen: `votesDb.vote` med `tokenHash`, `credentialId`,
+`credentialSignature`, och valsedelns `signingPublicKeyPem`. För ett val i
+kuvertmodellen är de tabellerna tomma, och kontrollerna passerar på `0 === 0`.
+**Spärren som ska avgöra om ett val får fastställas är alltså i dag grön på tomma
+tabeller.** Det är den värsta felklassen i en kontroll: ett falskt godkännande.
+
+Ingen uppgift ägde det. Uppgift 15 raderar kolumnerna kontrollerna läser, men säger
+bara "inga kvarvarande referenser". Det hade tvingat fram en ad hoc-radering av
+kontroller i stället för en ombyggnad. Luckan hittades i förhandsgranskningen
+inför uppgift 12, som fjärde fallet av samma sort i planen.
+
+**Vad slutkontrollen ska pröva i kuvertmodellen**
+
+Gå igenom varje befintlig kontroll och avgör en av tre saker, skriftligt i koden:
+behålls som den är, skrivs om mot det nya underlaget, eller tas bort med ett
+utskrivet skäl. Ingen kontroll försvinner tyst.
+
+Kontroller som ska finnas efteråt, och som var och en ska kunna fallera:
+
+1. **Antalet stämmer.** Antalet `EncryptedVote` per valsedel är lika med antalet
+   kuvert som skalades. Spara antalet vid stängningen om det inte redan finns,
+   så att det finns något att jämföra mot. Kontrollen ska inte kunna passera
+   på två tomma mängder när kuvert faktiskt lades.
+2. **Varje röst verifierar.** `verifyEncryptedBallot` på varje `EncryptedVote`,
+   inramad vid anropsstället enligt ruling 37 så att skräp i databasen blir en
+   avvikelse och inte en krasch.
+3. **Varje partiell dekryptering verifierar** mot förtroendemannens publika
+   andel och mot det aggregerade chiffret.
+4. **Räkningen stämmer.** Summan av räkneverken per valsedel är lika med antalet
+   röster, och en omkombination av de lagrade partiella dekrypteringarna ger de
+   publicerade talen.
+5. **Kuvertroten finns** och kopplingen är raderad (`link_cleared`, finns redan).
+6. **Fasen är `TALLIED`** innan fastställandet tillåts.
+7. **Revisionskedjan är obruten** (`audit_chain_intact`, finns redan).
+
+Behåll `PRECONDITION` kontra `CRITICAL` enligt den princip ruling 42 slog fast:
+en kontroll som fallerar för att valet inte kommit så långt är en förutsättning,
+inte en avvikelse, och får aldrig låsa ett oskyldigt val i `UNDER_REVIEW`.
+
+- [ ] **Steg 1: Skriv tester som fallerar för varje kontroll, en manipulation per test**
+
+Varje test ska manipulera databasen på ett sätt som bara den kontrollen fångar,
+och kräva att just den fallerar. Ett test som kontrollerar att allt är grönt på
+ett ärligt val bevisar ingenting om spärren.
+
+- [ ] **Steg 2: Bygg om kontrollerna**
+- [ ] **Steg 3: Kör hela sviten**
+- [ ] **Steg 4: Committa**
+
+---
+
 ## Task 13: Publicering och oberoende verifiering
 
 **Files:**
 - Modify: `src/app/api/observer/votes/route.ts`, `tools/verify-election.mjs`
-- Create: `src/app/verifiera/page.tsx` (ersätter tokenflödet)
+- Create: `src/app/verify/page.tsx` (ersätter tokenflödet; sidan flyttades från `/verifiera` i uppgift 11b)
 - Test: `tests/integration/independent-verification.test.ts`
 
 - [ ] **Steg 1: Skriv det fallerande testet**
@@ -3370,7 +3545,7 @@ git commit -m "Publicerad mängd och oberoende omräkning av summan"
 ## Task 14: Röstsidan lägger och ändrar krypterade röster
 
 **Files:**
-- Modify: `src/app/rosta/page.tsx`
+- Modify: `src/app/vote/page.tsx` (flyttad från `src/app/rosta` i uppgift 11b)
 - Test: `tests/e2e/voting-flow.spec.ts` (skrivs om mot det nya flödet)
 
 **Interfaces:**
@@ -3507,7 +3682,7 @@ här projektet har redan förlorat tid på exakt det två gånger.
 - [ ] **Steg 6: Committa**
 
 ```bash
-git add src/app/rosta/page.tsx tests/e2e/voting-flow.spec.ts
+git add src/app/vote/page.tsx tests/e2e/voting-flow.spec.ts
 git commit -m "Röstsidan lägger och ändrar krypterade röster"
 ```
 
@@ -3523,6 +3698,11 @@ git commit -m "Röstsidan lägger och ändrar krypterade röster"
 
 Ta bort `src/app/api/vote/credential/route.ts`, lägg till `src/app/api/vote/encrypted/route.ts`,
 `src/app/api/admin/elections/close/route.ts`, `src/app/api/admin/elections/decrypt/route.ts`.
+
+**Kontrollera listan mot vad som redan står där.** `close/route.ts` lades in i
+uppgift 11 och `decrypt/route.ts` i uppgift 12, eftersom testet annars fallerade.
+Slutkontrollen byggdes om mot kuvertmodellen i uppgift 12b, så att raderingen av
+kolumnerna här inte tvingar fram en ad hoc-radering av kontroller.
 
 - [ ] **Steg 2: Kör och se att det fallerar**
 
@@ -3561,7 +3741,20 @@ git commit -m "Blindsigneringen bort — obundenheten kommer nu från att inga r
 ## Task 16: Dokumentation och begränsningar
 
 **Files:**
-- Modify: `ARCHITECTURE.md`, `SECURITY.md`, `src/lib/known-limitations.ts`, `tests/security/known-limitations.test.ts`
+- Modify: `ARCHITECTURE.md`, `README.md`, `VERIFIABILITY.md`, `SECURITY.md`, `src/lib/known-limitations.ts`, `tests/security/known-limitations.test.ts`
+
+**Varför uppgiften växte**
+
+Den skrevs som en omskrivning av `ARCHITECTURE.md` avsnitt 4-7. Det räcker inte,
+och luckan är densamma som redan upptäckts två gånger i den här planen: en fil
+står i ingen uppgifts ägo och felet syns först när någon läser den.
+
+- `ARCHITECTURE.md` avsnitt 3 är *Blinda signaturer, förklarat enkelt* — hela den
+  mekanism uppgift 15 raderar. Avsnitt 1-2 beskriver samma gamla modell.
+- `VERIFIABILITY.md` avsnitt 1 är i sin helhet *Röstintyg*, samma raderade
+  mekanism. Filen ägdes av ingen uppgift.
+- `README.md` ägdes av ingen uppgift, och dess rubrikpåstående är inte bara
+  inaktuellt utan **fel om säkerhetsmodellen**. Se steg 5.
 
 - [ ] **Steg 1: Ta bort de lösta begränsningarna**
 
@@ -3595,18 +3788,87 @@ när något blir bättre.
 },
 ```
 
-- [ ] **Steg 3: Skriv om `ARCHITECTURE.md` avsnitt 4–7**
+- [ ] **Steg 3: Skriv om `ARCHITECTURE.md` avsnitt 1-7**
+
+Inte bara 4-7. Avsnitt 3 beskriver blindsigneringen, som uppgift 15 har raderat,
+och avsnitt 1-2 beskriver separationen som den såg ut innan kuvertmodellen.
 
 Ersätt blindsigneringens beskrivning med kuvertanalogin, sekvensdiagrammet över
 kryptering → ändring → skalning → summering, och tabellen över vad varje egenskap
 vilar på. Behåll formen från det befintliga avsnittet om blindsignering: analogin
 först, matematiken sedan, och ett stycke om vad konstruktionen **inte** ger.
 
-- [ ] **Steg 4: Kör hela sviten och committa**
+Gå också igenom avsnitt 10, *Vad arkitekturen ska vara, och var koden avviker*.
+Avvikelserna där är skrivna mot den gamla koden.
+
+- [ ] **Steg 4: Skriv om `VERIFIABILITY.md` avsnitt 1**
+
+Avsnittet heter *Röstintyg: varför databasflaggor inte räcker* och beskriver en
+mekanism som inte längre finns. Det som ersätter det är inte ett intyg utan en
+signerad kuvertläggning: väljaren signerar sitt eget chiffer med BankID, och
+kuvertroten publiceras innan signaturerna raderas.
+
+**Skriv inte att roten är ett inklusionsbevis.** Det är den inte i dag —
+`merkle.ts` exporterar ingen inklusionsvägsfunktion, inga syskonhashar lagras,
+och efter skalningen är signaturerna borta så ingen utomstående kan räkna om
+den. Den är ett åtagande över mängden kuvert, publicerat före raderingen.
+Samma fel har redan rättats två gånger i det här projektet — i spec 4.6 och i
+schemats kommentar om `envelopeRoot` — och ska inte återinföras här.
+
+Behåll avsnitt 2-5 där de fortfarande är sanna, men kontrollera varje påstående
+mot koden i stället för att anta det.
+
+- [ ] **Steg 5: Skriv om `README.md`**
+
+README:s rubrikpåstående är i dag **fel om säkerhetsmodellen**, inte bara
+inaktuellt. Den säger:
+
+> Den del som vet **"person X har röstat"** kan inte ta reda på
+> **"person X röstade på parti Y"**.
+
+I kuvertmodellen är det falskt medan röstningen pågår. `voters_db` bär
+kopplingen med flit — det är den som gör rösten utbytbar och därmed röstköp
+meningslöst. Separationen **uppstår vid stängningen**, när kopplingen raderas.
+Att beskriva den som en egenskap som gäller hela tiden är precis den sortens
+överdrivna löfte som redan rättats på tre andra ställen i projektet.
+
+Skriv om README så att den säger vad som faktiskt gäller, och när:
+
+1. Under röstningen: kopplingen finns, rösten kan ändras, och det är avsikten.
+2. Vid stängningen: chiffren flyttas, kopplingen raderas, kuvertroten publiceras.
+3. Efter stängningen: ingen koppling finns kvar i den levande databasen — och
+   säg rakt ut att backuper, läsreplikor och WAL-loggen inte omfattas av
+   raderingen. Det är samma begränsning som `link-exists-during-voting` i steg 2,
+   och README ska inte lova mer än begränsningslistan medger.
+
+Rätta också det som är konkret fel i dag:
+
+- Tabellen över sidor beskriver `/rosta` som *"Partival, bekräftelse och kvitto
+  med token"* och `/verifiera` som *"Kontrollera en röst med sin token"*. Tokens
+  finns inte i modellen. Sidorna har dessutom bytt sökväg i uppgift 11b:
+  `/identify`, `/vote`, `/verify` och `/architecture`. De svenska sökvägarna
+  omdirigeras, men README ska ange de nya.
+- Genomgången säger *"Har redan röstat — avvisas"*. I den nya modellen kan en
+  väljare rösta igen och ändra sig fram till stängningen. Demopersonnumrens
+  utfall ska stämma med vad seeden faktiskt gör.
+- *"Det enda som passerar gränsen när en röst läggs är ett parti-id"* är fel.
+  Det som passerar är ett chiffer som ingen kan läsa utan k av n andelar.
+- SQL-exemplet läser `anonymous_vote`. Den tabellen heter `vote` sedan
+  omdöpningen, och den nya tabellen för krypterade röster heter `encrypted_vote`.
+  Kör kommandona innan du skriver in dem — ett exempel som inte fungerar är
+  värre än inget exempel.
+- **Behåll avsnittet om testdatabaserna** som lades in i uppgift 11a (att
+  integrationstesterna kör mot `voters_test`/`votes_test`, att vakten frågar
+  servern vilken databas den är ansluten till, och när testerna hoppas över
+  respektive fallerar). Det är skrivet mot koden och stämmer. Notera också att
+  e2e-sviten med flit nollställer röster och seedar om **dev**-databasen, eftersom
+  den testar den körande appen.
+
+- [ ] **Steg 6: Kör hela sviten och committa**
 
 ```bash
 npx vitest run && npx playwright test
-git add -A && git commit -m "Arkitekturen beskriver dubbla kuvert; fyra begränsningar lösta, två nya"
+git add -A && git commit -m "Dokumentationen beskriver dubbla kuvert; fyra begränsningar lösta, två nya"
 ```
 
 ---
