@@ -1450,7 +1450,14 @@ npm run migrate
 npm run generate
 ```
 
-Stoppa dev-servern först — den håller Prisma-motorens DLL låst på Windows.
+**Stoppa dev-servern forst.** Pa Windows haller en korande Next-process Prisma-
+motorens DLL last, och `prisma generate` faller da med
+`EPERM: operation not permitted, rename ... query_engine-windows.dll.node.tmp`.
+Felet ser ut som ett rattighetsproblem men ar en fillasning. Kontrollera med
+`netstat -ano | grep :3000` och stoppa processen innan du genererar.
+
+Databasen kors i Docker och delas med resten av arbetet. Kor `npm run migrate`
+mot den, inte mot en ny instans.
 
 - [ ] **Steg 6: Kör testerna**
 
@@ -3002,6 +3009,36 @@ Förväntat: FAIL, modulen saknas
 Summera komponentvis över alla `EncryptedVote` för valsedeln, spara varje
 förtroendemans bidrag med bevis, och kombinera när k stycken finns. Ta den diskreta
 logaritmen med `maximum` satt till antalet röstberättigade.
+
+**TVA FYND FRAN TIDIGARE UPPGIFTER SOM DEN HAR UPPGIFTEN AGER.**
+
+Granskningen av uppgift 1 och 3 noterade att kryptoprimitiven medvetet inte
+sjalvforsvarar sig — de litar pa att anroparen validerar. Den har uppgiften ar
+anroparen, och far darfor inte arva den tilliten:
+
+1. **`combine` ska vagra dubbla `trusteeIndex`.** Utan vakten utesluter den inre
+   loopens `j === i`-filter aven dubblettens eget index ur produkten, och
+   Lagrange-koefficienten blir fel — TYST. Ett felaktigt rostetal som inte kastar
+   ar den varsta felklassen i ett rakneverk. Det unika indexet
+   `@@unique([ballotId, optionIndex, trusteeIndex])` hindrar det i praktiken, men
+   vakten ar tva rader och gor felet loud:
+
+   ```ts
+   const indices = new Set(partials.map((partial) => partial.trusteeIndex))
+   if (indices.size !== partials.length) {
+     throw new Error('Samma fortroendeman bidrog tva ganger.')
+   }
+   ```
+
+   Lagg den i `combine` i `src/lib/crypto/threshold.ts` som en del av den har
+   uppgiften, och tacka den med ett test.
+
+2. **Validera gruppelement fran databasen innan de anvands.** Chiffren
+   kontrollerades med `isInSubgroup` nar rosten lades, men aggregeringen laser dem
+   fran `votes_db` och ska inte forutsatta att ingen rort dem daremellan. Anropa
+   `isInSubgroup` pa varje `c1` och `c2` innan de multipliceras ihop, och avbryt
+   rakningen med ett tydligt fel om nagot faller — en tyst felaktig summa ar sam re
+   an ett avbrott.
 
 - [ ] **Steg 4: Kör testerna**
 
