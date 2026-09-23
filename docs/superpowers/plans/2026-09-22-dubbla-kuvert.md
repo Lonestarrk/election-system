@@ -3288,8 +3288,8 @@ gamla, eftersom den visar skyddet ändra form.
      id: 'link-exists-during-voting',
      title: 'Kopplingen väljare↔röst finns medan röstningen pågår',
      why:
-       'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar och ' +
-       'därmed röstköp meningslöst. Priset är att "kan inte existera" blivit "raderas enligt ' +
+       'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar, så ' +
+       'att en köpt röst kan ersättas ända fram till stängningen. Priset är att "kan inte existera" blivit "raderas enligt ' +
        'schema". Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen, och rösten är ' +
        'bara skyddad av att chiffret inte går att läsa utan k av n andelar. Det är den ' +
        'huvudsakliga akademiska invändningen mot Estlands system.',
@@ -3419,6 +3419,39 @@ Tidslinjen ska fungera så här:
   därför också utanför demoläge.
 - **Ärlighet:** tidslinjen visar hur valet är tänkt att fungera. En kort rad
   säger det och länkar till Utvecklingsstatus för vad som är byggt.
+
+**Kvarvarande från granskningen av 11c, som den här uppgiften äger**, eftersom
+den ändå rör filerna:
+
+- `FollowAVote.tsx:150-166`: rutan "Efter stängningen" är alltid grön och säger
+  att det inte går att säga ur databasen längre, också när
+  `remainingEnvelopes > 0`, alltså just när kopplingen finns kvar. Gör den till en
+  varning i det läget.
+- `code-facts.ts`, `votedMarkerNotKept`: markören söker bara `voterBallotStatus` och
+  `markBallotAsVoted` i tre filer. Uppgift 11d skriver markeringen "har röstat",
+  kanske i en ny modell eller via en hjälpfunktion. Då skulle påståendet stå kvar
+  grönt fast det är falskt. **Skärp markören innan 11d**, så att varje skrivning av
+  en markering i skalningens transaktion fäller påståendet.
+- `EnvelopeModel.tsx:31`: etiketten om att väljaren ser om hon redan har röstat
+  gäller inte kuvertröster, eftersom `hasVoted` bara läses ur
+  `voter_ballot_status`. Beskriv det som design, eller ta bort det.
+- `known-limitations.ts`, posten `receipt-proves-choice`: texten säger att
+  lösningen inte är att ta bort kvittot och att kontrollen är hela skälet. Det
+  motsäger spec 3.1 på samma sida. Posten stämmer fortfarande för det gamla
+  flödet, men motiveringen får inte argumentera mot det beslutade.
+- Posten `live-results-in-old-flow` och metadataraden "Löpande resultat" nämner
+  bara antal per parti. Men `/api/observer/votes` lämnar ut varje röst i det
+  gamla flödet med innehåll (`ballotPartyId`, `candidateId`, `optionId`), utan
+  inloggning och även under `OPEN`. Säg det. Meningen *"Kuvertmodellen räknar
+  ingenting förrän kopplingen raderats"* låter som en spärr som är byggd. Skriv den
+  som design.
+- Reducern i livevyn: vägra att en fas går baklänges och att `linkClearedAt` blir
+  null igen. Det stänger den teoretiska luckan att ordningen avgörs av när frågan
+  skickades och inte av när servern läste.
+- `known-limitations.test.ts`: kontrollen mot hårdkodade rubriker hittar bara
+  formen `<td>Rubrik</td>`. Den ska också hitta listans egen form
+  `<td><strong>…</strong></td>` och radbruten text. Kontrollen att listan
+  importeras ska gälla filen som faktiskt renderar listan.
 
 **Teknik**
 
@@ -3761,7 +3794,9 @@ bevis**, och väljaren ser *att* hon röstat, inte vad.
 - kuvertroten och antalet kuvert som skalades
 
 **Vad som aldrig publiceras:** enskilda chiffer, deras hashar eller bevis, och
-ingenting per röst. Att ett fält läcker på ett ställe räcker för att bygga
+ingenting per röst. `/api/observer/votes` lämnar i dag ut varje röst i det gamla
+flödet med innehåll (`ballotPartyId`, `candidateId`, `optionId`), utan inloggning och
+även under `OPEN`. Det ska bort, inte kompletteras. Att ett fält läcker på ett ställe räcker för att bygga
 köparens verktyg.
 
 **Under röstningen publiceras bara valdeltagandet, och ingen ser löpande
@@ -4131,14 +4166,17 @@ när något blir bättre.
 lades till i uppgift 11c**, eftersom arkitektursidan läser listan och annars hade
 visat kuvertmodellen utan dess risker. Lägg inte till dem igen; kontrollera att
 de fortfarande stämmer. Koden nedan står kvar som referens för formuleringen.
+Lydelsen i `link-exists-during-voting` skärptes i 11c:s fixrunda, eftersom
+"därmed röstköp meningslöst" lovade mer än spec 3.1 medger. Den nya lydelsen,
+som står nedan och i `known-limitations.ts`, är den som gäller.
 
 ```ts
 {
   id: 'link-exists-during-voting',
   title: 'Kopplingen väljare↔röst finns medan röstningen pågår',
   why:
-    'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar och ' +
-    'därmed röstköp meningslöst. Priset är att "kan inte existera" blivit "raderas enligt ' +
+    'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar, så ' +
+    'att en köpt röst kan ersättas ända fram till stängningen. Priset är att "kan inte existera" blivit "raderas enligt ' +
     'schema". Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen, och rösten är ' +
     'bara skyddad av att chiffret inte går att läsa utan k av n andelar. Det är den ' +
     'huvudsakliga akademiska invändningen mot Estlands system.',
@@ -4194,8 +4232,8 @@ inaktuellt. Den säger:
 > **"person X röstade på parti Y"**.
 
 I kuvertmodellen är det falskt medan röstningen pågår. `voters_db` bär
-kopplingen med flit — det är den som gör rösten utbytbar och därmed röstköp
-meningslöst. Separationen **uppstår vid stängningen**, när kopplingen raderas.
+kopplingen med flit — det är den som gör rösten utbytbar, så att en köpt röst
+kan ersättas ända fram till stängningen. Separationen **uppstår vid stängningen**, när kopplingen raderas.
 Att beskriva den som en egenskap som gäller hela tiden är precis den sortens
 överdrivna löfte som redan rättats på tre andra ställen i projektet.
 
@@ -4245,6 +4283,22 @@ git add -A && git commit -m "Dokumentationen beskriver dubbla kuvert; fyra begr�
 ---
 
 ## Task 17: Demoläge och skarpt läge
+
+**Vakten för demoläget, som växeln bygger på, ska skärpas först.** Uppgift 11c
+samlade demoläget i `isDemoMode()` i `src/lib/demo-mode.ts`, med ett strukturtest i
+`tests/security/api-surface.test.ts`. Granskningen visade att testet släpper igenom:
+
+- en hanterare skriven som `export const POST = async …`, `export function PUT`
+  eller `export { leak as PATCH }`
+- `HEAD` och `OPTIONS`
+- ett villkor som svarar 200 i stället för 404
+- filer under `src/app/api/demo` som inte heter `route.ts`
+
+Lägg dessutom till ett **beteendetest**. Det byter `isDemoMode` mot `false` och båda
+databasklienterna mot proxies som kastar vid all åtkomst, importerar varje rutt
+under `src/app/api/demo`, anropar varje exporterad metod och kräver 404 utan någon
+databasåtkomst. Lägg också ett test som visar att växeln faktiskt styr
+`isDemoMode()`. Det finns inget som prövar det i dag.
 
 **Files:**
 - Create: `src/lib/runtime-mode.ts`, `src/app/api/mode/route.ts`
