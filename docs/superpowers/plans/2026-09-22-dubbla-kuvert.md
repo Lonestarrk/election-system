@@ -2615,6 +2615,48 @@ export async function castEncryptedBallot(
 }
 ```
 
+- [ ] **Steg 3a: Lägg till `publicKeyFromCertificate`**
+
+`envelope-signature.ts` exporterar redan `personalNumberFromCertificate`. Lägg
+en systerfunktion bredvid den, så att det fortsätter finnas **ett enda ställe**
+som förstår certifikatformatet:
+
+```ts
+/**
+ * Nyckelmaterialet ur certifikatet, utan det som identifierar personen.
+ *
+ * Certifikatet bär personnumret i klartext. Det som ska lagras och senare
+ * verifieras mot är nyckeln, inte påståendet om vem den tillhör — den
+ * kopplingen avgörs när rösten läggs och bärs därefter av radens koppling till
+ * väljaren.
+ *
+ * Attrappens format har personnumret på en rad före PEM-blocket. Ett riktigt
+ * X.509-certifikat har det i subject-fältet och saknar prefixet helt, så där
+ * returneras certifikatet oförändrat — nyckeln extraheras då av crypto vid
+ * verifieringen.
+ *
+ * Ligger bredvid personalNumberFromCertificate med flit: två funktioner som
+ * tolkar samma format på var sitt håll skulle kunna glida isär, och symptomet
+ * vore signaturer som verifierar mot fel nyckel.
+ */
+export function publicKeyFromCertificate(certificate: string): string {
+  return certificate.replace(/^personnummer:\d+
+/, '')
+}
+```
+
+Ett test som vaktar att båda funktionerna läser samma certifikat konsekvent:
+
+```ts
+it('nyckel och personnummer läses ur samma certifikat utan att störa varandra', async () => {
+  const data = await signAs('199001011234')
+
+  expect(personalNumberFromCertificate(data.certificate)).toBe('199001011234')
+  expect(publicKeyFromCertificate(data.certificate)).toMatch(/^-----BEGIN PUBLIC KEY-----/)
+  expect(publicKeyFromCertificate(data.certificate)).not.toContain('personnummer:')
+})
+```
+
 - [ ] **Steg 3b: Byt ut certifikatkolumnen**
 
 Uppgift 5 byggdes innan granskningen av uppgift 8 hittade det här, så kolumnen
