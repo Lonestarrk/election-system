@@ -5,6 +5,7 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { closeStateOf } from '@/modules/eligibility/election.service'
 import { clearPendingVotes } from '@/modules/eligibility/pending-vote.service'
 import { validateBeforeClose, type ValidationReport } from './validate-before-close.usecase'
 
@@ -56,6 +57,76 @@ export type CloseOutcome =
   | { status: 'already_closed' }
   | { status: 'validation_failed'; summary: ValidationReport['summary'] }
   | { status: 'invalid_ballot'; ciphertextHash: string }
+
+/**
+ * Vad som är känt om kopplingen mellan väljare och röst när stängningen
+ * avbrutits.
+ *
+ * `untouched` — kontrollerat: ingenting är raderat, och det går att säga rakt
+ *   ut. Så är det på varje väg som bryter FÖRE transaktionen, och på den väg
+ *   där efterkontrollen visar att transaktionen rullade tillbaka.
+ *
+ * `unknown` — OKONTROLLERAT. Transaktionen kan ha commitat; vi kunde bara inte
+ *   läsa tillbaka utfallet. Det enda ärliga beskedet är att stängningen KAN ha
+ *   gått igenom.
+ */
+export type LinkState = 'untouched' | 'unknown'
+
+/**
+ * Stängningen bröts, och felet BÄR sitt eget säkerhetspåstående.
+ *
+ * VARFÖR EN EGEN FELTYP OCH INTE EN NY GREN I `CloseOutcome`.
+ *
+ * Samma resonemang som när efterkontrollen infördes: varje gren i
+ * `CloseOutcome` beskriver ett begripligt tillstånd hos OMRÖSTNINGEN — för
+ * tidigt, redan stängd, en avvikelse att utreda — och rutten har ett eget svar
+ * för var och en. Ett brutet antagande om systemet självt är inte ett sådant
+ * tillstånd. Det som däremot ändrades i fixrunda 3 är att de brutna
+ * antagandena inte längre är utbytbara: "ingenting är raderat" och "jag vet
+ * inte om något raderats" är två olika besked till en administratör, och
+ * skillnaden måste bäras av felet självt — rutten kan inte gissa den ur en
+ * felsträng.
+ *
+ * Att låta fältet vara `unknown` som förval för allt ANNAT som kastar är
+ * avsiktligt försiktigt: påståendet "ORÖRD" ska bara ges där koden vet det.
+ */
+export class CloseAbortedError extends Error {
+  readonly linkState: LinkState
+
+  constructor(linkState: LinkState, message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'CloseAbortedError'
+    this.linkState = linkState
+  }
+}
+
+/**
+ * Beskedet som ska visas när stängningen kastat.
+ *
+ * Bor här och inte i rutten: det är ett påstående om vad som hänt med
+ * kopplingen mellan väljare och röst, alltså en domänfråga, och det är den
+ * enda platsen där påståendets sanning går att härleda. Rutten väljer bara
+ * statuskod.
+ */
+export function abortedMessageFor(error: unknown): string {
+  const linkState: LinkState = error instanceof CloseAbortedError ? error.linkState : 'unknown'
+
+  if (linkState === 'untouched') {
+    return (
+      'Stängningen avbröts innan något raderades. Kopplingen mellan väljare och röst är ' +
+      'ORÖRD, ingen röst är förlorad, och omröstningen kan stängas om när felet är utrett. ' +
+      'Vad som gick fel framgår av serverloggen — svaret gissar medvetet inte.'
+    )
+  }
+
+  return (
+    'Stängningen kunde inte bekräftas. Den KAN ha gått igenom — kontrollera omröstningens ' +
+    'fas innan du gör något annat. Står den i STRIPPED är kopplingen mellan väljare och röst ' +
+    'raderad och stängningen klar; står den kvar i OPEN gick den inte igenom. En omkörning är ' +
+    'ofarlig i båda fallen: en redan stängd omröstning svarar att den är stängd utan att röra ' +
+    'någonting. Vad som gick fel framgår av serverloggen.'
+  )
+}
 
 /**
  * Ett blad per kuvert.
@@ -336,7 +407,8 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
      * röster som saknas. Ett undantag lämnar kopplingen orörd, och stängningen
      * kan köras om när felet är utrett.
      */
-    throw new Error(
+    throw new CloseAbortedError(
+      'untouched',
       `Stängningen avbröts: ${envelopes.length} kuvert skulle flyttas men ${moved} finns i ` +
         'röstdatabasen. Kopplingen är orörd.',
     )
@@ -425,13 +497,50 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
    * som antalskontrollen i steg 5 redan kastar på, och rutten har en gren som
    * svarar 409 med beskedet att kopplingen ligger kvar.
    */
-  const after = await votersDb.election.findUniqueOrThrow({
-    where: { id: electionId },
-    select: { phase: true, envelopeRoot: true },
-  })
+  /**
+   * LÄSNINGEN LIGGER EFTER COMMITEN, OCH DESS EGET FEL BETYDER NÅGOT HELT
+   * ANNAT ÄN DESS SVAR (fixrunda 3).
+   *
+   * Fallerar den här läsningen — tappad anslutning, pool-timeout, en
+   * omstart mellan COMMIT och SELECT — har transaktionen redan gått igenom
+   * eller inte, och vi kan inte veta vilket. Att låta det felet falla i samma
+   * gren som "kontrollen visade rollback" hade fått stängningen att påstå att
+   * kopplingen är ORÖRD i ett läge där den mycket väl kan vara raderad. Det är
+   * samma överdrivna löfte som resten av den här uppgiften handlat om, fast i
+   * ett körtidsmeddelande i stället för i dokumentationen — och det visas för
+   * en administratör i precis det ögonblick beskedet betyder som mest.
+   *
+   * Ingen dataförlust sker i något av fallen, och en omkörning är ofarlig: har
+   * stängningen gått igenom står fasen i STRIPPED och nästa körning svarar
+   * `already_closed`.
+   */
+  let after
+  try {
+    after = await closeStateOf(electionId)
+  } catch (error) {
+    throw new CloseAbortedError(
+      'unknown',
+      'Stängningen kunde inte bekräftas: transaktionen har skickats men utfallet gick inte ' +
+        'att läsa tillbaka. Kontrollera omröstningens fas innan stängningen körs om.',
+      { cause: error },
+    )
+  }
+
+  /**
+   * En försvunnen omröstning är inte heller ett kontrollerat "ingenting
+   * hände" — raden fanns när transaktionen skickades, så dess frånvaro säger
+   * ingenting om huruvida raderingen commitade.
+   */
+  if (after === null) {
+    throw new CloseAbortedError(
+      'unknown',
+      'Stängningen kunde inte bekräftas: omröstningen finns inte längre i röstlängden.',
+    )
+  }
 
   if (after.phase !== 'STRIPPED' || after.envelopeRoot === null) {
-    throw new Error(
+    throw new CloseAbortedError(
+      'untouched',
       'Stängningen gick inte igenom: skrivningarna i röstlängden finns inte kvar efter ' +
         `transaktionen (fas ${after.phase}, rot ${after.envelopeRoot === null ? 'oskriven' : 'skriven'}). ` +
         'Kopplingen mellan väljare och röst ligger kvar och stängningen kan köras om.',

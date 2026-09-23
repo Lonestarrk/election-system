@@ -5,7 +5,7 @@ import { logger } from '@/lib/logger'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
 import { getMirroredElection } from '@/modules/eligibility/election.service'
-import { closeElection } from '@/orchestration/close-election.usecase'
+import { abortedMessageFor, closeElection } from '@/orchestration/close-election.usecase'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -97,6 +97,13 @@ export async function POST(request: Request) {
    * SVARET PÅSTÅR INGEN ORSAK. Rutten kan inte veta vilken av vägarna som
    * löste ut, och en gissning som råkar peka fel skickar utredningen åt fel
    * håll. Orsaken står i loggen, säkerhetspåståendet i svaret.
+   *
+   * OCH SÄKERHETSPÅSTÅENDET FORMULERAS INTE HÄR. "Ingenting är raderat" är
+   * sant bara på de vägar som bryter innan eller under transaktionen, aldrig
+   * på den där efterkontrollens egen läsning fallerade — då kan kopplingen
+   * mycket väl vara borta. Skillnaden bärs av felet självt
+   * (`CloseAbortedError.linkState`), och `abortedMessageFor` översätter den
+   * till besked. Rutten väljer bara statuskod.
    */
   let outcome: Awaited<ReturnType<typeof closeElection>>
 
@@ -107,16 +114,7 @@ export async function POST(request: Request) {
       reason: error instanceof Error ? error.message : 'okänt fel',
     })
 
-    return jsonResponse(
-      {
-        status: 'aborted',
-        message:
-          'Stängningen avbröts innan något raderades. Kopplingen mellan väljare och röst är ' +
-          'ORÖRD, ingen röst är förlorad, och omröstningen kan stängas om när felet är ' +
-          'utrett. Vad som gick fel framgår av serverloggen — svaret gissar medvetet inte.',
-      },
-      409,
-    )
+    return jsonResponse({ status: 'aborted', message: abortedMessageFor(error) }, 409)
   }
 
   if (outcome.status === 'too_early') {

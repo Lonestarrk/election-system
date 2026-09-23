@@ -110,6 +110,31 @@ export async function mirrorElection(input: MirrorElectionInput): Promise<void> 
   })
 }
 
+/** Omröstningens skalningstillstånd, som det står i röstlängden. */
+export type CloseState = { phase: string; envelopeRoot: string | null }
+
+/**
+ * Läser fasen och kuvertroten.
+ *
+ * Finns som en egen, namngiven fråga i stället för en inline-läsning hos
+ * anroparen, eftersom den är ETT PÅSTÅENDE OM UTFALLET av den oåterkalleliga
+ * skalningen: `closeElection` använder den för att kontrollera att dess egen
+ * transaktion verkligen commitade innan den säger att kopplingen är raderad
+ * (se steg 7 där). Att läsningen har ett namn gör också att dess EGET
+ * misslyckande går att prova — och de två fallen "transaktionen rullade
+ * tillbaka" och "jag kunde inte kontrollera utfallet" kräver helt olika besked
+ * till administratören.
+ *
+ * Ingår inte i `MirroredElection`: fas och rot är skalningens arbetsmaterial,
+ * inte den publika metadata speglingen finns för.
+ */
+export async function closeStateOf(electionId: string): Promise<CloseState | null> {
+  return votersDb.election.findUnique({
+    where: { id: electionId },
+    select: { phase: true, envelopeRoot: true },
+  })
+}
+
 /** Tar bort speglingen. Finns för att orkestreringen ska kunna backa. */
 export async function removeMirroredElection(electionId: string): Promise<void> {
   await votersDb.election.deleteMany({ where: { id: electionId } })

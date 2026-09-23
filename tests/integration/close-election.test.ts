@@ -5,7 +5,9 @@ import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
 import {
+  abortedMessageFor,
   closeElection,
+  CloseAbortedError,
   envelopeRootOf,
   idForEnvelope,
 } from '@/orchestration/close-election.usecase'
@@ -66,6 +68,36 @@ vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
       }
 
       return actual.recordAuditEvent(eventType as never, client as never)
+    },
+  }
+})
+
+/**
+ * Låter efterkontrollens EGEN läsning fallera (fixrunda 3).
+ *
+ * `closeStateOf` är den läsning `closeElection` gör EFTER den oåterkalleliga
+ * commiten. Fallerar den — tappad anslutning, pool-timeout, en omstart mellan
+ * COMMIT och SELECT — har stängningen kanske gått igenom, kanske inte, och
+ * beskedet får inte påstå att kopplingen är orörd.
+ *
+ * Bara `closeStateOf` byts ut. Resten av modulen går till den äkta
+ * implementationen, så `mirrorElection` (som `createElection` i `beforeEach`
+ * använder) och allt annat är opåverkat.
+ */
+const electionServiceControl = vi.hoisted(() => ({ failCloseStateRead: false }))
+
+vi.mock('@/modules/eligibility/election.service', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/modules/eligibility/election.service')>()
+
+  return {
+    ...actual,
+    closeStateOf: async (electionId: string) => {
+      if (electionServiceControl.failCloseStateRead) {
+        throw new Error('anslutningen mot röstlängden tappades')
+      }
+
+      return actual.closeStateOf(electionId)
     },
   }
 })
@@ -139,6 +171,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
   beforeEach(async () => {
     auditControl.poisonTransaction = false
+    electionServiceControl.failCloseStateRead = false
     await resetElectionData()
 
     // Partiregistret är delad referensdata och tas inte bort av
@@ -632,6 +665,78 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     auditControl.poisonTransaction = false
     expect((await closeElection(electionId)).status).toBe('closed')
     expect(await votersDb.pendingVote.count()).toBe(0)
+  })
+
+  it('påstår inte att kopplingen är orörd när utfallet inte gick att läsa tillbaka', async () => {
+    /**
+     * SAMMA KLASS AV FEL SOM RESTEN AV UPPGIFTEN, FAST ÅT ANDRA HÅLLET.
+     *
+     * Efterkontrollens läsning ligger efter den oåterkalleliga commiten.
+     * Fallerar den av någon annan orsak än utfallet kastar `closeElection`
+     * trots att transaktionen gick igenom — och beskedet "kopplingen är ORÖRD"
+     * vore då falskt, visat för en administratör i precis det ögonblick det
+     * betyder som mest.
+     *
+     * Testet låter läsningen fallera efter en stängning som VERKLIGEN gick
+     * igenom, och kräver att beskedet inte påstår något det inte vet.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+
+    electionServiceControl.failCloseStateRead = true
+
+    const error = await closeElection(electionId).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    )
+
+    expect(error).toBeInstanceOf(CloseAbortedError)
+    expect((error as CloseAbortedError).linkState).toBe('unknown')
+
+    // Stängningen gick i själva verket igenom — påståendet om motsatsen hade
+    // alltså varit falskt.
+    expect(await votersDb.pendingVote.count()).toBe(0)
+    expect(await votesDb.encryptedVote.count()).toBe(2)
+
+    const besked = abortedMessageFor(error)
+    expect(besked).not.toContain('ORÖRD')
+    expect(besked).not.toContain('innan något raderades')
+    expect(besked).toContain('KAN ha gått igenom')
+    expect(besked).toContain('fas')
+
+    // Och en omkörning är ofarlig, precis som beskedet lovar.
+    electionServiceControl.failCloseStateRead = false
+    expect((await closeElection(electionId)).status).toBe('already_closed')
+  })
+
+  it('säger däremot rakt ut att kopplingen är orörd när det ÄR kontrollerat', async () => {
+    // Motstycket: den kontrollerade vägen ska inte ha blivit försiktigare än
+    // den behöver vara. Antalskontrollen i steg 5 vet att ingenting raderats.
+    await castFor(anna, 'bp-s')
+    // Ett chiffer som redan ligger i röstdatabasen med en ANNAN hash gör att
+    // antalet inte kan stämma: kuvertet flyttas, men räkningen ser en rad för
+    // mycket på valsedeln.
+    await votesDb.encryptedVote.create({
+      data: {
+        id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        ballotId,
+        ciphertext: [],
+        proofs: {},
+        ciphertextHash: 'en-hash-som-inte-hor-till-nagot-kuvert',
+      },
+    })
+
+    const error = await closeElection(electionId).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    )
+
+    expect(error).toBeInstanceOf(CloseAbortedError)
+    expect((error as CloseAbortedError).linkState).toBe('untouched')
+    expect(abortedMessageFor(error)).toContain('ORÖRD')
+
+    // Och kopplingen ligger faktiskt kvar, precis som beskedet påstår.
+    expect(await votersDb.pendingVote.count()).toBe(1)
   })
 
   it('slutkontrollen är kritisk om en koppling finns kvar EFTER skalningen', async () => {
