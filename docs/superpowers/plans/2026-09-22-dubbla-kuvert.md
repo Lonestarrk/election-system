@@ -1315,7 +1315,17 @@ model PendingVote {
 
   /// Certifikatet ur signaturen. Bar personnummer och namn — far därför
   /// ALDRIG folja med till votes_db vid skalningen.
-  bankIdCertificate String @map("bankid_certificate")
+  /// Den publika nyckeln ur certifikatet — INTE certifikatet självt.
+  ///
+  /// Certifikatet bär personnumret i klartext, både i attrappens format och i
+  /// riktiga svenska BankID-certifikat där det ligger i subject. Att lagra det
+  /// i råform skulle sätta ett klartextpersonnummer bredvid identitetshashen i
+  /// röstlängden, alltså upphäva hela skälet att hasha.
+  ///
+  /// Nyckeln räcker för att verifiera signaturen om vid valideringen. Att
+  /// underskrivaren var rätt person avgörs när rösten läggs, och bärs därefter
+  /// av radens koppling till voterStatusId.
+  bankIdPublicKey String @map("bankid_public_key")
 
   /// Dygnsupplöst, som all annan tidsdata i röstlängden.
   updatedAt DateTime @map("updated_at")
@@ -2521,20 +2531,46 @@ export async function castEncryptedBallot(
    * passerar varje relationell kontroll. Bara signaturen avslöjar att väljaren
    * aldrig godkant innehallet. Se spec 4.6.
    */
+  /**
+   * TVA SKILDA KONTROLLER, OCH DE FAR INTE SLAS IHOP.
+   *
+   * 1. Ar signaturen giltig for den nyttolast servern byggde? Rent
+   *    kryptografiskt, ingen identitet inblandad.
+   * 2. Tillhor certifikatet SAMMA person som sessionen? Det avgors genom att
+   *    hasha personnumret certifikatet pastar och jamfora mot rostlangdens
+   *    identitetshash.
+   *
+   * Granskningen av uppgift 8 fangade att ett tidigare utkast skickade
+   * `voter.externalIdentityHash` direkt som `expectedPersonalNumber` till
+   * verifyEnvelopeSignature. Den funktionen jamfor mot certifikatets
+   * KLARTEXTSIFFROR, sa en hash hade aldrig matchat — och varje giltig rost
+   * hade avvisats med `invalid_signature`. Ett totalt, tyst haveri i precis den
+   * funktion uppgiften bygger.
+   *
+   * Hashningen ar dessutom asynkron (scrypt genom antagningskon), vilket ar
+   * skalet att den hor hemma har och inte i signaturmodulen.
+   */
   const voter = await votersDb.voterStatus.findUnique({
     where: { id: voterStatusId },
     select: { externalIdentityHash: true },
   })
 
-  if (
-    !voter ||
-    !verifyEnvelopeSignature(
-      envelope.signature,
-      envelope.certificate,
-      { electionId, ballotId, ciphertextHash: ballot.ciphertextHash, castSequence: envelope.castSequence },
-      voter.externalIdentityHash,
-    )
-  ) {
+  if (!voter) return { status: 'not_eligible' }
+
+  const signatureIsValid = verifyEnvelopeSignature(envelope.signature, envelope.certificate, {
+    electionId,
+    ballotId,
+    ciphertextHash: ballot.ciphertextHash,
+    castSequence: envelope.castSequence,
+  })
+
+  const assertedPersonalNumber = personalNumberFromCertificate(envelope.certificate)
+
+  const signerIsTheVoter =
+    assertedPersonalNumber !== null &&
+    (await hashPersonalNumber(assertedPersonalNumber)) === voter.externalIdentityHash
+
+  if (!signatureIsValid || !signerIsTheVoter) {
     return { status: 'invalid_signature' }
   }
 
@@ -2546,7 +2582,20 @@ export async function castEncryptedBallot(
       ciphertextHash: ballot.ciphertextHash,
       castSequence: envelope.castSequence,
       bankIdSignature: envelope.signature,
-      bankIdCertificate: envelope.certificate,
+      /**
+       * DEN PUBLIKA NYCKELN, INTE CERTIFIKATET.
+       *
+       * Certifikatet bar personnumret i klartext — bade i attrappens format och
+       * i riktiga svenska BankID-certifikat, dar det ligger i subject. Att lagra
+       * det raform skulle satta ett klartextpersonnummer bredvid
+       * identitetshashen i rostlangden, alltsa upphava hela skalet att hasha.
+       *
+       * Det som behovs senare ar (a) nyckeln, for att kunna verifiera signaturen
+       * om vid valideringen, och (b) att underskrivaren var ratt person — och
+       * det andra ar redan avgjort av kontrollen ovan och bars av radens
+       * koppling till voterStatusId.
+       */
+      bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
       updatedAt: truncateToDay(new Date()),
     },
     create: {
@@ -2557,7 +2606,7 @@ export async function castEncryptedBallot(
       ciphertextHash: ballot.ciphertextHash,
       castSequence: envelope.castSequence,
       bankIdSignature: envelope.signature,
-      bankIdCertificate: envelope.certificate,
+      bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
       updatedAt: truncateToDay(new Date()),
     },
   })
@@ -2565,6 +2614,25 @@ export async function castEncryptedBallot(
   return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: existing !== null }
 }
 ```
+
+- [ ] **Steg 3b: Byt ut certifikatkolumnen**
+
+Uppgift 5 byggdes innan granskningen av uppgift 8 hittade det här, så kolumnen
+heter `bankid_certificate` i databasen. Den ska bära den publika nyckeln, inte
+certifikatet — se kommentaren i schemat.
+
+```bash
+# Efter att schemat ändrats:
+npx prisma migrate dev --schema=prisma/voters/schema.prisma --name bankid_public_key --create-only
+npm run migrate && npm run generate
+```
+
+Stoppa dev-servern före `generate` — en körande Next-process håller Prisma-
+motorns DLL låst på Windows, och felet ser ut som ett rättighetsproblem.
+
+Tabellen är tom i alla miljöer (ingen röst har lagts än), så en `DROP COLUMN`
+följd av `ADD COLUMN` är riskfri här. Skriv ändå migreringen som ett namnbyte
+om kolumnen kan innehålla data när du kör den.
 
 - [ ] **Steg 4: Skriv rutten `src/app/api/vote/encrypted/route.ts`**
 
