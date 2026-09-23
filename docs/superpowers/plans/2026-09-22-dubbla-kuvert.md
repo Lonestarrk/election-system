@@ -3099,6 +3099,18 @@ Förväntat: FAIL, modulen saknas
 Implementera enligt kommentaren. Uppdatera `Election.linkClearedAt` och
 `Election.phase` sist.
 
+**Och gör `phase` auktoritativ där den är tillgänglig.** Granskningen av uppgift
+9 påpekade att `castEncryptedBallot` avgör "stängd" enbart via klockan och
+`linkClearedAt`, aldrig via fasen — trots att fältets egen kommentar säger att
+en klocka som går fel ändrar beteendet tyst medan en fasövergång är en händelse
+någon utfört. Det var planmandaterat, eftersom fasen inte fanns förrän nu.
+
+Utöka därför kontrollen i `pending-vote.service.ts` så att en röst avvisas när
+`election.phase !== 'OPEN'`, utöver de befintliga villkoren. Behåll
+klockkontrollen — den fångar fallet att stängningen ännu inte körts fast tiden
+gått ut. Lägg ett test som sätter fasen till `CLOSED` med klockan kvar i
+framtiden och kräver att rösten avvisas.
+
 **Kuvertrotens format måste vara utskrivet, inte uppfunnet.** Den oberoende
 verifieraren i uppgift 13 ska kunna rakna om den utan att lasa var kallkod, och
 en väljare ska kunna bevisa inklusion mot den. Aterbruka `src/lib/merkle.ts`,
@@ -3355,7 +3367,153 @@ git commit -m "Publicerad mängd och oberoende omräkning av summan"
 
 ---
 
-## Task 14: Slakta blindsigneringen
+## Task 14: Röstsidan lägger och ändrar krypterade röster
+
+**Files:**
+- Modify: `src/app/rosta/page.tsx`
+- Test: `tests/e2e/voting-flow.spec.ts` (skrivs om mot det nya flödet)
+
+**Interfaces:**
+- Consumes: `/api/vote/session`, `/api/vote/ballot`, `/api/vote/sign-start`, `/api/vote/encrypted`; `encryptBallot` och `canonicalOptions` från klientmodulerna
+- Produces: inget nytt API
+
+**Varför den här uppgiften finns, och varför den ligger här**
+
+Röstsidan anropar i dag `/api/vote/credential` och `/api/vote/cast`. Uppgift 15
+raderar båda. Utan den här uppgiften har systemet en ny baksida och en framsida
+som anropar rutter som inte längre finns — och felet syns först när någon
+försöker rösta.
+
+Luckan upptäcktes av granskningen av uppgift 9: filen stod i planens
+filstruktur men ingen uppgift ägde den. Den ligger före raderingen med flit, så
+att sviten aldrig passerar ett tillstånd där appen inte går att rösta i.
+
+**Vad väljaren ska se, och varför**
+
+Modellen har tre egenskaper som måste synas i gränssnittet, annars finns de
+bara i koden:
+
+1. **Att rösten går att ändra.** Har väljaren redan lagt en röst på valsedeln
+   ska sidan säga det, visa att den kan ändras fram till stängning, och göra
+   ändringen lika lätt som den första röstningen. Det är hela skyddet mot
+   röstköp — en köpare måste bevaka väljaren till klockan 20 — och väljaren
+   måste förstå att hon har den möjligheten för att den ska betyda något.
+
+2. **Verifikationskoden.** Chifferhashen visas efter varje läggning, med
+   beskedet att den ändras när rösten ändras och att den senaste är den som
+   gäller. Sidan ska säga vad koden är bra till: att kontrollera att rösten
+   finns i den publicerade mängden efter stängning.
+
+3. **Att sidan inte kan visa vad du röstade.** Efter läggningen finns bara
+   chiffret. Sidan får inte spara valet i webbläsarens lagring för att kunna
+   visa det igen — det vore ett kvitto som bevisar innehållet, alltså precis
+   det modellen tar bort. Säg det i gränssnittet.
+
+- [ ] **Steg 1: Skriv de fallerande e2e-testerna**
+
+Skriv om `tests/e2e/voting-flow.spec.ts` mot det nya flödet. Behåll varje
+befintligt test som fortfarande beskriver en sann egenskap — särskilt att
+Gunvor får Faluns kommunvalsedel och inte Stockholms, att Elis avvisas, och att
+ingen kvittokod hamnar i webbläsarens lagring.
+
+Nya tester:
+
+```ts
+test('en väljare kan ändra sin röst, och koden ändras med den', async ({ page }) => {
+  /**
+   * Hela skyddet mot röstköp. Kan rösten inte ändras är en köpt röst köpt.
+   */
+  await identify(page, VOTERS.canVote)
+  const first = await voteFor(page, 'Socialdemokraterna')
+
+  await expect(page.getByText(/du har röstat/i)).toBeVisible()
+  await expect(page.getByText(/kan ändra/i)).toBeVisible()
+
+  const second = await voteFor(page, 'Moderaterna')
+
+  expect(second).not.toBe(first)
+})
+
+test('sidan visar aldrig vad väljaren röstade på', async ({ page }) => {
+  // Efter läggningen finns bara chiffret. Visade sidan valet vore det ett
+  // kvitto som bevisar innehållet.
+  await identify(page, VOTERS.verifiesReceipt)
+  await voteFor(page, 'Moderaterna')
+  await page.reload()
+
+  await expect(page.getByText(/du har röstat/i)).toBeVisible()
+  await expect(page.getByText('Moderaterna')).toHaveCount(0)
+})
+
+test('signaturen begärs av BankID, inte av sidan', async ({ page }) => {
+  // Sidan får inte konstruera något som liknar ett kuvert. Den startar en
+  // signering och pollar; allt som signeras byggs av servern.
+  const bodies: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/api/vote/encrypted')) bodies.push(request.postData() ?? '')
+  })
+
+  await identify(page, VOTERS.doubleVote)
+  await voteFor(page, 'Centerpartiet')
+
+  for (const body of bodies) {
+    expect(body).not.toMatch(/signature|certificate|castSequence/)
+  }
+})
+```
+
+- [ ] **Steg 2: Kör och se dem falla**
+
+Kör: `npx playwright test tests/e2e/voting-flow.spec.ts`
+Förväntat: FAIL — sidan använder fortfarande det gamla flödet.
+
+- [ ] **Steg 3: Skriv om sidan**
+
+Flödet per valsedel:
+
+```
+hämta valsedelns alternativ  →  canonicalOptions  →  väljaren väljer
+        ↓
+encryptBallot i webbläsaren  →  chiffer + bevis + hash, slumptalen kastas
+        ↓
+POST /api/vote/sign-start { ballotId, ciphertextHash }  →  orderRef + QR
+        ↓
+väljaren signerar i BankID
+        ↓
+POST /api/vote/encrypted { ballotId, orderRef, ballot }  →  pollas tills klar
+        ↓
+visa verifikationskoden, och att rösten går att ändra
+```
+
+Återanvänd `BankIdLogin`-komponentens QR- och autostartmönster om det passar,
+men **starta ingen legitimering** — det här är en signering, och väljaren är
+redan inloggad.
+
+**Kryptering i webbläsaren tar tid.** Tre valsedlar kostar omkring 0,7 sekunder
+sammanlagt, och en enskild riksdagsvalsedel omkring 0,3. Visa att något händer;
+en sida som ser låst ut under en sekund tolkas som trasig.
+
+- [ ] **Steg 4: Kör testerna**
+
+Kör: `npx playwright test` och `npx vitest run`
+Förväntat: PASS
+
+- [ ] **Steg 5: Öppna sidan i en riktig webbläsare**
+
+Starta dev-servern och rösta igenom hela flödet själv, inklusive en ändring.
+Ett blockerat skript eller en död knapp syns inte som ett fel i bygget — det
+här projektet har redan förlorat tid på exakt det två gånger.
+
+- [ ] **Steg 6: Committa**
+
+```bash
+git add src/app/rosta/page.tsx tests/e2e/voting-flow.spec.ts
+git commit -m "Röstsidan lägger och ändrar krypterade röster"
+```
+
+---
+
+## Task 15: Slakta blindsigneringen
 
 **Files:**
 - Delete: `src/lib/blind-signature.ts`, `src/lib/blind-client.ts`, `src/modules/eligibility/credential.service.ts`, `src/app/api/vote/credential/route.ts`, `src/modules/ballot-box/token.service.ts`, och deras tester
@@ -3400,7 +3558,7 @@ git commit -m "Blindsigneringen bort — obundenheten kommer nu från att inga r
 
 ---
 
-## Task 15: Dokumentation och begränsningar
+## Task 16: Dokumentation och begränsningar
 
 **Files:**
 - Modify: `ARCHITECTURE.md`, `SECURITY.md`, `src/lib/known-limitations.ts`, `tests/security/known-limitations.test.ts`
@@ -3453,7 +3611,7 @@ git add -A && git commit -m "Arkitekturen beskriver dubbla kuvert; fyra begräns
 
 ---
 
-## Task 16: Demoläge och skarpt läge
+## Task 17: Demoläge och skarpt läge
 
 **Files:**
 - Create: `src/lib/runtime-mode.ts`, `src/app/api/mode/route.ts`
@@ -3712,7 +3870,7 @@ git commit -m "Demoläge och skarpt läge, med produktion som felläge"
 
 ---
 
-## Task 17: OpenAPI-spec genererad ur valideringsschemana
+## Task 18: OpenAPI-spec genererad ur valideringsschemana
 
 **Files:**
 - Create: `src/lib/openapi.ts`, `src/app/api/openapi/route.ts`, `src/app/api-dokumentation/page.tsx`
