@@ -625,14 +625,25 @@ export function proveZeroOrOne(
   const fakeResponse = randomScalar()
   const honestCommitment = randomScalar()
 
-  const shifted = message === 1 ? (ciphertext.c2 * modPow(G, Q - 1n, P)) % P : ciphertext.c2
+  /**
+   * DE TVA GRENARNAS MAL, UTSKRIVNA VAR FOR SIG.
+   *
+   * Gren 0 pastar att chiffret kodar 0, alltsa att c2 = h^r. Malet ar c2.
+   * Gren 1 pastar 1, alltsa att c2 = h^r * g. Malet ar c2 / g.
+   *
+   * Den SIMULERADE grenen ar den vi inte kan bevisa arligt, alltsa motsatsen
+   * till `message`. Tas fel mal har blir simuleringen ogiltig, och verifieraren
+   * underkanner ett arligt bevis — ett fel som bara syns som att giltiga roster
+   * avvisas.
+   */
+  const target0 = ciphertext.c2
+  const target1 = (ciphertext.c2 * modPow(G, Q - 1n, P)) % P
+  const simulatedTarget = message === 0 ? target1 : target0
 
   const simulated = {
     a: (modPow(G, fakeResponse, P) * modPow(ciphertext.c1, Q - fakeChallenge, P)) % P,
     b:
-      (modPow(publicKey, fakeResponse, P) *
-        modPow(message === 1 ? ciphertext.c2 : shifted, Q - fakeChallenge, P)) %
-      P,
+      (modPow(publicKey, fakeResponse, P) * modPow(simulatedTarget, Q - fakeChallenge, P)) % P,
   }
 
   const honest = { a: modPow(G, honestCommitment, P), b: modPow(publicKey, honestCommitment, P) }
