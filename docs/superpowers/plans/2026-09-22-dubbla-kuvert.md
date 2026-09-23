@@ -1110,6 +1110,15 @@ describe('enhetsvektor', () => {
     ).toBe(3)
   })
 
+  it('hittar valet oavsett i vilken ordning faltet skrevs', () => {
+    // Serialiseringsjamforelse hade fallit har, och felmeddelandet hade pekat
+    // pa datan nar felet lag i formen.
+    const options = canonicalOptions(SHAPE)
+    const choice = { candidateId: 'k-anna', ballotPartyId: 'bp-s', kind: 'CANDIDATE' } as const
+
+    expect(indexOfChoice(options, choice)).toBe(3)
+  })
+
   it('kastar på ett val som inte finns på valsedeln', () => {
     expect(() =>
       indexOfChoice(canonicalOptions(SHAPE), { kind: 'PARTY', ballotPartyId: 'bp-okänt' }),
@@ -1176,10 +1185,24 @@ export function canonicalOptions(shape: BallotShape): BallotOption[] {
   return options
 }
 
+/**
+ * Jamfor falt for falt, inte via JSON.stringify.
+ *
+ * Serialisering beror pa nyckelordningen i objektet. En anropare som bygger
+ * sitt val med falten i annan ordning hade fatt "Valet finns inte pa den har
+ * valsedeln" — ett meddelande som pekar pa data nar felet ligger i formen.
+ */
+function sameOption(a: BallotOption, b: BallotOption): boolean {
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'BLANK') return true
+  if (b.kind === 'BLANK') return false
+  if (a.ballotPartyId !== b.ballotPartyId) return false
+  if (a.kind === 'CANDIDATE' && b.kind === 'CANDIDATE') return a.candidateId === b.candidateId
+  return a.kind === b.kind
+}
+
 export function indexOfChoice(options: BallotOption[], choice: BallotOption): number {
-  const index = options.findIndex(
-    (option) => JSON.stringify(option) === JSON.stringify(choice),
-  )
+  const index = options.findIndex((option) => sameOption(option, choice))
 
   if (index === -1) throw new Error('Valet finns inte på den här valsedeln.')
   return index
