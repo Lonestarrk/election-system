@@ -1738,6 +1738,26 @@ describe('krypterad valsedel', () => {
     expect(JSON.stringify(ballot)).not.toContain('nonce')
   })
 
+  it('en pahittad hash avvisas', async () => {
+    /**
+     * Klienten far inte kunna pasta vad som helst om sitt eget chiffer.
+     * Godtas hashen pa ord letar valjarens inklusionskontroll senare efter ett
+     * varde som inte finns i den publicerade mangden — och felet syns forst
+     * efter att kopplingen raderats.
+     */
+    const keys = generateKeyPair()
+    const options = canonicalOptions(SHAPE)
+    const ballot = encryptBallot(keys.publicKey.toString(), 'val-1', 'vs-1', options, {
+      kind: 'BLANK',
+    })
+
+    const tampered = { ...ballot, ciphertextHash: 'f'.repeat(64) }
+
+    expect(
+      verifyEncryptedBallot(keys.publicKey.toString(), 'val-1', 'vs-1', options.length, tampered),
+    ).toBe(false)
+  })
+
   it('hashen beror på hela chifferlistan', () => {
     const a = hashCiphertext([{ c1: '2', c2: '3' }])
     const b = hashCiphertext([{ c1: '2', c2: '4' }])
@@ -1758,6 +1778,7 @@ Förväntat: FAIL, import saknas
 - [ ] **Steg 3: Skriv `src/lib/crypto/verify-ballot.ts`**
 
 ```ts
+import { createHash } from 'node:crypto'
 import { isInSubgroup } from './group'
 import { multiply, type Ciphertext } from './elgamal'
 import { verifySumIsOne, verifyZeroOrOne, type EqualityProof, type ZeroOrOneProof } from './proofs'
@@ -1766,6 +1787,25 @@ export type EncryptedBallot = {
   ciphertext: Array<{ c1: string; c2: string }>
   proofs: { components: ZeroOrOneProof[]; sum: EqualityProof }
   ciphertextHash: string
+}
+
+/**
+ * Kanonisk hash over chifferlistan.
+ *
+ * Bor har och inte i klientmodulen, eftersom BADE bevisaren och verifieraren
+ * maste rakna fram exakt samma varde. Tva implementationer som glider isar ger
+ * ett fel som ser ut som en manipulerad rost.
+ */
+export function hashCiphertext(ciphertext: Array<{ c1: string; c2: string }>): string {
+  const hash = createHash('sha256')
+  hash.update('valsystem/chiffer/v1')
+  for (const pair of ciphertext) {
+    hash.update(' ')
+    hash.update(pair.c1)
+    hash.update(' ')
+    hash.update(pair.c2)
+  }
+  return hash.digest('hex')
 }
 
 /** Kontexten som binder ett bevis till sin plats. Måste vara identisk hos bevisaren. */
@@ -1788,6 +1828,21 @@ export function verifyEncryptedBallot(
 ): boolean {
   if (ballot.ciphertext.length !== expectedLength) return false
   if (ballot.proofs.components.length !== expectedLength) return false
+
+  /**
+   * HASHEN MASTE RAKNAS OM, INTE TAS PA ORD.
+   *
+   * Klienten skickar bade chiffret och dess hash. Godtar vi hashen som den ar
+   * kan en klient skicka en hash som inte hor till chiffret — och eftersom
+   * signaturen i uppgift 8 binder just den pastadda hashen skulle aven den
+   * verifiera.
+   *
+   * Foljden vore tyst och sen: valjarens inklusionskontroll letar efter en hash
+   * som inte finns i den publicerade mangden, och Merkleroten over kuverten
+   * beraknas over varden utan motsvarande chiffer. Felet syns forst efter att
+   * kopplingen raderats, alltsa nar ingen langre kan fraga valjaren.
+   */
+  if (ballot.ciphertextHash !== hashCiphertext(ballot.ciphertext)) return false
 
   const key = BigInt(publicKey)
   const ciphertexts: Ciphertext[] = []
@@ -1819,12 +1874,11 @@ export function verifyEncryptedBallot(
 - [ ] **Steg 4: Skriv `src/lib/encrypt-client.ts`**
 
 ```ts
-import { createHash } from 'node:crypto'
 import { randomScalar } from './crypto/group'
 import { encrypt, multiply } from './crypto/elgamal'
 import { proveSumIsOne, proveZeroOrOne } from './crypto/proofs'
 import { indexOfChoice, unitVector, type BallotOption } from './crypto/ballot-encoding'
-import { proofContext, type EncryptedBallot } from './crypto/verify-ballot'
+import { hashCiphertext, proofContext, type EncryptedBallot } from './crypto/verify-ballot'
 
 /**
  * KRYPTERAR VÄLJARENS VAL — OCH KASTAR SLUMPTALEN.
@@ -1871,17 +1925,7 @@ export function encryptBallot(
   return { ciphertext: serialised, proofs: { components, sum }, ciphertextHash: hashCiphertext(serialised) }
 }
 
-export function hashCiphertext(ciphertext: Array<{ c1: string; c2: string }>): string {
-  const hash = createHash('sha256')
-  hash.update('valsystem/chiffer/v1')
-  for (const pair of ciphertext) {
-    hash.update('\u0000')
-    hash.update(pair.c1)
-    hash.update('\u0000')
-    hash.update(pair.c2)
-  }
-  return hash.digest('hex')
-}
+export { hashCiphertext }
 ```
 
 - [ ] **Steg 5: Kör testerna**
