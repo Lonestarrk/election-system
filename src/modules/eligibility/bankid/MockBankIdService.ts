@@ -91,8 +91,21 @@ const DEMO_NAMES: Record<string, { givenName: string; surname: string }> = {
  *
  * Det fungerar därför att Node/OpenSSL:s PEM-parser hoppar över text före
  * "-----BEGIN"-raden, så nyckeln går ändå att använda direkt mot
- * `crypto.verify`. Byts mocken mot skarpt BankID ersätts den här radläsningen
- * av en riktig avläsning av certifikatets subject.
+ * `crypto.verify`.
+ *
+ * BYTET TILL SKARPT BANKID ÄR TVÅ STEG, INTE ETT.
+ *
+ * (a) Radprefixet ersätts av en riktig avläsning av certifikatets
+ *     subject-fält — det är den lätta delen.
+ *
+ * (b) CERTIFIKATETS KEDJA MÅSTE VALIDERAS MOT BANKIDS CA, som ett eget steg
+ *     innan personnumret ens läses. Ett certifikat är bara ett påstående;
+ *     det är CA-signaturen som gör påståendet tillförlitligt. Utan (b) kan
+ *     vem som helst skapa ett eget nyckelpar, skriva in vilket personnummer
+ *     som helst i subject-fältet och signera med sin egen privata nyckel —
+ *     `personalNumberFromCertificate` i `envelope-signature.ts` skulle läsa
+ *     av det påhittade personnumret som om det vore sant. Se den funktionens
+ *     dokumentation för varför.
  */
 const MOCK_CERTIFICATE_PREFIX = /^personnummer:(\d+)\n/
 

@@ -57,15 +57,51 @@ export function envelopePayload(payload: EnvelopePayload): string {
  * eget namn så länge chifferhashen råkar stämma.
  *
  * `MockBankIdService` simulerar CA-påståendet genom att skriva personnumret
- * som en rad ovanför den publika PEM-nyckeln — se dess dokumentation. Byts
- * mocken mot skarpt BankID ersätts radläsningen här av en riktig avläsning av
- * certifikatets subject.
+ * som en rad ovanför den publika PEM-nyckeln — se dess dokumentation.
+ *
+ * BYTET TILL SKARPT BANKID ÄR TVÅ STEG, INTE ETT.
+ *
+ * (a) Läs personnumret ur certifikatets subject-fält i stället för
+ *     radprefixet — det är den lätta delen, en annan avläsning av samma
+ *     sorts påstående.
+ *
+ * (b) VALIDERA CERTIFIKATETS KEDJA MOT BANKIDS CA. Det är inte valfritt.
+ *     `verifyEnvelopeSignature` nedan gör bara `crypto.verify(certificate,
+ *     …)` — och Node/OpenSSLs PEM-parser kontrollerar ingen utfärdarkedja,
+ *     den extraherar bara nyckelmaterial ur vilken PEM-text som helst mellan
+ *     `-----BEGIN` och `-----END`. Utan kedjevalidering kan vem som helst
+ *     skapa ett eget nyckelpar, skriva in vilket personnummer som helst i
+ *     subject-fältet och signera med sin egen privata nyckel — och den här
+ *     kontrollen skulle säga ja, eftersom den bara läser vad certifikatet
+ *     PÅSTÅR, inte om påståendet är styrkt av en betrodd utfärdare. Det är
+ *     precis den bindning en CA-signatur ger och ett självutfärdat
+ *     certifikat inte kan ge.
+ *
+ * Attrappen behöver inte (b) eftersom dess "certifikat" aldrig påstår sig
+ * vara utfärdat av någon — det är bara en nyckel med ett radprefix som
+ * testerna känner igen. Men den dagen `certificate` kommer från ett riktigt
+ * BankID-svar måste kedjevalideringen in HÄR, före signaturkontrollen,
+ * annars är hela funktionen en attackyta i stället för ett skydd.
  */
 const MOCK_CERTIFICATE_PREFIX = /^personnummer:(\d+)\n/
 
-function certificateBelongsTo(certificate: string, expectedPersonalNumber: string): boolean {
+/**
+ * Personnumret som certifikatet påstår, i siffror.
+ *
+ * Skilt från verifyEnvelopeSignature med flit. Anroparen ska hasha värdet och
+ * jämföra mot röstlängdens identitetshash — hashningen är asynkron och hör
+ * hemma i behörighetsmodulen, inte här.
+ *
+ * Returnerar null när certifikatet inte bär något personnummer i det format vi
+ * känner igen. Anroparen ska då avvisa, aldrig anta.
+ */
+export function personalNumberFromCertificate(certificate: string): string | null {
   const match = MOCK_CERTIFICATE_PREFIX.exec(certificate)
-  return match !== null && match[1] === expectedPersonalNumber
+  return match ? match[1] : null
+}
+
+function certificateBelongsTo(certificate: string, expectedPersonalNumber: string): boolean {
+  return personalNumberFromCertificate(certificate) === expectedPersonalNumber
 }
 
 /**

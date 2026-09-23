@@ -92,6 +92,20 @@ export type BankIdCollectComplete = {
      *
      * I attrappen den demoidentitetens publika nyckel i PEM-format. I skarpt
      * BankID X.509-certifikatet ur svaret.
+     *
+     * BÄR SAMMA SKYDDSVÄRDA UPPGIFT SOM `personalNumber`, I KLARTEXT.
+     *
+     * I attrappens format ligger personnumret bokstavligen i en rad ovanför
+     * nyckeln (`personnummer:<nummer>\n<publik nyckel>`). I ett riktigt
+     * svenskt BankID-certifikat ligger det i subject-fältet — lika läsbart,
+     * bara i ett annat format. Certifikatet är med andra ord inte en ofarlig
+     * nyckel med ett bevis bifogat; det ÄR personnumret, plus ett bevis.
+     *
+     * Får därför, precis som `personalNumber`, aldrig lämna
+     * eligibility-modulen eller lagras i råform. Uppgift 9 lagrar den publika
+     * nyckeln för sig och en HASH av det personnummer certifikatet påstår —
+     * se `personalNumberFromCertificate` i `envelope-signature.ts` — aldrig
+     * certifikatet självt.
      */
     certificate: string
   }
