@@ -1249,7 +1249,14 @@ model PendingVote {
   id String @id @default(uuid())
 
   voterStatusId String      @map("voter_status_id")
-  voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Cascade)
+
+  /// RESTRICT, INTE CASCADE.
+  ///
+  /// En struken valjares rost ska raknas (spec 7.4), sa en radering far inte
+  /// tyst ta rosten med sig. Restrict betyder att en valjare inte kan
+  /// hardraderas medan hon har en liggande rost. Efter skalningen ar raden
+  /// borta och raderingen fri igen.
+  voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Restrict)
 
   /// Speglat id. Ingen FK — valsedeln bor i den andra databasen.
   ballotId String @map("ballot_id")
@@ -1262,6 +1269,19 @@ model PendingVote {
 
   /// SHA-256 över den kanoniska serialiseringen. Väljarens inklusionshandtag.
   ciphertextHash String @map("ciphertext_hash")
+
+  /// Okar vid varje laggning och ligger INUTI det signerade.
+  ///
+  /// Utan den kan den som fangat valjarens forsta signerade kuvert skicka in
+  /// det igen efter att hon andrat sig, och rosten atergar till den kopta.
+  castSequence Int @map("cast_sequence")
+
+  /// Valjarens egen signatur over kuvertet, fran BankID /sign.
+  bankIdSignature String @map("bankid_signature")
+
+  /// Certifikatet ur signaturen. Bar personnummer och namn — far darfor
+  /// ALDRIG folja med till votes_db vid skalningen.
+  bankIdCertificate String @map("bankid_certificate")
 
   /// Dygnsupplöst, som all annan tidsdata i röstlängden.
   updatedAt DateTime @map("updated_at")
@@ -1277,6 +1297,20 @@ Lägg till på `Election` i samma fil:
 ```prisma
   /// När kopplingen väljare↔röst raderades. Null medan röstningen pågår.
   linkClearedAt DateTime? @map("link_cleared_at")
+
+  /// OPEN | CLOSED | VALIDATED | STRIPPED | TALLIED | CERTIFIED.
+  ///
+  /// Enkelriktad. Ordningen maste vara omojlig att kasta om, inte bara
+  /// osannolik — se spec 6.1. Att fasen ar ett falt och inte en jamforelse mot
+  /// klockan spelar roll: en klocka som gar fel andrar beteendet tyst, medan en
+  /// fasovergang ar en handelse nagon utfort.
+  phase String @default("OPEN")
+
+  /// Merklerot over (ciphertextHash, bankIdSignature) fore skalningen.
+  ///
+  /// Det enda som overlever raderingen av signaturerna, och det som later en
+  /// valjare med sparat kuvert bevisa att det raknades. Se spec 7.3.
+  envelopeRoot String? @map("envelope_root")
 ```
 
 Och på `VoterStatus`:
@@ -1458,10 +1492,21 @@ describe.skipIf(!databaseAvailable)('tröskelnyckel vid skapande', () => {
     expect(await votesDb.trusteeShare.count({ where: { electionId: id } })).toBe(3)
   })
 
-  it('lagrar ingen andel i klartext bredvid sin publika motsvarighet', () => {
-    // Skulle encryptedShare vara samma värde som ligger bakom publicShare vore
-    // hela delningen teater.
-    expect(true).toBe(true) // ersätts i steg 3 med ett riktigt värdetest
+  it('andelen lagras skyddad, inte i klartext', async () => {
+    const id = await newElection()
+    const share = await votesDb.trusteeShare.findFirstOrThrow({ where: { electionId: id } })
+
+    // AES-GCM-formatet ar iv:tag:payload — tre hexdelar.
+    expect(share.encryptedShare.split(':')).toHaveLength(3)
+    expect(() => BigInt(share.encryptedShare)).toThrow()
+  })
+
+  it('andelen gar inte att lasa upp med fel fras', async () => {
+    // Hela skyddet. Gar den upp med vad som helst ar losenfrasen dekoration.
+    const id = await newElection()
+    const share = await votesDb.trusteeShare.findFirstOrThrow({ where: { electionId: id } })
+
+    expect(() => decryptShare(share.encryptedShare, 'fel-fras', share.trusteeIndex)).toThrow()
   })
 })
 ```
@@ -1479,6 +1524,10 @@ I `src/orchestration/create-election.usecase.ts`, efter att omröstningen skapat
 import { generateKeyPair } from '@/lib/crypto/elgamal'
 import { publicShare, splitSecret } from '@/lib/crypto/threshold'
 import { encryptShare } from '@/lib/crypto/share-storage'
+
+// createElection tar nu ocksa `trusteePassphrases: [string, string, string]`.
+// Fraserna lagras ALDRIG — bara de krypterade andelarna. I demolage seedas tre
+// kanda fraser som skrivs ut av npm run seed.
 
 /**
  * TRE ANDELAR, TVÅ KRÄVS.
@@ -1503,7 +1552,7 @@ await votesDb.trusteeShare.createMany({
     electionId: election.id,
     trusteeIndex: share.index,
     publicShare: publicShare(share).toString(),
-    encryptedShare: encryptShare(share.value),
+    encryptedShare: encryptShare(share.value, input.trusteePassphrases[share.index - 1]!, share.index),
   })),
 })
 ```
@@ -1522,11 +1571,24 @@ import { env } from '@/lib/env'
  * att en databasdump plus applikationens miljö inte räcker för att öppna
  * resultatet. Här är målet att visa mekaniken, inte att skydda den.
  */
-const KEY = scryptSync(env.identityPepper, 'trustee-share', 32)
+/**
+ * Nyckeln harleds ur FORTROENDEMANNENS LOSENFRAS, aldrig ur appens miljo.
+ *
+ * Alternativet skyddar ingenting: en andel krypterad med en nyckel harledd ur
+ * IDENTITY_PEPPER ar lasbar for var och en som har databasen och miljon — och
+ * appen behover bada for att fungera, sa en komprometterad appserver ger
+ * batteri. Tre andelar i samma lada ar inte tre innehavare.
+ *
+ * Saltet ar andelens index, sa att tva fortroendeman med samma fras anda far
+ * olika nycklar.
+ */
+function keyFor(passphrase: string, trusteeIndex: number): Buffer {
+  return scryptSync(passphrase, `trustee-share-${trusteeIndex}`, 32)
+}
 
-export function encryptShare(value: bigint): string {
+export function encryptShare(value: bigint, passphrase: string, trusteeIndex: number): string {
   const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', KEY, iv)
+  const cipher = createCipheriv('aes-256-gcm', keyFor(passphrase, trusteeIndex), iv)
   const encrypted = Buffer.concat([cipher.update(value.toString(), 'utf8'), cipher.final()])
 
   return [iv.toString('hex'), cipher.getAuthTag().toString('hex'), encrypted.toString('hex')].join(
@@ -1534,9 +1596,13 @@ export function encryptShare(value: bigint): string {
   )
 }
 
-export function decryptShare(stored: string): bigint {
+export function decryptShare(stored: string, passphrase: string, trusteeIndex: number): bigint {
   const [iv, tag, payload] = stored.split(':')
-  const decipher = createDecipheriv('aes-256-gcm', KEY, Buffer.from(iv!, 'hex'))
+  const decipher = createDecipheriv(
+    'aes-256-gcm',
+    keyFor(passphrase, trusteeIndex),
+    Buffer.from(iv!, 'hex'),
+  )
   decipher.setAuthTag(Buffer.from(tag!, 'hex'))
 
   return BigInt(
@@ -1547,25 +1613,12 @@ export function decryptShare(stored: string): bigint {
 }
 ```
 
-- [ ] **Steg 5: Byt ut platshållartestet i steg 1**
-
-```ts
-  it('andelen lagras skyddad, inte i klartext', async () => {
-    const id = await newElection()
-    const share = await votesDb.trusteeShare.findFirstOrThrow({ where: { electionId: id } })
-
-    // AES-GCM-formatet är iv:tag:payload — tre hexdelar.
-    expect(share.encryptedShare.split(':')).toHaveLength(3)
-    expect(() => BigInt(share.encryptedShare)).toThrow()
-  })
-```
-
-- [ ] **Steg 6: Kör testerna**
+- [ ] **Steg 5: Kör testerna**
 
 Kör: `npx vitest run tests/integration/threshold-key.test.ts`
 Förväntat: PASS, 3 tester
 
-- [ ] **Steg 7: Committa**
+- [ ] **Steg 6: Committa**
 
 ```bash
 git add src/orchestration/create-election.usecase.ts src/lib/crypto/share-storage.ts tests/integration/threshold-key.test.ts
@@ -2140,16 +2193,25 @@ git commit -m "Väljaren signerar sitt kuvert — en röst går inte att lägga 
 - Test: `tests/integration/pending-vote.test.ts`
 
 **Interfaces:**
-- Consumes: `verifyEncryptedBallot`, `EncryptedBallot`, `canonicalOptions`
+- Consumes: `verifyEncryptedBallot`, `EncryptedBallot`, `canonicalOptions` fran uppgift 7;
+  `verifyEnvelopeSignature`, `EnvelopePayload` fran uppgift 8
 - Produces:
   ```ts
+  export type SignedEnvelope = {
+    signature: string
+    certificate: string
+    castSequence: number
+  }
   export type CastOutcome =
     | { status: 'recorded'; ciphertextHash: string; replaced: boolean }
     | { status: 'closed' }
     | { status: 'invalid_proof' }
+    | { status: 'invalid_signature' }
+    | { status: 'stale_sequence' }
     | { status: 'not_eligible' }
   export function castEncryptedBallot(
-    voterStatusId: string, electionId: string, ballotId: string, ballot: EncryptedBallot,
+    voterStatusId: string, electionId: string, ballotId: string,
+    ballot: EncryptedBallot, envelope: SignedEnvelope,
   ): Promise<CastOutcome>
   export function pendingVoteFor(voterStatusId: string, ballotId: string): Promise<{ ciphertextHash: string } | null>
   export function clearPendingVotes(electionId: string): Promise<number>
@@ -2194,6 +2256,25 @@ it('ett chiffer utanför undergruppen avvisas', async () => {
   ballot.ciphertext[0]!.c1 = (P - 1n).toString()
 
   expect((await castRaw(voter, ballot)).status).toBe('invalid_proof')
+})
+
+it('en rost signerad av nagon annan avvisas', async () => {
+  // REVIEW FOCUS 7. Raden pekar pa en verklig, rostberattigad valjare och
+  // passerar varje relationell kontroll — bara signaturen avslojar den.
+  const ballot = await buildBallot('bp-s')
+  const envelope = await signAs(kim, ballot, 1)
+
+  expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
+})
+
+it('ett ateruppspelat aldre kuvert avvisas', async () => {
+  // REVIEW FOCUS 8. Utan detta overlever ett rostkop hela andringsmojligheten.
+  const first = await buildBallot('bp-s')
+  await cast(voter, first, await signAs(voter, first, 1))
+  const second = await buildBallot('bp-m')
+  await cast(voter, second, await signAs(voter, second, 2))
+
+  expect((await castRaw(voter, first, await signAs(voter, first, 1))).status).toBe('stale_sequence')
 })
 
 it('ändring ger en ny verifikationskod', async () => {
@@ -2254,8 +2335,43 @@ export async function castEncryptedBallot(
 
   const existing = await votersDb.pendingVote.findUnique({
     where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
-    select: { id: true },
+    select: { id: true, castSequence: true },
   })
+
+  /**
+   * RAKNAREN MASTE OKA, OCH KONTROLLEN MASTE LIGGA HAR.
+   *
+   * Den som fangat valjarens forsta signerade kuvert kan annars skicka in det
+   * igen efter att hon andrat sig, och rosten atergar till den kopta — ett
+   * rostkop som overlever hela andringsmojligheten.
+   */
+  if (existing && envelope.castSequence <= existing.castSequence) {
+    return { status: 'stale_sequence' }
+  }
+
+  /**
+   * SIGNATUREN AR DEN ENDA KONTROLL SOM STANGER "ROST LAGD I NAGON ANNANS NAMN".
+   *
+   * En rad som skrivs direkt i databasen pekar pa en verklig valjare och
+   * passerar varje relationell kontroll. Bara signaturen avslojar att valjaren
+   * aldrig godkant innehallet. Se spec 4.6.
+   */
+  const voter = await votersDb.voterStatus.findUnique({
+    where: { id: voterStatusId },
+    select: { externalIdentityHash: true },
+  })
+
+  if (
+    !voter ||
+    !verifyEnvelopeSignature(
+      envelope.signature,
+      envelope.certificate,
+      { electionId, ballotId, ciphertextHash: ballot.ciphertextHash, castSequence: envelope.castSequence },
+      voter.externalIdentityHash,
+    )
+  ) {
+    return { status: 'invalid_signature' }
+  }
 
   await votersDb.pendingVote.upsert({
     where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
@@ -2263,6 +2379,9 @@ export async function castEncryptedBallot(
       ciphertext: ballot.ciphertext,
       proofs: ballot.proofs,
       ciphertextHash: ballot.ciphertextHash,
+      castSequence: envelope.castSequence,
+      bankIdSignature: envelope.signature,
+      bankIdCertificate: envelope.certificate,
       updatedAt: truncateToDay(new Date()),
     },
     create: {
@@ -2271,6 +2390,9 @@ export async function castEncryptedBallot(
       ciphertext: ballot.ciphertext,
       proofs: ballot.proofs,
       ciphertextHash: ballot.ciphertextHash,
+      castSequence: envelope.castSequence,
+      bankIdSignature: envelope.signature,
+      bankIdCertificate: envelope.certificate,
       updatedAt: truncateToDay(new Date()),
     },
   })
@@ -2310,7 +2432,7 @@ git commit -m "Rösten kan läggas och ändras fram till stängning"
 - Produces:
   ```ts
   export type Anomaly = {
-    kind: 'BAD_SIGNATURE' | 'WRONG_VOTER' | 'STALE_SEQUENCE' | 'NOT_ELIGIBLE' | 'WRONG_BALLOT' | 'BAD_PROOF'
+    kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF'
     pendingVoteId: string
     /** Bara för administratörens utredning. Publiceras aldrig. */
     voterStatusId: string
@@ -2395,6 +2517,23 @@ describe('validering medan kopplingen finns kvar', () => {
     expect(report.summary.byKind).toMatchObject({ BAD_SIGNATURE: 1 })
   })
 
+  it('en struken valjares rost underkanns INTE', async () => {
+    /**
+     * Beslutet i spec 7.4, vaktat.
+     *
+     * Det ar latt att lagga till en rostberattigandekontroll "for sakerhets
+     * skull" — den kanns som en sjalvklarhet. Den skulle forkasta giltiga
+     * roster fran valjare som strukits efter att ha rostat.
+     */
+    await castFor(anna, 'bp-s')
+    await votersDb.voterStatus.update({ where: { id: anna }, data: { isEligible: false } })
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.summary.passed).toBe(true)
+    expect(report.anomalies).toHaveLength(0)
+  })
+
   it('att valideringen körts hamnar i revisionsloggen', async () => {
     // Att läsa kopplingen ska synas. En tyst läsning är oskiljbar från en
     // obehörig.
@@ -2436,36 +2575,31 @@ Förväntat: FAIL, modulen saknas
 
 Kontrollerna körs i ordning, billigast först:
 
-1. `NOT_ELIGIBLE` — väljaren finns och är röstberättigad
-2. `WRONG_BALLOT` — valsedeln gäller väljarens kommun och region
-3. `STALE_SEQUENCE` — räknaren i signaturen är den högsta väljaren ställt ut
-4. `BAD_SIGNATURE` — signaturen verifierar mot chifferhash och personnummer
-5. `BAD_PROOF` — valsedelns bevis verifierar
+1. `WRONG_BALLOT` — valsedeln gäller väljarens kommun och region
+2. `STALE_SEQUENCE` — räknaren i signaturen är den högsta väljaren ställt ut
+3. `BAD_SIGNATURE` — signaturen verifierar mot chifferhash och personnummer
+4. `BAD_PROOF` — valsedelns bevis verifierar
+
+**VALIDERINGEN KONTROLLERAR INTE NUVARANDE ROSTBERATTIGANDE, och det ar ett
+beslut och inte en glomska.** Att rosten var legitim nar den lades framgar av
+signaturen, inte av rostlangdens tillstand i efterhand. En valjare som strukits
+efter att ha rostat — dodsfall ar det realistiska fallet — ska fa sin rost
+raknad, precis som en svensk fortidsrost. En kontroll mot nulaget skulle
+forkasta giltiga roster. Se spec 7.4.
 
 `passed` är sant enbart när `anomalies` är tom. Skriv `PRE_CLOSE_VALIDATION` till
 revisionsloggen med antal, aldrig med identiteter.
 
-- [ ] **Steg 4: Koppla in spärren i stängningen**
+Inkopplingen i stangningen gors av UPPGIFT 11, som ager
+`close-election.usecase.ts`. Den har uppgiften levererar bara
+anvandningsfallet och sina tester.
 
-I `close-election.usecase.ts`, före allt annat:
+- [ ] **Steg 4: Kör testerna**
 
-```ts
-const report = await validateBeforeClose(electionId)
-
-if (!report.summary.passed) {
-  // Att skala ändå vore att kasta bort bevismaterialet för det problem vi just
-  // hittat. Efter raderingen finns ingen väljare att fråga och ingen signatur
-  // att kontrollera.
-  return { status: 'validation_failed', report: report.summary }
-}
-```
-
-- [ ] **Steg 5: Kör testerna**
-
-Kör: `npx vitest run tests/integration/validate-before-close.test.ts tests/integration/close-election.test.ts`
+Kör: `npx vitest run tests/integration/validate-before-close.test.ts`
 Förväntat: PASS
 
-- [ ] **Steg 6: Committa**
+- [ ] **Steg 5: Committa**
 
 ```bash
 git add src/orchestration/validate-before-close.usecase.ts tests/integration/validate-before-close.test.ts
@@ -2485,9 +2619,10 @@ git commit -m "Valideringen är en spärr: skalningen körs inte över en avvike
 - Produces:
   ```ts
   export type CloseOutcome =
-    | { status: 'closed'; moved: number; cleared: number }
+    | { status: 'closed'; moved: number; cleared: number; envelopeRoot: string }
     | { status: 'too_early'; closesAt: Date }
     | { status: 'already_closed' }
+    | { status: 'validation_failed'; summary: ValidationReport['summary'] }
     | { status: 'invalid_ballot'; ciphertextHash: string }
   export function closeElection(electionId: string): Promise<CloseOutcome>
   ```
@@ -2541,6 +2676,36 @@ it('infogar sorterat på innehåll, inte i den ordning väljarna röstade', asyn
   expect(hashes).toEqual([...hashes].sort())
 })
 
+it('publicerar en kuvertrot INNAN signaturerna raderas', async () => {
+  /**
+   * Spec 7.3. Roten ar det enda som overlever, sa den maste beraknas medan
+   * signaturerna finns. Ett test som bara kontrollerar att roten finns EFTERAT
+   * skulle passera aven om den beraknats over en tom mangd.
+   */
+  await castFor(anna, 'bp-s')
+  await castFor(kim, 'bp-m')
+
+  const outcome = await closeElection(electionId)
+
+  expect(outcome).toMatchObject({ status: 'closed' })
+  const election = await votersDb.election.findUniqueOrThrow({ where: { id: electionId } })
+
+  expect(election.envelopeRoot).toMatch(/^[0-9a-f]{64}$/)
+  // Roten ska vara den over de tva faktiska kuverten, inte over ingenting.
+  expect(election.envelopeRoot).not.toBe(await merkleRootOf([]))
+})
+
+it('vagrar skala nar valideringen hittar en avvikelse', async () => {
+  // Sparren, inte rapporten. Skalningen far inte kora over ett fynd.
+  await stuffVoteFor(kim, 'bp-m')
+
+  const outcome = await closeElection(electionId)
+
+  expect(outcome.status).toBe('validation_failed')
+  expect(await votersDb.pendingVote.count()).toBeGreaterThan(0)
+  expect(await votesDb.encryptedVote.count()).toBe(0)
+})
+
 it('avvisar hela stängningen om en valsedel inte längre verifierar', async () => {
   await castFor(anna, 'bp-s')
   await votersDb.$executeRaw`update pending_vote set ciphertext_hash = 'fel'`
@@ -2563,16 +2728,28 @@ Förväntat: FAIL, modulen saknas
  *
  * Ordningen är noga vald och kan inte kastas om.
  *
- *   1. verifiera varje valsedel EN GÅNG TILL
- *   2. infoga i votes_db, sorterat på chifferhash
- *   3. kontrollera att antalet stämmer
- *   4. först då radera kopplingen
+ *   1. validera enligt uppgift 10 — avbryt vid avvikelse
+ *   2. berakna och spara Merkleroten over kuverten
+ *   3. verifiera varje valsedel EN GÅNG TILL
+ *   4. infoga i votes_db, sorterat på chifferhash
+ *   5. kontrollera att antalet stämmer
+ *   6. först då radera kopplingen
  *
- * Steg 1 känns överflödigt — bevisen kontrollerades ju när rösten lades. Det är
- * ändå rätt: det är den sista punkt där ett fel kan pekas ut, för efter steg 4
- * finns ingen väljare att fråga.
+ * Steg 1 ar en SPARR, inte en rapport. Att skala anda vore att kasta bort
+ * bevismaterialet for det problem man just hittat: efter steg 6 finns ingen
+ * valjare att fraga och ingen signatur att kontrollera.
  *
- * Steg 2 före 4 är inte en smaksak. Raderade vi först och kraschade skulle
+ * Steg 2 MASTE ligga fore steg 6. Merkleroten over (ciphertextHash,
+ * bankIdSignature), sorterade pa chifferhash, ar det enda som overlever
+ * raderingen av signaturerna — och det som later en valjare med sparat kuvert
+ * bevisa i efterhand att det raknades. Beraknas den efter raderingen finns
+ * ingenting att berakna den over. Roten avslojar ingenting sjalv; den ar en
+ * hash.
+ *
+ * Steg 3 känns överflödigt — bevisen kontrollerades ju när rösten lades. Det är
+ * ändå rätt: det är den sista punkt där ett fel kan pekas ut.
+ *
+ * Steg 4 före 6 är inte en smaksak. Raderade vi först och kraschade skulle
  * rösterna vara borta utan att finnas i räkningen — ingen kan återskapa dem.
  * Flyttar vi först och kraschar är chiffren redan trygga, och omkörningen ser
  * dem som befintliga tack vare det unika indexet på ciphertextHash.
@@ -2634,7 +2811,9 @@ git commit -m "Stängningen skalar bort identiteten och kontrolleras av slutkont
 - Produces:
   ```ts
   export function aggregate(ballotId: string): Promise<Ciphertext[]>
-  export function submitPartialDecryption(ballotId: string, trusteeIndex: number): Promise<{ status: 'accepted' | 'rejected' | 'duplicate' }>
+  export function submitPartialDecryption(
+    ballotId: string, trusteeIndex: number, passphrase: string,
+  ): Promise<{ status: 'accepted' | 'rejected' | 'duplicate' | 'wrong_passphrase' }>
   export function completeTally(ballotId: string): Promise<{ status: 'tallied'; counts: number[] } | { status: 'needs_more_trustees'; have: number; need: number }>
   ```
 
@@ -2647,17 +2826,26 @@ it('räknar rätt utan att öppna någon enskild röst', async () => {
   await castFor(robin, 'bp-m')
   await closeElection(electionId)
 
-  await submitPartialDecryption(ballotId, 1)
-  await submitPartialDecryption(ballotId, 2)
+  await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0]!)
+  await submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1]!)
   const result = await completeTally(ballotId)
 
   expect(result).toMatchObject({ status: 'tallied' })
   expect((result as { counts: number[] }).counts).toEqual([0, 2, 1]) // blank, S, M
 })
 
+it('fel losenfras later ingen andel oppnas', async () => {
+  // Utan detta ar frasen dekoration och andelen lika oskyddad som forut.
+  await closeElection(electionId)
+
+  expect(await submitPartialDecryption(ballotId, 1, 'fel')).toMatchObject({
+    status: 'wrong_passphrase',
+  })
+})
+
 it('en ensam förtroendeman räcker inte', async () => {
   await closeElection(electionId)
-  await submitPartialDecryption(ballotId, 1)
+  await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0]!)
 
   expect(await completeTally(ballotId)).toMatchObject({ status: 'needs_more_trustees', have: 1, need: 2 })
 })
@@ -2673,8 +2861,8 @@ it('avvisar ett bidrag vars bevis inte hör till det här chiffret', async () =>
 it('en valsedel utan röster ger nollor, inte ett kastat fel', async () => {
   // REVIEW FOCUS 6.
   await closeElection(emptyElectionId)
-  await submitPartialDecryption(emptyBallotId, 1)
-  await submitPartialDecryption(emptyBallotId, 2)
+  await submitPartialDecryption(emptyBallotId, 1, TRUSTEE_PASSPHRASES[0]!)
+  await submitPartialDecryption(emptyBallotId, 2, TRUSTEE_PASSPHRASES[1]!)
 
   expect(await completeTally(emptyBallotId)).toMatchObject({ status: 'tallied', counts: [0, 0, 0] })
 })
@@ -2683,8 +2871,8 @@ it('ingen enskild röst finns dekrypterad någonstans efteråt', async () => {
   // Det som gör valhemligheten strukturell och inte en rutin.
   await castFor(anna, 'bp-s')
   await closeElection(electionId)
-  await submitPartialDecryption(ballotId, 1)
-  await submitPartialDecryption(ballotId, 2)
+  await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0]!)
+  await submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1]!)
   await completeTally(ballotId)
 
   const votes = await votesDb.encryptedVote.findMany()
