@@ -3566,8 +3566,12 @@ och controllern stoppar och startar om den.
 ---
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
-11d → 11e → **14** → 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 11f ligger före
-11d eftersom användaren prioriterade arkitektursidan. Uppgift 14 flyttades upp eftersom "Följ en
+**14** → 11d → 11e → 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 11f ligger först
+eftersom användaren prioriterade arkitektursidan. Uppgift 14 flyttades fram
+2026-09-23 på användarens begäran, så att det gamla tokenflödet försvinner ur det
+man klickar sig igenom. Beroendet är kontrollerat: uppgift 14 använder bara
+rutterna från uppgift 7–9. Ändringen av det signerade i 11e sker på serversidan,
+och sidan bygger aldrig något som signeras. Uppgift 14 flyttades upp eftersom "Följ en
 röst" inte kan visas live förrän röstsidan lägger kuvert. Beroendet är
 kontrollerat: uppgift 14 använder bara rutterna från uppgift 7–9, som är klara.
 
@@ -3954,6 +3958,16 @@ Fyra egenskaper måste synas i gränssnittet:
 
 Byt också komponentnamnen `RostaContent` och `RostaPage` mot engelska. Sidan
 flyttades i uppgift 11b men behöll de svenska namnen.
+
+**Verifieringssidan slutar fråga efter token.** Användaren påpekade 2026-09-23 att
+appen fortfarande har den gamla verifieringen med token. Efter den här uppgiften
+delar röstsidan inte längre ut några tokens, så rutan på `/verify` har inget att
+verifiera. Ersätt den med en förklaring på vardagsspråk: fram till stängningen ser
+du din röst på röstsidan, på enheten du röstade från, och efter stängningen kommer
+den här sidan att visa att du röstat men inte vad. Säg att det sista inte är byggt
+än. Hela sidan byggs i uppgift 13, som behöver markeringen "har röstat" från 11d.
+Rör inte `/api/verify`. Rutten tillhör det gamla flödet och raderas i uppgift 15.
+Skriv om eller ta bort e2e-testerna som verifierar med token.
 
 **`prisma/reset-votes.ts` måste också tömma `pending_vote` och `encrypted_vote`**,
 och `partial_decryption` och `ballot_tally` om de finns. E2e-svitens globalSetup
