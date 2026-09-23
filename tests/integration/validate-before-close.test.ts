@@ -1,3 +1,4 @@
+import { createSign, generateKeyPairSync } from 'node:crypto'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { Prisma } from '.prisma/voters'
 import { votersDb } from '@/modules/eligibility/db'
@@ -29,6 +30,11 @@ import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from 
  * ärlig röstläggning mot fel valsedel (`forceBallotFor`, eftersom ingenting i
  * `castEncryptedBallot` självt kontrollerar väljarens folkbokföring — den
  * kontrollen finns bara här).
+ *
+ * Testet "en självkonsekvent förfalskning med eget nyckelpar fångas INTE"
+ * dokumenterar en känd, medveten gräns i stället för att gömma den — se dess
+ * egen kommentar och dokumentationshuvudet i
+ * `validate-before-close.usecase.ts`.
  */
 
 const databaseAvailable = await isDatabaseAvailable()
@@ -216,16 +222,18 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
   }
 
   /**
-   * DET HÅL SOM BARA SIGNATUREN STÄNGER.
-   *
-   * Skriver en rad direkt i databasen, förbi `castEncryptedBallot`, med ett i
-   * övrigt korrekt chiffer men en signatur som inte håller. Raden pekar på en
-   * verklig, röstberättigad väljare och passerar varje relationell kontroll —
-   * bara signaturkontrollen avslöjar att väljaren aldrig godkänt innehållet.
+   * Skriver en rad direkt i databasen, förbi `castEncryptedBallot`, med ett
+   * lagrat chiffer men en signatur som inte håller — oavsett vilken valsedel
+   * det gäller. Generaliserad över `targetBallotId`/`ballot` så att samma
+   * skrivväg kan användas både för DET HÅL SOM BARA SIGNATUREN STÄNGER
+   * (`stuffVoteFor`, på riksdagsvalsedeln) och för testet som visar att flera
+   * avvikelser på samma rad rapporteras samtidigt (på kommunvalsedeln).
    */
-  async function stuffVoteFor(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<void> {
-    const ballot = await buildBallot(party)
-
+  async function stuffVoteForBallot(
+    voterStatusId: string,
+    targetBallotId: string,
+    ballot: EncryptedBallot,
+  ): Promise<void> {
     const data = {
       ciphertext: ballot.ciphertext as unknown as Prisma.InputJsonValue,
       proofs: ballot.proofs as unknown as Prisma.InputJsonValue,
@@ -237,10 +245,22 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     }
 
     await votersDb.pendingVote.upsert({
-      where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
-      create: { voterStatusId, ballotId, ...data },
+      where: { voterStatusId_ballotId: { voterStatusId, ballotId: targetBallotId } },
+      create: { voterStatusId, ballotId: targetBallotId, ...data },
       update: data,
     })
+  }
+
+  /**
+   * DET HÅL SOM BARA SIGNATUREN STÄNGER.
+   *
+   * Raden pekar på en verklig, röstberättigad väljare, har ett i övrigt
+   * korrekt chiffer på rätt valsedel, och passerar varje relationell
+   * kontroll — bara signaturkontrollen avslöjar att väljaren aldrig godkänt
+   * innehållet.
+   */
+  async function stuffVoteFor(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<void> {
+    await stuffVoteForBallot(voterStatusId, ballotId, await buildBallot(party))
   }
 
   /**
@@ -329,6 +349,69 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     )
   })
 
+  it('en självkonsekvent förfalskning med eget nyckelpar fångas INTE', async () => {
+    /**
+     * KÄND BEGRÄNSNING, INTE EN REGRESSION (fixrunda 1 av uppgift 10:s
+     * granskning, fynd 2).
+     *
+     * `stuffVoteFor` ovan bevisar bara att kontrollen fångar NONSENS — en
+     * skräpsträng som inte håller mot någon nyckel. Det här testet bygger
+     * i stället den förfalskning som faktiskt oroar: en angripare med
+     * skrivrättighet som genererar sitt EGET nyckelpar, signerar ett
+     * välformat kuvert med sin egen privata nyckel, och skriver nyckeln,
+     * signaturen och ett verkligt `voterStatusId` tillsammans i en rad.
+     * Raden är fullständigt självkonsekvent — `classifySignature` kan bara
+     * pröva att signaturen håller mot nyckeln SOM STÅR I RADEN, inte att den
+     * nyckeln verkligen tillhör Kim. Se dokumentationshuvudet i
+     * `validate-before-close.usecase.ts` för vad som skulle stänga det här
+     * (CA-kedjevalidering vid läggningstillfället, eller ett
+     * identitetsbundet värde kvar i raden). Posten i
+     * `src/lib/known-limitations.ts` läggs av uppgift 16 — inte här.
+     *
+     * Testet ska gå RÖTT den dag hålet stängs. Det är ett medvetet
+     * fallerande larm, inte ett misslyckat försök att fånga hålet.
+     */
+    const ballot = await buildBallot('bp-m')
+
+    const forgedKeys = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    })
+
+    const forgedPayload = envelopePayload({
+      electionId,
+      ballotId,
+      ciphertextHash: ballot.ciphertextHash,
+      castSequence: 1,
+    })
+    const forgedSignature = createSign('sha256')
+      .update(forgedPayload)
+      .end()
+      .sign(forgedKeys.privateKey, 'base64')
+
+    const data = {
+      ciphertext: ballot.ciphertext as unknown as Prisma.InputJsonValue,
+      proofs: ballot.proofs as unknown as Prisma.InputJsonValue,
+      ciphertextHash: ballot.ciphertextHash,
+      castSequence: 1,
+      bankIdSignature: forgedSignature,
+      bankIdPublicKey: forgedKeys.publicKey,
+      updatedAt: new Date(),
+    }
+
+    await votersDb.pendingVote.upsert({
+      where: { voterStatusId_ballotId: { voterStatusId: kim, ballotId } },
+      create: { voterStatusId: kim, ballotId, ...data },
+      update: data,
+    })
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.summary.passed).toBe(true)
+    expect(report.anomalies).toHaveLength(0)
+  })
+
   it('upptäcker en återuppspelad äldre röst', async () => {
     const first = await castFor(anna, 'bp-s')
     await castFor(anna, 'bp-m')
@@ -351,6 +434,38 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     expect(report.anomalies).toContainEqual(
       expect.objectContaining({ kind: 'WRONG_BALLOT', voterStatusId: gunvor }),
     )
+  })
+
+  it('en rad med flera samtidiga avvikelser rapporterar dem alla', async () => {
+    /**
+     * Fynd 3, fixrunda 1 av uppgift 10:s granskning.
+     *
+     * "Billigast först" avgör bara ordningen kontrollerna körs i, inte om en
+     * dyrare körs efter att en billigare redan träffat. En rad kan ha flera
+     * fel på samma gång — och just den kombinationen är vad en administratör
+     * behöver för att skilja en bugg från ett angrepp (spec 7.2). Gunvor får
+     * här en rad på Stockholms kommunvalsedel (fel för henne — WRONG_BALLOT)
+     * med en signatur som inte håller (BAD_SIGNATURE), i en och samma rad.
+     */
+    const kommunOptions = canonicalOptions({
+      allowsCandidateVote: false,
+      parties: [{ id: kommunPartyId, displayOrder: 0, candidates: [] }],
+    })
+    const ballot = encryptBallot(publicKey, electionId, kommunBallotId, kommunOptions, {
+      kind: 'PARTY',
+      ballotPartyId: kommunPartyId,
+    })
+
+    await stuffVoteForBallot(gunvor, kommunBallotId, ballot)
+
+    const report = await validateBeforeClose(electionId)
+
+    const forGunvor = report.anomalies
+      .filter((anomaly) => anomaly.voterStatusId === gunvor)
+      .map((anomaly) => anomaly.kind)
+      .sort()
+
+    expect(forGunvor).toEqual(['BAD_SIGNATURE', 'WRONG_BALLOT'])
   })
 
   it('rapportens sammanfattning namnger ingen väljare', async () => {
@@ -382,6 +497,21 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
 
     expect(report.summary.passed).toBe(true)
     expect(report.anomalies).toHaveLength(0)
+
+    /**
+     * DEN HÄR ASSERTIONEN ÄR INTE ÖVERFLÖDIG — TA INTE BORT DEN.
+     *
+     * `passed`/`anomalies` ovan fångar bara varianten "avvisa och flagga".
+     * Den farligare varianten av en regression är att någon lägger
+     * `where: { voterStatus: { isEligible: true } } ` i `pendingVote.findMany`
+     * — den mest idiomatiska Prisma-vägen att "hjälpsamt" återinföra
+     * röstberättigandekontrollen. Då FILTRERAS Annas röst tyst bort ur
+     * resultatmängden: `votes`/`voters` går 1 → 0, `anomalies` förblir tom,
+     * `passed` förblir sant, och de två raderna ovan skulle fortsätta gå
+     * gröna. Bara ett explicit antal fångar att rösten verkligen RÄKNADES,
+     * inte bara att den inte flaggades.
+     */
+    expect(report.summary).toMatchObject({ votes: 1, voters: 1 })
   })
 
   it('att valideringen körts hamnar i revisionsloggen', async () => {

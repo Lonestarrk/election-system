@@ -24,10 +24,38 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  *   Kryptografiska säger att raden bär ett bevis bara väljaren kunde
  *                  framställa. Ingen med databasåtkomst kan förfalska dem.
  *
- * Signaturkontrollen (STALE_SEQUENCE/BAD_SIGNATURE nedan) är den enda som
- * stänger "en röst lagd i någon annans namn", eftersom en sådan rad passerar
- * varje relationell kontroll: väljaren är verklig, röstberättigad enligt
- * radens existens, och pekar på en valsedel som finns.
+ * VAD SIGNATURKONTROLLEN (STALE_SEQUENCE/BAD_SIGNATURE NEDAN) FAKTISKT STÄNGER
+ * — OCH VAD DEN INTE GÖR.
+ *
+ * Den stänger i DAG: förvanskat eller på annat sätt manipulerat
+ * signaturmaterial i en rad som annars är äkta (ett fält som gått sönder
+ * eller bytts ut efter att raden skrevs), och en klient som försöker skicka
+ * med ett eget påhittat kuvert i stället för att gå via BankID —
+ * `castEncryptedBallot` hämtar signatur och certifikat bara ur BankID:s eget
+ * svar, aldrig ur begäran (se `pending-vote.service.ts` och
+ * `/api/vote/encrypted`).
+ *
+ * DEN STÄNGER INTE EN ANGRIPARE MED SKRIVRÄTTIGHET TILL DATABASEN. En sådan
+ * angripare kan generera ett eget nyckelpar, signera ett välformat kuvert med
+ * sin egen privata nyckel, och skriva nyckeln, signaturen och ett verkligt
+ * `voterStatusId` tillsammans i en rad som är fullständigt självkonsekvent.
+ * `classifySignature` kan bara pröva att signaturen håller mot NYCKELN SOM
+ * STÅR I RADEN — inte att den nyckeln verkligen tillhör väljaren radens
+ * `voterStatusId` pekar på. Den bindningen finns inte kvar att kontrollera
+ * här: `PendingVote` lagrar bara nyckelmaterialet, aldrig certifikatet (se
+ * `PendingVote.bankIdPublicKey`s dokumentation för varför). Se testet
+ * "en självkonsekvent förfalskning med eget nyckelpar fångas INTE" i
+ * `validate-before-close.test.ts` för en körd demonstration av precis den
+ * här luckan — den är känd, inte förbisedd, och ska tas upp som en post i
+ * `src/lib/known-limitations.ts` av uppgift 16.
+ *
+ * Vad som SKULLE stänga den: antingen CA-kedjevalidering av certifikatet vid
+ * LÄGGNINGSTILLFÄLLET, så att bara en nyckel utfärdad av BankIDs CA någonsin
+ * kan bli en rad (redan utpekat som återstående arbete i
+ * `personalNumberFromCertificate`s dokumentation), eller att behålla ett
+ * identitetsbundet värde i raden i stället för bara nyckeln — vilket i sin
+ * tur återöppnar exakt den avvägning som fick certifikatet att strykas till
+ * förmån för bara nyckelmaterialet (samma dokumentation som ovan).
  *
  * VAD DEN HÄR FILEN INTE GÖR
  *
@@ -66,11 +94,37 @@ export type ValidationReport = {
  * räknarvärde k, inte för det som står i kolumnen" — omöjligt att förfalska,
  * eftersom det kräver väljarens privata nyckel.
  *
- * Gränsen finns för att en absurt hög (tampererad) räknarkolumn inte ska få
- * valideringen att leta i det oändliga. Ingen verklig väljare ändrar sig
- * hundratals gånger på en och samma valsedel.
+ * Gränsen finns för att en absurt hög (tampererad) räknarkolumn på EN rad
+ * inte ska få valideringen att leta i det oändliga för just den raden. Ingen
+ * verklig väljare ändrar sig hundratals gånger på en och samma valsedel.
+ *
+ * Den ensam räcker inte mot en angripare som skriver MÅNGA rader, var och en
+ * med en absurt hög räknarkolumn — se `MAX_TOTAL_STALE_PROBES` nedan för
+ * taket som skyddar mot det.
  */
 const MAX_STALE_LOOKBACK = 500
+
+/**
+ * Sammanlagt tak för hela körningen på hur många extra signaturverifieringar
+ * STALE_SEQUENCE-sökningen får göra, över samtliga rader.
+ *
+ * `MAX_STALE_LOOKBACK` begränsar kostnaden för EN avvikande rad. Det räcker
+ * inte mot en angripare med skrivrättighet som skapar MÅNGA rader, var och en
+ * med en manipulerad, hög räknarkolumn: utan ett gemensamt tak skulle
+ * kostnaden växa linjärt med antalet sådana rader, upp till
+ * `MAX_STALE_LOOKBACK` extra verifieringar VAR — långsamt nog att fördröja
+ * stängningen, vilket är precis det valideringen (spec 7.1) inte får göra sig
+ * skyldig till själv.
+ *
+ * Budgeten delas mellan ALLA rader i körningen, inte per rad. Tar den slut
+ * mitt i sökningen för en rad avgörs den raden som BAD_SIGNATURE i stället
+ * för STALE_SEQUENCE — en försiktig, inte en felaktig, klassificering: raden
+ * är fortfarande en avvikelse och gör fortfarande `passed` falskt, bara
+ * kategorin kan bli fel under den extrema omständigheten att budgeten tagit
+ * slut. Ett normalt val, utan manipulerade rader, förbrukar aldrig budgeten —
+ * varje ärlig rad kostar exakt en verifiering (det rena, snabba fallet).
+ */
+const MAX_TOTAL_STALE_PROBES = 5000
 
 type SignatureVerdict = 'ok' | 'stale' | 'bad'
 
@@ -98,6 +152,8 @@ function classifySignature(
     bankIdSignature: string
     bankIdPublicKey: string
   },
+  /** Delad mellan alla rader i körningen — se `MAX_TOTAL_STALE_PROBES`. */
+  staleProbeBudget: { remaining: number },
 ): SignatureVerdict {
   const current = envelopePayload({
     electionId,
@@ -110,7 +166,13 @@ function classifySignature(
 
   const lowerBound = Math.max(1, vote.castSequence - MAX_STALE_LOOKBACK)
 
-  for (let candidate = vote.castSequence - 1; candidate >= lowerBound; candidate -= 1) {
+  for (
+    let candidate = vote.castSequence - 1;
+    candidate >= lowerBound && staleProbeBudget.remaining > 0;
+    candidate -= 1
+  ) {
+    staleProbeBudget.remaining -= 1
+
     const older = envelopePayload({
       electionId,
       ballotId: vote.ballotId,
@@ -164,8 +226,8 @@ function toEncryptedBallot(vote: {
  * Kör hela valideringen för en omröstning, medan `PendingVote` fortfarande
  * pekar på `voterStatusId`.
  *
- * KONTROLLERNA KÖRS I ORDNING, BILLIGAST FÖRST, OCH STOPPAR VID FÖRSTA
- * TRÄFF PER RAD.
+ * KONTROLLERNA KÖRS I ORDNING, BILLIGAST FÖRST — MEN ALLA KÖRS, FÖR VARJE
+ * RAD, OAVSETT OM EN TIDIGARE REDAN TRÄFFAT.
  *
  *   1. WRONG_BALLOT    — en ren uppslagning mot spegeltabellen.
  *   2. STALE_SEQUENCE  — kryptografisk, men en enda `verify` i det vanliga
@@ -173,8 +235,16 @@ function toEncryptedBallot(vote: {
  *   4. BAD_PROOF       — dyrast: en handfull modulär exponentiering per
  *                        alternativ på valsedeln.
  *
- * En rad som redan underkänts av en billigare kontroll prövas aldrig mot en
- * dyrare — dels för kostnadens skull, dels för att den redan är förklarad.
+ * "Billigast först" avgör bara ORDNINGEN de körs i, inte OM de körs. En rad
+ * kan ha flera samtidiga fel — fel valsedel OCH ett förfalskat bevis är inte
+ * mer osannolikt än bara det ena — och just den kombinationen betyder mest
+ * för en administratörs triage (spec 7.2 finns för att avvikelser ska gå att
+ * UTREDA). WRONG_BALLOT-kommentaren ovan säger uttryckligen att en sådan rad
+ * "kan komma från en bugg lika gärna som ett angrepp": att i det läget dölja
+ * en SAMTIDIG signatur- eller bevisavvikelse, bara för att den redan
+ * kategoriserats som fel valsedel, vore att gömma exakt den information som
+ * skiljer en bugg från ett angrepp. En rad utan avvikelser kostar fortfarande
+ * bara det billiga, vanliga fallet av varje kontroll.
  *
  * VALIDERINGEN KONTROLLERAR INTE NUVARANDE RÖSTBERÄTTIGANDE, och det är ett
  * beslut, inte en glömska (spec 7.4). Att rösten var legitim när den lades
@@ -208,6 +278,8 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
 
   const anomalies: Anomaly[] = []
   const shapeCache = new Map<string, Awaited<ReturnType<typeof getEncryptedBallotShape>>>()
+  // Delad över hela körningen — se `MAX_TOTAL_STALE_PROBES`.
+  const staleProbeBudget = { remaining: MAX_TOTAL_STALE_PROBES }
 
   for (const vote of pendingVotes) {
     const anomaly = (kind: Anomaly['kind']): Anomaly => ({
@@ -220,23 +292,20 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
     const ballot = ballotById.get(vote.ballotId)
     if (!ballot || mismatchesVoterArea(ballot, vote.voterStatus)) {
       anomalies.push(anomaly('WRONG_BALLOT'))
-      continue
     }
 
     // 2–3. STALE_SEQUENCE / BAD_SIGNATURE — kryptografiska, en verifiering i
-    // det vanliga (rena) fallet.
-    const signatureVerdict = classifySignature(electionId, vote)
+    // det vanliga (rena) fallet. Körs OAVSETT om WRONG_BALLOT redan träffade.
+    const signatureVerdict = classifySignature(electionId, vote, staleProbeBudget)
     if (signatureVerdict === 'stale') {
       anomalies.push(anomaly('STALE_SEQUENCE'))
-      continue
     }
     if (signatureVerdict === 'bad') {
       anomalies.push(anomaly('BAD_SIGNATURE'))
-      continue
     }
 
-    // 4. BAD_PROOF — dyrast, och prövas bara på rader som redan klarat allt
-    // annat.
+    // 4. BAD_PROOF — dyrast, men körs ändå: en rad kan ha ett ogiltigt bevis
+    // OBEROENDE av om valsedeln eller signaturen redan avvek.
     let shape = shapeCache.get(vote.ballotId)
     if (shape === undefined) {
       shape = await getEncryptedBallotShape(vote.ballotId)
