@@ -180,8 +180,29 @@ BankID returnerar en XML-signatur ställd med väljarens eget certifikat. Raden 
 signaturen och certifikatet, och valideringen vid stängning kontrollerar varje signatur
 mot chifferhashen och mot personnumret i röstlängden.
 
-Därmed **kan en röst inte förfalskas av någon — inte heller av den som driver systemet.**
-Systemet slutar vara betrott att säga vem som röstat och börjar kunna bevisa det.
+Därmed kan en röst inte förfalskas av **en klient**. Systemet slutar vara betrott att
+säga att en viss webbläsare talar för en viss väljare.
+
+**MEN DEN SKYDDAR INTE MOT DEN SOM DRIVER SYSTEMET, OCH DET ÄR VIKTIGT ATT SÄGA RAKT UT.**
+
+En signatur är bara värd vad certifikatet bakom den är värt. Kontrollen jämför signaturen
+mot en nyckel, och att nyckeln tillhör en verklig väljare vilar helt på att certifikatet
+är utfärdat av BankID:s CA. Utan **kedjevalidering mot den CA:n** kan vem som helst med
+skrivrättighet till röstlängden generera ett eget nyckelpar, signera ett välformat kuvert,
+och skriva signatur, nyckel och väljarrad tillsammans i en fullt självkonsekvent post.
+Varje kontroll säger ja.
+
+Kedjevalideringen finns inte i den här prototypen, eftersom BankID är en attrapp. Vad
+signaturen ger i dag är alltså:
+
+| Skyddar mot | Skyddar inte mot |
+|---|---|
+| En klient som skickar med ett eget kuvert | Den som kan skriva direkt i databasen |
+| Manipulation av en annars äkta rads innehåll | En självkonsekvent förfalskning med eget nyckelpar |
+
+Skillnaden mellan de två kolumnerna är precis kedjevalideringen. Den står som känd
+begränsning, och konstruktionen är byggd för att den ska gå att lägga till utan att något
+annat ändras.
 
 **Återuppspelningen som också måste stoppas.** Utan räknaren i den signerade datan kan
 den som fångat väljarens *första* signerade kuvert skicka in det igen efter att hon ändrat
@@ -378,7 +399,7 @@ före ombyggnaden fanns ingen koppling alls.
 
 | Kontroll | Vad den upptäcker | Gick det i blindsigneringsmodellen? |
 |---|---|---|
-| Varje röst bär väljarens egen BankID-signatur över sitt chiffer | Förfalskad röst, även av den som driver systemet | Nej |
+| Varje röst bär väljarens egen BankID-signatur över sitt chiffer | Förfalskad röst från en klient; manipulation av en äkta rad | Nej |
 | Räknaren i signaturen är den högsta väljaren ställt ut | Återuppspelad äldre röst, alltså ett röstköp som överlever ändringen | Nej |
 | Varje liggande röst tillhör en existerande, röstberättigad väljare | Rader som pekar på ingen | Nej |
 | Valsedeln gäller väljaren, alltså rätt kommun och region | Fel valsedel, oavsett om det är bugg eller angrepp | Nej |
@@ -389,7 +410,12 @@ före ombyggnaden fanns ingen koppling alls.
 Den första raden ändrar kontrollernas karaktär. Utan signaturen är de *relationella* —
 de säger att raden hänger ihop med resten av databasen, vilket en angripare med
 skrivrättighet lätt ordnar. Med signaturen blir de **kryptografiska**: raden måste bära
-ett bevis som bara väljaren kunde framställa.
+ett bevis.
+
+Hur mycket det beviset är värt avgörs dock av avsnitt 4.6. Utan kedjevalidering mot
+BankID:s CA kan den som skriver direkt i databasen framställa beviset själv, och då är
+kontrollen tillbaka på relationell nivå mot just den angriparen. Valideringen stänger
+alltså **klientsidan** helt, och serversidan först när kedjevalideringen finns.
 
 **Skillnaden är också att avvikelser blir spårbara.** Tidigare gav en felräkning ett tal: fler
 röster än markerade väljare. Ingen kunde säga vilka rösterna var. Nu ger samma kontroll
