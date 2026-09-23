@@ -1594,7 +1594,9 @@ describe.skipIf(!databaseAvailable)('tröskelnyckel vid skapande', () => {
     const id = await newElection()
     const share = await votesDb.trusteeShare.findFirstOrThrow({ where: { electionId: id } })
 
-    expect(() => decryptShare(share.encryptedShare, 'fel-fras', share.trusteeIndex)).toThrow()
+    expect(() =>
+      decryptShare(share.encryptedShare, 'fel-fras', id, share.trusteeIndex),
+    ).toThrow()
   })
 })
 ```
@@ -1640,7 +1642,12 @@ await votesDb.trusteeShare.createMany({
     electionId: election.id,
     trusteeIndex: share.index,
     publicShare: publicShare(share).toString(),
-    encryptedShare: encryptShare(share.value, input.trusteePassphrases[share.index - 1]!, share.index),
+    encryptedShare: encryptShare(
+      share.value,
+      input.trusteePassphrases[share.index - 1]!,
+      election.id,
+      share.index,
+    ),
   })),
 })
 ```
@@ -1670,11 +1677,16 @@ import { env } from '@/lib/env'
  * Saltet ar andelens index, sa att två förtroendeman med samma fras anda far
  * olika nycklar.
  */
-function keyFor(passphrase: string, trusteeIndex: number): Buffer {
-  return scryptSync(passphrase, `trustee-share-${trusteeIndex}`, 32)
+function keyFor(passphrase: string, electionId: string, trusteeIndex: number): Buffer {
+  return scryptSync(passphrase, `trustee-share-${electionId}-${trusteeIndex}`, 32)
 }
 
-export function encryptShare(value: bigint, passphrase: string, trusteeIndex: number): string {
+export function encryptShare(
+  value: bigint,
+  passphrase: string,
+  electionId: string,
+  trusteeIndex: number,
+): string {
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', keyFor(passphrase, trusteeIndex), iv)
   const encrypted = Buffer.concat([cipher.update(value.toString(), 'utf8'), cipher.final()])
@@ -1684,7 +1696,12 @@ export function encryptShare(value: bigint, passphrase: string, trusteeIndex: nu
   )
 }
 
-export function decryptShare(stored: string, passphrase: string, trusteeIndex: number): bigint {
+export function decryptShare(
+  stored: string,
+  passphrase: string,
+  electionId: string,
+  trusteeIndex: number,
+): bigint {
   const [iv, tag, payload] = stored.split(':')
   const decipher = createDecipheriv(
     'aes-256-gcm',
