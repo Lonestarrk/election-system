@@ -77,6 +77,23 @@ export type BankIdCollectComplete = {
     name: string
     givenName: string
     surname: string
+
+    /**
+     * Signaturen över `userNonVisibleData`, satt endast av `sign`-ordrar.
+     *
+     * Det som gör en röst oförfalskbar: en verifierare kan bevisa att just den
+     * här personen godkände just det signerade innehållet, utan att behöva
+     * lita på vad servern påstår.
+     */
+    signature: string
+
+    /**
+     * Certifikatet signaturen verifieras mot.
+     *
+     * I attrappen den demoidentitetens publika nyckel i PEM-format. I skarpt
+     * BankID X.509-certifikatet ur svaret.
+     */
+    certificate: string
   }
 }
 
@@ -121,9 +138,39 @@ export type BankIdQrData = {
   elapsedSeconds: number
 }
 
+export type SignRequest = {
+  /**
+   * Väljarens IP-adress, som BankID:s `endUserIp`.
+   *
+   * BankID kräver den för sin egen riskbedömning. Systemet lagrar den inte och
+   * loggar den inte — den passerar till BankID och kastas.
+   */
+  endUserIp: string
+
+  /** Visas i appen. Det väljaren faktiskt godkänner. */
+  userVisibleData: string
+
+  /**
+   * Signeras men visas inte. Här ligger chifferhashen, valsedelns id och
+   * räknaren — sådant som måste vara bundet men som ingen människa kan granska
+   * på en telefonskärm.
+   */
+  userNonVisibleData: string
+}
+
 export interface IBankIdService {
   /** Startar en legitimeringsorder. */
   auth(request: BankIdAuthRequest): Promise<BankIdAuthOrder>
+
+  /**
+   * BankID /sign. Används vid röstläggning, aldrig vid inloggning.
+   *
+   * Skillnaden mot auth är inte kosmetisk: en auth bevisar att någon var
+   * närvarande, en sign bevisar att just den personen godkände just det här
+   * innehållet. Det senare är vad som gör en röst oförfalskbar — även för den
+   * som driver systemet.
+   */
+  sign(request: SignRequest): Promise<BankIdAuthOrder>
 
   /**
    * Den animerade QR-kodens data just nu.

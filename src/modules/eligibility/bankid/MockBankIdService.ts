@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createSign, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
 import { env } from '@/lib/env'
 import { computeQrData, QR_ORDER_LIFETIME_SECONDS } from './qr'
 import type {
@@ -7,6 +7,7 @@ import type {
   BankIdCollectResult,
   BankIdQrData,
   IBankIdService,
+  SignRequest,
 } from './IBankIdService'
 
 /**
@@ -52,6 +53,13 @@ type MockOrder = {
   demoPersonalNumber: string | null
   pollsRemaining: number
   cancelled: boolean
+
+  /**
+   * Sätts endast av `sign`. Skiljer en legitimeringsorder från en
+   * signeringsorder, så att `collect` vet om den ska signera något vid
+   * avslut.
+   */
+  userNonVisibleData: string | null
 }
 
 const orders = new Map<string, MockOrder>()
@@ -72,6 +80,26 @@ const DEMO_NAMES: Record<string, { givenName: string; surname: string }> = {
   '198001019876': { givenName: 'Alex', surname: 'Falk' },
 }
 
+/**
+ * Radprefix som markerar vem certifikatet tillhör.
+ *
+ * Ett riktigt BankID-certifikat är utfärdat av BankIDs CA och bär
+ * personnumret i sitt subject-fält — ett påstående från utfärdaren, inte
+ * något väljaren själv skriver under. Mockens "certifikat" är bara en publik
+ * nyckel utan CA, så samma bindning simuleras här: personnumret skrivs som en
+ * rad ovanför själva PEM-nyckeln.
+ *
+ * Det fungerar därför att Node/OpenSSL:s PEM-parser hoppar över text före
+ * "-----BEGIN"-raden, så nyckeln går ändå att använda direkt mot
+ * `crypto.verify`. Byts mocken mot skarpt BankID ersätts den här radläsningen
+ * av en riktig avläsning av certifikatets subject.
+ */
+const MOCK_CERTIFICATE_PREFIX = /^personnummer:(\d+)\n/
+
+function formatMockCertificate(personalNumber: string, publicKey: string): string {
+  return `personnummer:${personalNumber}\n${publicKey}`
+}
+
 function demoName(personalNumber: string): { name: string; givenName: string; surname: string } {
   const known = DEMO_NAMES[personalNumber] ?? { givenName: 'Demo', surname: 'Person' }
   return {
@@ -82,6 +110,30 @@ function demoName(personalNumber: string): { name: string; givenName: string; su
 }
 
 export class MockBankIdService implements IBankIdService {
+  /**
+   * Ett nyckelpar per demoidentitet, hållet i minnet.
+   *
+   * Attrappen får inte returnera en påhittad sträng. Skulle den göra det
+   * prövas verifieringen aldrig, och hela signaturkedjan vore otestad ända
+   * tills någon kopplar in skarp BankID — alltså precis när ett fel kostar
+   * som mest.
+   */
+  private readonly keys = new Map<string, { privateKey: string; publicKey: string }>()
+
+  private keysFor(personalNumber: string) {
+    const existing = this.keys.get(personalNumber)
+    if (existing) return existing
+
+    const pair = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    })
+
+    this.keys.set(personalNumber, pair)
+    return pair
+  }
+
   async auth(_request: BankIdAuthRequest): Promise<BankIdAuthOrder> {
     const orderRef = randomUUID()
 
@@ -94,6 +146,26 @@ export class MockBankIdService implements IBankIdService {
       demoPersonalNumber: null,
       pollsRemaining: env.mockBankIdPollsUntilComplete,
       cancelled: false,
+      userNonVisibleData: null,
+    })
+
+    return { orderRef, autoStartToken: randomUUID() }
+  }
+
+  async sign(request: SignRequest): Promise<BankIdAuthOrder> {
+    const orderRef = randomUUID()
+
+    orders.set(orderRef, {
+      qrStartToken: randomUUID(),
+      qrStartSecret: randomBytes(32).toString('hex'),
+      startedAt: Date.now(),
+      demoPersonalNumber: null,
+      pollsRemaining: env.mockBankIdPollsUntilComplete,
+      cancelled: false,
+      // Det som faktiskt signeras. Ligger kvar på ordern tills `collect`
+      // avslutar den, precis som skarpt BankID håller kvar begäran under
+      // hela legitimeringen.
+      userNonVisibleData: request.userNonVisibleData,
     })
 
     return { orderRef, autoStartToken: randomUUID() }
@@ -139,11 +211,24 @@ export class MockBankIdService implements IBankIdService {
     }
 
     const personalNumber = order.demoPersonalNumber
+    const { userNonVisibleData } = order
     orders.delete(orderRef)
+
+    // Auth-ordrar signerar ingenting — det finns inget innehåll att binda en
+    // signatur till, och nyckelparet slösas inte bort på att räknas fram i
+    // onödan. Fälten är ändå obligatoriska i typen, så att den som konsumerar
+    // en sign-order aldrig behöver hantera att de saknas.
+    let signature = ''
+    let certificate = ''
+    if (userNonVisibleData) {
+      const { privateKey, publicKey } = this.keysFor(personalNumber)
+      signature = createSign('sha256').update(userNonVisibleData).end().sign(privateKey, 'base64')
+      certificate = formatMockCertificate(personalNumber, publicKey)
+    }
 
     return {
       status: 'complete',
-      completionData: { personalNumber, ...demoName(personalNumber) },
+      completionData: { personalNumber, ...demoName(personalNumber), signature, certificate },
     }
   }
 
