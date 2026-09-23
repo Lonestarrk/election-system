@@ -12,7 +12,10 @@
 
 ## Global Constraints
 
-- **Inga nya npm-beroenden.** Mätt: 2,0 ms per modexp i 2048-bitars MODP räcker (0,7 s för en väljares tre valsedlar).
+- **Inga nya npm-beroenden**, med ett dokumenterat undantag i uppgift 17 (OpenAPI).
+  Regeln skrevs för kryptot: varje kryptoberoende är en angreppsyta i just den kod
+  som bär valhemligheten, och mätningen visade att inget behövs. Undantaget rör
+  varken krypto, röstdata eller identiteter. Mätt: 2,0 ms per modexp i 2048-bitars MODP räcker (0,7 s för en väljares tre valsedlar).
 - **Grupp:** RFC 3526 MODP Group 14. `g = 4` (ordning `q`), alla exponenter mod `q = (p-1)/2`.
 - **Varje mottaget gruppelement valideras** med `1 < y < p` och `y^q ≡ 1 (mod p)` innan det används.
 - **Kommentarer och användartext på svenska**, som resten av kodbasen. Kommentarer förklarar *varför*, inte *vad*.
@@ -3705,6 +3708,199 @@ Förväntat: PASS, 8 tester
 ```bash
 git add src/lib/runtime-mode.ts src/app/api/mode/route.ts prisma/ tests/unit/runtime-mode.test.ts tests/security/demo-mode-cannot-reach-production.test.ts
 git commit -m "Demoläge och skarpt läge, med produktion som felläge"
+```
+
+---
+
+## Task 17: OpenAPI-spec genererad ur valideringsschemana
+
+**Files:**
+- Create: `src/lib/openapi.ts`, `src/app/api/openapi/route.ts`, `src/app/api-dokumentation/page.tsx`
+- Modify: `src/lib/validation.ts` (registrera schemana), `package.json`, `ARCHITECTURE.md`
+- Test: `tests/security/openapi-coverage.test.ts`
+
+**Interfaces:**
+- Produces:
+  ```ts
+  export function openApiDocument(): OpenAPIObject
+  ```
+
+**Beroendeundantaget, och varför det är motiverat**
+
+Projektets globala krav säger inga nya npm-beroenden. Det skrevs för kryptot —
+poängen var att 2 ms per modexp räcker, så inget kryptobibliotek behövs, och att
+varje kryptoberoende är en angreppsyta i just den kod som bär valhemligheten.
+
+Den här uppgiften gör ett undantag för två paket, och skälet ska stå i
+`ARCHITECTURE.md`, inte bara i ett commit-meddelande:
+
+- `@asteasolutions/zod-to-openapi` — härleder specen ur de Zod-scheman rutterna
+  **faktiskt validerar med**. En handskriven spec beskriver vad någon trodde att
+  API:et gjorde vid skrivtillfället; en härledd beskriver vad det gör.
+- `swagger-ui-react` — CSP:n tillåter inga externa skript, så ett CDN-laddat
+  Swagger UI blockeras tyst. Paketerat med appen serveras det från `'self'`.
+
+Ingetdera rör krypto, röstdata eller identiteter. De läser scheman och renderar
+en sida.
+
+- [ ] **Steg 1: Skriv det fallerande testet**
+
+```ts
+// tests/security/openapi-coverage.test.ts
+import { readdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { openApiDocument } from '@/lib/openapi'
+
+/**
+ * SPECEN FÅR INTE TIGA OM EN RUTT.
+ *
+ * En API-dokumentation som missar en rutt är värre än ingen alls: läsaren drar
+ * slutsatsen att ytan är mindre än den är. Samma mönster som
+ * api-surface.test.ts, som redan räknar upp varje ruttfil — här krävs att
+ * inventeringen och specen täcker varandra.
+ *
+ * Demorutterna undantas med flit. De existerar bara när BankID är en attrapp
+ * och hör inte till det API någon ska integrera mot.
+ */
+function routeFiles(directory: string, prefix = ''): string[] {
+  const found: string[] = []
+
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) found.push(...routeFiles(path, `${prefix}/${entry.name}`))
+    else if (entry.name === 'route.ts') found.push(prefix)
+  }
+
+  return found
+}
+
+const routes = routeFiles(join(process.cwd(), 'src/app/api'))
+  .filter((path) => !path.startsWith('/demo'))
+  .sort()
+
+describe('OpenAPI-specen mot den faktiska ruttinventeringen', () => {
+  it('varje rutt finns i specen', () => {
+    const documented = Object.keys(openApiDocument().paths ?? {})
+      .map((path) => path.replace(/^\/api/, ''))
+      .sort()
+
+    expect(documented).toEqual(routes)
+  })
+
+  it('varje dokumenterad rutt finns på disk', () => {
+    // Andra riktningen. En spec som beskriver rutter som inte finns skickar
+    // den som integrerar mot ett API som svarar 404.
+    const documented = Object.keys(openApiDocument().paths ?? {}).map((path) =>
+      path.replace(/^\/api/, ''),
+    )
+
+    for (const path of documented) {
+      expect(routes, `${path} finns i specen men inte på disk`).toContain(path)
+    }
+  })
+
+  it('ingen rutt dokumenteras utan att beskriva sina fel', () => {
+    /**
+     * Rutterna svarar 403 på fel origin, 429 vid hastighetsgräns och 400 på
+     * ogiltig indata. En spec som bara visar lyckofallet får den som
+     * integrerar att tro att de svaren är buggar.
+     */
+    for (const [path, item] of Object.entries(openApiDocument().paths ?? {})) {
+      for (const [method, operation] of Object.entries(item as Record<string, any>)) {
+        if (!['get', 'post'].includes(method)) continue
+
+        const codes = Object.keys(operation.responses ?? {})
+        expect(codes, `${method.toUpperCase()} ${path} saknar felsvar`).not.toEqual(['200'])
+      }
+    }
+  })
+
+  it('inget svarsexempel innehåller ett personnummer eller en token', () => {
+    /**
+     * Ett exempel är dokumentation, men det kopieras också. Ett personnummer
+     * eller en kvittokod i specen blir ett personnummer i varje kodexempel
+     * någon klistrar in.
+     */
+    const serialised = JSON.stringify(openApiDocument())
+
+    expect(serialised).not.toMatch(/\b(19|20)\d{6}[-\s]?\d{4}\b/)
+    expect(serialised).not.toMatch(/"token"\s*:\s*"[0-9a-f]{40,}"/)
+  })
+})
+```
+
+- [ ] **Steg 2: Kör och se att det fallerar**
+
+Kör: `npx vitest run tests/security/openapi-coverage.test.ts`
+Förväntat: FAIL, `Failed to resolve import '@/lib/openapi'`
+
+- [ ] **Steg 3: Installera de två paketen**
+
+```bash
+npm install @asteasolutions/zod-to-openapi swagger-ui-react --save
+```
+
+Kör `npm install` med `--ignore-scripts` om postinstall faller — projektets
+postinstall kör `prisma generate`, som kräver att dev-servern är stoppad.
+
+- [ ] **Steg 4: Registrera schemana och bygg dokumentet**
+
+`src/lib/validation.ts` innehåller redan varje rutts indataschema. Utöka dem med
+`.openapi()`-metadata via `extendZodWithOpenApi`, och bygg dokumentet i
+`src/lib/openapi.ts`:
+
+```ts
+/**
+ * SPECEN HÄRLEDS UR VALIDERINGEN, INTE UR PROSA.
+ *
+ * Varje rutt validerar sin indata med ett Zod-schema i validation.ts. Genereras
+ * specen ur samma scheman beskriver den vad API:et FAKTISKT accepterar. En
+ * handskriven spec beskriver vad någon trodde att det accepterade när den
+ * skrevs, och de två glider isär tyst.
+ *
+ * Täckningen vaktas av tests/security/openapi-coverage.test.ts, som jämför mot
+ * samma ruttinventering som api-surface-testet använder.
+ */
+```
+
+Varje operation ska beskriva `403` (fel origin), `429` (hastighetsgräns) och
+`400` (ogiltig indata) utöver lyckofallet — testet i steg 1 kräver det.
+
+**Svarsexemplen får inte innehålla riktiga personnummer eller kvittokoder.**
+Använd uppenbart påhittade värden.
+
+- [ ] **Steg 5: Servera specen och sidan**
+
+`src/app/api/openapi/route.ts` returnerar dokumentet som JSON. Rutten kräver
+ingen inloggning — API-ytan är offentlig information, och att dölja den gör
+systemet svårare att granska utan att göra det säkrare. Den ska ha
+origin-kontroll och hastighetsgräns som övriga rutter.
+
+`src/app/api-dokumentation/page.tsx` renderar `swagger-ui-react` mot den rutten.
+Sidan är en klientkomponent. **Kontrollera att den faktiskt laddar under CSP:n**
+— starta dev-servern och öppna sidan i en riktig webbläsare, för ett blockerat
+skript syns inte som ett fel i bygget. Det här projektet har redan förlorat tid
+på exakt det.
+
+- [ ] **Steg 6: Skriv in undantaget i ARCHITECTURE.md**
+
+Ett stycke som säger vilka två paket som lagts till, att de inte rör krypto,
+röstdata eller identiteter, och varför en genererad spec valdes framför en
+handskriven. Utan det ser nästa läsare bara att regeln brutits.
+
+- [ ] **Steg 7: Kör testerna**
+
+Kör: `npx vitest run` — hela sviten, inte bara den nya filen.
+Förväntat: PASS
+
+- [ ] **Steg 8: Committa**
+
+```bash
+git add package.json package-lock.json src/lib/openapi.ts src/lib/validation.ts \
+        src/app/api/openapi src/app/api-dokumentation \
+        tests/security/openapi-coverage.test.ts ARCHITECTURE.md
+git commit -m "OpenAPI-spec genererad ur valideringsschemana"
 ```
 
 ---
