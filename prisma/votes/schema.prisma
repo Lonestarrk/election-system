@@ -58,6 +58,13 @@ model Election {
   ballots     ElectionBallot[]
   commitments ElectionCommitment[]
 
+  /// Valets publika krypteringsnyckel, h = g^x.
+  encryptionPublicKey String? @map("encryption_public_key")
+
+  tallyCompletedAt DateTime? @map("tally_completed_at")
+
+  trusteeShares TrusteeShare[]
+
   @@map("election")
 }
 
@@ -145,6 +152,10 @@ model ElectionBallot {
   options BallotOption[]
   votes   Vote[]
 
+  encryptedVotes     EncryptedVote[]
+  partialDecryptions PartialDecryption[]
+  tallies            BallotTally[]
+
   @@index([electionId])
   @@map("election_ballot")
 }
@@ -182,6 +193,7 @@ model BallotParty {
   votes      Vote[]
 
   @@unique([ballotId, partyId])
+  @@unique([ballotId, displayOrder])
   @@index([partyId])
   @@map("ballot_party")
 }
@@ -212,6 +224,7 @@ model Candidate {
 
   votes Vote[]
 
+  @@unique([ballotPartyId, displayOrder])
   @@index([ballotPartyId])
   @@map("candidate")
 }
@@ -301,4 +314,69 @@ model Vote {
   @@index([candidateId])
   @@index([optionId])
   @@map("vote")
+}
+
+/// Det inre kuvertet, efter att identitetslagret skalats bort.
+model EncryptedVote {
+  id String @id @default(uuid())
+
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+
+  ciphertext Json
+  proofs     Json
+
+  /// Unik: gör skalningen idempotent. En avbruten körning kan köras om utan
+  /// att skapa dubbletter.
+  ciphertextHash String @unique @map("ciphertext_hash")
+
+  @@index([ballotId])
+  @@map("encrypted_vote")
+}
+
+/// En förtroendemans andel av dekrypteringsnyckeln.
+model TrusteeShare {
+  id String @id @default(uuid())
+
+  electionId String   @map("election_id")
+  election   Election @relation(fields: [electionId], references: [id], onDelete: Cascade)
+
+  trusteeIndex Int @map("trustee_index")
+
+  /// g^{x_i}. Publik, och det som bevisen kontrolleras mot.
+  publicShare String @map("public_share")
+
+  /// x_i, skyddad. En andel i klartext här vore lika illa som ingen delning.
+  encryptedShare String @map("encrypted_share")
+
+  @@unique([electionId, trusteeIndex])
+  @@map("trustee_share")
+}
+
+model PartialDecryption {
+  id String @id @default(uuid())
+
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+
+  optionIndex  Int    @map("option_index")
+  trusteeIndex Int    @map("trustee_index")
+  value        String
+  proof        Json
+
+  @@unique([ballotId, optionIndex, trusteeIndex])
+  @@map("partial_decryption")
+}
+
+model BallotTally {
+  id String @id @default(uuid())
+
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+
+  optionIndex Int @map("option_index")
+  count       Int
+
+  @@unique([ballotId, optionIndex])
+  @@map("ballot_tally")
 }

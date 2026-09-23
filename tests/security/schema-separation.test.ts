@@ -214,4 +214,39 @@ describe('databasseparation', () => {
     expect(votesSchema).toContain('@map("token_hash")')
     expect(votesSchema).not.toMatch(/@map\("token"\)/)
   })
+
+  it('PendingVote bär identitet och hör därför hemma i röstlängden', () => {
+    expect(votersFields).toMatch(/model PendingVote \{/)
+    expect(votesFields).not.toMatch(/model PendingVote \{/)
+  })
+
+  it('EncryptedVote innehåller ingen identitet', () => {
+    const model = votesFields.match(/model EncryptedVote \{[\s\S]*?\n\}/)?.[0] ?? ''
+
+    expect(model).not.toBe('')
+    for (const forbidden of ['voterStatusId', 'personalNumber', 'identityHash', 'sessionId']) {
+      expect(model, `EncryptedVote innehåller ${forbidden}`).not.toContain(forbidden)
+    }
+  })
+
+  it('kopplingen har en unik nyckel per väljare och valsedel', () => {
+    // Utan den kan en väljare få två liggande röster på samma valsedel, och
+    // skalningen skulle flytta båda.
+    const model = votersFields.match(/model PendingVote \{[\s\S]*?\n\}/)?.[0] ?? ''
+
+    expect(model).toContain('@@unique([voterStatusId, ballotId])')
+  })
+
+  it('ordningsnumren ar unika, sa den kanoniska ordningen ar total', () => {
+    /**
+     * Utan detta faller sorteringen tillbaka pa insattningsordning nar tva
+     * alternativ delar displayOrder — och klient och server kan da numrera
+     * valsedeln olika. Rosten hamnar pa fel alternativ, och inget bevis ser det.
+     */
+    const ballotParty = votesFields.match(/model BallotParty \{[\s\S]*?\n\}/)?.[0] ?? ''
+    const candidate = votesFields.match(/model Candidate \{[\s\S]*?\n\}/)?.[0] ?? ''
+
+    expect(ballotParty).toContain('@@unique([ballotId, displayOrder])')
+    expect(candidate).toContain('@@unique([ballotPartyId, displayOrder])')
+  })
 })

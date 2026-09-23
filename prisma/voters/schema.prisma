@@ -73,6 +73,7 @@ model VoterStatus {
   sessions       VotingSession[]
   adminSessions  AdminSession[]
   ballotStatuses VoterBallotStatus[]
+  pendingVotes   PendingVote[]
 
   @@map("voter_status")
 }
@@ -90,6 +91,23 @@ model Election {
   closesAt DateTime @map("closes_at")
 
   ballots ElectionBallot[]
+
+  /// När kopplingen väljare↔röst raderades. Null medan röstningen pågår.
+  linkClearedAt DateTime? @map("link_cleared_at")
+
+  /// OPEN | CLOSED | VALIDATED | STRIPPED | TALLIED | CERTIFIED.
+  ///
+  /// Enkelriktad. Ordningen maste vara omojlig att kasta om, inte bara
+  /// osannolik — se spec 6.1. Att fasen ar ett falt och inte en jamforelse mot
+  /// klockan spelar roll: en klocka som gar fel andrar beteendet tyst, medan en
+  /// fasovergang ar en handelse nagon utfort.
+  phase String @default("OPEN")
+
+  /// Merklerot over (ciphertextHash, bankIdSignature) fore skalningen.
+  ///
+  /// Det enda som overlever raderingen av signaturerna, och det som later en
+  /// valjare med sparat kuvert bevisa att det raknades. Se spec 7.3.
+  envelopeRoot String? @map("envelope_root")
 
   @@map("election")
 }
@@ -300,4 +318,59 @@ model AuditEvent {
 
   @@index([eventType])
   @@map("audit_event")
+}
+
+/// Det yttre kuvertet: vem som röstat, plus ett chiffer systemet inte kan läsa.
+///
+/// RADEN ERSÄTTS NÄR VÄLJAREN ÄNDRAR SIG, och RADERAS när röstningen stänger.
+/// Det är hela mekanismen mot röstköp: en köpare måste bevaka väljaren fram
+/// till stängningen för att vara säker på vad som räknas.
+///
+/// Att kopplingen existerar under röstningen är ett medvetet byte mot den
+/// tidigare konstruktionen, där den var fysiskt omöjlig. Se
+/// docs/spec/2026-09-22-dubbla-kuvert.md avsnitt 9.
+model PendingVote {
+  id String @id @default(uuid())
+
+  voterStatusId String      @map("voter_status_id")
+
+  /// RESTRICT, INTE CASCADE.
+  ///
+  /// En struken väljares röst ska räknas (spec 7.4), så en radering får inte
+  /// tyst ta rösten med sig. Restrict betyder att en väljare inte kan
+  /// hårdraderas medan hon har en liggande röst. Efter skalningen är raden
+  /// borta och raderingen fri igen.
+  voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Restrict)
+
+  /// Speglat id. Ingen FK — valsedeln bor i den andra databasen.
+  ballotId String @map("ballot_id")
+
+  /// M par (c1, c2) som decimalsträngar.
+  ciphertext Json
+
+  /// M stycken 0/1-bevis plus ett summabevis.
+  proofs Json
+
+  /// SHA-256 över den kanoniska serialiseringen. Väljarens inklusionshandtag.
+  ciphertextHash String @map("ciphertext_hash")
+
+  /// Ökar vid varje läggning och ligger INUTI det signerade.
+  ///
+  /// Utan den kan den som fångat väljarens första signerade kuvert skicka in
+  /// det igen efter att hon ändrat sig, och rösten återgår till den köpta.
+  castSequence Int @map("cast_sequence")
+
+  /// Väljarens egen signatur över kuvertet, från BankID /sign.
+  bankIdSignature String @map("bankid_signature")
+
+  /// Certifikatet ur signaturen. Bär personnummer och namn — får därför
+  /// ALDRIG följa med till votes_db vid skalningen.
+  bankIdCertificate String @map("bankid_certificate")
+
+  /// Dygnsupplöst, som all annan tidsdata i röstlängden.
+  updatedAt DateTime @map("updated_at")
+
+  @@unique([voterStatusId, ballotId])
+  @@index([ballotId])
+  @@map("pending_vote")
 }
