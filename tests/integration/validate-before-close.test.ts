@@ -368,8 +368,8 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
      * nyckeln verkligen tillhör Kim. Se dokumentationshuvudet i
      * `validate-before-close.usecase.ts` för vad som skulle stänga det här
      * (CA-kedjevalidering vid läggningstillfället, eller ett
-     * identitetsbundet värde kvar i raden). Posten i
-     * `src/lib/known-limitations.ts` läggs av uppgift 16 — inte här.
+     * identitetsbundet värde kvar i raden). Luckan står som posten
+     * `bankid-chain-not-validated` i `src/lib/known-limitations.ts`.
      *
      * Testet ska gå RÖTT den dag hålet stängs. Det är ett medvetet
      * fallerande larm, inte ett misslyckat försök att fånga hålet.

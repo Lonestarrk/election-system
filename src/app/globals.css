@@ -517,6 +517,61 @@ th {
   min-width: 11rem;
 }
 
+/**
+ * Förklarande tabeller som staplas på smala skärmar.
+ *
+ * En tabell med tre till fem kolumner löpande text går inte att läsa på en
+ * telefon: kolumnerna trycks ihop till remsor några ord breda, raderna blir
+ * flera hundra pixlar höga, och den sista kolumnen nås bara genom att skrolla
+ * i sidled. Under 640 px blir varje rad i stället ett eget block. Första
+ * cellen blir radens rubrik, och övriga celler får sin kolumnrubrik som
+ * etikett ur attributet data-label.
+ *
+ * Bara för förklarande tabeller, och bara där klassen satts. Datatabellerna
+ * med hashar och id:n skrollar i sidled som förut, av skälet ovan.
+ */
+@media (max-width: 640px) {
+  .stack-on-mobile thead {
+    display: none;
+  }
+
+  .stack-on-mobile,
+  .stack-on-mobile tbody,
+  .stack-on-mobile tr,
+  .stack-on-mobile td,
+  .stack-on-mobile td:first-child {
+    display: block;
+    width: auto;
+    min-width: 0;
+  }
+
+  .stack-on-mobile tr {
+    border-bottom: 1px solid var(--border);
+    padding: 0.7rem 0;
+  }
+
+  .stack-on-mobile td,
+  .stack-on-mobile td:first-child {
+    border-bottom: none;
+    padding: 0.2rem 0;
+    white-space: normal;
+  }
+
+  .stack-on-mobile td:first-child {
+    font-weight: 600;
+  }
+
+  .stack-on-mobile td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
+
 /* Demo ------------------------------------------------------------------ */
 
 .split {

@@ -89,8 +89,10 @@ describe('modulgränser', () => {
      * Kvarvarande undantag:
      *  – admin/stats: hämtar två aggregat, ett från varje databas. Ser antal,
      *    aldrig rader.
-     *  – demo/database-state: demosidans underlag. Visar båda tabellerna med
-     *    avkortade värden, sorterade så att skrivordningen inte röjs.
+     *  – demo/database-state: arkitektursidans livevy, bara i demoläget.
+     *    Visar båda databaserna med avkortade värden, sorterade så att
+     *    skrivordningen inte röjs. Medan röstningen pågår syns kopplingen i
+     *    pending_vote med flit; rutten parar aldrig själv ihop raderna.
      *  – final-check.usecase: slutkontrollen. Jämför ANTAL godkända röstningar
      *    mot ANTAL registrerade röster. Läser aldrig en enskild väljare, och
      *    kan inte para ihop sidorna — det finns ingen gemensam identifierare.

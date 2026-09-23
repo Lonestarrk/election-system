@@ -1,5 +1,6 @@
-import { jsonResponse } from '@/lib/http'
+import { errorResponse, jsonResponse } from '@/lib/http'
 import { votesDb } from '@/modules/ballot-box/db'
+import { bankIdIsMocked } from '@/modules/eligibility/bankid'
 import { votersDb } from '@/modules/eligibility/db'
 
 export const runtime = 'nodejs'
@@ -8,41 +9,204 @@ export const dynamic = 'force-dynamic'
 /**
  * GET /api/demo/database-state
  *
- * Underlag till demonstrationssidan: innehållet i båda databaserna sida vid
- * sida, så att man med egna ögon kan se att det inte finns någon gemensam
- * kolumn att koppla ihop dem med.
+ * Underlaget till arkitektursidans livevy: båda databasernas innehåll som det
+ * ser ut just nu, tabellerna från båda röstmodellerna, och några slutsatser
+ * som räknas fram ur det som hämtats.
  *
- * DEN HÄR ENDPOINTEN SKA INTE FINNAS I ETT SKARPT SYSTEM. Den är med för att
- * POC:ens hela poäng är att gå att granska. Tre saker görs ändå rätt, eftersom
- * ett dåligt exempel är sämre än inget exempel:
+ * FINNS BARA I DEMOLÄGET.
  *
- * 1. Hashvärden kortas av. Hela värden skulle göra det möjligt att slå upp en
- *    känd token direkt via demosidan.
+ * Svaret visar röstlängden: varje väljares id och identitetshash, och medan
+ * röstningen pågår vilken väljare som lagt vilket kuvert. Det får ingen sida
+ * visa i skarpt läge. Rutten svarar därför 404 när BankID inte är en attrapp,
+ * med samma villkor och av samma skäl som de andra rutterna under /api/demo.
+ * Uppgift 17 byter villkoret mot lägesväxeln. 404 och inte 403: en rutt som
+ * inte finns ska inte gå att skilja från en som finns men nekar.
  *
- * 2. Raderna sorteras på id, inte på insättningsordning. Databasens naturliga
- *    radordning återspeglar i vilken ordning saker skedde, och två listor i
- *    kronologisk ordning går att para ihop rad för rad — vilket vore precis
- *    den korrelation systemet är byggt för att förhindra. Eftersom id är
- *    slumpade UUID:er blandar sorteringen bort tidsordningen.
+ * Villkoret saknades här fram till uppgift 11c, fast rutten redan då lämnade
+ * ut röstlängden. Arkitektursidan anropar den bara i demoläget, men en sida som
+ * låter bli att fråga är inget skydd. Skyddet är att svaret inte finns.
  *
- * 3. Foreign keys hämtas ur information_schema i båda databaserna, så att
- *    påståendet "det finns ingen relation" går att kontrollera i stället för
- *    att behöva tros på.
+ * VAD SOM VISAS HAR BYTT KARAKTÄR
+ *
+ * Den gamla demonstrationen gick ut på att det inte fanns någon koppling att
+ * se. I kuvertmodellen finns kopplingen med flit medan röstningen pågår, i
+ * kolumnen `pending_vote.voter_status_id`. Rutten visar den i stället för att
+ * dölja den, eftersom en livevy som döljer den påstår mer än modellen ger. Den
+ * visar samtidigt det som skyddar innehållet: att chiffret bredvid inte går att
+ * läsa.
+ *
+ * FYRA SAKER GÖRS ÄNDÅ RÄTT, eftersom ett dåligt exempel är sämre än inget:
+ *
+ * 1. Id:n, hashar och stora tal kortas till sina första tolv tecken. Det
+ *    räcker för att se att två värden är samma, till exempel att en rad i
+ *    pending_vote pekar på en viss väljare, men svaret blir ingen fullständig
+ *    kopia av röstlängden.
+ *
+ * 2. Raderna sorteras på id, inte i den ordning de skrevs. Databasens
+ *    naturliga radordning speglar i vilken ordning saker hände, och två listor
+ *    i tidsordning går att para ihop rad för rad. `pending_vote` har slumpade
+ *    id:n, så sorteringen blandar bort tidsordningen. `encrypted_vote` har
+ *    id:n härledda ur chifferhashen, så där ÄR id-ordningen innehållets ordning.
+ *
+ * 3. Främmande nycklar och kolumner hämtas ur information_schema i båda
+ *    databaserna, och frågan som visar kopplingen körs på riktigt. Påståendena
+ *    ska gå att kontrollera, inte behöva tros på.
+ *
+ * 4. Det hemliga väljs aldrig ut: väljarens BankID-signatur och nyckeln ur
+ *    certifikatet, bevisen, förtroendemännens krypterade andelar och
+ *    valsedlarnas privata signeringsnycklar. Kolumnerna finns, men ingenting ur
+ *    dem lämnar databasen här.
  */
 
-type ForeignKeyRow = {
+// ---------------------------------------------------------------------------
+// Svarets form
+//
+// Exporteras som typer och inget annat. Arkitektursidan läser samma typer, så
+// att en kolumn som tas bort här (till exempel den gamla tabellen `vote` när
+// det gamla flödet raderas) blir ett kompileringsfel på sidan i stället för en
+// tabell som tyst blir tom. Next.js tillåter bara vissa värden som export från
+// en ruttfil, men typer syns inte för den kontrollen.
+// ---------------------------------------------------------------------------
+
+export type ForeignKey = {
   table_name: string
   column_name: string
   foreign_table_name: string
   foreign_column_name: string
 }
 
+/**
+ * Hur ett chiffer visas: hur många par (c1, c2) det har, början på det första
+ * paret och hur många siffror talen har.
+ *
+ * Mer behövs inte för att se att innehållet inte går att läsa. Null betyder
+ * att det lagrade värdet inte har chiffrets form, vilket bara kan hända om
+ * någon skrivit direkt i databasen.
+ */
+export type CiphertextPreview = { pairs: number; c1: string; c2: string; digits: number }
+
+export type ElectionState = {
+  /** Omröstningens id är offentligt och visas helt. */
+  id: string
+  name: string
+  /** Ur röstlängden: OPEN | CLOSED | VALIDATED | STRIPPED | TALLIED | CERTIFIED. */
+  phase: string
+  closesAt: string
+  /** När kopplingen raderades. Null medan röstningen pågår. */
+  linkClearedAt: string | null
+  /** Kuvertroten, avkortad. Null tills stängningen skrivit den. */
+  envelopeRoot: string | null
+  /** Ur röstdatabasen: valets publika krypteringsnyckel, avkortad. */
+  encryptionPublicKey: string | null
+  tallyCompletedAt: string | null
+}
+
+export type VoterStatusRow = {
+  id: string
+  externalIdentityHash: string
+  isEligible: boolean
+  isAdmin: boolean
+}
+
+/** Det yttre kuvertet. Här syns kopplingen, och den ska synas. */
+export type PendingVoteRow = {
+  id: string
+  /** Kopplingen: samma avkortade värde som väljarens id i voter_status. */
+  voterStatusId: string
+  electionId: string | null
+  ballotId: string
+  ballotLabel: string | null
+  ciphertextHash: string
+  castSequence: number
+  /** Dygnsupplöst, precis som det lagras. */
+  updatedAt: string
+  ciphertext: CiphertextPreview | null
+}
+
+/** Det inre kuvertet, efter stängningen. Har ingen kolumn som pekar på en väljare. */
+export type EncryptedVoteRow = {
+  id: string
+  electionId: string | null
+  ballotId: string
+  ballotLabel: string | null
+  ciphertextHash: string
+  ciphertext: CiphertextPreview | null
+}
+
+export type TrusteeShareRow = { electionId: string; trusteeIndex: number; publicShare: string }
+
+export type PartialDecryptionRow = {
+  ballotId: string
+  ballotLabel: string | null
+  optionIndex: number
+  trusteeIndex: number
+  value: string
+}
+
+export type BallotTallyRow = {
+  ballotId: string
+  ballotLabel: string | null
+  optionIndex: number
+  count: number
+}
+
+/** GAMLA MODELLEN: en röst lagd med röstintyg och blind signatur. */
+export type LegacyVoteRow = { id: string; tokenHash: string; ballotId: string; createdAt: string }
+
+export type DatabaseState = {
+  elections: ElectionState[]
+  votersDb: {
+    name: 'voters_db'
+    voterStatus: VoterStatusRow[]
+    pendingVote: PendingVoteRow[]
+    /** Kolumnerna i pending_vote, ur information_schema. */
+    pendingVoteColumns: string[]
+    foreignKeys: ForeignKey[]
+  }
+  votesDb: {
+    name: 'votes_db'
+    encryptedVote: EncryptedVoteRow[]
+    /** Kolumnerna i encrypted_vote, ur information_schema. */
+    encryptedVoteColumns: string[]
+    trusteeShare: TrusteeShareRow[]
+    partialDecryption: PartialDecryptionRow[]
+    ballotTally: BallotTallyRow[]
+    /** Tabellen `vote`, som röstsidan fortfarande skriver till med det gamla flödet. */
+    legacyVote: LegacyVoteRow[]
+    foreignKeys: ForeignKey[]
+  }
+  analysis: {
+    /** Frågan "vem röstade på vad", så som den går att ställa, och hur många rader den gav nyss. */
+    linkQuery: { sql: string; rows: number }
+    /** Hur många identitetsbärande värden ur röstlängden som jämfördes mot röstdatabasen. */
+    identityValuesCompared: number
+    /** Identitetsvärden som ändå finns i röstdatabasen. Ska vara tom. */
+    identityValuesInVotesDb: string[]
+    /**
+     * Chifferhashar som just nu finns i BÅDA databaserna.
+     *
+     * Tom före stängningen, då hashen bara ligger i röstlängden bredvid
+     * väljaren, och tom efter, då den bara ligger i röstdatabasen utan väljare.
+     * Inte tom under själva stängningen, eller om en stängning avbrutits efter
+     * flytten men före raderingen.
+     */
+    ciphertextHashesInBoth: string[]
+    foreignKeysChecked: number
+    /** Främmande nycklar som pekar ut ur sin egen databas. PostgreSQL tillåter inga. */
+    foreignKeysAcrossDatabases: ForeignKey[]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Frågor
+// ---------------------------------------------------------------------------
+
 const FOREIGN_KEY_QUERY = `
   SELECT
-    tc.table_name        AS table_name,
-    kcu.column_name      AS column_name,
-    ccu.table_name       AS foreign_table_name,
-    ccu.column_name      AS foreign_column_name
+    tc.table_name::text   AS table_name,
+    kcu.column_name::text AS column_name,
+    ccu.table_name::text  AS foreign_table_name,
+    ccu.column_name::text AS foreign_column_name
   FROM information_schema.table_constraints AS tc
   JOIN information_schema.key_column_usage AS kcu
     ON tc.constraint_name = kcu.constraint_name
@@ -55,125 +219,322 @@ const FOREIGN_KEY_QUERY = `
   ORDER BY tc.table_name, kcu.column_name
 `
 
-function shorten(value: string): string {
-  return `${value.slice(0, 12)}…`
+const TABLE_QUERY = `
+  SELECT table_name::text AS table_name
+  FROM information_schema.tables
+  WHERE table_schema = 'public'
+`
+
+/**
+ * Frågan man skulle vilja ställa: vem röstade på vad.
+ *
+ * I den gamla modellen gick den inte att skriva färdigt. Nu går den att
+ * skriva, och den körs mot röstlängden varje gång rutten anropas. Under
+ * röstningen ger den en rad per kuvert: väljaren, och ett chiffer ingen kan
+ * läsa. Efter stängningen ger den inga rader alls, eftersom pending_vote är
+ * tom och encrypted_vote ligger i en annan databas utan någon kolumn att
+ * joina på.
+ *
+ * Texten skickas med i svaret, så att sidan visar exakt den fråga som kördes.
+ */
+const LINK_QUERY = [
+  'SELECT v.external_identity_hash, p.ballot_id, p.ciphertext',
+  'FROM voter_status v',
+  'JOIN pending_vote p ON p.voter_status_id = v.id',
+].join('\n')
+
+function columnsQuery(table: 'pending_vote' | 'encrypted_vote'): string {
+  // Tabellnamnet är en av två konstanter, aldrig indata.
+  return `
+    SELECT column_name::text AS column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = '${table}'
+    ORDER BY ordinal_position
+  `
 }
 
-const VOTER_COLUMNS = ['id', 'external_identity_hash', 'is_eligible', 'is_admin']
-const VOTE_COLUMNS = ['id', 'token_hash', 'ballot_id', 'created_at']
+// ---------------------------------------------------------------------------
+// Formatering
+// ---------------------------------------------------------------------------
 
-const VOTER_TABLES = [
-  'voter_status',
-  'voter_ballot_status',
-  'voting_session',
-  'admin_session',
-  'election',
-  'election_ballot',
-  'push_subscription',
-  'audit_event',
-]
-const VOTE_TABLES = [
-  'election',
-  'election_ballot',
-  'party',
-  'ballot_party',
-  'candidate',
-  'ballot_option',
-  'anonymous_vote',
-]
+const SHOWN_CHARACTERS = 12
+
+function shorten(value: string): string {
+  return `${value.slice(0, SHOWN_CHARACTERS)}…`
+}
+
+function day(date: Date): string {
+  return date.toISOString().slice(0, 10)
+}
+
+/** Timupplösning, precis som det gamla flödet lagrar sina röster. */
+function hour(date: Date): string {
+  return `${date.toISOString().slice(0, 13).replace('T', ' ')}:00`
+}
+
+/**
+ * Chiffret som det lagras är en lista med par av decimalsträngar.
+ *
+ * Värdet kommer direkt ur databasen, förbi varje schema, och tolkas därför
+ * försiktigt. En rad som inte har chiffrets form ska synas som det den är, inte
+ * krascha livevyn.
+ */
+function previewCiphertext(value: unknown): CiphertextPreview | null {
+  if (!Array.isArray(value) || value.length === 0) return null
+
+  const first: unknown = value[0]
+  if (typeof first !== 'object' || first === null) return null
+
+  const { c1, c2 } = first as { c1?: unknown; c2?: unknown }
+  if (typeof c1 !== 'string' || typeof c2 !== 'string') return null
+
+  return { pairs: value.length, c1: shorten(c1), c2: shorten(c2), digits: c1.length }
+}
+
+// ---------------------------------------------------------------------------
+// Rutten
+// ---------------------------------------------------------------------------
 
 export async function GET() {
-  const [voters, votes, voterKeys, voteKeys] = await Promise.all([
+  if (!bankIdIsMocked) {
+    return errorResponse('NOT_FOUND', 'Rutten finns inte.', 404)
+  }
+
+  const [
+    elections,
+    voterBallots,
+    voters,
+    pendingVotes,
+    pendingVoteColumns,
+    voterKeys,
+    voterTables,
+    linkRows,
+    voteElections,
+    voteBallots,
+    encryptedVotes,
+    encryptedVoteColumns,
+    trusteeShares,
+    partialDecryptions,
+    ballotTallies,
+    legacyVotes,
+    voteKeys,
+    voteTables,
+  ] = await Promise.all([
+    votersDb.election.findMany({
+      orderBy: { closesAt: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        phase: true,
+        closesAt: true,
+        linkClearedAt: true,
+        envelopeRoot: true,
+      },
+    }),
+    // Bara id, omröstning och etikett. Spegeln bär också valsedelns privata
+    // signeringsnyckel, och den väljs aldrig ut.
+    votersDb.electionBallot.findMany({ select: { id: true, electionId: true, label: true } }),
     votersDb.voterStatus.findMany({
       orderBy: { id: 'asc' },
       select: { id: true, externalIdentityHash: true, isEligible: true, isAdmin: true },
     }),
+    votersDb.pendingVote.findMany({
+      orderBy: { id: 'asc' },
+      // Varken signaturen, nyckeln ur certifikatet eller bevisen. Se punkt 4 ovan.
+      select: {
+        id: true,
+        voterStatusId: true,
+        ballotId: true,
+        ciphertext: true,
+        ciphertextHash: true,
+        castSequence: true,
+        updatedAt: true,
+      },
+    }),
+    votersDb.$queryRawUnsafe<Array<{ column_name: string }>>(columnsQuery('pending_vote')),
+    votersDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
+    votersDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
+    votersDb.$queryRawUnsafe<Array<{ rows: number }>>(
+      `SELECT count(*)::int AS rows FROM (${LINK_QUERY}) AS link`,
+    ),
+
+    votesDb.election.findMany({
+      select: { id: true, encryptionPublicKey: true, tallyCompletedAt: true },
+    }),
+    votesDb.electionBallot.findMany({ select: { id: true, electionId: true, label: true } }),
+    votesDb.encryptedVote.findMany({
+      orderBy: { id: 'asc' },
+      select: { id: true, ballotId: true, ciphertext: true, ciphertextHash: true },
+    }),
+    votesDb.$queryRawUnsafe<Array<{ column_name: string }>>(columnsQuery('encrypted_vote')),
+    // Den publika andelen, aldrig den krypterade.
+    votesDb.trusteeShare.findMany({
+      orderBy: [{ electionId: 'asc' }, { trusteeIndex: 'asc' }],
+      select: { electionId: true, trusteeIndex: true, publicShare: true },
+    }),
+    votesDb.partialDecryption.findMany({
+      orderBy: [{ ballotId: 'asc' }, { optionIndex: 'asc' }, { trusteeIndex: 'asc' }],
+      select: { ballotId: true, optionIndex: true, trusteeIndex: true, value: true },
+    }),
+    votesDb.ballotTally.findMany({
+      orderBy: [{ ballotId: 'asc' }, { optionIndex: 'asc' }],
+      select: { ballotId: true, optionIndex: true, count: true },
+    }),
     votesDb.vote.findMany({
       orderBy: { id: 'asc' },
-      // Bara valsedeln, inte partiet. Demovyn visar att tabellerna saknar
-      // gemensamma värden — den behöver inte avslöja vad någon röstat på för
-      // att göra den poängen.
-      select: { id: true, tokenHash: true, createdAt: true, ballotId: true },
+      // Bara valsedeln, inte partiet. Livevyn behöver inte avslöja vad någon
+      // röstat på för att visa hur tabellen ser ut.
+      select: { id: true, tokenHash: true, ballotId: true, createdAt: true },
     }),
-    votersDb.$queryRawUnsafe<ForeignKeyRow[]>(FOREIGN_KEY_QUERY),
-    votesDb.$queryRawUnsafe<ForeignKeyRow[]>(FOREIGN_KEY_QUERY),
+    votesDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
+    votesDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
   ])
 
-  // Samtliga fullständiga värden ur båda tabellerna. Används bara för att
-  // räkna fram överlappet nedan och returneras aldrig.
-  const voterValues = new Set<string>()
+  const voterBallotById = new Map(voterBallots.map((ballot) => [ballot.id, ballot]))
+  const voteBallotById = new Map(voteBallots.map((ballot) => [ballot.id, ballot]))
+  const voteElectionById = new Map(voteElections.map((election) => [election.id, election]))
+
+  /**
+   * Analysen räknas fram ur det som faktiskt hämtades. Ingenting är
+   * hårdkodat: siffrorna kommer från databaserna och kan bli något annat än
+   * noll om någon bröt separationen, eller om en stängning avbrutits mitt i.
+   *
+   * De fullständiga värdena används bara här och lämnar aldrig rutten.
+   */
+  const identityValues = new Set<string>()
   for (const voter of voters) {
-    voterValues.add(voter.id)
-    voterValues.add(voter.externalIdentityHash)
+    identityValues.add(voter.id)
+    identityValues.add(voter.externalIdentityHash)
+  }
+  for (const pending of pendingVotes) {
+    // Det yttre kuvertets id är bundet till väljaren lika mycket som väljarens eget.
+    identityValues.add(pending.id)
+    identityValues.add(pending.voterStatusId)
   }
 
-  const voteValues = new Set<string>()
-  for (const vote of votes) {
-    voteValues.add(vote.id)
-    voteValues.add(vote.tokenHash)
+  const votesDbValues = new Set<string>()
+  for (const row of encryptedVotes) {
+    votesDbValues.add(row.id)
+    votesDbValues.add(row.ciphertextHash)
   }
+  for (const row of legacyVotes) {
+    votesDbValues.add(row.id)
+    votesDbValues.add(row.tokenHash)
+  }
+  for (const row of partialDecryptions) votesDbValues.add(row.value)
+  for (const row of trusteeShares) votesDbValues.add(row.publicShare)
 
-  return jsonResponse({
-    voterDatabase: {
+  const encryptedHashes = new Set(encryptedVotes.map((row) => row.ciphertextHash))
+
+  const voterTableNames = new Set(voterTables.map((table) => table.table_name))
+  const voteTableNames = new Set(voteTables.map((table) => table.table_name))
+
+  const state: DatabaseState = {
+    elections: elections.map((election) => {
+      const mirrored = voteElectionById.get(election.id)
+      return {
+        id: election.id,
+        name: election.name,
+        phase: election.phase,
+        closesAt: election.closesAt.toISOString(),
+        linkClearedAt: election.linkClearedAt?.toISOString() ?? null,
+        envelopeRoot: election.envelopeRoot === null ? null : shorten(election.envelopeRoot),
+        encryptionPublicKey: mirrored?.encryptionPublicKey
+          ? shorten(mirrored.encryptionPublicKey)
+          : null,
+        tallyCompletedAt: mirrored?.tallyCompletedAt?.toISOString() ?? null,
+      }
+    }),
+
+    votersDb: {
       name: 'voters_db',
-      table: 'voter_status',
-      columns: VOTER_COLUMNS,
-      rows: voters.map((voter) => ({
+      voterStatus: voters.map((voter) => ({
         id: shorten(voter.id),
         externalIdentityHash: shorten(voter.externalIdentityHash),
         isEligible: voter.isEligible,
         isAdmin: voter.isAdmin,
       })),
+      pendingVote: pendingVotes.map((pending) => {
+        const ballot = voterBallotById.get(pending.ballotId)
+        return {
+          id: shorten(pending.id),
+          voterStatusId: shorten(pending.voterStatusId),
+          electionId: ballot?.electionId ?? null,
+          ballotId: shorten(pending.ballotId),
+          ballotLabel: ballot?.label ?? null,
+          ciphertextHash: shorten(pending.ciphertextHash),
+          castSequence: pending.castSequence,
+          updatedAt: day(pending.updatedAt),
+          ciphertext: previewCiphertext(pending.ciphertext),
+        }
+      }),
+      pendingVoteColumns: pendingVoteColumns.map((column) => column.column_name),
       foreignKeys: voterKeys,
     },
-    voteDatabase: {
+
+    votesDb: {
       name: 'votes_db',
-      table: 'anonymous_vote',
-      columns: VOTE_COLUMNS,
-      rows: votes.map((vote) => ({
+      encryptedVote: encryptedVotes.map((row) => {
+        const ballot = voteBallotById.get(row.ballotId)
+        return {
+          id: shorten(row.id),
+          electionId: ballot?.electionId ?? null,
+          ballotId: shorten(row.ballotId),
+          ballotLabel: ballot?.label ?? null,
+          ciphertextHash: shorten(row.ciphertextHash),
+          ciphertext: previewCiphertext(row.ciphertext),
+        }
+      }),
+      encryptedVoteColumns: encryptedVoteColumns.map((column) => column.column_name),
+      trusteeShare: trusteeShares.map((share) => ({
+        electionId: share.electionId,
+        trusteeIndex: share.trusteeIndex,
+        publicShare: shorten(share.publicShare),
+      })),
+      partialDecryption: partialDecryptions.map((row) => ({
+        ballotId: shorten(row.ballotId),
+        ballotLabel: voteBallotById.get(row.ballotId)?.label ?? null,
+        optionIndex: row.optionIndex,
+        trusteeIndex: row.trusteeIndex,
+        value: shorten(row.value),
+      })),
+      ballotTally: ballotTallies.map((row) => ({
+        ballotId: shorten(row.ballotId),
+        ballotLabel: voteBallotById.get(row.ballotId)?.label ?? null,
+        optionIndex: row.optionIndex,
+        count: row.count,
+      })),
+      legacyVote: legacyVotes.map((vote) => ({
         id: shorten(vote.id),
         tokenHash: shorten(vote.tokenHash),
         ballotId: shorten(vote.ballotId),
-        // Timupplösning, precis som den lagras.
-        createdAt: vote.createdAt.toISOString().slice(0, 13).replace('T', ' ') + ':00',
+        createdAt: hour(vote.createdAt),
       })),
       foreignKeys: voteKeys,
     },
-    /**
-     * Analysen räknas fram ur det som faktiskt hämtades — ingenting är
-     * hårdkodat. En demonstration som bara påstår att listorna är tomma vore
-     * värdelös; siffrorna ska komma från databasen och kunna bli något annat
-     * än noll om någon bröt separationen.
-     */
+
     analysis: {
+      linkQuery: { sql: LINK_QUERY, rows: linkRows[0]?.rows ?? 0 },
+      identityValuesCompared: identityValues.size,
+      identityValuesInVotesDb: [...identityValues]
+        .filter((value) => votesDbValues.has(value))
+        .map(shorten),
+      ciphertextHashesInBoth: pendingVotes
+        .filter((pending) => encryptedHashes.has(pending.ciphertextHash))
+        .map((pending) => shorten(pending.ciphertextHash)),
+      foreignKeysChecked: voterKeys.length + voteKeys.length,
       /**
-       * Båda tabellerna har en kolumn som heter `id`. Det är ingen koppling —
-       * det är två oberoende primärnycklar som råkar ha samma namn. Att
-       * redovisa det i stället för att tysta ned det är hela poängen: se
-       * `overlappingValues` nedan för vad som faktiskt spelar roll.
+       * Räknas fram mot tabellistan ur samma databas, inte mot en handskriven
+       * lista. Den tidigare listan hade hunnit bli fel: den räknade upp
+       * `anonymous_vote`, som bytt namn till `vote`, och saknade tabellerna
+       * kuvertmodellen lade till.
        */
-      sharedColumnNames: VOTER_COLUMNS.filter((column) => VOTE_COLUMNS.includes(column)),
-
-      /**
-       * Det avgörande måttet: hur många värden förekommer i BÅDA databaserna?
-       *
-       * Jämförelsen görs på fullständiga värden (inte de avkortade som
-       * returneras för visning) och täcker varje id och varje hash i båda
-       * tabellerna. Är svaret noll finns det inget värde att göra en join på —
-       * inte ens manuellt, inte ens av någon med båda databaserna framför sig.
-       */
-      overlappingValues: [...voterValues].filter((value) => voteValues.has(value)),
-      valuesCompared: voterValues.size + voteValues.size,
-
-      crossDatabaseForeignKeys: [
-        ...voterKeys.filter((key) => !VOTER_TABLES.includes(key.foreign_table_name)),
-        ...voteKeys.filter((key) => !VOTE_TABLES.includes(key.foreign_table_name)),
+      foreignKeysAcrossDatabases: [
+        ...voterKeys.filter((key) => !voterTableNames.has(key.foreign_table_name)),
+        ...voteKeys.filter((key) => !voteTableNames.has(key.foreign_table_name)),
       ],
-
-      note:
-        'Foreign keys ovan pekar alltid på en tabell i samma databas. PostgreSQL ' +
-        'tillåter inte foreign keys mellan databaser, så en relation mellan ' +
-        'voter_status och anonymous_vote kan inte existera.',
     },
-  })
+  }
+
+  return jsonResponse(state)
 }

@@ -1,67 +1,65 @@
-'use client'
-
-import { useEffect, useState } from 'react'
-import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
+import type { ReactNode } from 'react'
+import { KNOWN_LIMITATIONS, type KnownLimitation } from '@/lib/known-limitations'
+import { bankIdIsMocked } from '@/modules/eligibility/bankid'
+import { CURRENTLY, PHASES } from './code-facts'
+import { LiveDatabaseView } from './LiveDatabaseView'
 
 /**
  * Arkitektursidan.
  *
- * Sidan ska kunna läsas av någon som misstror systemet. Den visar därför
- * databasernas faktiska innehåll och räknar fram slutsatserna ur det som
- * hämtas — ingenting är hårdkodat. En demonstration som bara påstår att
- * listorna är tomma vore värdelös.
+ * Sidan ska kunna läsas av någon som misstror systemet. Den förklarar
+ * modellen med dubbla kuvert, visar i demoläget databasernas faktiska innehåll
+ * och räknar fram slutsatserna ur det som hämtas. En demonstration som bara
+ * påstår att en tabell är tom vore värdelös.
  *
  * Den redovisar också vad som INTE är löst. En arkitektursida som bara listar
  * styrkor är marknadsföring, och i ett valsystem är marknadsföring farligt: den
  * som tror att systemet klarar mer än det gör fattar sämre beslut än den som
  * inte känner till det alls.
+ *
+ * TRE KÄLLOR, INGEN AV DEM SKRIVEN HÄR
+ *
+ * Det sidan påstår om kodens nuvarande läge, till exempel vilka faser som
+ * faktiskt skrivs, läses ur ./code-facts.ts. De kända begränsningarna läses ur
+ * src/lib/known-limitations.ts. Databasernas innehåll hämtas av livevyn. De två
+ * första bär markörer i koden och ett test som går rött när en markör
+ * försvinner, så sidan kan inte bli inaktuell utan att någon märker det.
  */
 
-type ForeignKey = {
-  table_name: string
-  column_name: string
-  foreign_table_name: string
-  foreign_column_name: string
+/**
+ * DEMOLÄGET AVGÖRS HÄR, PÅ ETT STÄLLE.
+ *
+ * Livevyn och "Följ en röst" visar röstlängden och får bara finnas i
+ * demoläget. Sidan är en serverkomponent för att kunna avgöra det innan något
+ * skickas till webbläsaren: i skarpt läge renderas livevyn inte alls, och
+ * ingen fråga till /api/demo/database-state görs. Förklaringarna visas i båda
+ * lägena.
+ *
+ * Predikatet är detsamma som rutten använder. Uppgift 17 byter det mot
+ * lägesväxeln, och bytet är den här raden.
+ */
+const DEMO_MODE: boolean = bankIdIsMocked
+
+/**
+ * En begränsning ur listan, efter id.
+ *
+ * Kastar om posten saknas. Sidan hänvisar till den i löpande text, och en
+ * hänvisning till en post som tagits bort betyder att texten runt omkring också
+ * är fel. tests/security/architecture-page.test.ts fångar det innan sidan gör
+ * det.
+ */
+function limitation(id: string): KnownLimitation {
+  const found = KNOWN_LIMITATIONS.find((entry) => entry.id === id)
+  if (!found) {
+    throw new Error(`Arkitektursidan hänvisar till begränsningen "${id}", som inte finns i listan.`)
+  }
+  return found
 }
 
-type DatabaseState = {
-  voterDatabase: {
-    name: string
-    columns: string[]
-    rows: Array<{
-      id: string
-      externalIdentityHash: string
-      isEligible: boolean
-      isAdmin: boolean
-    }>
-    foreignKeys: ForeignKey[]
-  }
-  voteDatabase: {
-    name: string
-    columns: string[]
-    rows: Array<{ id: string; tokenHash: string; ballotId: string; createdAt: string }>
-    foreignKeys: ForeignKey[]
-  }
-  analysis: {
-    sharedColumnNames: string[]
-    overlappingValues: string[]
-    valuesCompared: number
-    crossDatabaseForeignKeys: ForeignKey[]
-  }
-}
-
-export default function DemoPage() {
-  const [state, setState] = useState<DatabaseState | null>(null)
-  const [showAttempt, setShowAttempt] = useState(false)
-
-  useEffect(() => {
-    fetch('/api/demo/database-state')
-      .then((response) => response.json())
-      .then(setState)
-      .catch(() => setState(null))
-  }, [])
-
-  const analysis = state?.analysis
+export default function ArchitecturePage() {
+  const link = limitation('link-exists-during-voting')
+  const chain = limitation('bankid-chain-not-validated')
+  const dealer = limitation('trusted-dealer')
 
   return (
     <main>
@@ -69,374 +67,308 @@ export default function DemoPage() {
         <div>
           <h1>Arkitektur</h1>
           <p className="muted">
-            Systemet består av två delar som aldrig delar data. Här kan du se dem sida vid sida och
-            själv kontrollera att det inte finns någon koppling mellan dem.
+            Systemet bygger på dubbla kuvert, efter Estlands modell. Under röstningen vet systemet
+            att du har röstat men inte på vad, och du kan ändra dig fram till stängningen. Vid
+            stängningen skalas identiteten bort. Här står hur det går till, vad det skyddar mot och
+            vad det inte skyddar mot.
+            {DEMO_MODE &&
+              ' I demoläget kan du dessutom se båda databaserna som de ser ut just nu, och följa en röst genom stängningen.'}
           </p>
         </div>
 
-        {/* --- Dataflöde ---------------------------------------------------- */}
-        <div className="card">
-          <h2>Dataflöde</h2>
-          <div className="flow">
-            <div className="flow-node identity">BankID</div>
-            <div className="flow-label">QR-kod eller autostart — inget personnummer skrivs in</div>
+        <div className="notice warning">
+          <strong>Ombyggnaden pågår.</strong>
+          <div style={{ marginTop: '0.35rem' }}>
+            Kuvertmodellen finns på serversidan: röstläggning med BankID-signatur, validering och
+            stängning. {CURRENTLY.votePageUsesOldFlow.text} {CURRENTLY.decryptionNotBuilt.text} Sidan
+            beskriver kuvertmodellen och säger vad som är byggt.
+            {DEMO_MODE &&
+              ' Livevyn visar vad databaserna faktiskt innehåller, med båda modellernas tabeller märkta.'}
+          </div>
+        </div>
+
+        {/* --- 1. Kuvertmodellen -------------------------------------------- */}
+        <section className="card" aria-labelledby="kuverten">
+          <h2 id="kuverten">Dubbla kuvert</h2>
+          <p>
+            Tänk på en brevröst. Du lägger valsedeln i ett innerkuvert utan namn, och innerkuvertet i
+            ett ytterkuvert med ditt namn och din underskrift. Den som tar emot posten ser att du har
+            röstat, men inte på vad. Skickar du en ny röst före sista dagen byts den gamla ut. När
+            rösterna ska räknas kontrolleras ytterkuverten, sprättas upp och kastas, och
+            innerkuverten blandas innan någon öppnar dem.
+          </p>
+          <p className="muted small">
+            Här är ytterkuvertet en rad i tabellen <span className="mono">pending_vote</span> i
+            röstlängden, <span className="mono">voters_db</span>: vem du är, din BankID-signatur och
+            ett chiffer. Innerkuvertet är chiffret, ditt val krypterat i webbläsaren under valets
+            publika nyckel. Den privata nyckeln finns inte hel någonstans. Den är delad mellan tre
+            förtroendemän, och två av dem måste medverka för att något ska kunna öppnas. Vid
+            stängningen flyttas chiffren till <span className="mono">encrypted_vote</span> i
+            röstdatabasen, <span className="mono">votes_db</span>, sorterade på innehåll, och
+            ytterkuverten raderas.
+          </p>
+
+          <div className="flow" style={{ marginTop: '1.5rem' }}>
+            <div className="flow-node identity">Legitimering med BankID</div>
+            <div className="flow-label">väljaren ser sina valsedlar och om hon redan har röstat</div>
             <div className="flow-arrow">↓</div>
-            <div className="flow-node identity">Röstberättigande</div>
-            <div className="flow-label">röstberättigad + har inte röstat på valsedeln</div>
+            <div className="flow-node">Webbläsaren krypterar valet</div>
+            <div className="flow-label">
+              under valets publika nyckel · bevis för exakt ett kryss · slumptalen kastas
+            </div>
             <div className="flow-arrow">↓</div>
-            <div className="flow-node identity">Blint signerat röstintyg</div>
-            <div className="flow-label">myndigheten signerar utan att se vad den signerar</div>
+            <div className="flow-node identity">Väljaren signerar med BankID</div>
+            <div className="flow-label">över chifferhashen, med en räknare inuti det signerade</div>
+            <div className="flow-arrow">↓</div>
+            <div className="flow-node identity">Ytterkuvert i pending_vote</div>
+            <div className="flow-label">voters_db · väljare och chiffer · ersätts om hon röstar igen</div>
 
             <div className="barrier">
               <span>Här slutar identiteten</span>
             </div>
+            <div className="flow-label">stängningen: validera, flytta, radera kopplingen</div>
+            <div className="flow-arrow">↓</div>
 
-            <div className="flow-label">röstintyg + valt alternativ — ingen session, ingen cookie</div>
+            <div className="flow-node anonymous">Innerkuvert i encrypted_vote</div>
+            <div className="flow-label">
+              votes_db · sorterat på innehåll · ingen väljare, ingen tidsstämpel
+            </div>
             <div className="flow-arrow">↓</div>
-            <div className="flow-node anonymous">Anonym röst</div>
-            <div className="flow-arrow">↓</div>
-            <div className="flow-node anonymous">Slumpad token</div>
-            <div className="flow-arrow">↓</div>
-            <div className="flow-node anonymous">Register över anonyma röster</div>
+            <div className="flow-node anonymous">Två av tre förtroendemän öppnar summan</div>
+            <div className="flow-label">
+              enskilda chiffer dekrypteras aldrig · {CURRENTLY.decryptionNotBuilt.short}
+            </div>
           </div>
 
-          <div className="notice success" style={{ marginTop: '1.5rem' }}>
-            <strong>Röstläggningen har ingen session.</strong>
+          <div className="notice info" style={{ marginTop: '1.5rem' }}>
+            <strong>En skillnad mot brevrösten är avgörande: innerkuverten öppnas aldrig ett och ett.</strong>
             <div style={{ marginTop: '0.35rem' }}>
-              Rutten som tar emot rösten läser ingen cookie, slår inte upp någon session och
-              importerar ingenting från röstlängdsmodulen. Den <em>kan</em> alltså inte veta vem som
-              röstar — det är en egenskap hos koden, inte en regel någon lovat följa. Ett
-              arkitekturtest läser källkoden och misslyckas om importen någonsin läggs tillbaka.
+              Chiffren multipliceras ihop till ett chiffer av summan, och bara summan dekrypteras.
+              I kuvertmodellen är kvittot chifferhashen. Den visar att ditt chiffer finns med, men
+              inte vad det innehåller, eftersom webbläsaren kastar slumptalen som krypteringen byggde
+              på.
             </div>
           </div>
 
           <p className="muted small" style={{ marginTop: '1rem' }}>
-            Det som passerar gränsen är ett röstintyg och ett valt alternativ. Funktionen som tar
-            emot det har signaturen{' '}
-            <span className="mono">
-              castVote({'{ ballotId, ballotPartyId, candidateId, optionId, credentialId, credentialSignature }'})
-            </span>{' '}
-            — sex identifierare som alla pekar på rader i röstdatabasen, och ingen parameter för
-            identitet. En utvecklare kan inte skicka med sådant ens av misstag; kompilatorn stoppar
-            det.
+            Skyddet mot röstköp är att rösten kan ändras fram till stängningen. Varje ny röst kräver
+            en ny BankID-signatur, och räknaren inuti det signerade måste vara högre än förra
+            gången. Utan räknaren kunde den som fångat ditt första kuvert skicka in det igen efter
+            att du ändrat dig, och en köpt röst skulle överleva hela ändringsmöjligheten.
           </p>
-        </div>
+        </section>
 
-        {/* --- Blinda signaturer -------------------------------------------- */}
-        <div className="card">
-          <h2>Varför intyget inte går att spåra</h2>
+        {/* --- Faserna ----------------------------------------------------- */}
+        <section className="card" aria-labelledby="faserna">
+          <h2 id="faserna">Faserna</h2>
           <p className="muted small">
-            Kravet är att en observatör ska kunna verifiera att varje röst skapats genom den
-            auktoriserade processen. Det går inte att lösa med en flagga i databasen: den som inte
-            litar på databasen kan inte verifiera en flagga i samma databas.
-          </p>
-
-          <ol className="muted small" style={{ marginTop: '1rem', paddingLeft: '1.25rem' }}>
-            <li>Din webbläsare skapar ett hemligt röstintyg: 32 slumpbytes.</li>
-            <li>
-              Webbläsaren <strong>blindar</strong> intyget genom att multiplicera in en slumpfaktor
-              som aldrig lämnar din enhet.
-            </li>
-            <li>
-              Du legitimerar dig. Myndigheten markerar din rösträtt som använd och signerar det
-              blindade värdet — <strong>utan att se vad den signerar</strong>.
-            </li>
-            <li>Webbläsaren avblindar signaturen och kontrollerar att den är giltig.</li>
-            <li>Rösten lämnas in anonymt med intyget. Ingen session är inblandad.</li>
-          </ol>
-
-          <div className="notice info" style={{ marginTop: '1rem' }}>
-            <strong>Obundenheten är informationsteoretisk, inte beräkningsmässig.</strong>
-            <div style={{ marginTop: '0.35rem' }}>
-              Blindningsfaktorn är likformigt slumpad, så det myndigheten ser vid signeringen är
-              statistiskt oberoende av intyget. Det är inte <em>svårt</em> att koppla ihop utfärdande
-              och inlösen — det är omöjligt, även för den som sparat allt servern sett.
-            </div>
-          </div>
-
-          <p className="muted small" style={{ marginTop: '1rem' }}>
-            Samma mekanism tog bort ett tidigare problem. Förr skedde två skrivningar i följd —
-            markera som röstad, sedan registrera rösten — och en krasch emellan kunde ge en förlorad
-            röst. Nu sker markering och utfärdande i <em>en</em> transaktion, och inlösen är
-            engångs: samma intyg kan inte lösas in två gånger, oavsett hur många parallella
-            försök som görs. Ordningen mellan databaserna spelar ingen roll längre.
-          </p>
-        </div>
-
-        {/* --- Databaserna -------------------------------------------------- */}
-        <div className="split">
-          <div className="card">
-            <h2>voters_db</h2>
-            <p className="muted small">Vet vem du är. Vet inte vad du röstat på.</p>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>id</th>
-                    <th>identitetshash</th>
-                    <th>röstberättigad</th>
-                    <th>admin</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state?.voterDatabase.rows.map((row) => (
-                    <tr key={row.id}>
-                      <td className="mono">{row.id}</td>
-                      <td className="mono">{row.externalIdentityHash}</td>
-                      <td>{row.isEligible ? 'ja' : 'nej'}</td>
-                      <td>{row.isAdmin ? 'ja' : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="muted small" style={{ marginTop: '0.75rem' }}>
-              &quot;Har röstat&quot; står inte här utan i en egen tabell, per person och valsedel —
-              att ha röstat i riksdagsvalet men inte i kommunvalet är ett giltigt tillstånd som en
-              boolean inte kan uttrycka. Tidpunkten lagras med dygnsupplösning.
-            </p>
-          </div>
-
-          <div className="card">
-            <h2>votes_db</h2>
-            <p className="muted small">Vet vad som röstats. Vet inte vem som röstat.</p>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>id</th>
-                    <th>token-hash</th>
-                    <th>valsedel</th>
-                    <th>tidpunkt</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state?.voteDatabase.rows.map((row) => (
-                    <tr key={row.id}>
-                      <td className="mono">{row.id}</td>
-                      <td className="mono">{row.tokenHash}</td>
-                      <td className="mono">{row.ballotId}</td>
-                      <td className="mono">{row.createdAt}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="muted small" style={{ marginTop: '0.75rem' }}>
-              Partiet visas inte här. Demovyn ska visa att tabellerna saknar gemensamma värden — den
-              behöver inte avslöja vad någon röstat på för att göra den poängen. Tidpunkten lagras
-              med timupplösning, och raderna visas sorterade på id, inte i skrivordning.
-            </p>
-          </div>
-        </div>
-
-        {/* --- Bevisning ---------------------------------------------------- */}
-        <div className="card">
-          <h2>Finns det någon koppling?</h2>
-
-          {analysis && (
-            <>
-              <div
-                className={
-                  analysis.overlappingValues.length === 0 ? 'notice success' : 'notice danger'
-                }
-              >
-                {analysis.overlappingValues.length === 0 ? (
-                  <>
-                    <strong>Inget värde förekommer i båda databaserna.</strong>
-                    <div style={{ marginTop: '0.35rem' }}>
-                      {analysis.valuesCompared} id:n och hashvärden jämfördes. Noll träffar. Det
-                      finns alltså inget värde att koppla ihop en väljare och en röst med — inte
-                      ens manuellt, för den som har båda databaserna framför sig.
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <strong>Överlappande värden hittades.</strong>
-                    <div className="mono" style={{ marginTop: '0.35rem' }}>
-                      {analysis.overlappingValues.join(', ')}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="notice warning" style={{ marginTop: '1rem' }}>
-                <strong>Ett värde ÄR dock delat, och det ska sägas rakt ut.</strong>
-                <div style={{ marginTop: '0.35rem' }}>
-                  Omröstningen och dess valsedlar finns i <em>båda</em> databaserna med samma UUID.
-                  En foreign key mellan två PostgreSQL-databaser är fysiskt omöjlig, och
-                  alternativet — att den ena sidan frågar den andra — skulle kräva just den
-                  läsvägen som konstruktionen finns till för att omöjliggöra. Speglingen låter
-                  varje relation stanna inom sin egen databas.
-                  <div style={{ marginTop: '0.5rem' }}>
-                    Vad det kostar: med en enda omröstning ingenting. Med flera partitioneras
-                    rösterna, och &quot;har röstat&quot;-tabellen visar vem som röstat i vilken
-                    omröstning — anonymitetsmängden krymper per omröstning i stället för att omfatta
-                    alla röster i systemet. För en valsedel med få röstande är det en verklig
-                    försämring. Jämförelsen ovan gäller väljarrader mot röstrader, som fortfarande
-                    saknar varje gemensamt värde.
-                  </div>
-                </div>
-              </div>
-
-              <p className="muted small" style={{ marginTop: '1rem' }}>
-                Kolumnnamn som finns i båda tabellerna:{' '}
-                <span className="mono">
-                  {analysis.sharedColumnNames.length > 0
-                    ? analysis.sharedColumnNames.join(', ')
-                    : 'inga'}
-                </span>
-                . Att båda tabellerna har en kolumn som heter <span className="mono">id</span> är
-                ingen koppling — det är två oberoende primärnycklar som råkar ha samma namn, med
-                slumpade värden ur skilda serier. Det som avgör är om något <em>värde</em>
-                {' '}förekommer i båda.
-              </p>
-            </>
-          )}
-
-          <h3 style={{ marginTop: '1.5rem' }}>Foreign keys i databaserna</h3>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>databas</th>
-                  <th>från</th>
-                  <th>till</th>
-                </tr>
-              </thead>
-              <tbody>
-                {state &&
-                  [
-                    ...state.voterDatabase.foreignKeys.map((key) => ({ db: 'voters_db', key })),
-                    ...state.voteDatabase.foreignKeys.map((key) => ({ db: 'votes_db', key })),
-                  ].map(({ db, key }) => (
-                    <tr key={`${db}.${key.table_name}.${key.column_name}`}>
-                      <td className="mono">{db}</td>
-                      <td className="mono">
-                        {key.table_name}.{key.column_name}
-                      </td>
-                      <td className="mono">
-                        {key.foreign_table_name}.{key.foreign_column_name}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="muted small" style={{ marginTop: '0.75rem' }}>
-            Samtliga relationer går till en tabell i samma databas. PostgreSQL tillåter inte foreign
-            keys över databasgränser, så en relation mellan <span className="mono">voter_status</span>{' '}
-            och <span className="mono">anonymous_vote</span> kan inte skapas — varken av en
-            utvecklare, en migration eller en administratör.
-          </p>
-
-          <div className="button-row" style={{ marginTop: '1.25rem' }}>
-            <button type="button" className="secondary" onClick={() => setShowAttempt(!showAttempt)}>
-              {showAttempt ? 'Dölj' : 'Försök koppla en väljare till en röst'}
-            </button>
-          </div>
-
-          {showAttempt && (
-            <div style={{ marginTop: '1.25rem' }}>
-              <p className="muted small">Frågan man skulle vilja ställa:</p>
-              <pre
-                className="mono small"
-                style={{
-                  background: 'var(--surface-muted)',
-                  padding: '1rem',
-                  borderRadius: 'var(--radius)',
-                  overflowX: 'auto',
-                }}
-              >
-{`SELECT v.external_identity_hash, a.ballot_party_id
-FROM voter_status v
-JOIN anonymous_vote a ON ??? = ???;`}
-              </pre>
-              <div className="notice danger" style={{ marginTop: '0.75rem' }}>
-                Frågan går inte att skriva färdigt. Det finns inget villkor att sätta i JOIN:en —
-                inga gemensamma kolumner, ingen foreign key, inget delat id. Dessutom ligger
-                tabellerna i olika databaser, så en och samma anslutning ser aldrig båda samtidigt.
-                <div style={{ marginTop: '0.5rem' }}>
-                  Röstintyget är det enda värdet som passerat båda sidorna — men det bar väljaren
-                  själv över gränsen, och myndigheten såg det aldrig i klartext. Det finns ingen rad
-                  i röstlängden att matcha det mot.
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* --- Verifierbarhet ----------------------------------------------- */}
-        <div className="card">
-          <h2>Hur valet kan granskas utan att valhemligheten bryts</h2>
-          <p className="muted small">
-            Det ska inte räcka att lita på att administratören säger att databasen är korrekt. En
-            oberoende part måste kunna kontrollera hela kedjan själv:
-          </p>
-          <p className="mono small" style={{ marginTop: '0.5rem' }}>
-            legitim röstning → exakt en anonym röst → rösten finns kvar → rösten räknades korrekt
+            Ordningen ska vara omöjlig att kasta om, inte bara osannolik. Därför är fasen ett fält på
+            omröstningen och inte en jämförelse mot klockan: en klocka som går fel ändrar beteendet
+            tyst, medan en fasövergång är en händelse som någon utfört. Fasen går bara framåt, och en
+            röst avvisas i varje fas utom OPEN.
           </p>
 
           <div className="table-wrap" style={{ marginTop: '1rem' }}>
-            <table className="prose-table">
+            <table className="prose-table stack-on-mobile">
+              <thead>
+                <tr>
+                  <th>Fas</th>
+                  <th>Kopplingen finns</th>
+                  <th>Röster tas emot</th>
+                  <th>Härnäst</th>
+                  <th>I koden i dag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {PHASES.map((row, index) => {
+                  const previous = PHASES[index - 1]
+                  return (
+                    <tr key={row.phase}>
+                      <td className="mono" style={{ width: 'auto', minWidth: 0 }}>
+                        {row.phase}
+                      </td>
+                      <td data-label="Kopplingen finns">
+                        {yesNo(row.linkExists, previous?.linkExists)}
+                      </td>
+                      <td data-label="Röster tas emot">
+                        {yesNo(row.acceptsVotes, previous?.acceptsVotes)}
+                      </td>
+                      <td data-label="Härnäst">{row.next}</td>
+                      <td data-label="I koden i dag">{row.today.text}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="muted small" style={{ marginTop: '1rem' }}>
+            De fyra första kolumnerna är specens tabell. Att CLOSED och STRIPPED är skilda tillstånd
+            gör valideringsfönstret synligt: kopplingen finns, men ingen röst tas emot. Och eftersom
+            övergången till STRIPPED är villkoret för att något ska få dekrypteras, kan ingen
+            dekryptering beställas förrän kopplingen bevisligen är borta.
+          </p>
+          <p className="muted small">
+            &quot;Nej&quot; om kopplingen betyder att raderna är borta ur den levande databasen.
+            Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen.
+          </p>
+        </section>
+
+        {/* --- Vad konstruktionen inte ger ----------------------------------- */}
+        <section className="card" aria-labelledby="inte-ger">
+          <h2 id="inte-ger">Vad konstruktionen inte ger</h2>
+          <p className="muted small">Kuverten skyddar inte mot följande, inte ens när allt är byggt.</p>
+          <ul className="small" style={{ paddingLeft: '1.25rem', marginTop: '0.75rem' }}>
+            <li style={listItemStyle}>
+              <strong>Kopplingen finns medan röstningen pågår.</strong> Den som kan läsa röstlängden
+              ser vem som har röstat, hur många gånger hon ändrat sig och vilken dag hon senast
+              gjorde det. Innehållet skyddas då bara av att chiffret inte går att läsa utan två av tre
+              andelar, och två förtroendemän som samarbetar kan öppna vilket chiffer som helst.
+              Raderingen vid stängningen når inte backuper, läsreplikor eller WAL-loggen.{' '}
+              <LimitationReference entry={link} />
+            </li>
+            <li style={listItemStyle}>
+              <strong>Signaturen skyddar inte mot den som driver systemet.</strong> Den stoppar en
+              klient som skickar in ett eget kuvert. Men certifikatet prövas inte mot BankID:s CA, så
+              den som kan skriva i databasen kan förfalska en rad som valideringen godkänner.{' '}
+              <LimitationReference entry={chain} />
+            </li>
+            <li style={listItemStyle}>
+              <strong>Nyckeln har funnits hel.</strong> Tröskelnyckeln skapas av en betrodd utdelare
+              och finns ett ögonblick på ett ställe innan den delas.{' '}
+              <LimitationReference entry={dealer} />
+            </li>
+            <li style={listItemStyle}>
+              <strong>En manipulerad klient kan kryptera något annat än du valde.</strong>{' '}
+              Krypteringen sker i webbläsaren med kod som servern levererar. Motmedlet, att väljaren
+              kan granska ett kuvert i stället för att lägga det, ingår inte i modellen.
+            </li>
+            <li style={listItemStyle}>
+              <strong>Den som kan bevaka dig fram till stängningen kan fortfarande tvinga dig.</strong>{' '}
+              Att rösten går att ändra hjälper bara om du kan ändra den i fred. Estland låter en
+              pappersröst upphäva den digitala. Det ingår inte här.
+            </li>
+          </ul>
+        </section>
+
+        {/* --- 2 och 3. Livevyn och "Följ en röst" ----------------------------- */}
+        {DEMO_MODE ? (
+          <LiveDatabaseView linkLimitationTitle={link.title} />
+        ) : (
+          <section className="card" aria-labelledby="livevy">
+            <h2 id="livevy">Databaserna just nu</h2>
+            <p className="muted small">
+              Livevyn och &quot;Följ en röst&quot; visas bara i demoläget. De visar röstlängden, och
+              den får ingen sida visa i skarpt läge. Sidan frågar därför inte efter den, och rutten
+              som lämnar ut den svarar 404 när BankID inte är en attrapp.
+            </p>
+          </section>
+        )}
+
+        {/* --- Granskning ---------------------------------------------------- */}
+        <section className="card" aria-labelledby="granskning">
+          <h2 id="granskning">Hur valet kan granskas utan att valhemligheten bryts</h2>
+          <p className="muted small">
+            Det ska inte räcka att lita på att administratören säger att databasen är korrekt. En
+            oberoende part ska kunna kontrollera kedjan själv, och den här tabellen säger vilka delar
+            av kedjan som finns i koden i dag.
+          </p>
+
+          <div className="table-wrap" style={{ marginTop: '1rem' }}>
+            <table className="prose-table stack-on-mobile">
               <thead>
                 <tr>
                   <th>Fråga</th>
-                  <th>Hur den besvaras utan tillit</th>
+                  <th>Hur kuvertmodellen svarar</th>
+                  <th>I koden i dag</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Har rösten skapats genom den auktoriserade processen?</td>
-                  <td>
-                    Varje röst bär en signatur som bara valsedelns privata nyckel kan ha skapat.
-                    Vem som helst verifierar den med den publika nyckeln.
+                  <td>Är varje kuvert lagt av väljaren själv?</td>
+                  <td data-label="Hur kuvertmodellen svarar">
+                    Varje rad bär väljarens BankID-signatur över chifferhashen och räknaren.
+                    Valideringen före stängningen prövar signatur, räknare, valsedel och bevis medan
+                    kopplingen finns, och stoppar stängningen vid en avvikelse.
+                  </td>
+                  <td data-label="I koden i dag">
+                    Byggt. Men signaturen prövas mot nyckeln i raden, inte mot BankID:s CA.{' '}
+                    <LimitationReference entry={chain} />
                   </td>
                 </tr>
                 <tr>
-                  <td>Har någon röst ändrats eller tagits bort?</td>
-                  <td>
-                    Merkleträd över rösterna, sorterade på <em>innehåll</em> och inte på tid.
-                    Publicerade rötter binder underlaget vid en tidpunkt.
+                  <td>Har något kuvert tillkommit eller försvunnit vid stängningen?</td>
+                  <td data-label="Hur kuvertmodellen svarar">
+                    Kuvertroten, en Merklerot över alla par av chifferhash och signatur, räknas ut
+                    innan något raderas och skrivs en enda gång. Stängningen avbryter om antalet som
+                    flyttats inte är exakt antalet som fanns.
+                  </td>
+                  <td data-label="I koden i dag">
+                    Byggt. {CURRENTLY.envelopeRootNotPublished.text} Ingen inklusionsväg lagras, och
+                    efter stängningen är signaturerna raderade, så ingen utomstående kan räkna om
+                    roten.
                   </td>
                 </tr>
                 <tr>
-                  <td>Motsvarar antalet godkända röstningar antalet röster?</td>
-                  <td>Båda talen publiceras per valsedel och kan jämföras.</td>
+                  <td>Finns min röst med?</td>
+                  <td data-label="Hur kuvertmodellen svarar">
+                    Väljaren letar upp sin verifikationskod, chifferhashen, i den publicerade mängden.
+                  </td>
+                  <td data-label="I koden i dag">
+                    {CURRENTLY.encryptedVotesNotPublished.text}
+                    {DEMO_MODE && ' I demoläget går kontrollen att göra i "Följ en röst" ovan.'}
+                  </td>
                 </tr>
                 <tr>
                   <td>Räknades rösterna korrekt?</td>
-                  <td>Hela röstunderlaget publiceras. Vem som helst kan räkna om det.</td>
+                  <td data-label="Hur kuvertmodellen svarar">
+                    Vem som helst multiplicerar ihop chiffren till summan och kontrollerar
+                    förtroendemännens dekrypteringsbevis.
+                  </td>
+                  <td data-label="I koden i dag">{CURRENTLY.decryptionNotBuilt.text}</td>
+                </tr>
+                <tr>
+                  <td>Har revisionsloggen ändrats?</td>
+                  <td data-label="Hur kuvertmodellen svarar">
+                    Loggen är en hashkedja: varje rad bär föregående rads hash, så en borttagen eller
+                    ändrad rad bryter alla senare. Både valideringen och raderingen loggas, så att det
+                    syns att kopplingen lästs och raderats. Posterna säger vilken timme, men varken
+                    vem eller hur många.
+                  </td>
+                  <td data-label="I koden i dag">
+                    Byggt, och slutkontrollen prövar kedjan. Den hindrar inte den som har skrivrätt
+                    i databasen från att räkna om hela kedjan från början.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Kan ett resultat fastställas medan kopplingen finns?</td>
+                  <td data-label="Hur kuvertmodellen svarar">
+                    Nej. Slutkontrollen vägrar så länge ett enda ytterkuvert finns kvar.
+                  </td>
+                  <td data-label="I koden i dag">Byggt. {CURRENTLY.finalCheckOldModel.text}</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
           <p className="muted small" style={{ marginTop: '1rem' }}>
-            Merkleträdet sorteras på innehåll av ett skäl som är värt att förstå. En hashkedja i
-            skrivordning vore den självklara lösningen — men ett löpnummer <em>är</em> en ordning,
-            och hela poängen med grova tidsstämplar är att rösterna inte ska gå att sortera i samma
-            följd som väljarna legitimerade sig. En kedja hade rivit ned tidsskyddet för att bygga
-            upp manipulationsskyddet.
+            Kuvertroten sorterar sina löv på innehåll, av ett skäl som är värt att förstå. En
+            hashkedja i skrivordning vore den självklara lösningen, men ett löpnummer är en ordning,
+            och i den här modellen vore det ordningen väljarna röstade i. Då hade manipulationsskyddet
+            byggts upp genom att valhemligheten revs ned.
           </p>
+        </section>
 
-          <p className="muted small">
-            Öppet utan inloggning: <span className="mono">POST /api/observer/election</span> och{' '}
-            <span className="mono">POST /api/observer/votes</span>. Att publicera röstunderlaget
-            hotar inte valhemligheten — det är <em>möjligt</em> just därför att underlaget inte bär
-            någon identitet.
-          </p>
-        </div>
-
-        {/* --- Metadata ----------------------------------------------------- */}
-        <div className="card">
-          <h2>Metadata som skulle kunna underminera anonymiteten</h2>
+        {/* --- 4. Metadata --------------------------------------------------- */}
+        <section className="card" aria-labelledby="metadata">
+          <h2 id="metadata">Metadata som skulle kunna underminera valhemligheten</h2>
           <p className="muted small">
             Separationen i databasen är den lätta delen. Det som faktiskt hotar valhemligheten är
-            spåren runtomkring.
+            spåren runtomkring. Tabellen gäller kuvertmodellen; det gamla flödets egna risker står i
+            listan längst ned.
           </p>
           <div className="table-wrap">
-            <table className="prose-table">
+            <table className="prose-table stack-on-mobile">
               <thead>
                 <tr>
                   <th>Risk</th>
@@ -445,70 +377,97 @@ JOIN anonymous_vote a ON ??? = ???;`}
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td>Exakta tidsstämplar</td>
-                  <td>Rad matchas mot rad på millisekund</td>
-                  <td>Dygn i röstlängden, timme i röstdatabasen</td>
-                </tr>
-                <tr>
-                  <td>Skrivordning i databasen</td>
-                  <td>Rader i samma kronologiska ordning kan paras ihop</td>
-                  <td>Slumpade UUID:n; Merkleträdet sorteras på innehåll, inte på tid</td>
-                </tr>
-                <tr>
-                  <td>IP-adress</td>
-                  <td>IP plus tidpunkt är i praktiken en identitet</td>
-                  <td>Används till hastighetsbegränsning, hashas, lagras aldrig</td>
-                </tr>
-                <tr>
-                  <td>Request-id</td>
-                  <td>Samma id i båda delarnas loggar kopplar ihop dem</td>
-                  <td>Request-id skickas aldrig in i röstmodulen</td>
-                </tr>
-                <tr>
-                  <td>Applikationsloggar</td>
-                  <td>En token eller ett personnummer i loggen river hela modellen</td>
-                  <td>All loggning går genom ett filter som maskerar kända mönster</td>
-                </tr>
-                <tr>
-                  <td>Analys och felrapportering</td>
-                  <td>Tredjepartstjänst får både identitet och beteende</td>
-                  <td>Finns inte i systemet; CSP tillåter inga utgående anrop</td>
-                </tr>
-                <tr>
-                  <td>Databasens revisionsloggar</td>
-                  <td>PostgreSQL-loggning kan återskapa skrivordningen</td>
-                  <td>Prismas frågeloggning avstängd — men serverns WAL är kvar, se SECURITY.md</td>
-                </tr>
-                <tr>
-                  <td>Personröst på liten kandidat</td>
-                  <td>Ett kryss som delas med tio personer är nästan en identitet</td>
-                  <td>
-                    Ingen geografisk markering på rösten, ingen finare tidsstämpel — men mängden är
-                    liten i sig. Inte löst.
-                  </td>
-                </tr>
-                <tr>
-                  <td>Lågt röstantal</td>
-                  <td>Är du ensam om att rösta en timme är tidsbucketen unik</td>
-                  <td>Inte löst. Kräver garanterad anonymitetsmängd, se SECURITY.md</td>
-                </tr>
+                <MetadataRow
+                  risk="Kopior av röstlängden"
+                  reveals="En backup, en läsreplik eller WAL-loggen från före stängningen innehåller pending_vote, med väljare och chifferhash"
+                >
+                  Ingenting. Raderingen når bara den levande databasen.{' '}
+                  <LimitationReference entry={link} />
+                </MetadataRow>
+                <MetadataRow risk="Exakta tidsstämplar" reveals="Rad matchas mot rad på tid">
+                  Dygn i röstlängden, också på pending_vote. encrypted_vote har ingen tidsstämpel
+                  alls. Revisionsloggen och det gamla flödets röster har timupplösning.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Skrivordning"
+                  reveals="Rader i samma ordning som väljarna röstade går att para ihop"
+                >
+                  Kuverten flyttas i en enda sats vid stängningen, sorterade på chifferhash, och id:t
+                  härleds ur hashen. Tabellens ordning är innehållets.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Räknaren i ytterkuvertet"
+                  reveals="Visar hur många gånger väljaren har ändrat sig"
+                >
+                  Finns bara i pending_vote, följer aldrig med till votes_db och raderas med
+                  kopplingen.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Löpande resultat"
+                  reveals="Differensen mellan två publicerade summor är rösterna däremellan, och under röstningen vet systemet vem som röstade när"
+                >
+                  Ingen summa räknas under röstningen. En dekryptering får inte beställas förrän
+                  fasen är STRIPPED, alltså förrän kopplingen är borta.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Personröst och små alternativ"
+                  reveals="Ett alternativ som få väljer är nästan en identitet"
+                >
+                  I designen öppnas bara summan per alternativ, aldrig en enskild röst. Men en summa
+                  på ett är fortfarande en summa på ett. Inte löst, och går inte att lösa med
+                  kryptografi.
+                </MetadataRow>
+                <MetadataRow risk="IP-adress" reveals="IP plus tidpunkt är i praktiken en identitet">
+                  Används till hastighetsbegränsning och hålls hashad i processminnet. Lagras aldrig
+                  i en databas.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Request-id"
+                  reveals="Samma id i båda delarnas loggar kopplar ihop dem"
+                >
+                  Systemet skapar inget request-id.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Applikationsloggar"
+                  reveals="En chifferhash eller ett personnummer i loggen kopplar ihop sidorna"
+                >
+                  All loggning går genom ett filter som maskerar kända mönster, bland dem 64
+                  hextecken, alltså chifferhashar. Ett test stoppar direkta anrop till konsolen.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Analys och felrapportering"
+                  reveals="En tredjepartstjänst får både identitet och beteende"
+                >
+                  Finns inte. CSP:n tillåter inga utgående anrop.
+                </MetadataRow>
+                <MetadataRow
+                  risk="Databasens egna loggar"
+                  reveals="PostgreSQL:s WAL innehåller varje skrivning i exakt ordning"
+                >
+                  Prismas frågeloggning är avstängd i båda klienterna. WAL-loggen bär kuverten även
+                  efter raderingen, se SECURITY.md avsnitt 4.6.
+                </MetadataRow>
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
 
-        {/* --- Vad som inte är löst ----------------------------------------- */}
-        <div className="card">
-          <h2>Varför detta inte räcker för ett riktigt val</h2>
+        {/* --- 4. Vad som inte är löst --------------------------------------- */}
+        <section className="card" aria-labelledby="begransningar">
+          <h2 id="begransningar">Varför detta inte räcker för ett riktigt val</h2>
           <p className="muted small">
-            Modellen visar principen: legitimera väljaren separat, låt väljaren själv bära ett blint
-            signerat intyg över gränsen, registrera rösten anonymt, och publicera underlaget så att
-            vem som helst kan räkna om valet. Den visar inte ett valsystem redo för drift.
+            Modellen visar principen: legitimera väljaren, låt henne lägga ett krypterat kuvert som
+            bär hennes egen signatur, skala bort identiteten vid stängningen och öppna bara summan. Den
+            visar inte ett valsystem redo för drift.
+          </p>
+          <p className="muted small">
+            Listan gäller hela systemet. De tre första posterna hör till kuvertmodellen. Några av de
+            övriga beskriver det gamla flödet med röstintyg och blinda signaturer och försvinner ur
+            listan när det flödet tas bort, medan andra gäller oavsett modell.
           </p>
 
           <div className="table-wrap" style={{ marginTop: '1rem' }}>
-            <table className="prose-table">
+            <table className="prose-table stack-on-mobile">
               <thead>
                 <tr>
                   <th>Kvarstående problem</th>
@@ -527,14 +486,14 @@ JOIN anonymous_vote a ON ??? = ???;`}
 
                   Varje post bär en markör i källkoden. Löser någon problemet
                   försvinner markören och ett säkerhetstest failar tills posten
-                  tagits bort — ett test som går sönder när systemet blir bättre.
+                  tagits bort, ett test som går sönder när systemet blir bättre.
                 */}
-                {KNOWN_LIMITATIONS.map((limitation) => (
-                  <tr key={limitation.id}>
+                {KNOWN_LIMITATIONS.map((entry) => (
+                  <tr key={entry.id} id={`begransning-${entry.id}`}>
                     <td>
-                      <strong>{limitation.title}</strong>
+                      <strong>{entry.title}</strong>
                     </td>
-                    <td>{limitation.why}</td>
+                    <td>{entry.why}</td>
                   </tr>
                 ))}
               </tbody>
@@ -542,13 +501,53 @@ JOIN anonymous_vote a ON ??? = ???;`}
           </div>
 
           <p className="muted small" style={{ marginTop: '1rem' }}>
-            Samtliga är beskrivna i <span className="mono">SECURITY.md</span> och{' '}
-            <span className="mono">VERIFIABILITY.md</span>, med resonemanget bakom varje avvägning.
-            Listan är avsiktligt fullständig: den som tror att systemet klarar mer än det gör fattar
-            sämre beslut än den som inte känner till det alls.
+            Resonemanget bakom kuvertmodellens avvägningar står i specen,{' '}
+            <span className="mono">docs/spec/2026-09-22-dubbla-kuvert.md</span>. Listan är den enda
+            källan: sidan läser den och skriver den inte, så den blir aldrig mer rätt än listan. Den
+            som tror att systemet klarar mer än det gör fattar sämre beslut än den som inte känner
+            till det alls.
           </p>
-        </div>
+        </section>
       </div>
     </main>
   )
 }
+
+/**
+ * "ja" eller "nej", i fetstil där värdet skiftar från fasen före. Det är
+ * övergångarna specens tabell lyfter fram: röstningen stänger i CLOSED, och
+ * kopplingen försvinner i STRIPPED.
+ */
+function yesNo(value: boolean, previous: boolean | undefined) {
+  const text = value ? 'ja' : 'nej'
+  return previous !== undefined && previous !== value ? <strong>{text}</strong> : text
+}
+
+/** En hänvisning till en post i listan längst ned, med rubriken ur listan. */
+function LimitationReference({ entry }: { entry: KnownLimitation }) {
+  return (
+    <span className="muted">
+      Står i listan nedan som <a href={`#begransning-${entry.id}`}>{entry.title}</a>.
+    </span>
+  )
+}
+
+function MetadataRow({
+  risk,
+  reveals,
+  children,
+}: {
+  risk: string
+  reveals: string
+  children: ReactNode
+}) {
+  return (
+    <tr>
+      <td>{risk}</td>
+      <td data-label="Hur den skulle avslöja">{reveals}</td>
+      <td data-label="Vad systemet gör">{children}</td>
+    </tr>
+  )
+}
+
+const listItemStyle = { marginBottom: '0.6rem' }

@@ -40,6 +40,62 @@ export type KnownLimitation = {
 }
 
 export const KNOWN_LIMITATIONS: KnownLimitation[] = [
+  /**
+   * KUVERTMODELLENS BEGRÄNSNINGAR.
+   *
+   * De tre första posterna gäller modellen med dubbla kuvert och är sanna i
+   * koden redan i dag. Posterna efter dem beskriver det gamla röstflödet med
+   * röstintyg och blinda signaturer, som röstsidan fortfarande kör. De står
+   * kvar tills det flödet tas bort, och testet tvingar bort var och en när
+   * dess markör försvinner.
+   */
+  {
+    id: 'link-exists-during-voting',
+    title: 'Kopplingen väljare↔röst finns medan röstningen pågår',
+    why:
+      'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar och ' +
+      'därmed röstköp meningslöst. Priset är att "kan inte existera" blivit "raderas enligt ' +
+      'schema". Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen, och rösten är ' +
+      'bara skyddad av att chiffret inte går att läsa utan k av n andelar. Det är den ' +
+      'huvudsakliga akademiska invändningen mot Estlands system.',
+    // PendingVote är det yttre kuvertet: väljarens id i samma rad som chiffret.
+    // Så länge modellen finns, finns kopplingen medan röstningen pågår.
+    stillTrueIf: { file: 'prisma/voters/schema.prisma', contains: 'model PendingVote' },
+  },
+  {
+    id: 'trusted-dealer',
+    title: 'Tröskelnyckeln delas av en betrodd utdelare',
+    why:
+      'Vid valets skapande existerar hela den privata nyckeln på ett ställe under ett ögonblick ' +
+      'innan den delas och raderas. Riktig distribuerad nyckelgenerering låter förtroendemännen ' +
+      'bygga nyckeln utan att den någonsin sätts ihop.',
+    // Att dela en färdig nyckel ÄR den betrodda utdelaren. Vid distribuerad
+    // nyckelgenerering finns ingen hel nyckel att dela, och anropet försvinner.
+    stillTrueIf: { file: 'src/orchestration/create-election.usecase.ts', contains: 'splitSecret' },
+  },
+  {
+    id: 'bankid-chain-not-validated',
+    title: 'BankID-certifikatkedjan valideras inte',
+    why:
+      'Signaturen på det yttre kuvertet prövas mot den publika nyckel som står i certifikatet, ' +
+      'men certifikatet prövas aldrig mot BankID:s CA. Den som har skrivrättighet i databasen ' +
+      'kan därför skapa ett eget nyckelpar, signera ett välformat kuvert och lägga nyckel, ' +
+      'signatur och en verklig väljare i en helt självkonsekvent rad, som valideringen före ' +
+      'stängningen godkänner. Signaturen skyddar alltså mot en klient som skickar in ett eget ' +
+      'kuvert, men inte mot den som driver systemet. Förfalskningen finns som körbart test i ' +
+      'tests/integration/validate-before-close.test.ts.',
+    // Signaturen prövas mot den PEM-text som skickas in, vad den än är: Nodes
+    // PEM-tolkning tar ut nyckeln utan att fråga vem som utfärdat den, och
+    // valideringen före stängningen skickar in nyckeln ur raden. Med
+    // kedjevalidering prövas certifikatet först mot BankID:s CA och nyckeln
+    // tas ur det prövade certifikatet, och då ändras just det här anropet.
+    // Läggs en kontroll bara till bredvid anropet, utan att röra det, måste
+    // markören pekas om för hand.
+    stillTrueIf: {
+      file: 'src/modules/eligibility/bankid/envelope-signature.ts',
+      contains: "verifier.verify(certificate, signature, 'base64')",
+    },
+  },
   {
     id: 'client-code-from-server',
     title: 'Klientkoden levereras av servern',

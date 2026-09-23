@@ -46,8 +46,8 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  * `PendingVote.bankIdPublicKey`s dokumentation för varför). Se testet
  * "en självkonsekvent förfalskning med eget nyckelpar fångas INTE" i
  * `validate-before-close.test.ts` för en körd demonstration av precis den
- * här luckan — den är känd, inte förbisedd, och ska tas upp som en post i
- * `src/lib/known-limitations.ts` av uppgift 16.
+ * här luckan — den är känd, inte förbisedd, och står som posten
+ * `bankid-chain-not-validated` i `src/lib/known-limitations.ts`.
  *
  * Vad som SKULLE stänga den: antingen CA-kedjevalidering av certifikatet vid
  * LÄGGNINGSTILLFÄLLET, så att bara en nyckel utfärdad av BankIDs CA någonsin
