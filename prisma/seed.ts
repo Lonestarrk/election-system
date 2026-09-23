@@ -1,6 +1,9 @@
 import { scryptHex } from '../src/lib/crypto'
 import { describeElectionSeed } from './election-seed-report'
 import { generateElectionKeyPair } from '../src/lib/blind-signature'
+import { generateKeyPair } from '../src/lib/crypto/elgamal'
+import { publicShare, splitSecret } from '../src/lib/crypto/threshold'
+import { encryptShare } from '../src/lib/crypto/share-storage'
 import { PrismaClient as VotersClient } from '.prisma/voters'
 import { PrismaClient as VotesClient } from '.prisma/votes'
 
@@ -62,6 +65,21 @@ const PARTIES = [
 
 const MUNICIPALITY = '0180'
 const REGION = '01'
+
+/**
+ * Demofraser för de tre förtroendemännen.
+ *
+ * En riktig lösenfras väljer varje förtroendeman själv, och den lagras
+ * ingenstans — se src/lib/crypto/share-storage.ts. Här, i demoläge, seedas tre
+ * kända fraser så att en och samma person kan spela alla tre rollerna, precis
+ * som administratörens personnummer skrivs ut. Namnen gör det uppenbart att
+ * det här inte är skarpa hemligheter.
+ */
+const TRUSTEE_PASSPHRASES: [string, string, string] = [
+  'demo-fortroendeman-ett',
+  'demo-fortroendeman-tva',
+  'demo-fortroendeman-tre',
+]
 
 /**
  * Demoväljare. Personnumren är påhittade och följer bara formatet.
@@ -150,6 +168,34 @@ async function main() {
         opensAt: new Date(Date.UTC(2026, 8, 1)),
         closesAt: new Date(Date.UTC(2026, 8, 30)),
       },
+    })
+
+    /**
+     * TRÖSKELNYCKELN. Tre andelar, två krävs för att öppna resultatet.
+     *
+     * Samma konstruktion som createElection i orkestreringslagret: den
+     * privata nyckeln raderas ur skop direkt efter delningen och lämnar
+     * aldrig den här funktionen.
+     */
+    const keys = generateKeyPair()
+    const shares = splitSecret(keys.privateKey, 3, 2)
+
+    await votesDb.election.update({
+      where: { id: election.id },
+      data: { encryptionPublicKey: keys.publicKey.toString() },
+    })
+
+    await votesDb.trusteeShare.createMany({
+      data: shares.map((share) => ({
+        electionId: election.id,
+        trusteeIndex: share.index,
+        publicShare: publicShare(share).toString(),
+        encryptedShare: encryptShare(
+          share.value,
+          TRUSTEE_PASSPHRASES[share.index - 1]!,
+          share.index,
+        ),
+      })),
     })
 
     const createdBallots: Array<{ id: string; kind: string; label: string; areaCode: string | null }> =
@@ -267,7 +313,10 @@ async function main() {
   process.stdout.write(
     `Seedat: ${PARTIES.length} partier, ${VOTERS.length} personer (${eligible} röstberättigade).\n` +
       `${electionSummary}\n` +
-      `Administratör: ${admin?.personalNumber ?? '—'}\n`,
+      `Administratör: ${admin?.personalNumber ?? '—'}\n` +
+      `Förtroendemän (demofraser, två av tre krävs för att öppna resultatet):\n` +
+      TRUSTEE_PASSPHRASES.map((phrase, index) => `  ${index + 1}. ${phrase}`).join('\n') +
+      '\n',
   )
 }
 

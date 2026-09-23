@@ -160,6 +160,23 @@ const ballotInputSchema = z
     { message: 'En partivalsedel behöver minst ett parti, en fråga inga.' },
   )
 
+/**
+ * Tre lösenfraser, en per förtroendeman.
+ *
+ * Endast en minimilängd kontrolleras här — det är administratörsgränssnittet,
+ * inte valsedelsformuläret, som ska vägleda förtroendemännen till en stark
+ * fras. Ingen övre gräns: en lång fras ska aldrig avvisas.
+ */
+const trusteePassphrasesSchema = z
+  .tuple([
+    z.string().min(8, 'Varje lösenfras måste vara minst 8 tecken.'),
+    z.string().min(8, 'Varje lösenfras måste vara minst 8 tecken.'),
+    z.string().min(8, 'Varje lösenfras måste vara minst 8 tecken.'),
+  ])
+  .refine((phrases) => new Set(phrases).size === phrases.length, {
+    message: 'Förtroendemännens lösenfraser måste vara olika.',
+  })
+
 export const createElectionSchema = z
   .object({
     name: z.string().trim().min(1, 'Omröstningen behöver ett namn.').max(200),
@@ -167,6 +184,7 @@ export const createElectionSchema = z
     opensAt: z.coerce.date(),
     closesAt: z.coerce.date(),
     ballots: z.array(ballotInputSchema).min(1, 'Minst en valsedel krävs.').max(50),
+    trusteePassphrases: trusteePassphrasesSchema,
   })
   .refine((value) => value.closesAt > value.opensAt, {
     message: 'Omröstningen måste stänga efter att den öppnat.',

@@ -44,6 +44,7 @@ async function electionWithWindow(name: string, opensAt: Date, closesAt: Date): 
     ballots: [
       { kind: 'RIKSDAG', label: 'Riksdagen', allowsCandidateVote: false, parties: [{ partyId }] },
     ],
+    trusteePassphrases: ['test-fras-ett', 'test-fras-tva', 'test-fras-tre'],
   })
 
   if (outcome.status !== 'created') throw new Error(`Kunde inte skapa ${name}.`)

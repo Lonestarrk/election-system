@@ -5,8 +5,12 @@ import {
   deleteElection,
   type CreatedElection,
 } from '@/modules/ballot-box'
+import { votesDb } from '@/modules/ballot-box/db'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { mirrorElection, removeMirroredElection } from '@/modules/eligibility/election.service'
+import { generateKeyPair } from '@/lib/crypto/elgamal'
+import { publicShare, splitSecret } from '@/lib/crypto/threshold'
+import { encryptShare } from '@/lib/crypto/share-storage'
 
 /**
  * Skapar en omröstning i båda databaserna.
@@ -63,6 +67,15 @@ export type CreateElectionRequest = {
     parties?: Array<{ partyId: string; candidates?: string[] }>
     options?: string[]
   }>
+
+  /**
+   * En lösenfras per förtroendeman, satt av personen själv och aldrig lagrad.
+   *
+   * Tre andelar, två krävs för att öppna resultatet — se
+   * src/lib/crypto/threshold.ts. Fraserna lämnar den här funktionen bara som
+   * krypteringsnycklar för respektive andel; klartexten sparas ingenstans.
+   */
+  trusteePassphrases: [string, string, string]
 }
 
 export async function createElection(
@@ -91,6 +104,48 @@ export async function createElection(
     })
   } catch (error) {
     logger.error('Kunde inte skapa omröstningen i röstdatabasen', { error: String(error) })
+    await recordAuditEvent(AUDIT_EVENTS.ELECTION_CREATION_FAILED)
+    return { status: 'failed', message: 'Omröstningen kunde inte skapas.' }
+  }
+
+  try {
+    /**
+     * TRE ANDELAR, TVÅ KRÄVS.
+     *
+     * Nyckeln som öppnar resultatet får inte ligga hos en ensam administratör —
+     * varken för att kunna läsa i förtid eller för att kunna vägra släppa
+     * siffrorna.
+     *
+     * Den ursprungliga privata nyckeln raderas här och lämnar aldrig funktionen.
+     * Att den existerar alls under ett ögonblick är den betrodda utdelarens
+     * svaghet, och den står som känd begränsning — se kommentaren i
+     * src/lib/crypto/threshold.ts.
+     */
+    const keys = generateKeyPair()
+    const shares = splitSecret(keys.privateKey, 3, 2)
+
+    await votesDb.election.update({
+      where: { id: created.id },
+      data: { encryptionPublicKey: keys.publicKey.toString() },
+    })
+
+    await votesDb.trusteeShare.createMany({
+      data: shares.map((share) => ({
+        electionId: created.id,
+        trusteeIndex: share.index,
+        publicShare: publicShare(share).toString(),
+        encryptedShare: encryptShare(share.value, input.trusteePassphrases[share.index - 1]!, share.index),
+      })),
+    })
+    // `keys.privateKey` och `shares` går nu ur skop. Ingen referens till den
+    // sammansatta hemligheten finns kvar någonstans efter den här punkten.
+  } catch (error) {
+    logger.error('Kunde inte skapa tröskelnyckeln för omröstningen', { error: String(error) })
+
+    // Ingen har hunnit rösta i en omröstning som just misslyckades med att
+    // skapas, så borttagningen kan inte radera någons röst.
+    await deleteElection(created.id).catch(() => undefined)
+
     await recordAuditEvent(AUDIT_EVENTS.ELECTION_CREATION_FAILED)
     return { status: 'failed', message: 'Omröstningen kunde inte skapas.' }
   }

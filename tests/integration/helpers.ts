@@ -106,6 +106,7 @@ export async function createTestElection(name = 'Testvalet'): Promise<TestElecti
         parties: [{ partyId }],
       },
     ],
+    trusteePassphrases: ['test-fras-ett', 'test-fras-tva', 'test-fras-tre'],
   })
 
   if (outcome.status !== 'created') throw new Error('Kunde inte skapa testomröstningen.')
