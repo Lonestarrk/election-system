@@ -70,6 +70,17 @@ export const AUDIT_EVENTS = {
    * precis vad revisionsloggen ska hålla sig ifrån.
    */
   ELECTION_NOTIFICATION_SENT: 'ELECTION_NOTIFICATION_SENT',
+  /**
+   * Valideringen som körs medan `PendingVote` fortfarande pekar på en väljare
+   * — se `validate-before-close.usecase.ts`.
+   *
+   * Loggas utan antal och utan identiteter, av samma skäl som allt annat här:
+   * validering körs en gång per omröstning strax före skalningen, så även ett
+   * enda antal skulle i praktiken peka ut precis det tillfället. Det som ska
+   * synas är ATT kopplingen lästs, inte vad läsningen gav för resultat —
+   * resultatet hör hemma i valideringsrapporten, som publiceras separat.
+   */
+  PRE_CLOSE_VALIDATION: 'PRE_CLOSE_VALIDATION',
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]

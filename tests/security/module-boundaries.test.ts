@@ -103,6 +103,13 @@ describe('modulgränser', () => {
      *    anonyma modulen. `castEncryptedBallot` själv importerar ingenting
      *    därifrån (se `pending-vote.service.ts`); det är rutten som hämtar
      *    formen via den anonyma modulens publika API och skickar med den in.
+     *  – validate-before-close.usecase: valideringen som körs medan
+     *    `PendingVote` fortfarande pekar på en väljare (uppgift 10). Läser en
+     *    enskild väljares folkbokföring för WRONG_BALLOT och behöver
+     *    omröstningens krypteringsnyckel och antal alternativ för BAD_PROOF,
+     *    av samma skäl som vote/encrypted ovan. Publicerar bara antal och
+     *    kategorier — vilka väljare det gällde stannar i `anomalies`, som
+     *    aldrig lämnar den här filen olästat av en administratör.
      */
     const allowed = [
       // Skapar omröstningen i båda databaserna. Rör bara offentlig metadata —
@@ -110,6 +117,7 @@ describe('modulgränser', () => {
       // väljare eller en röst att koppla ihop.
       'src/orchestration/create-election.usecase.ts',
       'src/orchestration/final-check.usecase.ts',
+      'src/orchestration/validate-before-close.usecase.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
       'src/app/api/observer/election/route.ts',
