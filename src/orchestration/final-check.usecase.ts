@@ -352,15 +352,44 @@ export async function runFinalCheck(electionId: string): Promise<FinalCheckRepor
       where: { ballotId: { in: election.ballots.map((ballot) => ballot.id) } },
     })
 
+    const mirrored = await votersDb.election.findUnique({
+      where: { id: electionId },
+      select: { linkClearedAt: true },
+    })
+    const stripped = mirrored?.linkClearedAt != null
+
+    /**
+     * SEVERITETEN HÄNGER PÅ OM SKALNINGEN KÖRTS — ANNARS LÅSER KONTROLLEN ETT
+     * VAL SOM INTE GJORT NÅGOT FEL.
+     *
+     * En omröstning som ännu inte skalats HAR liggande kopplingar. Det är inte
+     * en avvikelse, det är normaltillståndet under röstningen. Vore kontrollen
+     * ovillkorligt KRITISK skulle `anomalous` bli sant och `certifyElection`
+     * sätta valet i UNDER_REVIEW — ett tillstånd som inte går att lämna via
+     * applikationen. En administratör som trycker en dag för tidigt hade då
+     * gjort valet omöjligt att fastställa, vilket är precis det
+     * `certifyElection`s egen dokumentation säger inte får kunna hända.
+     *
+     * Först när skalningen körts (`linkClearedAt` är satt) är en kvarvarande
+     * koppling en verklig avvikelse: då har raderingen påståtts vara gjord, och
+     * en rad som ändå finns kvar betyder att den inte blev av — eller att någon
+     * skrivit tillbaka den. Samma uppdelning som `election_closed` och
+     * `matches_commitment` redan gör: för tidigt är en FÖRUTSÄTTNING, fel är en
+     * AVVIKELSE.
+     */
     checks.push({
       id: 'link_cleared',
       question: 'Är kopplingen mellan väljare och röst raderad?',
-      severity: 'CRITICAL',
+      severity: stripped ? 'CRITICAL' : 'PRECONDITION',
       passed: remaining === 0,
       detail:
         remaining === 0
           ? 'Inga kopplingar finns kvar.'
-          : `${remaining} kopplingar finns kvar. Valet får inte fastställas.`,
+          : stripped
+            ? `${remaining} kopplingar finns kvar trots att skalningen körts. ` +
+              'Valet får inte fastställas.'
+            : `${remaining} kopplingar finns kvar. Skalningen har inte körts än — ` +
+              'stäng omröstningen först. Ingenting är fel.',
     })
   }
 

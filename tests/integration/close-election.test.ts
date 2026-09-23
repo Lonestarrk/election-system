@@ -4,7 +4,12 @@ import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
-import { closeElection, envelopeRootOf } from '@/orchestration/close-election.usecase'
+import {
+  closeElection,
+  envelopeRootOf,
+  idForEnvelope,
+} from '@/orchestration/close-election.usecase'
+import { certifyElection, runFinalCheck } from '@/orchestration/final-check.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -49,6 +54,8 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
   const ANNA_PN = '199001011234'
   const KIM_PN = '198505152345'
   const ROBIN_PN = '197012125678'
+  const SAM_PN = '196408083456'
+  const VERA_PN = '198812247890'
 
   let electionId: string
   let ballotId: string
@@ -61,6 +68,8 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
   let anna: string
   let kim: string
   let robin: string
+  let sam: string
+  let vera: string
 
   /** Vilket personnummer en testväljares voterStatusId hör till — för `signAs`. */
   const personalNumberByVoter = new Map<string, string>()
@@ -155,6 +164,8 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     anna = await createSignedVoter(ANNA_PN)
     kim = await createSignedVoter(KIM_PN)
     robin = await createSignedVoter(ROBIN_PN)
+    sam = await createSignedVoter(SAM_PN)
+    vera = await createSignedVoter(VERA_PN)
 
     /**
      * Omröstningen ligger som stängd genom hela sviten.
@@ -222,7 +233,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
    * Klockan öppnas bara så länge kuvertet läggs och ställs tillbaka direkt
    * efteråt — se kommentaren i `beforeEach`.
    */
-  async function castFor(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<void> {
+  async function castFor(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<string> {
     await setClosesAt(electionId, new Date(Date.now() + 3_600_000))
 
     try {
@@ -242,9 +253,16 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       if (outcome.status !== 'recorded') {
         throw new Error(`Kunde inte lägga rösten (${outcome.status}).`)
       }
+
+      // Läggningsordningen, som testet av infogningsordningen behöver.
+      return ballot.ciphertextHash
     } finally {
       await setClosesAt(electionId, new Date(Date.now() - 60_000))
     }
+  }
+
+  function isSorted(values: string[]): boolean {
+    return values.every((value, index) => index === 0 || values[index - 1]! <= value)
   }
 
   /**
@@ -307,21 +325,78 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
   })
 
   it('infogar sorterat på innehåll, inte i den ordning väljarna röstade', async () => {
-    // Insättningsordningen får inte avslöja i vilken ordning folk röstade —
-    // annars kan den som vet när någon legitimerade sig peka ut hens rad.
-    await castFor(anna, 'bp-s')
-    await castFor(kim, 'bp-m')
-    await castFor(robin, 'bp-s')
+    /**
+     * Insättningsordningen får inte avslöja i vilken ordning folk röstade —
+     * annars kan den som vet när någon legitimerade sig peka ut hens rad.
+     *
+     * TESTET LÄSER `ctid`, INTE `id`. Det är avsiktligt och bär hela
+     * bevisvärdet. `id` härleds ur chifferhashen, så `order by id` ÄR
+     * chifferhashordning oavsett i vilken ordning raderna infogades — en
+     * assertion på den ordningen kan inte fallera och bevakar ingenting.
+     * `ctid` är radens fysiska plats och speglar den ordning `createMany`
+     * skickade arrayen i, alltså exakt det som ska prövas: arrayen kommer ur
+     * en `findMany` utan `orderBy` och ligger därför i praktiken i
+     * läggningsordning. Sorteringen i `closeElection` är det enda som stänger
+     * den kanalen.
+     *
+     * `ctid` är avsiktligt Postgres-specifik. Den rör sig vid `VACUUM FULL`
+     * och vid en `UPDATE`, men är trogen i en tabell som bara tar emot en enda
+     * `INSERT` och sedan läses. Den bär hela testets bevisvärde och tål inte
+     * att tystna: byts lagringen ut måste testet skrivas om, inte tas bort.
+     *
+     * FEM KUVERT, INTE TRE. Med tre är sannolikheten 1 på 6 att en osorterad
+     * infogning ändå råkar se sorterad ut; med fem är den 1 på 120.
+     */
+    const castOrder = [
+      await castFor(anna, 'bp-s'),
+      await castFor(kim, 'bp-m'),
+      await castFor(robin, 'bp-s'),
+      await castFor(sam, 'bp-m'),
+      await castFor(vera, 'bp-s'),
+    ]
+
+    /**
+     * Läggningsordningen är slumpmässig — chiffret randomiseras — och kan
+     * därför råka vara sorterad redan. Då hade testet varit vakuöst: det
+     * skulle passera lika bra utan sorteringen i `closeElection`. Sista
+     * kuvertet läggs om tills ordningen är osorterad, vilket ger det en ny
+     * slumpad chifferhash.
+     */
+    for (let attempt = 0; attempt < 5 && isSorted(castOrder); attempt += 1) {
+      castOrder[castOrder.length - 1] = await castFor(vera, 'bp-s')
+    }
+    expect(isSorted(castOrder), 'läggningsordningen var redan sorterad').toBe(false)
+
     await closeElection(electionId)
 
-    const hashes = (
-      await votesDb.encryptedVote.findMany({
-        orderBy: { id: 'asc' },
-        select: { ciphertextHash: true },
-      })
-    ).map((row) => row.ciphertextHash)
+    const rows = await votesDb.$queryRawUnsafe<Array<{ ciphertext_hash: string }>>(
+      'select ciphertext_hash from encrypted_vote order by ctid',
+    )
+    const stored = rows.map((row) => row.ciphertext_hash)
 
-    expect(hashes).toEqual([...hashes].sort())
+    expect(stored).toEqual([...castOrder].sort())
+  })
+
+  it('radens id härleds ur chifferhashen, inte ur slumpen', async () => {
+    /**
+     * Det som det gamla `order by id`-testet i själva verket prövade.
+     *
+     * Ett slumpat id hade gjort primärnyckelns ordning oberoende av
+     * innehållet, och därmed gjort den sorterade infogningen verkningslös för
+     * alla som läser tabellen sorterad i stället för i fysisk ordning.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    await closeElection(electionId)
+
+    const rows = await votesDb.encryptedVote.findMany({
+      select: { id: true, ciphertextHash: true },
+    })
+
+    expect(rows).toHaveLength(2)
+    for (const row of rows) {
+      expect(row.id).toBe(idForEnvelope(row.ciphertextHash))
+    }
   })
 
   it('publicerar en kuvertrot INNAN signaturerna raderas', async () => {
@@ -360,5 +435,101 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     expect((await closeElection(electionId)).status).toBe('invalid_ballot')
     expect(await votersDb.pendingVote.count()).toBe(1)
+  })
+
+  it('en omkörning efter ett krascherfönster rör inte den publicerade roten', async () => {
+    /**
+     * DEN ENDA OÅTERKALLELIGA FÖRLUSTEN I HELA FLÖDET, VAKTAD.
+     *
+     * Kraschar processen efter att kopplingen raderats men innan fasövergången
+     * skrivits, står omröstningen kvar i OPEN utan ett enda `PendingVote`.
+     * Omkörningen läser då noll kuvert och passerar valideringen — noll rader
+     * ger noll avvikelser — och skulle med en tidig rotskrivning ha ersatt den
+     * äkta roten med roten över ingenting, innan antalskontrollen hinner
+     * avbryta. Roten går inte att räkna om: signaturerna är borta.
+     *
+     * Testet återskapar exakt det tillståndet och kräver att roten är
+     * OFÖRÄNDRAD efteråt.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    expect((await closeElection(electionId)).status).toBe('closed')
+
+    const before = await votersDb.election.findUniqueOrThrow({
+      where: { id: electionId },
+      select: { envelopeRoot: true },
+    })
+
+    // Fönstret: kopplingen är borta, men fasövergången hann aldrig skrivas.
+    await votersDb.election.update({
+      where: { id: electionId },
+      data: { phase: 'OPEN', linkClearedAt: null },
+    })
+
+    await expect(closeElection(electionId)).rejects.toThrow()
+
+    const after = await votersDb.election.findUniqueOrThrow({
+      where: { id: electionId },
+      select: { envelopeRoot: true },
+    })
+
+    expect(after.envelopeRoot).toBe(before.envelopeRoot)
+    expect(after.envelopeRoot).not.toBe(envelopeRootOf([]))
+    // Chiffren ligger kvar — omkörningen fick inte radera dem heller.
+    expect(await votesDb.encryptedVote.count()).toBe(2)
+  })
+
+  it('att kopplingen raderats hamnar i revisionsloggen', async () => {
+    // Den enda oåterkalleliga händelsen i systemet får inte ske tyst.
+    await castFor(anna, 'bp-s')
+    await closeElection(electionId)
+
+    const events = await votersDb.auditEvent.findMany({ orderBy: { sequence: 'desc' }, take: 1 })
+    expect(events[0]!.eventType).toBe('LINK_CLEARED')
+  })
+
+  it('slutkontrollen låser inte ett val som ännu inte skalats', async () => {
+    /**
+     * `link_cleared` är KRITISK först efter skalningen.
+     *
+     * Ett val som ännu inte stängts HAR liggande kopplingar — det är
+     * normaltillståndet, inte en avvikelse. Vore kontrollen ovillkorligt
+     * kritisk skulle `certifyElection` sätta valet i UNDER_REVIEW, ett
+     * tillstånd som inte går att lämna via applikationen. En administratör som
+     * trycker en dag för tidigt skulle då ha gjort valet omöjligt att
+     * fastställa.
+     */
+    await castFor(anna, 'bp-s')
+
+    const report = await runFinalCheck(electionId)
+    const check = report!.checks.find((candidate) => candidate.id === 'link_cleared')!
+
+    expect(check.passed).toBe(false)
+    expect(check.severity).toBe('PRECONDITION')
+    expect(report!.anomalous).toBe(false)
+
+    const outcome = await certifyElection(electionId)
+    expect(outcome.status).toBe('not_ready')
+
+    const stored = await votesDb.election.findUniqueOrThrow({
+      where: { id: electionId },
+      select: { status: true },
+    })
+    expect(stored.status).toBe('OPEN')
+  })
+
+  it('slutkontrollen är kritisk om en koppling finns kvar EFTER skalningen', async () => {
+    await castFor(anna, 'bp-s')
+    expect((await closeElection(electionId)).status).toBe('closed')
+
+    // Någon skriver tillbaka en koppling efter att raderingen påståtts vara gjord.
+    await stuffVoteFor(kim, 'bp-m')
+
+    const report = await runFinalCheck(electionId)
+    const check = report!.checks.find((candidate) => candidate.id === 'link_cleared')!
+
+    expect(check.passed).toBe(false)
+    expect(check.severity).toBe('CRITICAL')
+    expect(report!.anomalous).toBe(true)
   })
 })

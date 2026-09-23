@@ -1,6 +1,7 @@
 import { getAdminSession, isAdminAuthenticated } from '@/lib/admin-auth'
 import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
+import { logger } from '@/lib/logger'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
 import { getMirroredElection } from '@/modules/eligibility/election.service'
@@ -84,7 +85,39 @@ export async function POST(request: Request) {
   const election = await getMirroredElection(body.data.electionId)
   if (!election) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
 
-  const outcome = await closeElection(body.data.electionId)
+  /**
+   * ETT KAST HÄR ÄR INTE ETT OKÄNT FEL — DET ÄR SKYDDSMEKANISMEN SOM LÖSTE UT.
+   *
+   * `closeElection` kastar när antalet flyttade kuvert inte stämmer, i stället
+   * för att gå vidare och radera de enda kopior som finns. Precis då betyder
+   * beskedet som mest, och precis då hade en naken 500 sagt minst: en
+   * administratör som ser "Internal Server Error" har ingen aning om huruvida
+   * kopplingen finns kvar eller är borta.
+   *
+   * Ingenting i den kastande vägen raderar, så svaret kan säga det rakt ut.
+   * Övriga grenar svarar med 409 och en förklaring; den här gör samma sak.
+   */
+  let outcome: Awaited<ReturnType<typeof closeElection>>
+
+  try {
+    outcome = await closeElection(body.data.electionId)
+  } catch (error) {
+    logger.error('Stängningen avbröts', {
+      reason: error instanceof Error ? error.message : 'okänt fel',
+    })
+
+    return jsonResponse(
+      {
+        status: 'aborted',
+        message:
+          'Stängningen avbröts innan något raderades. Kopplingen mellan väljare och röst är ' +
+          'ORÖRD och omröstningen kan stängas om när felet är utrett. Kontrollera att ' +
+          'chiffren hunnit fram till röstdatabasen — antalet där stämde inte med antalet ' +
+          'liggande kuvert.',
+      },
+      409,
+    )
+  }
 
   if (outcome.status === 'too_early') {
     // 409, inte 403: begäran var behörig, men omröstningen pågår fortfarande.

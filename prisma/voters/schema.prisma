@@ -103,10 +103,20 @@ model Election {
   /// fasovergang ar en handelse nagon utfort.
   phase String @default("OPEN")
 
-  /// Merklerot over (ciphertextHash, bankIdSignature) fore skalningen.
+  /// Merklerot över (ciphertextHash, bankIdSignature), beräknad före
+  /// skalningen och skriven en enda gång.
   ///
-  /// Det enda som overlever raderingen av signaturerna, och det som later en
-  /// valjare med sparat kuvert bevisa att det raknades. Se spec 7.3.
+  /// VAD DEN ÄR: ett åtagande publicerat INNAN kopplingen raderas. Den binder
+  /// exakt den mängd kuvert som fanns när valet stängde — läggs ett kuvert
+  /// till, ändras eller försvinner i efterhand blir roten en annan. Det är
+  /// också det enda som överlever raderingen av signaturerna, eftersom
+  /// underlaget den räknades över inte finns kvar efteråt.
+  ///
+  /// VAD DEN INTE ÄR: ett inklusionsbevis. En väljare kan i dag INTE visa att
+  /// just hennes kuvert ingick — det kräver en inklusionsväg (syskonhasharna
+  /// upp genom trädet), och `src/lib/merkle.ts` varken lagrar eller exporterar
+  /// någon sådan. Efter skalningen är dessutom `bankIdSignature` raderad, så
+  /// ingen utomstående kan räkna om roten över huvud taget. Se spec 7.3.
   envelopeRoot String? @map("envelope_root")
 
   @@map("election")

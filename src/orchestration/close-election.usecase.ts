@@ -4,6 +4,7 @@ import { verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
+import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { clearPendingVotes } from '@/modules/eligibility/pending-vote.service'
 import { validateBeforeClose, type ValidationReport } from './validate-before-close.usecase'
 
@@ -13,22 +14,28 @@ import { validateBeforeClose, type ValidationReport } from './validate-before-cl
  * Ordningen är noga vald och kan inte kastas om.
  *
  *   1. validera enligt uppgift 10 — avbryt vid avvikelse
- *   2. beräkna och spara Merkleroten över kuverten
+ *   2. beräkna Merkleroten över kuverten (skrivs i steg 6, se nedan)
  *   3. verifiera varje valsedel EN GÅNG TILL
  *   4. infoga i votes_db, sorterat på chifferhash
  *   5. kontrollera att antalet stämmer
- *   6. först då radera kopplingen
+ *   6. först då, odelbart: skriv roten, radera kopplingen, växla fas
  *
  * Steg 1 är en SPÄRR, inte en rapport. Att skala ändå vore att kasta bort
  * bevismaterialet för det problem man just hittat: efter steg 6 finns ingen
  * väljare att fråga och ingen signatur att kontrollera.
  *
  * Steg 2 MÅSTE ligga före steg 6. Merkleroten över (ciphertextHash,
- * bankIdSignature), sorterade på chifferhash, är det enda som överlever
- * raderingen av signaturerna — och det som låter en väljare med sparat kuvert
- * bevisa i efterhand att det räknades. Beräknas den efter raderingen finns
- * ingenting att beräkna den över. Roten avslöjar ingenting själv; den är en
- * hash.
+ * bankIdSignature) är det enda som överlever raderingen av signaturerna:
+ * beräknas den efter raderingen finns ingenting att beräkna den över. Den är
+ * ett åtagande om exakt den mängd kuvert som fanns när valet stängde — läggs
+ * ett kuvert till, ändras eller försvinner efteråt blir roten en annan. Roten
+ * avslöjar ingenting själv; den är en hash.
+ *
+ * VAD ROTEN INTE GER, så att ingen bygger vidare på ett löfte som inte finns:
+ * en väljare kan i dag inte visa att just hennes kuvert ingick. Det kräver en
+ * inklusionsväg — syskonhasharna upp genom trädet — och `merkle.ts` varken
+ * lagrar eller exporterar någon sådan. Efter skalningen är dessutom
+ * signaturerna borta, så ingen utomstående kan räkna om roten alls.
  *
  * Steg 3 känns överflödigt — bevisen kontrollerades ju när rösten lades. Det är
  * ändå rätt: det är den sista punkt där ett fel kan pekas ut.
@@ -51,22 +58,37 @@ export type CloseOutcome =
   | { status: 'invalid_ballot'; ciphertextHash: string }
 
 /**
- * Ett blad per kuvert, sorterat på chifferhash.
+ * Ett blad per kuvert.
  *
- * Sorteringen gör roten oberoende av i vilken ordning väljarna röstade — samma
- * skäl som infogningen i votes_db sorteras. Bladet binder BÅDE hashen och
- * signaturen: bara hashen hade låtit en signatur bytas ut obemärkt, bara
- * signaturen hade inte pekat ut vilken röst den hörde till.
+ * Bladet binder BÅDE hashen och signaturen: bara hashen hade låtit en signatur
+ * bytas ut obemärkt, bara signaturen hade inte pekat ut vilken röst den hörde
+ * till.
  */
 export function envelopeLeaf(envelope: { ciphertextHash: string; bankIdSignature: string }): string {
   return hashLeaf(`${envelope.ciphertextHash}|${envelope.bankIdSignature}`)
 }
 
+/**
+ * Kuvertroten.
+ *
+ * ORDNINGEN I TRÄDET ÄR LÖVHASHORDNING — INTE CHIFFERHASHORDNING.
+ *
+ * Det är `merkleRoot` som sorterar, och den sorterar på lövens egna
+ * hashvärden (se resonemanget i `merkle.ts` om varför ordningen måste komma ur
+ * innehållet). En försortering på chifferhash här hade därför inte haft någon
+ * effekt alls på roten — men den stod i vägen som dokumentation: den som
+ * bygger om trädet enligt beskrivningen "sorterat på chifferhash" parar ihop
+ * löven i fel ordning och får en annan rot i så gott som varje val.
+ *
+ * DEN SOM RÄKNAR OM ROTEN gör alltså: ett löv per kuvert enligt
+ * `envelopeLeaf`, och lämnar därefter både sortering och ihopparning åt
+ * `merkleRoot`. Ordningen kuverten kommer i spelar ingen roll — vilket är hela
+ * poängen: roten säger ingenting om i vilken ordning väljarna röstade.
+ */
 export function envelopeRootOf(
   envelopes: Array<{ ciphertextHash: string; bankIdSignature: string }>,
 ): string {
-  const sorted = [...envelopes].sort((a, b) => a.ciphertextHash.localeCompare(b.ciphertextHash))
-  return merkleRoot(sorted.map(envelopeLeaf))
+  return merkleRoot(envelopes.map(envelopeLeaf))
 }
 
 /** Det som läses ur röstlängden för att kunna skalas. */
@@ -82,11 +104,12 @@ type Envelope = {
  * Sorterar på chifferhash med samma jämförelse som `Array.prototype.sort` gör
  * på strängar.
  *
- * Avsiktligt INTE `localeCompare` här: det som skrivs till databasen måste
- * hamna i en ordning som en observatör kan räkna fram igen utan att känna till
- * serverns språkinställning. (`envelopeRootOf` får använda `localeCompare`
- * eftersom `merkleRoot` sorterar löven om på egen hand — där påverkar
- * jämförelsen ingenting som lämnar funktionen.)
+ * Avsiktligt INTE `localeCompare`: det som skrivs till databasen måste hamna i
+ * en ordning som en observatör kan räkna fram igen utan att känna till
+ * serverns språkinställning.
+ *
+ * Det här är den ENDA sorteringen i filen som har någon effekt. Roten sorterar
+ * `merkleRoot` själv, på lövhashar — se `envelopeRootOf`.
  */
 function byCiphertextHash(a: Envelope, b: Envelope): number {
   if (a.ciphertextHash < b.ciphertextHash) return -1
@@ -110,8 +133,18 @@ function byCiphertextHash(a: Envelope, b: Envelope): number {
  * Det avslöjar ingenting nytt: chifferhashen står redan i raden. Och det är
  * deterministiskt, vilket gör en omkörning till en konflikt på primärnyckeln
  * precis som på det unika indexet.
+ *
+ * FUNKTIONEN HÄVDAR SIN EGEN FÖRUTSÄTTNING. Hela invarianten — att
+ * primärnyckelns ordning är innehållets ordning — vilar på att indata är
+ * gemen hex av fast längd. En kortare eller blandad sträng skulle ge id:n vars
+ * lexikala ordning inte längre följer chifferhashens, och felet skulle inte
+ * synas någonstans förrän någon läser tabellen sorterad och drar fel slutsats.
  */
-function idForEnvelope(ciphertextHash: string): string {
+export function idForEnvelope(ciphertextHash: string): string {
+  if (!/^[0-9a-f]{64}$/.test(ciphertextHash)) {
+    throw new Error('Chifferhashen är inte 64 gemena hextecken — id:t kan inte härledas ur den.')
+  }
+
   const hex = ciphertextHash.slice(0, 32)
   return [
     hex.slice(0, 8),
@@ -242,8 +275,27 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
   }
 
   // --- 2. Kuvertroten, medan signaturerna fortfarande finns ---------------
+  /**
+   * BERÄKNAS HÄR, SKRIVS SENARE — OCH BÅDA DELARNA ÄR KRAV.
+   *
+   * Beräkningen måste ske medan signaturerna finns: roten är det enda som
+   * överlever raderingen, och efter steg 6 finns ingenting att räkna den över.
+   * `envelopes` är läst ovan, alltså före varje skrivning.
+   *
+   * SKRIVNINGEN däremot hör hemma i samma transaktion som raderingen, och
+   * skälet är ett krascherfönster som annars förstör roten permanent: kraschar
+   * processen efter att kopplingen raderats men innan fasövergången skrivits,
+   * står omröstningen kvar i OPEN utan ett enda `PendingVote`. En omkörning
+   * läser då noll kuvert, passerar valideringen (noll rader ger noll
+   * avvikelser) — och skulle med en tidig skrivning ha ersatt den äkta roten
+   * med `envelopeRootOf([])` innan antalskontrollen hinner avbryta. Den
+   * förlusten går inte att reparera: signaturerna är borta.
+   *
+   * Skrivningen är dessutom skriv-en-gång (`envelopeRoot: null` i villkoret),
+   * så att inte heller en oförutsedd väg hit kan skriva över en publicerad
+   * rot.
+   */
   const envelopeRoot = envelopeRootOf(envelopes)
-  await votersDb.election.update({ where: { id: electionId }, data: { envelopeRoot } })
 
   // --- 3. Varje valsedel verifieras en gång till --------------------------
   const broken = await firstUnverifiableEnvelope(electionId, envelopes)
@@ -290,12 +342,41 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
     )
   }
 
-  // --- 6. Först nu raderas kopplingen mellan väljare och röst -------------
-  const cleared = await clearPendingVotes(electionId)
+  /**
+   * --- 6. Först nu raderas kopplingen mellan väljare och röst -------------
+   *
+   * DE TRE SKRIVNINGARNA ÄR ODELBARA, OCH DET ÄR INGEN DETALJ.
+   *
+   * Flytten mellan databaserna kan omöjligt vara en transaktion — men de här
+   * tre ligger alla i röstlängden och kunde alltså vara det. Var de inte det
+   * fanns ett fönster mellan raderingen och fasövergången där en krasch lämnar
+   * omröstningen i OPEN utan kuvert: ett tillstånd en omkörning inte kan
+   * skilja från "ingen har röstat", och som utan roten skriven här hade fått
+   * omkörningen att publicera roten över en tom mängd.
+   *
+   * Revisionsposten ligger med inuti, efter fasövergången. En rollback tar
+   * då posten med sig — en logg som påstår att kopplingen raderats när den
+   * ligger kvar vore värre än ingen logg alls.
+   */
+  const cleared = await votersDb.$transaction(async (tx) => {
+    // Skriv-en-gång: en redan publicerad rot får aldrig ersättas. `updateMany`
+    // och inte `update`, eftersom en träfflös `update` kastar — här ska en
+    // redan satt rot hoppas över, inte fälla körningen.
+    await tx.election.updateMany({
+      where: { id: electionId, envelopeRoot: null },
+      data: { envelopeRoot },
+    })
 
-  await votersDb.election.update({
-    where: { id: electionId },
-    data: { phase: 'STRIPPED', linkClearedAt: new Date() },
+    const removed = await clearPendingVotes(electionId, tx)
+
+    await tx.election.update({
+      where: { id: electionId },
+      data: { phase: 'STRIPPED', linkClearedAt: new Date() },
+    })
+
+    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
+
+    return removed
   })
 
   return { status: 'closed', moved, cleared, envelopeRoot }

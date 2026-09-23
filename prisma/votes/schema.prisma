@@ -318,7 +318,19 @@ model Vote {
 
 /// Det inre kuvertet, efter att identitetslagret skalats bort.
 model EncryptedVote {
-  id String @id @default(uuid())
+  /// HÄRLEDS UR `ciphertextHash` — SÄTTS ALDRIG AV DATABASEN.
+  ///
+  /// `idForEnvelope` i `src/orchestration/close-election.usecase.ts` bygger
+  /// id:t av chifferhashens första 32 hextecken. Det gör primärnyckelns
+  /// ordning identisk med innehållets, vilket är hela skälet till att raderna
+  /// infogas sorterade: den som läser tabellen sorterar på primärnyckeln, inte
+  /// på fysisk radordning.
+  ///
+  /// Fältet har därför medvetet INGET `@default(uuid())`. Ett slumpat
+  /// standardvärde hade tyst brutit den kopplingen för varje framtida
+  /// insättningsväg som utelämnar id:t; utan default vägrar TypeScript i
+  /// stället att kompilera en sådan väg.
+  id String @id
 
   ballotId String         @map("ballot_id")
   ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)

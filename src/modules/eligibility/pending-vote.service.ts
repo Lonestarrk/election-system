@@ -322,16 +322,27 @@ export async function pendingVoteFor(
  * Anropas av skalningen (uppgift 11) efter att kuverten flyttats till den
  * anonyma sidan. Rösten som redan flyttats påverkas inte — det som raderas
  * här är bara kopplingen mellan väljare och kuvert, aldrig innehållet.
+ *
+ * @param client Klienten raderingen körs med. Skalningen skickar in sin
+ *   transaktion, så att raderingen och fasövergången blir odelbara — en krasch
+ *   däremellan hade lämnat en omröstning i OPEN utan kuvert kvar, vilket en
+ *   omkörning inte kan skilja från en omröstning där ingen röstat.
  */
-export async function clearPendingVotes(electionId: string): Promise<number> {
-  const ballots = await votersDb.electionBallot.findMany({
+export async function clearPendingVotes(
+  electionId: string,
+  client: PendingVoteClient = votersDb,
+): Promise<number> {
+  const ballots = await client.electionBallot.findMany({
     where: { electionId },
     select: { id: true },
   })
 
-  const result = await votersDb.pendingVote.deleteMany({
+  const result = await client.pendingVote.deleteMany({
     where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },
   })
 
   return result.count
 }
+
+/** Se `clearPendingVotes`. Den delade klienten eller en transaktion. */
+export type PendingVoteClient = Pick<typeof votersDb, 'electionBallot' | 'pendingVote'>

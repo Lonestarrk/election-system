@@ -81,6 +81,19 @@ export const AUDIT_EVENTS = {
    * resultatet hör hemma i valideringsrapporten, som publiceras separat.
    */
   PRE_CLOSE_VALIDATION: 'PRE_CLOSE_VALIDATION',
+  /**
+   * Kopplingen mellan väljare och röst raderades — skalningen, se
+   * `close-election.usecase.ts`.
+   *
+   * Den enda oåterkalleliga händelsen i systemet, och därför den som allra
+   * minst får ske tyst. Posten säger ATT den skedde, och vilken timme.
+   *
+   * Inget antal och inget omröstnings-id, av samma skäl som
+   * PRE_CLOSE_VALIDATION: skalningen sker en gång per omröstning, så redan ett
+   * ensamt antal skulle peka ut precis det tillfället — och tillsammans med
+   * timmen vore det en tidsmarkör bredvid varje röst som just flyttats.
+   */
+  LINK_CLEARED: 'LINK_CLEARED',
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]
@@ -120,12 +133,25 @@ export function auditEntryHash(input: {
  */
 const MAX_SEQUENCE_ATTEMPTS = 5
 
-export async function recordAuditEvent(eventType: AuditEventType): Promise<void> {
+/**
+ * Klienten händelsen skrivs med.
+ *
+ * Normalt den delade `votersDb`. En anropare som redan kör i en transaktion
+ * skickar in sin `tx` i stället, så att revisionsposten lever och dör med det
+ * den beskriver — se `closeElection`, där en post om en radering som rullats
+ * tillbaka vore värre än ingen post alls.
+ */
+export type AuditClient = Pick<typeof votersDb, 'auditEvent'>
+
+export async function recordAuditEvent(
+  eventType: AuditEventType,
+  client: AuditClient = votersDb,
+): Promise<void> {
   const occurredAt = truncateToHour(new Date())
 
   for (let attempt = 1; attempt <= MAX_SEQUENCE_ATTEMPTS; attempt += 1) {
     try {
-      const previous = await votersDb.auditEvent.findFirst({
+      const previous = await client.auditEvent.findFirst({
         orderBy: { sequence: 'desc' },
         select: { sequence: true, entryHash: true },
       })
@@ -133,7 +159,7 @@ export async function recordAuditEvent(eventType: AuditEventType): Promise<void>
       const sequence = (previous?.sequence ?? 0) + 1
       const previousHash = previous?.entryHash ?? null
 
-      await votersDb.auditEvent.create({
+      await client.auditEvent.create({
         data: {
           eventType,
           occurredAt,
