@@ -1441,7 +1441,54 @@ Och på `ElectionBallot`:
   tallies            BallotTally[]
 ```
 
-- [ ] **Steg 5: Generera migreringarna**
+- [ ] **Steg 5: Gor den kanoniska ordningen bevisbart total**
+
+Granskningen av uppgift 4 hittade detta, och det hor hemma har.
+
+`canonicalOptions` sorterar pa `displayOrder`. Men varken `BallotParty` eller
+`Candidate` har ett unikhetsvillkor pa faltet, sa tva partier pa samma valsedel
+kan dela ordningsnummer. `Array.prototype.sort` ar stabil, vilket betyder att
+ordningen da faller tillbaka pa **insattningsordningen** — som kan skilja mellan
+klienten och servern, eftersom de laser raderna ur olika fragor.
+
+Foljden vore att en rost raknas pa fel alternativ, och ingenting i bevisen
+fangar det: de bevisar att vektorn ar valformad, inte att den betyder samma sak
+for bada parter. Sorteringen ar alltsa bara total om databasen garanterar det.
+
+Lagg till i `prisma/votes/schema.prisma`:
+
+```prisma
+// pa BallotParty
+  @@unique([ballotId, displayOrder])
+
+// pa Candidate
+  @@unique([ballotPartyId, displayOrder])
+```
+
+Och ett test i `tests/security/schema-separation.test.ts`:
+
+```ts
+it('ordningsnumren ar unika, sa den kanoniska ordningen ar total', () => {
+  /**
+   * Utan detta faller sorteringen tillbaka pa insattningsordning nar tva
+   * alternativ delar displayOrder — och klient och server kan da numrera
+   * valsedeln olika. Rosten hamnar pa fel alternativ, och inget bevis ser det.
+   */
+  const ballotParty = votesFields.match(/model BallotParty \{[\s\S]*?
+\}/)?.[0] ?? ''
+  const candidate = votesFields.match(/model Candidate \{[\s\S]*?
+\}/)?.[0] ?? ''
+
+  expect(ballotParty).toContain('@@unique([ballotId, displayOrder])')
+  expect(candidate).toContain('@@unique([ballotPartyId, displayOrder])')
+})
+```
+
+Finns redan rader som bryter mot villkoret i utvecklingsdatabasen faller
+migreringen. Kor `npm run reset:votes && npm run seed` forst om sa sker —
+seed-datan har unika ordningsnummer.
+
+- [ ] **Steg 6: Generera migreringarna**
 
 ```bash
 npx prisma migrate dev --schema=prisma/voters/schema.prisma --name pending_vote --create-only
@@ -1459,12 +1506,12 @@ Felet ser ut som ett rattighetsproblem men ar en fillasning. Kontrollera med
 Databasen kors i Docker och delas med resten av arbetet. Kor `npm run migrate`
 mot den, inte mot en ny instans.
 
-- [ ] **Steg 6: Kör testerna**
+- [ ] **Steg 7: Kör testerna**
 
 Kör: `npx vitest run tests/security/schema-separation.test.ts`
 Förväntat: PASS
 
-- [ ] **Steg 7: Committa**
+- [ ] **Steg 8: Committa**
 
 ```bash
 git add prisma/ tests/security/schema-separation.test.ts
