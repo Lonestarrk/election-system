@@ -117,7 +117,7 @@ describe.skipIf(!databaseAvailable)('token visas bara en gång', () => {
 })
 
 describe('klienten sparar inte token', () => {
-  const receiptPageSource = readFileSync(join(process.cwd(), 'src/app/rosta/page.tsx'), 'utf8')
+  const receiptPageSource = readFileSync(join(process.cwd(), 'src/app/vote/page.tsx'), 'utf8')
 
   /**
    * Granskar koden, inte kommentarerna.

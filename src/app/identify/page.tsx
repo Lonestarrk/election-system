@@ -161,7 +161,7 @@ export default function LegitimeringPage() {
               // Omröstnings-id:t följer med i URL:en. Det är offentlig
               // information och avslöjar ingenting om väljaren — till skillnad
               // från sessionen, som aldrig lämnar cookien.
-              router.push(`/rosta?val=${encodeURIComponent(electionId)}`)
+              router.push(`/vote?election=${encodeURIComponent(electionId)}`)
             }}
           />
         )}

@@ -31,7 +31,7 @@ test.describe('när ingen omröstning är öppen', () => {
   })
 
   test('säger det rakt ut i stället för att visa en tom rullgardin', async ({ page }) => {
-    await page.goto('/legitimera')
+    await page.goto('/identify')
 
     await expect(page.getByText('Ingen omröstning är öppen just nu.')).toBeVisible()
 
@@ -51,14 +51,14 @@ test.describe('när ingen omröstning är öppen', () => {
      * fanns något att välja. Uppmaningen var alltså omöjlig att följa i exakt
      * det läge där den gavs.
      */
-    await page.goto('/legitimera')
+    await page.goto('/identify')
 
     await expect(page.getByRole('button', { name: 'BankID på denna enhet' })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'BankID på annan enhet' })).toHaveCount(0)
   })
 
   test('den omöjliga uppmaningen finns inte kvar någonstans på sidan', async ({ page }) => {
-    await page.goto('/legitimera')
+    await page.goto('/identify')
 
     await expect(page.getByText(/Välj vilken omröstning du vill rösta i/)).toHaveCount(0)
   })
@@ -66,7 +66,7 @@ test.describe('när ingen omröstning är öppen', () => {
   test('hänvisar till seedningen, eftersom det nästan alltid är orsaken', async ({ page }) => {
     // I en demomiljö beror tomt läge på att demodatan saknas eller gått ut.
     // Att säga det sparar den felsökningsrunda som började i gränssnittet.
-    await page.goto('/legitimera')
+    await page.goto('/identify')
 
     await expect(page.getByText('npm run seed')).toBeVisible()
   })
@@ -92,7 +92,7 @@ test.describe('medan listan hämtas', () => {
       await route.continue()
     })
 
-    await page.goto('/legitimera')
+    await page.goto('/identify')
 
     // Medan hämtningen pågår: varken tomt-läge eller rullgardin, utan besked
     // om att det hämtas.
@@ -109,7 +109,7 @@ test.describe('när en omröstning är öppen', () => {
   test('då finns både rullgardinen och knapparna', async ({ page }) => {
     // Kontrasten mot ovan. Utan det här testet kunde ett villkor som alltid
     // är falskt passera de fyra föregående.
-    await page.goto('/legitimera')
+    await page.goto('/identify')
 
     await expect(page.getByLabel('Omröstning')).toBeVisible()
     await expect(page.getByRole('button', { name: 'BankID på denna enhet' })).toBeVisible()
@@ -132,7 +132,7 @@ test.describe('BankID på denna enhet', () => {
      * gest. Testet vaktar att den knappen finns kvar: återinförs den
      * automatiska navigeringen och knappen tas bort går det här rött.
      */
-    await page.goto('/legitimera')
+    await page.goto('/identify')
     await page.getByRole('button', { name: 'BankID på denna enhet' }).click()
 
     await expect(page.getByRole('button', { name: 'Öppna BankID' })).toBeVisible()
@@ -141,7 +141,7 @@ test.describe('BankID på denna enhet', () => {
   test('säger i demoläget att appen kommer att avvisa token', async ({ page }) => {
     // Utan det beskedet ser en misslyckad öppning ut som en bugg i appen, och
     // inte som den förväntade följden av att ingen order finns hos BankID.
-    await page.goto('/legitimera')
+    await page.goto('/identify')
     await page.getByRole('button', { name: 'BankID på denna enhet' }).click()
 
     await expect(page.getByText(/ingen order registrerad hos BankID/)).toBeVisible()

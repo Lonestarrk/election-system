@@ -62,7 +62,14 @@ function RostaContent() {
    * styr ingenting: sessionen avgör vilken omröstning väljaren legitimerat sig
    * för, och ett annat värde i adressfältet ska inte kunna flytta rösten.
    */
-  const [electionId, setElectionId] = useState(params.get('val') ?? '')
+  const [electionId, setElectionId] = useState(
+    // `val` läses kvar som reserv: /rosta?val=... omdirigeras hit med
+    // frågesträngen oförändrad (se next.config.ts), så en gammal länk eller
+    // en webbläsare som redan cachat den gamla vägen ska fortfarande landa
+    // rätt. Reserven kan tas bort samma dag som de svenska omdirigeringarna
+    // tas bort.
+    params.get('election') ?? params.get('val') ?? '',
+  )
   const [electionName, setElectionName] = useState('')
   const [ballots, setBallots] = useState<Ballot[]>([])
   const [activeBallot, setActiveBallot] = useState<Ballot | null>(null)

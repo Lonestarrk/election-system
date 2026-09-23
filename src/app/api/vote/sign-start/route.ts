@@ -107,7 +107,7 @@ export async function POST(request: Request) {
 
   const origin = request.headers.get('origin')
   const baseOrigin = origin && env.appOrigins.includes(origin) ? origin : env.appOrigins[0]!
-  const returnUrl = `${baseOrigin}/rosta`
+  const returnUrl = `${baseOrigin}/vote`
 
   const initialQr = await bankIdService.qrData(order.orderRef)
 

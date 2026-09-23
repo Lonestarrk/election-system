@@ -44,11 +44,32 @@ const nextConfig: NextConfig = {
   // (C:\Users\<namn>\Cookies → EPERM). Next hoppar alltid över node_modules.
   serverExternalPackages: ['@prisma/client'],
 
-  // Gränssnittet är på svenska, så verifieringssidan ligger på /verifiera.
-  // /verify finns kvar som permanent omdirigering: det är sökvägen
-  // specifikationen anger, och en länk dit ska inte gå i stöpet.
+  /**
+   * De gamla svenska sökvägarna, som TILLFÄLLIGA omdirigeringar.
+   *
+   * Sökvägarna i appen är engelska; bara gränssnittet är på svenska. De fyra
+   * rutterna nedan låter en gammal svensk länk eller bokmärke fortsätta
+   * fungera medan de hittar fram till sin nya, engelska sökväg.
+   *
+   * VARFÖR permanent: false OCH INTE true
+   *
+   * En permanent omdirigering (308) cachas av webbläsaren på enheten, inte
+   * bara av en server eller proxy däremellan. Här stod tidigare precis en
+   * sådan, åt andra hållet: /verify → /verifiera, permanent. Vändes den bara
+   * om läser webbläsaren sitt eget cachade minne först: en enhet som en gång
+   * besökt /verify minns att den ska till /verifiera, och möter sedan den nya
+   * omdirigeringen tillbaka — en loop som sitter i webbläsaren och överlever
+   * att servern rättas. Ett proof of concept har inget sökmotorbehov som
+   * motiverar permanent, och permanent gör varje framtida namnbyte till
+   * samma sorts loop.
+   */
   async redirects() {
-    return [{ source: '/verify', destination: '/verifiera', permanent: true }]
+    return [
+      { source: '/legitimera', destination: '/identify', permanent: false },
+      { source: '/rosta', destination: '/vote', permanent: false },
+      { source: '/verifiera', destination: '/verify', permanent: false },
+      { source: '/demo', destination: '/architecture', permanent: false },
+    ]
   },
 
   // Säkerhetsheaders sätts även i middleware (som täcker API-rutter och

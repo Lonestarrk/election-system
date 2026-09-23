@@ -116,7 +116,7 @@ describe('den animerade QR-koden', () => {
 })
 
 describe('start-URL för samma enhet', () => {
-  const RETUR = 'http://localhost:3000/legitimera'
+  const RETUR = 'http://localhost:3000/identify'
 
   it('använder app-schemat för andra plattformar än iOS', () => {
     const url = launchUrl('token-abc', 'other', RETUR)
@@ -135,7 +135,7 @@ describe('start-URL för samma enhet', () => {
 
     expect(url).toBe(
       'https://app.bankid.com/?autostarttoken=token-abc' +
-        '&redirect=http%3A%2F%2Flocalhost%3A3000%2Flegitimera',
+        '&redirect=http%3A%2F%2Flocalhost%3A3000%2Fidentify',
     )
     expect(url).not.toContain('redirect=null')
   })

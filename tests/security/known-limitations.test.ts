@@ -134,7 +134,7 @@ describe('ingen dokumentation upprepar listan', () => {
 })
 
 describe('arkitektursidan läser listan i stället för att upprepa den', () => {
-  const page = readFileSync(join(process.cwd(), 'src/app/demo/page.tsx'), 'utf8')
+  const page = readFileSync(join(process.cwd(), 'src/app/architecture/page.tsx'), 'utf8')
 
   it('importerar begränsningarna', () => {
     expect(page).toMatch(/from '@\/lib\/known-limitations'/)

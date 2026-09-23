@@ -53,7 +53,7 @@ const BALLOT = /Kommunfullmäktige|Regionfullmäktige|Riksdagen/
  * plockar den första blir beroende av vad som kördes innan.
  */
 async function identify(page: Page, demoIdentity: string) {
-  await page.goto('/legitimera')
+  await page.goto('/identify')
 
   const electionSelect = page.getByLabel('Omröstning')
   await expect(electionSelect).toBeVisible()
@@ -88,7 +88,7 @@ test.describe('röstning från början till slut', () => {
   test('en röstberättigad väljare kan rösta och får en kvittokod', async ({ page }) => {
     await identify(page, VOTERS.canVote)
 
-    await expect(page).toHaveURL(/\/rosta/)
+    await expect(page).toHaveURL(/\/vote/)
     await expect(page.getByRole('heading', { name: 'Valsedlar' })).toBeVisible()
 
     await voteOnFirstBallot(page)
@@ -102,14 +102,14 @@ test.describe('röstning från början till slut', () => {
 
   test('kvittokoden går att verifiera', async ({ page }) => {
     await identify(page, VOTERS.verifiesReceipt)
-    await expect(page).toHaveURL(/\/rosta/)
+    await expect(page).toHaveURL(/\/vote/)
 
     await voteOnFirstBallot(page)
     await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible()
 
     const token = (await page.locator('.mono').first().innerText()).trim()
 
-    await page.goto('/verifiera')
+    await page.goto('/verify')
     await page.getByRole('textbox').fill(token)
     await page.getByRole('button').first().click()
 
@@ -124,7 +124,7 @@ test.describe('röstning från början till slut', () => {
     await expect(
       page.getByText(/inte röstberättigad|kan inte rösta|finns inte/i).first(),
     ).toBeVisible()
-    await expect(page).not.toHaveURL(/\/rosta/)
+    await expect(page).not.toHaveURL(/\/vote/)
   })
 
   test('den animerade QR-koden byts ut medan man väntar', async ({ page }) => {
@@ -134,7 +134,7 @@ test.describe('röstning från början till slut', () => {
      * då har angriparen legitimerat sig som offret. Att koden hinner dö innan
      * dess gör angreppet opraktiskt.
      */
-    await page.goto('/legitimera')
+    await page.goto('/identify')
     await expect(page.getByLabel('Omröstning')).toBeVisible()
     await page.getByLabel('Omröstning').selectOption({ label: ELECTION })
     await page.getByRole('button', { name: 'BankID på annan enhet' }).click()
@@ -152,14 +152,14 @@ test.describe('röstning från början till slut', () => {
     // Kommunvalsedeln gäller bara den som är folkbokförd i kommunen.
     await identify(page, OTHER_MUNICIPALITY)
 
-    await expect(page).toHaveURL(/\/rosta/)
+    await expect(page).toHaveURL(/\/vote/)
     await expect(page.getByRole('button', { name: /Kommunfullmäktige/ })).toHaveCount(0)
     await expect(page.getByRole('button', { name: /Riksdagen/ })).toBeVisible()
   })
 
   test('samma väljare kan inte rösta två gånger på samma valsedel', async ({ page }) => {
     await identify(page, VOTERS.doubleVote)
-    await expect(page).toHaveURL(/\/rosta/)
+    await expect(page).toHaveURL(/\/vote/)
 
     const label = (await page.getByRole('button', { name: BALLOT }).first().innerText()).trim()
 
@@ -182,7 +182,7 @@ test.describe('vad sidorna inte läcker', () => {
      * därmed inte kan veta vem som röstar.
      */
     await identify(page, VOTERS.noSession)
-    await expect(page).toHaveURL(/\/rosta/)
+    await expect(page).toHaveURL(/\/vote/)
 
     let cookiesOnCast: string | undefined
 
@@ -203,7 +203,7 @@ test.describe('vad sidorna inte läcker', () => {
 
   test('ingen kvittokod hamnar i webbläsarens lagring', async ({ page }) => {
     await identify(page, VOTERS.noStorage)
-    await expect(page).toHaveURL(/\/rosta/)
+    await expect(page).toHaveURL(/\/vote/)
 
     await voteOnFirstBallot(page)
     await expect(page.getByRole('heading', { name: 'Dina kvittokoder' })).toBeVisible()

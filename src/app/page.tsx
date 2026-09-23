@@ -37,7 +37,7 @@ export default function StartPage() {
                 <strong>Spara din token</strong>
                 <div className="muted small">
                   Den visas en enda gång. Med den kan du kontrollera din röst på sidan{' '}
-                  <Link href="/verifiera">Verifiera röst</Link>.
+                  <Link href="/verify">Verifiera röst</Link>.
                 </div>
               </div>
             </li>
@@ -53,12 +53,12 @@ export default function StartPage() {
             administratörer eller för den som skulle komma över databasen.
           </p>
           <p className="muted small">
-            Du kan se exakt hur det fungerar på sidan <Link href="/demo">Arkitektur</Link>.
+            Du kan se exakt hur det fungerar på sidan <Link href="/architecture">Arkitektur</Link>.
           </p>
         </div>
 
         <div>
-          <Link href="/legitimera">
+          <Link href="/identify">
             <button type="button">Börja rösta</button>
           </Link>
         </div>
