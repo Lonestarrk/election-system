@@ -26,3 +26,4 @@ digitalt_valsystem_prompt.txt
 # Playwrights körresultat och spår.
 test-results/
 playwright-report/
+*.stackdump
