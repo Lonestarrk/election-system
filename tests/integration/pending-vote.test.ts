@@ -161,7 +161,9 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     return {
       signature: result.completionData.signature,
       certificate: result.completionData.certificate,
-      castSequence,
+      // Ordagrant det som skrevs under — inte castSequence vid sidan av. Se
+      // SignedEnvelope.signedData för varför (fixrunda 1, fynd 1).
+      signedData: result.completionData.signedData,
     }
   }
 
@@ -174,7 +176,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
   async function castRaw(
     voterStatusId: string,
     ballot: EncryptedBallot,
-    envelope: SignedEnvelope = { signature: '', certificate: '', castSequence: 1 },
+    envelope: SignedEnvelope = { signature: '', certificate: '', signedData: '' },
   ): Promise<CastOutcome> {
     const shape = await getEncryptedBallotShape(ballotId)
     return castEncryptedBallot(voterStatusId, electionId, ballotId, ballot, envelope, shape)
@@ -270,16 +272,51 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
   })
 
-  it('ett återuppspelat äldre kuvert avvisas', async () => {
-    // REVIEW FOCUS 8. Utan detta överlever ett röstköp hela ändringsmöjligheten.
-    const first = await buildBallot('bp-s')
-    await cast(voter, first, await signAs(voter, first, 1))
-    const second = await buildBallot('bp-m')
-    await cast(voter, second, await signAs(voter, second, 2))
+  it('en signatur för ett annat chiffer kan inte återanvändas mot ett nytt', async () => {
+    /**
+     * Fixrunda 1 av granskningen, fynd 1, krav 3.
+     *
+     * En genuint giltig, äkta signatur — riktigt undertecknad av väljaren
+     * själv — för valet "bp-s" försöks lämnas in mot chiffret för "bp-m". Den
+     * ska avvisas trots att den håller kryptografiskt mot SIG SJÄLV: det
+     * signerade innehållet pekar på fel chiffer.
+     */
+    const forS = await buildBallot('bp-s')
+    const forM = await buildBallot('bp-m')
+    const envelopeForS = await signAs(voter, forS, 1)
 
-    expect((await castRaw(voter, first, await signAs(voter, first, 1))).status).toBe(
-      'stale_sequence',
-    )
+    expect((await castRaw(voter, forM, envelopeForS)).status).toBe('invalid_signature')
+  })
+
+  it('ett återuppspelat äldre kuvert avvisas — den riktiga vägen', async () => {
+    /**
+     * REVIEW FOCUS 8, prövad så som den faktiskt uppstår (fixrunda 1 av
+     * granskningen, fynd 1).
+     *
+     * Väljaren startar en signering i en flik ("bp-s") utan att slutföra
+     * den, röstar klart i en annan flik under tiden ("bp-m"), och går sedan
+     * tillbaka och slutför den första, nu inaktuella, signeringen. Den ska
+     * avvisas — inte med ett missvisande `invalid_signature` (det gamla
+     * felet: en färskt omräknad räknare jämfördes i stället för den som
+     * faktiskt signerades), utan med `stale_sequence`, eftersom räknaren
+     * som prövas nu alltid är den som verkligen skrevs under.
+     *
+     * `castRaw` — inte `cast` — används för den första signeringen, för att
+     * kontrollera exakt det kuvert som en gång signerades, precis som
+     * `/api/vote/encrypted` skulle göra när väljaren till slut slutför den
+     * hängande fliken.
+     */
+    const started = await buildBallot('bp-s')
+    // Signeringen PÅBÖRJAS (nextCastSequence anropas här, precis som
+    // /api/vote/sign-start gör) men slutförs inte än — se signAs ovan.
+    const staleEnvelope = await signAs(voter, started, await nextCastSequence(voter, ballotId))
+
+    // Väljaren röstar klart i en annan flik under tiden.
+    const competing = await cast(voter, 'bp-m')
+    expect(competing.status).toBe('recorded')
+
+    // Väljaren går tillbaka och slutför den första, nu inaktuella, signeringen.
+    expect((await castRaw(voter, started, staleEnvelope)).status).toBe('stale_sequence')
   })
 
   it('ändring ger en ny verifikationskod', async () => {
@@ -330,9 +367,12 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       'utf8',
     )
 
-    expect(routeSource).not.toMatch(/body\.data\.(signature|certificate|castSequence)/)
+    expect(routeSource).not.toMatch(/body\.data\.(signature|certificate|castSequence|signedData)/)
     expect(routeSource).toMatch(/collected\.completionData\.signature/)
     expect(routeSource).toMatch(/collected\.completionData\.certificate/)
+    expect(routeSource).toMatch(/collected\.completionData\.signedData/)
+    // castSequence får inte räknas om av rutten längre — se fixrunda 1, fynd 1.
+    expect(routeSource).not.toMatch(/nextCastSequence/)
   })
 
   it('pendingVoteFor visar ingenting för en väljare utan liggande röst', async () => {

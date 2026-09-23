@@ -241,7 +241,15 @@ export class MockBankIdService implements IBankIdService {
 
     return {
       status: 'complete',
-      completionData: { personalNumber, ...demoName(personalNumber), signature, certificate },
+      completionData: {
+        personalNumber,
+        ...demoName(personalNumber),
+        signature,
+        certificate,
+        // Ordagrant vad som signerades — se dokumentationen på fältet i
+        // IBankIdService.ts för varför anroparen inte får bygga om det.
+        signedData: userNonVisibleData ?? '',
+      },
     }
   }
 

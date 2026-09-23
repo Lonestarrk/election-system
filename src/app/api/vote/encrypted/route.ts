@@ -8,11 +8,7 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { ballotBelongsToElection } from '@/modules/eligibility/election.service'
-import {
-  castEncryptedBallot,
-  nextCastSequence,
-  type CastOutcome,
-} from '@/modules/eligibility/pending-vote.service'
+import { castEncryptedBallot, type CastOutcome } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
 
 export const runtime = 'nodejs'
@@ -28,20 +24,20 @@ export const dynamic = 'force-dynamic'
  *
  * Tog rutten emot dem från klienten kunde vem som helst skapa ett eget
  * nyckelpar, formatera ett certifikat med valfritt personnummer, signera vad
- * som helst med det och skicka in — `verifyEnvelopeSignature` skulle säga ja,
+ * som helst med det och skicka in — signaturkontrollen skulle säga ja,
  * eftersom den bara kontrollerar att signaturen och certifikatet hör ihop.
  * Hela mekanismen vore dekoration. `castEncryptedBallotSchema` har därför
  * inget fält för dem, och Zod stryper okända fält som standard, så de
  * försvinner redan vid valideringen om en klient ändå skickar med dem.
  *
- * Servern hämtar i stället `signature` och `certificate` ur sitt eget
- * `bankIdService.collect(orderRef)` — svaret BankID gav för just den order
- * `/api/vote/sign-start` startade. `castSequence` räknas fram på nytt genom
- * samma `nextCastSequence` som startade ordern (se den funktionens
- * dokumentation för varför en andra uträkning här är säker snarare än ett
- * mellanlagrat tillstånd), och `electionId`/`voterStatusId` kommer från
- * röstsessionen. Ingenting som ingår i den signerade nyttolasten kommer från
- * något klienten påstår.
+ * Servern hämtar i stället `signature`, `certificate` OCH `signedData` ur
+ * sitt eget `bankIdService.collect(orderRef)` — svaret BankID gav för just
+ * den order `/api/vote/sign-start` startade. `castSequence` läses ur
+ * `signedData` av `castEncryptedBallot` självt (se `SignedEnvelope`s
+ * dokumentation för varför den INTE räknas fram på nytt här — det var
+ * precis den bugg fixrunda 1 av granskningen fångade), och
+ * `electionId`/`voterStatusId` kommer från röstsessionen. Ingenting som
+ * ingår i den signerade nyttolasten kommer från något klienten påstår.
  *
  * OMRÖSTNINGENS KRYPTERINGSNYCKEL OCH ANTAL ALTERNATIV HÄMTAS HÄR.
  *
@@ -56,7 +52,11 @@ export async function POST(request: Request) {
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
-  const rate = checkRateLimit('vote-encrypted', getClientIp(request), RATE_LIMITS.castVote)
+  const rate = checkRateLimit(
+    'vote-encrypted',
+    getClientIp(request),
+    RATE_LIMITS.castEncryptedBallot,
+  )
   if (!rate.allowed) {
     await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många försök.', 429, {
@@ -112,10 +112,7 @@ export async function POST(request: Request) {
     })
   }
 
-  const [shape, castSequence] = await Promise.all([
-    getEncryptedBallotShape(body.data.ballotId),
-    nextCastSequence(session.voterStatusId, body.data.ballotId),
-  ])
+  const shape = await getEncryptedBallotShape(body.data.ballotId)
 
   const outcome = await castEncryptedBallot(
     session.voterStatusId,
@@ -126,7 +123,7 @@ export async function POST(request: Request) {
       // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
       signature: collected.completionData.signature,
       certificate: collected.completionData.certificate,
-      castSequence,
+      signedData: collected.completionData.signedData,
     },
     shape,
   )

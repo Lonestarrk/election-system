@@ -2,9 +2,10 @@ import { truncateToDay } from '@/lib/time'
 import { verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
 import {
+  parseEnvelopePayload,
   personalNumberFromCertificate,
   publicKeyFromCertificate,
-  verifyEnvelopeSignature,
+  verifySignedPayload,
 } from './bankid/envelope-signature'
 import { votersDb } from './db'
 
@@ -23,7 +24,31 @@ import { votersDb } from './db'
 export type SignedEnvelope = {
   signature: string
   certificate: string
-  castSequence: number
+
+  /**
+   * Det faktiskt signerade innehållet, ordagrant — BankID:s eget
+   * `completionData.signedData`.
+   *
+   * INTE ETT SEPARAT `castSequence`-FÄLT, OCH DET ÄR AVSIKTLIGT (fixrunda 1
+   * av uppgift 9:s granskning, fynd 1).
+   *
+   * Ett tidigare utkast lät anroparen skicka med `castSequence` vid sidan av
+   * signaturen, och `castEncryptedBallot` räknade fram sin egen färska
+   * `nextCastSequence()` för att verifiera mot i stället för att lita på det
+   * medskickade talet. Två uträkningar av samma sak, gjorda vid olika
+   * tillfällen, kan ge olika svar — det vanliga fallet är en väljare som har
+   * en signering stående i en flik medan hon röstar klart i en annan.
+   * Följden var ett missvisande `invalid_signature` i stället för
+   * `stale_sequence`, och `stale_sequence`-grenen var i praktiken otestad i
+   * sin verkliga form.
+   *
+   * `castSequence` läses i stället ut ur `signedData` (via
+   * `parseEnvelopePayload`), EFTER att signaturen verifierats mot exakt den
+   * strängen. Talet som prövas mot dubbelröstningsspärren är därmed
+   * garanterat samma tal som väljarens BankID-app en gång skrev under —
+   * aldrig ett nytt, oberoende räknat.
+   */
+  signedData: string
 }
 
 export type CastOutcome =
@@ -86,6 +111,29 @@ export async function castEncryptedBallot(
     return { status: 'invalid_proof' }
   }
 
+  /**
+   * DET SIGNERADE INNEHÅLLET AVKODAS FÖRST — RÄKNAREN KOMMER DÄRIFRÅN, INTE
+   * FRÅN EN NY UTRÄKNING (fixrunda 1 av uppgift 9:s granskning, fynd 1).
+   *
+   * `envelope.signedData` är BankID:s eget `completionData.signedData` —
+   * ordagrant det väljarens app skrev under. `parseEnvelopePayload` läser ut
+   * `electionId`, `ballotId`, `ciphertextHash` och `castSequence` ur den
+   * strängen. Alla fyra måste stämma mot den här begäran; annars är kuvertet
+   * antingen trasigt eller en signatur som egentligen gäller en ANNAN röst
+   * — och en sådan signatur ska aldrig kunna återanvändas här bara för att
+   * den råkar verifiera kryptografiskt mot sitt eget, avvikande innehåll.
+   */
+  const signedPayload = parseEnvelopePayload(envelope.signedData)
+
+  if (
+    !signedPayload ||
+    signedPayload.electionId !== electionId ||
+    signedPayload.ballotId !== ballotId ||
+    signedPayload.ciphertextHash !== ballot.ciphertextHash
+  ) {
+    return { status: 'invalid_signature' }
+  }
+
   const existing = await votersDb.pendingVote.findUnique({
     where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
     select: { id: true, castSequence: true },
@@ -96,11 +144,47 @@ export async function castEncryptedBallot(
    *
    * Den som fångat väljarens första signerade kuvert kan annars skicka in det
    * igen efter att hon ändrat sig, och rösten återgår till den köpta — ett
-   * röstköp som överlever hela ändringsmöjligheten.
+   * röstköp som överlever hela ändringsmöjligheten. Talet som jämförs är nu
+   * garanterat det som faktiskt signerades (se `signedPayload` ovan), inte en
+   * uträkning gjord vid det här anropet — annars kan den avgörande jämförelsen
+   * göras mot fel tal utan att någon signatur någonsin behöver förfalskas,
+   * exakt det granskningen fångade.
    */
-  if (existing && envelope.castSequence <= existing.castSequence) {
+  if (existing && signedPayload.castSequence <= existing.castSequence) {
     return { status: 'stale_sequence' }
   }
+
+  /**
+   * SIGNATUREN VERIFIERAS MOT DET FAKTISKT SIGNERADE INNEHÅLLET.
+   *
+   * Inte mot en nyttolast som byggs om här — se `SignedEnvelope.signedData`
+   * och `verifySignedPayload` för hela resonemanget.
+   */
+  if (!verifySignedPayload(envelope.signature, envelope.certificate, envelope.signedData)) {
+    return { status: 'invalid_signature' }
+  }
+
+  /**
+   * TVÅ SKILDA KONTROLLER, OCH DE FÅR INTE SLÅS IHOP (fixrunda 1 av uppgift
+   * 9:s granskning, fynd 2).
+   *
+   * 1. Ovan: är signaturen giltig för exakt det signerade innehållet? Rent
+   *    kryptografiskt, ingen identitet inblandad — `verifySignedPayload` tar
+   *    inte ens emot ett förväntat personnummer.
+   * 2. Nedan: tillhör certifikatet SAMMA person som väljarraden? Det avgörs
+   *    genom att HASHA personnumret certifikatet påstår och jämföra mot
+   *    röstlängdens identitetshash — aldrig genom att jämföra certifikatet
+   *    mot sig självt (`certificateBelongsTo(certificate,
+   *    personalNumberFromCertificate(certificate))` vore alltid sant, ett
+   *    no-op maskerat som en kontroll — se `certificateBelongsTo`s JSDoc).
+   *
+   * Granskningen av uppgift 8 fångade dessutom att ett tidigare utkast
+   * skickade `voter.externalIdentityHash` direkt som förväntat personnummer
+   * till signaturverifieringen, som jämför mot KLARTEXTSIFFROR — en hash
+   * hade aldrig matchat, och varje giltig röst hade avvisats.
+   */
+  const assertedPersonalNumber = personalNumberFromCertificate(envelope.certificate)
+  if (assertedPersonalNumber === null) return { status: 'invalid_signature' }
 
   const voter = await votersDb.voterStatus.findUnique({
     where: { id: voterStatusId },
@@ -110,55 +194,18 @@ export async function castEncryptedBallot(
   if (!voter) return { status: 'not_eligible' }
 
   /**
-   * TVÅ SKILDA KONTROLLER, OCH DE FÅR INTE SLÅS IHOP.
+   * HASHNINGEN KOMMER SIST, EFTER ATT SIGNATUREN REDAN ÄR BEKRÄFTAT GILTIG.
    *
-   * 1. Är signaturen giltig för den nyttolast servern byggde? Rent
-   *    kryptografiskt, ingen identitet inblandad.
-   * 2. Tillhör certifikatet SAMMA person som sessionen? Det avgörs genom att
-   *    HASHA personnumret certifikatet påstår och jämföra mot röstlängdens
-   *    identitetshash.
-   *
-   * Granskningen av uppgift 8 fångade att ett tidigare utkast skickade
-   * `voter.externalIdentityHash` direkt som `expectedPersonalNumber` till
-   * `verifyEnvelopeSignature`. Den funktionen jämför mot certifikatets
-   * KLARTEXTSIFFROR, så en hash hade aldrig matchat — och varje giltig röst
-   * hade avvisats med `invalid_signature`. Ett totalt, tyst haveri i precis
-   * den funktion uppgiften bygger.
-   *
-   * `verifyEnvelopeSignature` tar (av uppgift 8:s granskning) alltid emot ett
-   * `expectedPersonalNumber` att jämföra certifikatets påstående mot — annars
-   * skulle en förfalskad väljare kunna signera med sitt EGET certifikat och
-   * komma förbi den kontrollen helt. Här jämförs certifikatet mot SIG SJÄLVT
-   * (`assertedPersonalNumber`), vilket gör anropet till en ren kryptografisk
-   * kontroll: håller signaturen ihop med det certifikat den påstår komma
-   * från? IDENTITETEN — att just DET certifikatet får föras till väljarens
-   * rad — avgörs helt separat, av hashjämförelsen nedan. De två kontrollerna
-   * slås alltså aldrig ihop till en, trots att de delar samma anrop.
-   *
-   * Hashningen är dessutom asynkron (scrypt genom antagningskön), vilket är
-   * skälet att den hör hemma här och inte i signaturmodulen.
+   * scrypt (via `hashPersonalNumber`) är avsiktligt kostsamt — se
+   * `identity.ts`. Att köra den för varje inkommen begäran, även de vars
+   * signatur redan underkänts ovan, vore att betala den kostnaden i onödan
+   * och ett billigt sätt att belasta antagningskön utan en enda giltig
+   * signatur.
    */
-  const assertedPersonalNumber = personalNumberFromCertificate(envelope.certificate)
-
-  const signatureIsValid =
-    assertedPersonalNumber !== null &&
-    verifyEnvelopeSignature(
-      envelope.signature,
-      envelope.certificate,
-      {
-        electionId,
-        ballotId,
-        ciphertextHash: ballot.ciphertextHash,
-        castSequence: envelope.castSequence,
-      },
-      assertedPersonalNumber,
-    )
-
   const signerIsTheVoter =
-    assertedPersonalNumber !== null &&
     (await hashPersonalNumber(assertedPersonalNumber)) === voter.externalIdentityHash
 
-  if (!signatureIsValid || !signerIsTheVoter) {
+  if (!signerIsTheVoter) {
     return { status: 'invalid_signature' }
   }
 
@@ -168,7 +215,7 @@ export async function castEncryptedBallot(
       ciphertext: ballot.ciphertext,
       proofs: ballot.proofs,
       ciphertextHash: ballot.ciphertextHash,
-      castSequence: envelope.castSequence,
+      castSequence: signedPayload.castSequence,
       bankIdSignature: envelope.signature,
       /**
        * DEN PUBLIKA NYCKELN, INTE CERTIFIKATET.
@@ -193,7 +240,7 @@ export async function castEncryptedBallot(
       ciphertext: ballot.ciphertext,
       proofs: ballot.proofs,
       ciphertextHash: ballot.ciphertextHash,
-      castSequence: envelope.castSequence,
+      castSequence: signedPayload.castSequence,
       bankIdSignature: envelope.signature,
       bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
       updatedAt: truncateToDay(new Date()),
@@ -204,22 +251,25 @@ export async function castEncryptedBallot(
 }
 
 /**
- * Nästa giltiga räknarvärde för väljarens kuvert på den här valsedeln.
+ * Nästa räknarvärde för väljarens kuvert på den här valsedeln — det tal som
+ * ska LÄGGAS IN i nyttolasten `/api/vote/sign-start` ber BankID signera.
  *
- * Delas mellan de två rutterna i det tvådelade signeringsflödet
- * (`/api/vote/sign-start` och `/api/vote/encrypted`): den nyttolast BankID
- * signerar måste bära exakt samma värde som `castEncryptedBallot` bygger sin
- * förväntade nyttolast med, annars verifierar aldrig en ärlig signatur. Båda
- * anropen räknar därför fram samma tal genom samma funktion, i stället för
- * att den ena sidan behöver komma ihåg och skicka det till den andra — det
- * finns inget mellanlagrat tillstånd att en angripare skulle kunna påverka.
+ * ANVÄNDS BARA VID SIGNERINGENS START, INTE VID VERIFIERING.
  *
- * Ändras ingenting i röstlängden mellan de två anropen (det normala fallet)
- * ger de exakt samma tal. Skulle ett tredje anrop hinna emellan — en
- * verkligt samtidig ändring — upptäcks det inte här, men det är ofarligt:
- * `castEncryptedBallot` bygger sin egen förväntade nyttolast av samma
- * räknare vid det tillfället, och en signatur över ett annat tal verifierar
- * då inte. Felet blir `invalid_signature`, aldrig en accepterad förfalskning.
+ * Fram till fixrunda 1 av uppgift 9:s granskning anropades den här funktionen
+ * på nytt av `/api/vote/encrypted` också, för att jämföra mot i stället för
+ * att lita på det tal som faktiskt signerats. Två uträkningar av samma sak
+ * vid olika tillfällen kan ge olika svar — se `SignedEnvelope.signedData` för
+ * hela felet det orsakade. `castEncryptedBallot` läser numera räknaren ur
+ * `envelope.signedData` (via `parseEnvelopePayload`) i stället, och anropar
+ * aldrig den här funktionen.
+ *
+ * Kvar att komma ihåg: startas TVÅ signeringar för samma väljare och valsedel
+ * innan någon av dem hunnit slutföras (två flikar, ingen ännu klar) kan båda
+ * få samma tal härifrån, eftersom ingen rad finns att räkna från förrän en av
+ * dem faktiskt skrivs. Det är ofarligt — `castEncryptedBallot`s
+ * `stale_sequence`-kontroll (`<=`, inte `<`) fångar ändå den som kommer in
+ * sist, se dess kommentar.
  */
 export async function nextCastSequence(voterStatusId: string, ballotId: string): Promise<number> {
   const existing = await votersDb.pendingVote.findUnique({

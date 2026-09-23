@@ -46,6 +46,68 @@ export function envelopePayload(payload: EnvelopePayload): string {
 }
 
 /**
+ * Den omvända operationen till `envelopePayload` — läser tillbaka fälten ur
+ * en signerad sträng.
+ *
+ * VARFÖR DEN HÄR FUNKTIONEN BEHÖVS (fixrunda 1 av uppgift 9:s granskning).
+ *
+ * `castSequence` fick tidigare räknas fram på nytt vid varje verifiering, i
+ * stället för att läsas ur det som faktiskt signerades — och en färsk
+ * uträkning kan skilja sig från den väljarens BankID-app en gång skrev
+ * under (det vanliga fallet: väljaren har en signering stående i en flik
+ * medan hon röstar klart i en annan). Talet som ska prövas mot
+ * dubbelröstningsspärren är det signerade, och det finns redan i
+ * `signedData` — det ska läsas ut, aldrig gissas eller räknas om.
+ *
+ * LÄNGDPREFIXEN GÖR AVKODNINGEN ENTYDIG.
+ *
+ * Varje fälts längd står skriven direkt före fältet, så det finns aldrig
+ * något att gissa om var ett fält slutar och nästa börjar — till skillnad
+ * från ett format med bara avgränsare, där ett fält som råkar innehålla
+ * avgränsaren skulle klippa fel.
+ *
+ * Returnerar null för allt som inte är välformat: fel antal fält, en
+ * längdangivelse som inte är siffror, en längd som inte stämmer med vad som
+ * faktiskt finns kvar av strängen, eller data som blir över efter sista
+ * fältet. Anroparen ska då avvisa kuvertet — aldrig anta något om
+ * innehållet i en trasig nyttolast.
+ */
+export function parseEnvelopePayload(payload: string): EnvelopePayload | null {
+  const fields: string[] = []
+  let rest = payload
+
+  for (let i = 0; i < 5; i += 1) {
+    const separator = rest.indexOf(':')
+    if (separator === -1) return null
+
+    const lengthText = rest.slice(0, separator)
+    if (!/^\d+$/.test(lengthText)) return null
+
+    const length = Number(lengthText)
+    const content = rest.slice(separator + 1, separator + 1 + length)
+    if (content.length !== length) return null
+
+    fields.push(content)
+    rest = rest.slice(separator + 1 + length)
+  }
+
+  if (rest.length !== 0) return null
+
+  const [magic, electionId, ballotId, ciphertextHash, castSequenceText] = fields as [
+    string,
+    string,
+    string,
+    string,
+    string,
+  ]
+
+  if (magic !== 'valsystem/kuvert/v1') return null
+  if (!/^\d+$/.test(castSequenceText)) return null
+
+  return { electionId, ballotId, ciphertextHash, castSequence: Number(castSequenceText) }
+}
+
+/**
  * Kontrollerar att certifikatet påstås tillhöra rätt person.
  *
  * Ett riktigt BankID-certifikat är utfärdat av BankIDs CA och bär
@@ -66,7 +128,7 @@ export function envelopePayload(payload: EnvelopePayload): string {
  *     sorts påstående.
  *
  * (b) VALIDERA CERTIFIKATETS KEDJA MOT BANKIDS CA. Det är inte valfritt.
- *     `verifyEnvelopeSignature` nedan gör bara `crypto.verify(certificate,
+ *     `verifySignedPayload` nedan gör bara `crypto.verify(certificate,
  *     …)` — och Node/OpenSSLs PEM-parser kontrollerar ingen utfärdarkedja,
  *     den extraherar bara nyckelmaterial ur vilken PEM-text som helst mellan
  *     `-----BEGIN` och `-----END`. Utan kedjevalidering kan vem som helst
@@ -88,7 +150,7 @@ const MOCK_CERTIFICATE_PREFIX = /^personnummer:(\d+)\n/
 /**
  * Personnumret som certifikatet påstår, i siffror.
  *
- * Skilt från verifyEnvelopeSignature med flit. Anroparen ska hasha värdet och
+ * Skilt från signaturkontrollen med flit. Anroparen ska hasha värdet och
  * jämföra mot röstlängdens identitetshash — hashningen är asynkron och hör
  * hemma i behörighetsmodulen, inte här.
  *
@@ -121,27 +183,62 @@ export function publicKeyFromCertificate(certificate: string): string {
   return certificate.replace(MOCK_CERTIFICATE_PREFIX, '')
 }
 
-function certificateBelongsTo(certificate: string, expectedPersonalNumber: string): boolean {
+/**
+ * Påstår certifikatet att det tillhör exakt det här personnumret?
+ *
+ * RENT ETT PÅSTÅENDE — INGEN KRYPTOGRAFI HÄR. Funktionen kontrollerar bara
+ * vad certifikatet SÄGER, inte om påståendet är styrkt (det görs, i skarpt
+ * BankID, av kedjevalideringen mot BankIDs CA — se
+ * `personalNumberFromCertificate`) och inte om NÅGON SIGNERAT NÅGOT
+ * ÖVERHUVUDTAGET med det (det gör `verifySignedPayload`).
+ *
+ * EXPORTERAD MED FLIT, SEPARAT FRÅN SIGNATURKONTROLLEN (fixrunda 1 av
+ * uppgift 9:s granskning, fynd 2).
+ *
+ * Ett tidigare anropsställe jämförde ett certifikat mot SIG SJÄLVT —
+ * `certificateBelongsTo(certificate, personalNumberFromCertificate(certificate))`
+ * i praktiken — vilket alltid är sant och gjorde identitetskontrollen till
+ * ett no-op maskerat som en riktig kontroll. Genom att den här funktionen
+ * tar emot ett `expectedPersonalNumber` utifrån (typiskt röstlängdens
+ * identitetshash, avhashat till ett jämförbart klartextvärde av anroparen —
+ * se `pending-vote.service.ts`) i stället för att härledas ur samma
+ * certifikat, blir det tautologiska anropet en typfelsfri omöjlighet att
+ * återupprepa av misstag.
+ */
+export function certificateBelongsTo(certificate: string, expectedPersonalNumber: string): boolean {
   return personalNumberFromCertificate(certificate) === expectedPersonalNumber
 }
 
 /**
- * Verifierar att RÄTT PERSON signerat RÄTT INNEHÅLL.
+ * Verifierar ENBART att signaturen kryptografiskt håller ihop med
+ * certifikatet, för exakt det innehåll som påstås signerat.
  *
- * Båda halvorna behövs. En giltig signatur över rätt innehåll från fel person
- * är en röst lagd i någon annans namn. En giltig signatur från rätt person
- * över fel innehåll är en återuppspelad eller flyttad röst.
+ * KONTROLLERAR INTE VEM. Det är en annan fråga och ett separat ansvar — se
+ * `certificateBelongsTo`. En signatur som denna funktion godkänner bevisar
+ * att NÅGON med den privata nyckeln till just det certifikatet godkände
+ * exakt `signedData`; den bevisar ingenting om vem den personen är. Att slå
+ * ihop de två frågorna i en enda funktion var precis vad som gjorde
+ * `verifyEnvelopeSignature` (den tidigare, nu borttagna funktionen) sårbar
+ * för att anropas tautologiskt — se `certificateBelongsTo` för hela
+ * resonemanget.
+ *
+ * `signedData` ska vara det FAKTISKT signerade innehållet, hämtat ordagrant
+ * ur BankID:s eget svar (`completionData.signedData`) — aldrig återskapat
+ * genom att bygga en ny `envelopePayload`. Anroparen läser ut de enskilda
+ * fälten (bland dem `castSequence`) ur `signedData` med
+ * `parseEnvelopePayload`. Ordningen mellan avkodningen och det här anropet
+ * spelar ingen roll för säkerheten — `signedData` kommer aldrig från
+ * begärans kropp, bara från BankID:s eget svar — men
+ * `pending-vote.service.ts` avkodar och stämmer av innehållet FÖRST, som en
+ * billig kontroll innan den dyrare kryptografiska verifieringen görs.
  */
-export function verifyEnvelopeSignature(
+export function verifySignedPayload(
   signature: string,
   certificate: string,
-  expectedPayload: EnvelopePayload,
-  expectedPersonalNumber: string,
+  signedData: string,
 ): boolean {
-  if (!certificateBelongsTo(certificate, expectedPersonalNumber)) return false
-
   const verifier = createVerify('sha256')
-  verifier.update(envelopePayload(expectedPayload))
+  verifier.update(signedData)
   verifier.end()
 
   try {

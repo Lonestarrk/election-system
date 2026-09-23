@@ -61,6 +61,28 @@ export const RATE_LIMITS = {
   /** Röstläggning. */
   castVote: { limit: 5, windowMs: 60_000 },
   /**
+   * Inlämning av den krypterade, signerade valsedeln (fixrunda 1 av
+   * uppgift 9:s granskning, fynd 3).
+   *
+   * /api/vote/encrypted är, till skillnad från /api/vote/cast, en
+   * POLLNINGSRUTT: väljarens BankID-signering är oftast inte klar första
+   * gången rutten anropas — svaret blir `pending`, och klienten frågar igen
+   * om en sekund, precis som /api/auth/bankid/collect (se `authCollect`
+   * ovan, samma resonemang). `castVote`s 5/min är satt för ETT anrop som
+   * lägger rösten direkt; den passar inte en rutt som normalt anropas ett
+   * tiotal gånger per signering. Med `castVote`s gräns skulle en ärlig
+   * väljare bli hastighetsbegränsad mitt i en egen, pågående signering.
+   *
+   * Satt lägre än `authCollect` (60/min) och inte lika högt, eftersom ett
+   * `complete`-svar här — till skillnad från `authCollect`s — också gör ett
+   * riktigt arbete: kryptografisk verifiering och en scrypt-hashning (se
+   * `hashPersonalNumber`). 30/min ger fortfarande gott om utrymme för att
+   * polla var annan sekund under en BankID-orders livstid (BankID rekommenderar
+   * ~30 sekunder), samtidigt som det håller nere hur många kostsamma
+   * verifieringsförsök en enda klient kan trigga per minut.
+   */
+  castEncryptedBallot: { limit: 30, windowMs: 60_000 },
+  /**
    * Verifiering. Stramt satt trots att en 240-bitars token inte går att
    * gissa — gränsen finns för att stoppa uppräkning som lastangrepp.
    */

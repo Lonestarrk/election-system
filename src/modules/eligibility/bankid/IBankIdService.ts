@@ -108,6 +108,38 @@ export type BankIdCollectComplete = {
      * certifikatet självt.
      */
     certificate: string
+
+    /**
+     * Det signerade innehållet, ordagrant — samma sträng som skickades in i
+     * `userNonVisibleData` vid `sign`. Tomt för `auth`-ordrar, som inte
+     * signerar något.
+     *
+     * SANNINGSKÄLLAN FÖR VAD SOM FAKTISKT SIGNERADES.
+     *
+     * Fixrunda 1 av uppgift 9:s granskning fångade att `/api/vote/encrypted`
+     * byggde OM nyttolasten vid varje anrop (en färsk `nextCastSequence()`)
+     * i stället för att verifiera mot det som faktiskt signerades. Effekten:
+     * `castSequence` i den återuppbyggda nyttolasten kunde skilja sig från
+     * den som väljarens BankID-app faktiskt skrev under — det vanliga fallet
+     * är två flikar, där väljaren röstar klart i den ena medan den andra
+     * fortfarande väntar på en signering som påbörjades tidigare. Symptomet
+     * var ett missvisande `invalid_signature` i stället för `stale_sequence`,
+     * och ingen test övade den riktiga vägen eftersom testhjälparna skickade
+     * `castSequence` vid sidan av signaturen i stället för att läsa det ur
+     * den.
+     *
+     * Det signerade innehållet finns redan hos BankID — det behöver aldrig
+     * gissas eller räknas om. Attrappen har det i `order.userNonVisibleData`.
+     *
+     * BYTET TILL SKARPT BANKID: det signerade innehållet ligger inte som ett
+     * eget fält i BankID:s svar, utan inuti XML-signaturen
+     * (`ocspResponse`/`signature`, base64-kodad XML enligt BankID:s
+     * signaturformat). Den som byter implementation måste packa upp XML:en
+     * och läsa ut `userNonVisibleData` därifrån — det får INTE återskapas
+     * genom att anta att det är samma sträng som servern skulle ha byggt,
+     * det är precis den gissningen som orsakade fixrunda 1:s fynd.
+     */
+    signedData: string
   }
 }
 
