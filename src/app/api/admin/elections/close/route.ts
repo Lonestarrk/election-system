@@ -1,11 +1,15 @@
 import { getAdminSession, isAdminAuthenticated } from '@/lib/admin-auth'
 import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
-import { logger } from '@/lib/logger'
+import { describeErrorChain, logger } from '@/lib/logger'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
 import { getMirroredElection } from '@/modules/eligibility/election.service'
-import { abortedMessageFor, closeElection } from '@/orchestration/close-election.usecase'
+import {
+  abortedMessageFor,
+  closeElection,
+  linkStateOf,
+} from '@/orchestration/close-election.usecase'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -110,11 +114,31 @@ export async function POST(request: Request) {
   try {
     outcome = await closeElection(body.data.electionId)
   } catch (error) {
-    logger.error('Stängningen avbröts', {
-      reason: error instanceof Error ? error.message : 'okänt fel',
-    })
+    const linkState = linkStateOf(error)
 
-    return jsonResponse({ status: 'aborted', message: abortedMessageFor(error) }, 409)
+    /**
+     * HELA ORSAKSKEDJAN, INTE BARA DET YTTERSTA LAGRET.
+     *
+     * `closeElection` paketerar om det underliggande felet och lägger det i
+     * `cause`. Loggas bara `error.message` försvinner det verkliga felet —
+     * och det gör det på den väg där administratören redan har minst att gå
+     * på. `describeErrorChain` följer kedjan, och `abortedMessageFor`s löfte
+     * om att orsaken framgår av serverloggen blir därmed sant.
+     */
+    logger.error('Stängningen avbröts', { linkState, reason: describeErrorChain(error) })
+
+    /**
+     * `linkState` följer med i svaret, inte bara i prosan.
+     *
+     * `status: 'aborted'` säger bara att något gick fel. En klient som ska
+     * avgöra om den får köra om utan att först titta i databasen behöver veta
+     * OM kopplingen är orörd — och den uppgiften ska inte behöva läsas ut ur
+     * en svensk mening.
+     */
+    return jsonResponse(
+      { status: 'aborted', linkState, message: abortedMessageFor(error) },
+      409,
+    )
   }
 
   if (outcome.status === 'too_early') {

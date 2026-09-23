@@ -10,7 +10,9 @@ import {
   CloseAbortedError,
   envelopeRootOf,
   idForEnvelope,
+  linkStateOf,
 } from '@/orchestration/close-election.usecase'
+import { describeErrorChain } from '@/lib/logger'
 import { certifyElection, runFinalCheck } from '@/orchestration/final-check.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
@@ -698,6 +700,15 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     expect(await votersDb.pendingVote.count()).toBe(0)
     expect(await votesDb.encryptedVote.count()).toBe(2)
 
+    /**
+     * ORSAKEN FÅR INTE FÖRSVINNA I OMPAKETERINGEN.
+     *
+     * `abortedMessageFor` lovar att det som gick fel framgår av serverloggen.
+     * Löftet håller bara om `cause` följer med — och det är precis vad
+     * ompaketeringen tappade innan `describeErrorChain` fanns.
+     */
+    expect(describeErrorChain(error)).toContain('anslutningen mot röstlängden tappades')
+
     const besked = abortedMessageFor(error)
     expect(besked).not.toContain('ORÖRD')
     expect(besked).not.toContain('innan något raderades')
@@ -707,6 +718,39 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     // Och en omkörning är ofarlig, precis som beskedet lovar.
     electionServiceControl.failCloseStateRead = false
     expect((await closeElection(electionId)).status).toBe('already_closed')
+  })
+
+  it('ett godtyckligt fel före transaktionen säger rakt ut att kopplingen är orörd', async () => {
+    /**
+     * GRÄNSEN, INTE UPPRÄKNINGEN.
+     *
+     * De vanligaste verkliga felen bor före transaktionen — databasen nere
+     * under valideringen, en läsning som inte går igenom. De lämnar kopplingen
+     * bevisbart orörd, och beskedet ska säga det: ett "kan ha gått igenom" där
+     * hade fått en administratör att tveka i onödan just när systemet är som
+     * mest stressat.
+     *
+     * Felet här är inte konstruerat via en mock utan är en äkta kastväg: den
+     * inledande `findUniqueOrThrow` på en omröstning som inte finns. Poängen
+     * är att den INTE är en `CloseAbortedError` från början — påståendet sätts
+     * av var i flödet den uppstod, inte av vem som kastade.
+     */
+    await castFor(anna, 'bp-s')
+
+    const error = await closeElection('00000000-0000-0000-0000-000000000000').then(
+      () => null,
+      (thrown: unknown) => thrown,
+    )
+
+    expect(error).toBeInstanceOf(CloseAbortedError)
+    expect(linkStateOf(error)).toBe('untouched')
+    expect(abortedMessageFor(error)).toContain('ORÖRD')
+
+    // Och orsaken finns kvar i kedjan, inte bara i det yttersta lagret.
+    expect(describeErrorChain(error)).toContain('orsakat av')
+
+    // Kopplingen ligger faktiskt kvar, precis som beskedet påstår.
+    expect(await votersDb.pendingVote.count()).toBe(1)
   })
 
   it('säger däremot rakt ut att kopplingen är orörd när det ÄR kontrollerat', async () => {

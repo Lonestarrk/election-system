@@ -108,8 +108,22 @@ export class CloseAbortedError extends Error {
  * enda platsen där påståendets sanning går att härleda. Rutten väljer bara
  * statuskod.
  */
+/**
+ * Vad som är känt om kopplingen efter ett kast.
+ *
+ * Allt som INTE är en `CloseAbortedError` räknas som `unknown`: påståendet att
+ * ingenting raderats får bara ges där koden vet det.
+ *
+ * Fältet hör hemma i svaret, inte bara i prosan — en klient som grenar på
+ * status behöver veta om den får köra om utan att först titta i databasen, och
+ * den frågan besvaras av just det här.
+ */
+export function linkStateOf(error: unknown): LinkState {
+  return error instanceof CloseAbortedError ? error.linkState : 'unknown'
+}
+
 export function abortedMessageFor(error: unknown): string {
-  const linkState: LinkState = error instanceof CloseAbortedError ? error.linkState : 'unknown'
+  const linkState = linkStateOf(error)
 
   if (linkState === 'untouched') {
     return (
@@ -279,13 +293,24 @@ async function firstUnverifiableEnvelope(
 }
 
 /**
- * Stänger omröstningen och skalar bort identitetslagret.
+ * Vad förberedelsen kom fram till.
  *
- * ATT STÄNGNINGEN ÄR ETT ANROP OCH INTE EN TIDPUNKT ÄR AVSIKTLIGT — se
- * `Election.phase`s dokumentation i schemat: en klocka som går fel ändrar
- * beteendet tyst, medan en fasövergång är en händelse någon utfört.
+ * Antingen är stängningen redan avgjord — för tidigt, redan stängd, en
+ * avvikelse — eller så är allt klart för den oåterkalleliga transaktionen.
  */
-export async function closeElection(electionId: string): Promise<CloseOutcome> {
+type Preparation =
+  | { kind: 'settled'; outcome: CloseOutcome }
+  | { kind: 'ready'; envelopeRoot: string; moved: number }
+
+/**
+ * Steg 1–5: allt som sker INNAN transaktionen.
+ *
+ * Utbruten ur `closeElection` för att gränsen mot transaktionen ska vara en
+ * plats i koden och inte en överenskommelse — se `closeElection` för varför
+ * den gränsen bestämmer vad som får sägas om kopplingen. Ingenting härifrån
+ * skriver i röstlängden.
+ */
+async function prepareClose(electionId: string): Promise<Preparation> {
   const election = await votersDb.election.findUniqueOrThrow({
     where: { id: electionId },
     select: { closesAt: true, phase: true },
@@ -298,10 +323,12 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
    * och det finns ingenting kvar att flytta. Att i stället låta klockan avgöra
    * hade gjort en omkörning omöjlig att skilja från en förstagångskörning.
    */
-  if (election.phase !== 'OPEN') return { status: 'already_closed' }
+  if (election.phase !== 'OPEN') {
+    return { kind: 'settled', outcome: { status: 'already_closed' } }
+  }
 
   if (election.closesAt > new Date()) {
-    return { status: 'too_early', closesAt: election.closesAt }
+    return { kind: 'settled', outcome: { status: 'too_early', closesAt: election.closesAt } }
   }
 
   const ballots = await votersDb.electionBallot.findMany({
@@ -340,9 +367,11 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
      * administratören får veta.
      */
     const broken = await firstUnverifiableEnvelope(electionId, envelopes)
-    if (broken !== null) return { status: 'invalid_ballot', ciphertextHash: broken }
+    if (broken !== null) {
+      return { kind: 'settled', outcome: { status: 'invalid_ballot', ciphertextHash: broken } }
+    }
 
-    return { status: 'validation_failed', summary: report.summary }
+    return { kind: 'settled', outcome: { status: 'validation_failed', summary: report.summary } }
   }
 
   // --- 2. Kuvertroten, medan signaturerna fortfarande finns ---------------
@@ -370,7 +399,9 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
 
   // --- 3. Varje valsedel verifieras en gång till --------------------------
   const broken = await firstUnverifiableEnvelope(electionId, envelopes)
-  if (broken !== null) return { status: 'invalid_ballot', ciphertextHash: broken }
+  if (broken !== null) {
+    return { kind: 'settled', outcome: { status: 'invalid_ballot', ciphertextHash: broken } }
+  }
 
   // --- 4. Infogningen i votes_db, sorterad på chifferhash -----------------
   /**
@@ -414,6 +445,51 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
     )
   }
 
+  return { kind: 'ready', envelopeRoot, moved }
+}
+
+/**
+ * Stänger omröstningen och skalar bort identitetslagret.
+ *
+ * ATT STÄNGNINGEN ÄR ETT ANROP OCH INTE EN TIDPUNKT ÄR AVSIKTLIGT — se
+ * `Election.phase`s dokumentation i schemat: en klocka som går fel ändrar
+ * beteendet tyst, medan en fasövergång är en händelse någon utfört.
+ */
+export async function closeElection(electionId: string): Promise<CloseOutcome> {
+  /**
+   * ALLT SOM KASTAR FÖRE TRANSAKTIONEN LÄMNAR KOPPLINGEN BEVISBART ORÖRD.
+   *
+   * Det är en egenskap hos VAR I FLÖDET felet uppstod, inte hos vilken
+   * funktion som råkade kasta — `prepareClose` läser, validerar, verifierar
+   * och skriver till den anonyma sidan, men rör aldrig `pending_vote`. Därför
+   * sätts påståendet här, på gränsen, i stället för vid varje enskilt
+   * anropsställe. En uppräkning av anropsställen hade ruttnat vid nästa
+   * ändring; gränsen gör det inte.
+   *
+   * Det spelar roll för att de vanligaste verkliga felen bor här — databasen
+   * nere under valideringen är långt mer sannolikt än ett avbrott vid COMMIT.
+   * Att ge det vanligaste felet det försiktiga "kan ha gått igenom" hade fått
+   * en administratör att tveka i onödan just när systemet är som mest stressat.
+   */
+  let preparation: Preparation
+
+  try {
+    preparation = await prepareClose(electionId)
+  } catch (error) {
+    if (error instanceof CloseAbortedError) throw error
+
+    throw new CloseAbortedError(
+      'untouched',
+      'Stängningen avbröts innan transaktionen inleddes. Kopplingen mellan väljare och röst ' +
+        'är orörd.',
+      { cause: error },
+    )
+  }
+
+  if (preparation.kind === 'settled') return preparation.outcome
+
+  const { envelopeRoot, moved } = preparation
+
   /**
    * --- 6. Först nu raderas kopplingen mellan väljare och röst -------------
    *
@@ -430,46 +506,65 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
    * då posten med sig — en logg som påstår att kopplingen raderats när den
    * ligger kvar vore värre än ingen logg alls.
    */
-  const cleared = await votersDb.$transaction(
-    async (tx) => {
-      // Skriv-en-gång: en redan publicerad rot får aldrig ersättas. `updateMany`
-      // och inte `update`, eftersom en träfflös `update` kastar — här ska en
-      // redan satt rot hoppas över, inte fälla körningen.
-      await tx.election.updateMany({
-        where: { id: electionId, envelopeRoot: null },
-        data: { envelopeRoot },
-      })
+  let cleared: number
 
-      const removed = await clearPendingVotes(electionId, tx)
+  try {
+    cleared = await votersDb.$transaction(
+      async (tx) => {
+        // Skriv-en-gång: en redan publicerad rot får aldrig ersättas.
+        // `updateMany` och inte `update`, eftersom en träfflös `update` kastar
+        // — här ska en redan satt rot hoppas över, inte fälla körningen.
+        await tx.election.updateMany({
+          where: { id: electionId, envelopeRoot: null },
+          data: { envelopeRoot },
+        })
 
-      await tx.election.update({
-        where: { id: electionId },
-        data: { phase: 'STRIPPED', linkClearedAt: new Date() },
-      })
+        const removed = await clearPendingVotes(electionId, tx)
 
-      await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
+        await tx.election.update({
+          where: { id: electionId },
+          data: { phase: 'STRIPPED', linkClearedAt: new Date() },
+        })
 
-      return removed
-    },
+        await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
+
+        return removed
+      },
+      /**
+       * TIDSGRÄNSEN ÄR VALD, INTE ÄRVD (fixrunda 2, uppgift 11).
+       *
+       * Prismas standard är 5 sekunder, och `db.ts` sätter ingen
+       * `transactionOptions`. Raderingen är en enda `deleteMany` över samtliga
+       * kuvert i omröstningen — i ett riktigt val hundratusentals rader — och
+       * den kan mycket väl ta längre tid än så. En P2028 hade rullat tillbaka
+       * allt, men det är en felväg som inte fanns när raderingen låg utanför
+       * en transaktion, och den ska inte uppstå av att ingen valde något.
+       *
+       * Två minuter är tilltaget för att rymma en radering i den storleken
+       * utan att vara obegränsat: en transaktion som hänger håller lås på
+       * `pending_vote` och `election`, så den får inte tillåtas leva hur länge
+       * som helst. `maxWait` är tiden att få en anslutning ur poolen, inte tid
+       * i transaktionen.
+       */
+      { timeout: 120_000, maxWait: 20_000 },
+    )
+  } catch (error) {
     /**
-     * TIDSGRÄNSEN ÄR VALD, INTE ÄRVD (fixrunda 2, uppgift 11).
+     * TRANSAKTIONEN ÄR DÄR KUNSKAPEN TAR SLUT.
      *
-     * Prismas standard är 5 sekunder, och `db.ts` sätter ingen
-     * `transactionOptions`. Raderingen är en enda `deleteMany` över samtliga
-     * kuvert i omröstningen — i ett riktigt val hundratusentals rader — och
-     * den kan mycket väl ta längre tid än så. En P2028 hade rullat tillbaka
-     * allt: utfallet är säkert (ingenting raderat, roten oskriven), men det är
-     * en felväg som inte fanns när raderingen låg utanför en transaktion, och
-     * den ska inte uppstå av att ingen valde något.
-     *
-     * Två minuter är tilltaget för att rymma en radering i den storleken utan
-     * att vara obegränsat: en transaktion som hänger håller lås på
-     * `pending_vote` och `election`, så den får inte tillåtas leva hur länge
-     * som helst. `maxWait` är tiden att få en anslutning ur poolen, inte tid i
-     * transaktionen.
+     * Ett kast här betyder oftast en rollback, alltså att ingenting raderats —
+     * men inte alltid. En tappad anslutning i samma ögonblick som COMMIT
+     * skickas ger samma undantag oavsett om servern hann genomföra den eller
+     * inte, och den skillnaden går inte att läsa ur felet. Då är `unknown` det
+     * enda ärliga svaret, även om det oftare är försiktigt än nödvändigt.
      */
-    { timeout: 120_000, maxWait: 20_000 },
-  )
+    throw new CloseAbortedError(
+      'unknown',
+      'Stängningen kunde inte bekräftas: transaktionen avbröts utan besked om den hann ' +
+        'genomföras. Kontrollera omröstningens fas innan stängningen körs om.',
+      { cause: error },
+    )
+  }
 
   /**
    * --- 7. STÄNGNINGEN KONTROLLERAR SITT EGET UTFALL ----------------------

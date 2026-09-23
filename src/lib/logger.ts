@@ -53,9 +53,37 @@ export function redact(input: string): string {
   return output
 }
 
+/**
+ * Hela orsakskedjan i ett fel, som en läsbar sträng.
+ *
+ * `Error.cause` är den enda platsen ett omslutande fel kan bära VARFÖR det
+ * kastades. Ett fel som paketeras om — "stängningen kunde inte bekräftas", med
+ * det verkliga databasfelet i `cause` — tappar alltså hela sin diagnostik om
+ * loggen bara skriver ut det yttersta lagret. Det var precis vad som hände i
+ * fixrunda 3: omslaget gjorde felsökningen sämre på den väg där
+ * administratören har minst information, och både ruttens text och
+ * felmeddelandet lovade en logg som inte innehöll orsaken.
+ *
+ * Kedjan följs med både djupgräns och cykelskydd: `cause` sätts av
+ * anropskoden och kan peka var som helst, även tillbaka på sig själv.
+ */
+export function describeErrorChain(error: unknown): string {
+  const seen = new Set<unknown>()
+  const parts: string[] = []
+  let current: unknown = error
+
+  while (current !== undefined && current !== null && !seen.has(current) && parts.length < 5) {
+    seen.add(current)
+    parts.push(current instanceof Error ? `${current.name}: ${current.message}` : String(current))
+    current = current instanceof Error ? current.cause : undefined
+  }
+
+  return parts.join(' <- orsakat av: ')
+}
+
 function serialise(value: unknown): string {
   if (typeof value === 'string') return value
-  if (value instanceof Error) return `${value.name}: ${value.message}`
+  if (value instanceof Error) return describeErrorChain(value)
   try {
     return JSON.stringify(value)
   } catch {
@@ -65,10 +93,29 @@ function serialise(value: unknown): string {
 
 type Level = 'info' | 'warn' | 'error'
 
+/**
+ * Gör om `Error`-värden i kontexten till läsbar text INNAN JSON-serialiseringen.
+ *
+ * `JSON.stringify(new Error('x'))` ger `{}` — namn, meddelande och orsak är
+ * inte uppräkningsbara egenskaper. En anropare som skickar med felet självt
+ * fick alltså tidigare en tom rad i loggen utan att någonting sa ifrån, vilket
+ * är exakt den sortens tysta förlust den här rundan handlat om. Nu blir samma
+ * anrop hela orsakskedjan i klartext.
+ */
+function normaliseContext(context: Record<string, unknown>): Record<string, unknown> {
+  const normalised: Record<string, unknown> = {}
+
+  for (const [key, value] of Object.entries(context)) {
+    normalised[key] = value instanceof Error ? describeErrorChain(value) : value
+  }
+
+  return normalised
+}
+
 function write(level: Level, message: string, context?: Record<string, unknown>): void {
   const parts = [`[${level.toUpperCase()}]`, redact(message)]
   if (context && Object.keys(context).length > 0) {
-    parts.push(redact(serialise(context)))
+    parts.push(redact(serialise(normaliseContext(context))))
   }
   const line = parts.join(' ')
 

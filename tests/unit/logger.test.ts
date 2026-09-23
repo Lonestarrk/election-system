@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { logger, redact } from '@/lib/logger'
+import { describeErrorChain, logger, redact } from '@/lib/logger'
 import { generateVoteToken } from '@/modules/ballot-box/token.service'
 
 /**
@@ -68,5 +68,41 @@ describe('logger', () => {
     const written = spy.mock.calls.flat().join(' ')
     expect(written).not.toContain(token)
     expect(written).not.toContain('19900101-1234')
+  })
+})
+
+describe('orsakskedjan i ett fel', () => {
+  /**
+   * Ett fel som paketeras om bär sitt verkliga skäl i `cause`. Skrivs bara det
+   * yttersta lagret ut försvinner diagnostiken precis där den behövs mest —
+   * se `describeErrorChain` och stängningen (uppgift 11, fixrunda 4).
+   */
+  it('följer cause hela vägen', () => {
+    const rot = new Error('anslutningen tappades')
+    const yttre = new Error('kunde inte bekräftas', { cause: rot })
+
+    const beskrivning = describeErrorChain(yttre)
+
+    expect(beskrivning).toContain('kunde inte bekräftas')
+    expect(beskrivning).toContain('anslutningen tappades')
+  })
+
+  it('fastnar inte i en cyklisk kedja', () => {
+    const a = new Error('a')
+    const b = new Error('b', { cause: a })
+    a.cause = b
+
+    expect(describeErrorChain(b)).toContain('a')
+  })
+
+  it('maskerar även det som ligger i orsaken', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rot = new Error('slog upp 19900101-1234')
+
+    logger.error('Fel', { error: new Error('yttre', { cause: rot }) })
+
+    const written = spy.mock.calls.flat().join(' ')
+    expect(written).not.toContain('19900101-1234')
+    expect(written).toContain('yttre')
   })
 })
