@@ -1,13 +1,32 @@
-import type { KnownLimitation } from '@/lib/known-limitations'
+import Link from 'next/link'
+import { KNOWN_LIMITATIONS, type KnownLimitation } from '@/lib/known-limitations'
 
 /**
- * Det sektionerna har gemensamt: begränsningarna sidan hänvisar till i löpande
- * text, och hur en hänvisning ser ut.
- *
- * Sidan slår upp posterna och skickar dem hit. Uppslaget ligger kvar i
- * page.tsx, där tests/security/architecture-page.test.ts kontrollerar att
- * varje hänvisning pekar på en post som finns.
+ * Det sektionerna på de tre sidorna har gemensamt: begränsningarna de hänvisar
+ * till i löpande text, hur en hänvisning ser ut och länkarna mellan sidorna.
  */
+
+/** Tekniska detaljer, där hela listan över kända begränsningar står. */
+export const TECHNICAL_PATH = '/architecture/technical'
+export const STATUS_PATH = '/architecture/status'
+
+/**
+ * En begränsning ur listan, efter id.
+ *
+ * Kastar om posten saknas. Sidorna hänvisar till den i löpande text, och en
+ * hänvisning till en post som tagits bort betyder att texten runt omkring också
+ * är fel. tests/security/architecture-page.test.ts fångar det innan sidan gör
+ * det, genom att leta efter anropen i alla sidans filer.
+ */
+export function limitation(id: string): KnownLimitation {
+  const found = KNOWN_LIMITATIONS.find((entry) => entry.id === id)
+  if (!found) {
+    throw new Error(`Arkitektursidan hänvisar till begränsningen "${id}", som inte finns i listan.`)
+  }
+  return found
+}
+
+/** Begränsningarna som sektionerna på Tekniska detaljer och Utvecklingsstatus hänvisar till. */
 export type PageLimitations = {
   link: KnownLimitation
   bankIdOrder: KnownLimitation
@@ -16,8 +35,42 @@ export type PageLimitations = {
   liveResults: KnownLimitation
 }
 
-/** En hänvisning till en post i listan längst ned, med rubriken ur listan. */
-export function LimitationReference({ entry }: { entry: KnownLimitation }) {
+export function pageLimitations(): PageLimitations {
+  return {
+    link: limitation('link-exists-during-voting'),
+    bankIdOrder: limitation('bankid-order-carries-link'),
+    chain: limitation('bankid-chain-not-validated'),
+    dealer: limitation('trusted-dealer'),
+    liveResults: limitation('live-results-in-old-flow'),
+  }
+}
+
+/** Adressen till en post i listan, från vilken sida som helst. */
+export function limitationHref(entry: KnownLimitation): string {
+  return `${TECHNICAL_PATH}#begransning-${entry.id}`
+}
+
+/**
+ * En hänvisning till en post i listan, med rubriken ur listan.
+ *
+ * På Tekniska detaljer står listan längre ned på samma sida. Från
+ * Utvecklingsstatus länkar hänvisningen dit.
+ */
+export function LimitationReference({
+  entry,
+  from = 'technical',
+}: {
+  entry: KnownLimitation
+  from?: 'technical' | 'status'
+}) {
+  if (from === 'status') {
+    return (
+      <span className="muted">
+        Står i listan på Tekniska detaljer som <Link href={limitationHref(entry)}>{entry.title}</Link>.
+      </span>
+    )
+  }
+
   return (
     <span className="muted">
       Står i listan nedan som <a href={`#begransning-${entry.id}`}>{entry.title}</a>.

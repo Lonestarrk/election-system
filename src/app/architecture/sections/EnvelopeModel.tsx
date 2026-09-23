@@ -1,34 +1,36 @@
 import { CURRENTLY } from '../code-facts'
 
 /**
- * Kuvertmodellen förklarad: analogin med brevrösten, vad kuverten motsvarar i
- * databaserna och flödet från legitimering till publicerade summor.
+ * Kuvertmodellen tekniskt: vad kuverten motsvarar i databaserna, och flödet
+ * från legitimering till publicerade summor.
+ *
+ * Liknelsen med brevrösten står på huvudsidan, på vardagsspråk. Här står
+ * samma modell med sina tekniska namn.
  */
 export function EnvelopeModel() {
   return (
     <section className="card" aria-labelledby="kuverten">
       <h2 id="kuverten">Dubbla kuvert</h2>
       <p>
-        Tänk på en brevröst. Du lägger valsedeln i ett innerkuvert utan namn, och innerkuvertet i
-        ett ytterkuvert med ditt namn och din underskrift. Den som tar emot posten ser att du har
-        röstat, men inte på vad. Skickar du en ny röst före sista dagen byts den gamla ut. När
-        rösterna ska räknas kontrolleras ytterkuverten, sprättas upp och kastas, och
-        innerkuverten blandas innan någon öppnar dem.
+        Ytterkuvertet är en rad i tabellen <span className="mono">pending_vote</span> i röstlängden,{' '}
+        <span className="mono">voters_db</span>: vem du är, din BankID-signatur och ett chiffer.
+        Innerkuvertet är chiffret, ditt val krypterat i webbläsaren under valets publika nyckel. Den
+        privata nyckeln finns inte hel någonstans. Den är delad mellan tre förtroendemän, och två
+        av dem måste medverka för att något ska kunna öppnas. Vid stängningen flyttas chiffren till{' '}
+        <span className="mono">encrypted_vote</span> i röstdatabasen,{' '}
+        <span className="mono">votes_db</span>, sorterade på innehåll, och ytterkuverten raderas.
       </p>
       <p className="muted small">
-        Här är ytterkuvertet en rad i tabellen <span className="mono">pending_vote</span> i
-        röstlängden, <span className="mono">voters_db</span>: vem du är, din BankID-signatur och
-        ett chiffer. Innerkuvertet är chiffret, ditt val krypterat i webbläsaren under valets
-        publika nyckel. Den privata nyckeln finns inte hel någonstans. Den är delad mellan tre
-        förtroendemän, och två av dem måste medverka för att något ska kunna öppnas. Vid
-        stängningen flyttas chiffren till <span className="mono">encrypted_vote</span> i
-        röstdatabasen, <span className="mono">votes_db</span>, sorterade på innehåll, och
-        ytterkuverten raderas.
+        Den som tar emot kuverten ser att du har röstat, men inte på vad. Skickar du en ny röst före
+        stängningen byts den gamla ut. Det är samma egenskaper som en brevröst har, och modellen är
+        Estlands, i drift sedan 2005.
       </p>
 
       <div className="flow" style={{ marginTop: '1.5rem' }}>
         <div className="flow-node identity">Legitimering med BankID</div>
-        <div className="flow-label">väljaren ser sina valsedlar och om hon redan har röstat</div>
+        <div className="flow-label">
+          väljaren ser sina valsedlar · enligt designen också om hon redan har röstat
+        </div>
         <div className="flow-arrow">↓</div>
         <div className="flow-node">Webbläsaren krypterar valet</div>
         <div className="flow-label">

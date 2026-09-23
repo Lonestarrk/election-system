@@ -671,3 +671,823 @@ th {
   text-align: center;
   padding: 0.5rem 1.25rem;
 }
+
+/* ---------------------------------------------------------------------------
+   Arkitektursidan: sidorna emellan, liknelsen och tidslinjen
+   --------------------------------------------------------------------------- */
+
+/* Länkarna mellan huvudsidan och dess två undersidor. */
+.arch-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.87rem;
+}
+
+.arch-nav a {
+  display: inline-block;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  text-decoration: none;
+  background: var(--surface);
+}
+
+.arch-nav a:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.arch-nav a[aria-current='page'] {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+/* Förklaringen av bildspråket: samma figurer som i tidslinjen. */
+.legend {
+  display: grid;
+  gap: 0.9rem;
+  margin: 1.1rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (min-width: 720px) {
+  .legend {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.legend li {
+  display: grid;
+  grid-template-columns: 3.25rem 1fr;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.legend svg {
+  display: block;
+  width: 3.25rem;
+  height: auto;
+}
+
+/* Länkkort till undersidorna. */
+.read-more {
+  display: grid;
+  gap: 0.9rem;
+}
+
+@media (min-width: 720px) {
+  .read-more {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.read-more a {
+  display: block;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+  background: var(--surface-muted);
+}
+
+.read-more a:hover {
+  border-color: var(--accent);
+}
+
+.read-more strong {
+  display: block;
+  color: var(--accent);
+  margin-bottom: 0.2rem;
+}
+
+/*
+ * TIDSLINJEN
+ *
+ * Knapparna står i en rad. På bred skärm får alla tretton plats; på smalare
+ * rullar raden i sidled i sin egen behållare, så att sidan själv aldrig blir
+ * bredare än skärmen. Vilket moment som visas syns på knappen, och linjen
+ * fram till det är ifylld.
+ */
+.tl-steps {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(70px, 1fr);
+  margin: 1rem -0.25rem 0;
+  padding: 0.25rem 0.25rem 0.5rem;
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tl-steps li {
+  position: relative;
+}
+
+/* Linjen mellan knapparna, i höjd med siffrorna. */
+.tl-steps li::before {
+  content: '';
+  position: absolute;
+  top: calc(0.3rem + 13px);
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--border);
+}
+
+.tl-steps li:first-child::before {
+  left: 50%;
+}
+
+.tl-steps li:last-child::before {
+  right: 50%;
+}
+
+.tl-steps li.tl-passed::before {
+  background: var(--accent);
+}
+
+.tl-steps li.tl-current::before {
+  background: linear-gradient(to right, var(--accent) 50%, var(--border) 50%);
+}
+
+.tl-steps li.tl-current:first-child::before {
+  background: var(--border);
+}
+
+.tl-step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.3rem 0.15rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 550;
+  line-height: 1.2;
+  text-align: center;
+  transition: color 0.15s ease;
+}
+
+.tl-step:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+.tl-step-number {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.tl-passed .tl-step-number {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tl-step[aria-current='step'] {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.tl-step[aria-current='step'] .tl-step-number {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.tl-body {
+  display: grid;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+@media (min-width: 880px) {
+  .tl-body {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 1.75rem;
+  }
+}
+
+.tl-stage {
+  padding: 0.5rem;
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.tl-stage svg {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  margin: 0 auto;
+}
+
+.tl-eyebrow {
+  margin: 0 0 0.3rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tl-title {
+  margin-bottom: 0.4rem;
+}
+
+.tl-text {
+  margin-bottom: 0;
+}
+
+/* Under scenen, så att knapparna står still hur lång texten än är. */
+.tl-nav {
+  justify-content: center;
+  margin-top: 0.75rem;
+}
+
+.tl-nav button[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .card.tl-section {
+    padding: 1.25rem 1rem;
+  }
+
+  .tl-stage {
+    padding: 0.35rem 0;
+  }
+}
+
+/* Scenen. Färgerna är sidans egna, så att den följer mörkt läge. */
+.tl-scene {
+  font-family: var(--font);
+}
+
+.tl-scene text {
+  text-anchor: middle;
+}
+
+.tl-scene .tl-count {
+  text-anchor: start;
+}
+
+.tl-label {
+  fill: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.tl-phone {
+  fill: var(--surface);
+  stroke: var(--text-muted);
+  stroke-width: 1.6;
+}
+
+.tl-screen {
+  fill: var(--bg);
+}
+
+.tl-phone-speaker {
+  stroke: var(--border-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.tl-screen-text {
+  fill: var(--text);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.tl-paper,
+.tl-id rect {
+  fill: var(--surface);
+  stroke: var(--border-strong);
+  stroke-width: 1.2;
+}
+
+.tl-id circle,
+.tl-id path {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.tl-box {
+  fill: var(--surface);
+  stroke: var(--text-muted);
+  stroke-width: 1.2;
+}
+
+.tl-option {
+  fill: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tl-option-small,
+.tl-count {
+  font-size: 9px;
+}
+
+.tl-count {
+  fill: var(--text);
+  font-weight: 600;
+}
+
+.tl-cross {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tl-person {
+  fill: var(--surface);
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+}
+
+.tl-key {
+  fill: var(--surface);
+  stroke: var(--text);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.tl-lock-body {
+  fill: var(--surface);
+  stroke: var(--text);
+  stroke-width: 1.8;
+}
+
+.tl-lock-shackle {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+
+.tl-keyhole {
+  fill: var(--text-muted);
+}
+
+.tl-keyhole-lit {
+  fill: var(--success);
+}
+
+.tl-lock-glyph path {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.1;
+}
+
+.tl-lock-glyph rect {
+  fill: var(--text-muted);
+}
+
+.tl-lock-stays .tl-lock-glyph path {
+  stroke: var(--text);
+}
+
+.tl-lock-stays .tl-lock-glyph rect {
+  fill: var(--text);
+}
+
+/* Kuverten. Ditt är blått så länge det går att peka ut, alla andra är grå. */
+.tl-env {
+  fill: var(--surface);
+  stroke: var(--border-strong);
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+}
+
+.tl-env-flap {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+}
+
+.tl-yours .tl-env {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1.9;
+}
+
+.tl-yours .tl-env-flap {
+  stroke: var(--accent);
+}
+
+.tl-name {
+  fill: var(--warning-soft);
+  stroke: var(--warning);
+  stroke-width: 0.9;
+}
+
+.tl-autograph {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 0.9;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+}
+
+.tl-you-tag {
+  fill: var(--accent);
+}
+
+.tl-you-tag-text {
+  fill: var(--surface);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.tl-tag {
+  fill: var(--surface);
+  stroke: var(--text-muted);
+  stroke-width: 1.2;
+}
+
+.tl-tag-text {
+  fill: var(--text);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+/* Urnorna: orange med namn, grön utan, som identitet och anonymitet på resten av sidan. */
+.tl-urn {
+  fill: var(--surface);
+  stroke-width: 1.8;
+}
+
+.tl-urn-named {
+  stroke: var(--warning);
+}
+
+.tl-urn-anon {
+  stroke: var(--success);
+}
+
+.tl-slot {
+  fill: var(--text-muted);
+}
+
+.tl-lid {
+  fill: var(--text);
+}
+
+.tl-empty {
+  fill: var(--text-faint);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.tl-bin {
+  fill: var(--surface);
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.tl-bin-rim {
+  stroke: var(--text-muted);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.tl-bin-lines {
+  stroke: var(--border-strong);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+
+.tl-check circle {
+  fill: var(--success);
+}
+
+.tl-check path {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tl-magnifier circle {
+  fill: var(--surface);
+  fill-opacity: 0.5;
+  stroke: var(--text);
+  stroke-width: 1.8;
+}
+
+.tl-magnifier path {
+  stroke: var(--text);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.tl-card {
+  fill: var(--surface);
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+}
+
+.tl-card-flap {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+
+.tl-bar {
+  fill: var(--text-muted);
+}
+
+.tl-proof rect {
+  fill: var(--success-soft);
+  stroke: var(--success);
+  stroke-width: 1.2;
+}
+
+.tl-proof path {
+  fill: none;
+  stroke: var(--success);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tl-proof text {
+  fill: var(--text);
+  font-size: 8.5px;
+  font-weight: 700;
+}
+
+/*
+ * Vilolägena. Det här är momentets slutläge, och det gäller alltid. Det som
+ * försvinner under ett moment har opacitet 0 i vila, så att det inte heller
+ * syns när ingen animation spelas.
+ */
+.tl-dimmed {
+  opacity: 0.35;
+}
+
+.tl-vanish,
+.tl-leave,
+.tl-away,
+.tl-sweep {
+  opacity: 0;
+}
+
+.tl-move,
+.tl-pop,
+.tl-grow {
+  transform-box: fill-box;
+}
+
+.tl-move {
+  transform-origin: 0 0;
+}
+
+.tl-pop {
+  transform-origin: center;
+}
+
+.tl-grow {
+  transform-origin: 0 50%;
+}
+
+/*
+ * Rörelsen, bara för den som inte bett om mindre av den, och bara när
+ * tidslinjen spelar ett moment. När sidan laddas bär scenen klassen tl-still
+ * och visar slutläget.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .tl-scene:not(.tl-still) .tl-a {
+    animation-duration: var(--t, 0.4s);
+    animation-delay: var(--d, 0s);
+    animation-fill-mode: both;
+    animation-timing-function: cubic-bezier(0.35, 0, 0.25, 1);
+  }
+
+  .tl-scene:not(.tl-still) .tl-move {
+    animation-name: tl-move;
+  }
+
+  .tl-scene:not(.tl-still) .tl-appear {
+    animation-name: tl-appear;
+  }
+
+  .tl-scene:not(.tl-still) .tl-pop {
+    animation-name: tl-pop;
+  }
+
+  .tl-scene:not(.tl-still) .tl-vanish {
+    animation-name: tl-vanish;
+  }
+
+  .tl-scene:not(.tl-still) .tl-leave {
+    animation-name: tl-leave;
+  }
+
+  .tl-scene:not(.tl-still) .tl-away {
+    animation-name: tl-away;
+  }
+
+  .tl-scene:not(.tl-still) .tl-scatter {
+    animation-name: tl-scatter;
+  }
+
+  .tl-scene:not(.tl-still) .tl-sweep {
+    animation-name: tl-sweep;
+    animation-timing-function: linear;
+  }
+
+  .tl-scene:not(.tl-still) .tl-grow {
+    animation-name: tl-grow;
+  }
+
+  .tl-scene:not(.tl-still) .tl-draw {
+    animation-name: tl-draw;
+    animation-timing-function: ease-out;
+  }
+
+  /*
+   * Markeringen som släcks: från din färg till samma grå som de andras. Samma
+   * kurva som namnen som glider bort, så att båda är borta i samma ögonblick.
+   */
+  .tl-scene:not(.tl-still) .tl-release .tl-env,
+  .tl-scene:not(.tl-still) .tl-release .tl-env-flap {
+    animation-duration: var(--t, 0.4s);
+    animation-delay: var(--d, 0s);
+    animation-fill-mode: both;
+    animation-timing-function: cubic-bezier(0.35, 0, 0.25, 1);
+  }
+
+  .tl-scene:not(.tl-still) .tl-release .tl-env {
+    animation-name: tl-release;
+  }
+
+  .tl-scene:not(.tl-still) .tl-release .tl-env-flap {
+    animation-name: tl-release-flap;
+  }
+
+  .tl-scene:not(.tl-still) .tl-dim {
+    animation: tl-dim 0.3s ease both;
+  }
+
+  .tl-scene:not(.tl-still) .tl-undim {
+    animation: tl-undim 0.3s ease both;
+  }
+}
+
+@keyframes tl-move {
+  from {
+    transform: translate(var(--dx), var(--dy)) scale(var(--s));
+  }
+}
+
+@keyframes tl-appear {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes tl-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+}
+
+@keyframes tl-vanish {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes tl-leave {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy));
+  }
+}
+
+@keyframes tl-away {
+  0% {
+    opacity: 1;
+    transform: none;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy));
+  }
+}
+
+@keyframes tl-scatter {
+  0% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy));
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes tl-sweep {
+  0% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy));
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: none;
+  }
+}
+
+@keyframes tl-grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes tl-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+
+@keyframes tl-release {
+  from {
+    fill: var(--accent-soft);
+    stroke: var(--accent);
+    stroke-width: 1.9;
+  }
+}
+
+@keyframes tl-release-flap {
+  from {
+    stroke: var(--accent);
+  }
+}
+
+@keyframes tl-dim {
+  from {
+    opacity: 1;
+  }
+}
+
+@keyframes tl-undim {
+  from {
+    opacity: 0.35;
+  }
+}

@@ -1,36 +1,32 @@
-import { CURRENTLY } from '../code-facts'
+import Link from 'next/link'
+import { STATUS_PATH, TECHNICAL_PATH } from './shared'
 
 /**
- * Sidans inledning och beskedet att ombyggnaden pågår.
+ * Huvudsidans inledning, på vardagsspråk.
  *
- * Beskedet läser sina påståenden om koden ur code-facts.ts, så att det ändras
- * i samma stund som koden gör.
+ * Sidan är skriven för den som aldrig har hört ordet kryptering. Fackorden,
+ * och allt om vad som är byggt och inte, står på undersidorna. Här står bara
+ * vad sidan förklarar och att den förklarar hur det är TÄNKT att fungera: en
+ * läsare som inte kan kontrollera förklaringen själv måste få veta att allt
+ * inte är byggt än.
  */
 export function Intro({ demo }: { demo: boolean }) {
   return (
-    <>
-      <div>
-        <h1>Arkitektur</h1>
-        <p className="muted">
-          Systemet byggs om till dubbla kuvert, efter Estlands modell. I den modellen vet systemet
-          under röstningen att du har röstat men inte på vad, och rösten går att ändra fram till
-          stängningen. Vid stängningen skalas identiteten bort, och efteråt publiceras bara
-          summorna. Här står hur det är tänkt att fungera, vad som är byggt, vad det skyddar mot
-          och vad det inte skyddar mot.
-          {demo &&
-            ' I demoläget kan du dessutom se båda databaserna som de ser ut just nu, och följa en röst genom stängningen.'}
-        </p>
-      </div>
-
-      <div className="notice warning">
-        <strong>Ombyggnaden pågår.</strong>
-        <div style={{ marginTop: '0.35rem' }}>
-          Kuvertmodellen finns på serversidan: röstläggning med BankID-signatur, validering och
-          stängning. {CURRENTLY.votePageUsesOldFlow.text} {CURRENTLY.decryptionNotBuilt.text}{' '}
-          {CURRENTLY.sumsNotPublished.text} Sidan beskriver kuvertmodellen och säger för varje del
-          om den är byggd.
-        </div>
-      </div>
-    </>
+    <div>
+      <h1>Arkitektur</h1>
+      <p>
+        Här förklaras hur din röst hålls hemlig, och hur den ändå kan räknas. Systemet bygger på
+        dubbla kuvert, samma idé som när man röstar med brev. Estland har använt den i sina digitala
+        val sedan 2005.
+      </p>
+      <p className="muted small">
+        Det här är en teknisk demonstration, och allt är inte byggt än. Sidan visar hur valet är
+        tänkt att fungera. Vad som finns i dag står på{' '}
+        <Link href={STATUS_PATH}>Utvecklingsstatus</Link>, och hur det fungerar tekniskt på{' '}
+        <Link href={TECHNICAL_PATH}>Tekniska detaljer</Link>.
+        {demo &&
+          ' Längre ned på sidan kan du dessutom se hur de två urnorna ser ut i databasen just nu.'}
+      </p>
+    </div>
   )
 }

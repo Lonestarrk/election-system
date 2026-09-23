@@ -74,6 +74,101 @@ const STRIPPING_DELETES_ENVELOPES: Marker = {
   contains: 'client.pendingVote.deleteMany(',
 }
 
+/**
+ * SKALNINGENS TRANSAKTION, ORD FÖR ORD.
+ *
+ * Spec 3.1 punkt 6 säger att markeringen "har röstat" skrivs i skalningens
+ * transaktion, och uppgift 11d ska bygga den. Markören som fanns före den här
+ * letade bara efter två namn, `voterBallotStatus` och `markBallotAsVoted`, i
+ * tre filer. En markering i en ny modell, eller via en ny hjälpfunktion, hade
+ * gått förbi den, och påståendet att ingenting markerar en kuvertröst hade
+ * stått kvar grönt när det blivit falskt.
+ *
+ * Markören låser därför transaktionens hela text, kommentarerna inräknade. En
+ * ny rad var som helst i den, en skrivning eller ett anrop med `tx`, fäller
+ * påståendet. En ändrad kommentar fäller det också, i onödan, och det är priset
+ * för att ingen skrivning kan glida förbi. Exporteras för testet som visar att
+ * markören faktiskt slår fel.
+ */
+export const STRIPPING_TRANSACTION: Marker = {
+  file: 'src/orchestration/close-election.usecase.ts',
+  contains: [
+    '      async (tx) => {',
+    '        // Skriv-en-gång: en redan publicerad rot får aldrig ersättas.',
+    '        // `updateMany` och inte `update`, eftersom en träfflös `update` kastar',
+    '        // — här ska en redan satt rot hoppas över, inte fälla körningen.',
+    '        await tx.election.updateMany({',
+    '          where: { id: electionId, envelopeRoot: null },',
+    '          data: { envelopeRoot },',
+    '        })',
+    '',
+    '        const removed = await clearPendingVotes(electionId, tx)',
+    '',
+    '        await tx.election.update({',
+    '          where: { id: electionId },',
+    "          data: { phase: 'STRIPPED', linkClearedAt: new Date() },",
+    '        })',
+    '',
+    '        await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)',
+    '',
+    '        return removed',
+    '      },',
+  ].join('\n'),
+}
+
+/**
+ * De två funktioner transaktionen lämnar `tx` till, låsta på samma sätt.
+ *
+ * `clearPendingVotes` låses ord för ord, och båda klienttyperna låses: en
+ * funktion som bara får `pendingVote` och `electionBallot`, respektive
+ * `auditEvent`, kan inte skriva i någon annan tabell genom transaktionen utan
+ * att typen ändras först.
+ */
+export const STRIPPING_HELPERS: Marker[] = [
+  {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains: [
+      'export async function clearPendingVotes(',
+      '  electionId: string,',
+      '  client: PendingVoteClient = votersDb,',
+      '): Promise<number> {',
+      '  const ballots = await client.electionBallot.findMany({',
+      '    where: { electionId },',
+      '    select: { id: true },',
+      '  })',
+      '',
+      '  const result = await client.pendingVote.deleteMany({',
+      '    where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },',
+      '  })',
+      '',
+      '  return result.count',
+      '}',
+    ].join('\n'),
+  },
+  {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains: "export type PendingVoteClient = Pick<typeof votersDb, 'electionBallot' | 'pendingVote'>",
+  },
+  {
+    file: 'src/modules/eligibility/audit.service.ts',
+    contains: "export type AuditClient = Pick<typeof votersDb, 'auditEvent'>",
+  },
+]
+
+/**
+ * Röstlängdens modeller, som de är i dag.
+ *
+ * En markering kan också hamna i en ny tabell som skrivs någon annanstans än i
+ * transaktionen. Därför fäller varje ny modell i röstlängden påståendet, och
+ * den som lägger till en får pröva om den är en sådan markering. Mönstret
+ * matchar en modell som INTE står i listan.
+ */
+export const VOTERS_MODELS_TODAY: Marker = {
+  nowhereIn: 'prisma/voters/schema.prisma',
+  matches:
+    /^model (?!(?:VoterStatus|Election|ElectionBallot|VoterBallotStatus|VotingSession|AdminSession|PushSubscription|AuditEvent|PendingVote) \{)/m,
+}
+
 // ---------------------------------------------------------------------------
 // Läget i stort
 // ---------------------------------------------------------------------------
@@ -145,12 +240,23 @@ export const CURRENTLY = {
 
   oldFlowLiveResults: {
     text:
-      'Det gamla flödet räknar däremot i klartext medan röstningen pågår: ' +
-      'observatörsgränssnittet, som är öppet utan inloggning, lämnar ut antalet röster per parti, ' +
-      'och adminvyn visar samma siffror.',
+      'Det gamla flödet räknar i klartext medan röstningen pågår: observatörsgränssnittet, som ' +
+      'är öppet utan inloggning, lämnar ut antalet röster per parti, och adminvyn visar samma ' +
+      'siffror. Samma gränssnitt lämnar dessutom ut varje röst i det gamla flödet med sitt ' +
+      'innehåll, alltså parti, kandidat eller svarsalternativ, också medan röstningen pågår.',
     holdsWhile: [
       { file: 'src/app/api/observer/election/route.ts', contains: 'getElectionResults(election.id)' },
       { file: 'src/app/api/admin/stats/route.ts', contains: 'getElectionResults(electionId)' },
+      // Varje röst lämnas ut med sitt val.
+      { file: 'src/app/api/observer/votes/route.ts', contains: 'ballotPartyId: true,' },
+      { file: 'src/app/api/observer/votes/route.ts', contains: 'candidateId: true,' },
+      { file: 'src/app/api/observer/votes/route.ts', contains: 'optionId: true,' },
+      // ... och rutten frågar inte om röstningen har stängt. Ett villkor på
+      // fas, stängningstid eller status behöver ett av de här orden.
+      {
+        nowhereIn: 'src/app/api/observer/votes/route.ts',
+        matches: /\b(phase|closesAt|linkClearedAt|tallyCompletedAt|status)\b/,
+      },
     ],
   },
 
@@ -160,18 +266,22 @@ export const CURRENTLY = {
       'kuvert: raden i pending_vote raderas, och markeringen i voter_ballot_status görs bara av ' +
       'det gamla flödet.',
     holdsWhile: [
-      {
-        nowhereIn: 'src/modules/eligibility/pending-vote.service.ts',
-        matches: /voterBallotStatus|markBallotAsVoted/,
-      },
-      {
-        nowhereIn: 'src/orchestration/close-election.usecase.ts',
-        matches: /voterBallotStatus|markBallotAsVoted/,
-      },
-      {
-        nowhereIn: 'src/app/api/vote/encrypted/route.ts',
-        matches: /voterBallotStatus|markBallotAsVoted/,
-      },
+      // Skalningens transaktion och det den lämnar `tx` till är orörda. Här
+      // skulle markeringen skrivas enligt spec 3.1 punkt 6, och varje ny rad
+      // i dem fäller påståendet.
+      STRIPPING_TRANSACTION,
+      ...STRIPPING_HELPERS,
+      // Ingen ny tabell i röstlängden, var den än skrivs.
+      VOTERS_MODELS_TODAY,
+      // Och varken stängningen, läggningen eller revisionsloggen rör det
+      // gamla flödets markering.
+      ...[
+        'src/modules/eligibility/pending-vote.service.ts',
+        'src/modules/eligibility/audit.service.ts',
+        'src/orchestration/close-election.usecase.ts',
+        'src/app/api/admin/elections/close/route.ts',
+        'src/app/api/vote/encrypted/route.ts',
+      ].map((file): Marker => ({ nowhereIn: file, matches: /voterBallotStatus|markBallotAsVoted/ })),
       STRIPPING_DELETES_ENVELOPES,
     ],
   },
@@ -499,5 +609,60 @@ export const PHASES: PhaseRow[] = [
         { file: 'src/orchestration/final-check.usecase.ts', contains: "data: { status: 'CERTIFIED'" },
       ],
     },
+  },
+]
+
+// ---------------------------------------------------------------------------
+// Vad som återstår
+// ---------------------------------------------------------------------------
+
+/**
+ * Det som återstår att bygga, i den ordning en läsare behöver det.
+ *
+ * Varje punkt är ett påstående om att något INTE finns, och bär samma markörer
+ * som påståendena ovan om samma sak. Byggs något försvinner markören, testet
+ * går rött, och punkten ska strykas härifrån. Listan kan därför bli kortare av
+ * sig själv, men aldrig påstå att något återstår som redan är byggt.
+ */
+export const REMAINING: CodeFact[] = [
+  {
+    text:
+      'Röstsidan lägger kuvert i stället för röster i det gamla flödet, och visar din nuvarande ' +
+      'röst på den enhet du röstade från.',
+    holdsWhile: VOTE_PAGE_OLD_FLOW,
+  },
+  {
+    text:
+      'Faserna CLOSED och VALIDATED blir egna tillstånd i stängningen, med övergångar som bara går ' +
+      'framåt.',
+    holdsWhile: [neverWritten('CLOSED'), neverWritten('VALIDATED')],
+  },
+  {
+    text: 'Markeringen "har röstat" skrivs i röstlängden vid skalningen, utan tidsstämpel.',
+    holdsWhile: CURRENTLY.votedMarkerNotKept.holdsWhile,
+  },
+  {
+    text: 'Tröskeldekrypteringen av summorna, med spärren som kräver att fasen är STRIPPED.',
+    holdsWhile: [DECRYPTION_NOT_BUILT, neverWritten('TALLIED')],
+  },
+  {
+    text:
+      'Publiceringen av summorna, förtroendemännens bidrag med bevis och kuvertroten, utanför ' +
+      'systemet.',
+    holdsWhile: [
+      ...CURRENTLY.sumsNotPublished.holdsWhile,
+      ...CURRENTLY.envelopeRootNotPublished.holdsWhile,
+    ],
+  },
+  {
+    text: 'Slutkontrollen och fastställandet för kuvertmodellen, med fasen CERTIFIED.',
+    holdsWhile: [...CURRENTLY.finalCheckOldModel.holdsWhile, neverWritten('CERTIFIED')],
+  },
+  {
+    text: 'Att det gamla flödet tas bort, med sina röstintyg, blinda signaturer och kvitton.',
+    holdsWhile: [
+      { file: 'src/lib/blind-client.ts', contains: 'createBlindedCredential' },
+      { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
+    ],
   },
 ]

@@ -1,4 +1,5 @@
 import type { DatabaseState, PendingVoteRow } from '@/app/api/demo/database-state/route'
+import { PHASES } from './code-facts'
 
 /**
  * "FÖLJ EN RÖST" UTAN ATT SIDAN SJÄLV BLIR KOPPLINGEN.
@@ -29,6 +30,14 @@ import type { DatabaseState, PendingVoteRow } from '@/app/api/demo/database-stat
  *    raderade raderna till liv i fliken. Löpnumren delas ut av
  *    ./live-refresh.ts när frågan skickas.
  *
+ *    Löpnumret säger dock bara i vilken ordning FRÅGORNA skickades, inte i
+ *    vilken ordning servern läste databasen. Två frågor i luften samtidigt
+ *    kan läsas i omvänd ordning, och då bär den nyare frågan den äldre bilden.
+ *    Därför vägras också en bild där en omröstning har gått baklänges i fasen,
+ *    eller där kopplingen åter står som oraderad. Faserna går bara framåt och
+ *    kopplingen återuppstår aldrig (spec 6.1), så en sådan bild kan bara vara
+ *    gammal, hur högt löpnummer den än har.
+ *
  * 4. Ingenting märker en rad i encrypted_vote. Det enda sidan säger om den
  *    tabellen efter stängningen är hur många anonyma rader den har.
  *
@@ -52,6 +61,11 @@ export type FollowState = {
   followedPendingVoteId: string | null
   /** Varför sidan senast glömde en rad den följde, så att den kan säga det. */
   forgotten: ForgetReason | null
+  /**
+   * Om den senaste hämtningen vägrades därför att den gick baklänges (punkt 3).
+   * Sidan säger det, i stället för att tyst visa en bild som inte uppdateras.
+   */
+  refused: boolean
 }
 
 export const INITIAL_FOLLOW_STATE: FollowState = {
@@ -60,6 +74,7 @@ export const INITIAL_FOLLOW_STATE: FollowState = {
   fetchedAt: null,
   followedPendingVoteId: null,
   forgotten: null,
+  refused: false,
 }
 
 export type FollowAction =
@@ -83,6 +98,30 @@ export function canFollow(snapshot: DatabaseState, row: PendingVoteRow): boolean
   return phaseOf(snapshot, row.electionId) === 'OPEN'
 }
 
+/** Specens ordning, OPEN först. Samma lista som fastabellen på sidan läser. */
+const PHASE_ORDER: readonly string[] = PHASES.map((row) => row.phase)
+
+/**
+ * Har någon omröstning gått baklänges mellan två bilder?
+ *
+ * Bara omröstningar som finns i båda bilderna jämförs. Nollställs och seedas
+ * databasen får omröstningen ett nytt id, och den nya omröstningen i OPEN är
+ * inte den gamla som gått baklänges. En fas som inte står i specens lista går
+ * inte att ordna, och vägrar därför ingenting.
+ */
+export function goesBackwards(previous: DatabaseState, next: DatabaseState): boolean {
+  return next.elections.some((after) => {
+    const before = previous.elections.find((election) => election.id === after.id)
+    if (!before) return false
+
+    if (before.linkClearedAt !== null && after.linkClearedAt === null) return true
+
+    const from = PHASE_ORDER.indexOf(before.phase)
+    const to = PHASE_ORDER.indexOf(after.phase)
+    return from !== -1 && to !== -1 && to < from
+  })
+}
+
 export function followReducer(state: FollowState, action: FollowAction): FollowState {
   switch (action.type) {
     case 'snapshot': {
@@ -90,12 +129,21 @@ export function followReducer(state: FollowState, action: FollowAction): FollowS
       // ersätta det, hur sent det än kommer fram.
       if (action.sequence <= state.sequence) return state
 
+      // Punkt 3 igen, sedd från databasen: en bild som går baklänges är äldre
+      // än den som visas, vad löpnumret än säger. Löpnumret flyttas inte fram,
+      // så att ett svar som skickades tidigare men lästes senare fortfarande
+      // kan tas emot.
+      if (state.snapshot !== null && goesBackwards(state.snapshot, action.snapshot)) {
+        return state.refused ? state : { ...state, refused: true }
+      }
+
       const next = action.snapshot
       const replaced = {
         ...state,
         snapshot: next,
         sequence: action.sequence,
         fetchedAt: action.fetchedAt,
+        refused: false,
       }
 
       if (state.followedPendingVoteId === null) return replaced

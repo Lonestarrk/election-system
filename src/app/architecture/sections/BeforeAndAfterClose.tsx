@@ -1,11 +1,13 @@
-import { CURRENTLY } from '../code-facts'
-import { listItemStyle } from './shared'
+import Link from 'next/link'
+import { listItemStyle, STATUS_PATH } from './shared'
 
 /**
  * Före och efter stängningen, enligt spec 3.1: vad väljaren ser, varför det
  * inte är ett kvitto, att ingen kod visas och att bara summorna publiceras.
  *
- * Allt utom rutan "I koden i dag" är design. Rutan läser code-facts.ts.
+ * Allt här är design. Vad som är byggt av det står på Utvecklingsstatus, under
+ * granskningsfrågorna "Kan väljaren kontrollera sin röst?" och "Räknades
+ * rösterna korrekt?", som läser code-facts.ts.
  */
 export function BeforeAndAfterClose() {
   return (
@@ -56,13 +58,11 @@ export function BeforeAndAfterClose() {
         efter att du ändrat dig.
       </p>
 
-      <div className="notice warning" style={{ marginTop: '1rem' }}>
-        <strong>I koden i dag</strong>
-        <div style={{ marginTop: '0.35rem' }}>
-          {CURRENTLY.deviceViewNotBuilt.text} {CURRENTLY.sumsNotPublished.text}{' '}
-          {CURRENTLY.votedMarkerNotKept.text}
-        </div>
-      </div>
+      <p className="muted small" style={{ marginBottom: 0 }}>
+        Visningen på enheten, markeringen &quot;har röstat&quot; och publiceringen: vad som är
+        byggt av dem står på{' '}
+        <Link href={`${STATUS_PATH}#granskning-i-dag`}>Utvecklingsstatus</Link>.
+      </p>
     </section>
   )
 }

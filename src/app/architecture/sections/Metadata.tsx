@@ -51,13 +51,12 @@ export function Metadata({ limitations }: { limitations: PageLimitations }) {
               {CURRENTLY.castSequenceStays.text}
             </MetadataRow>
             <MetadataRow
-              risk="Löpande resultat"
-              reveals="Differensen mellan två publicerade summor är rösterna däremellan, och under röstningen vet systemet vem som röstade när"
+              risk="Löpande resultat och enskilda röster"
+              reveals="Differensen mellan två publicerade summor är rösterna däremellan, och under röstningen vet systemet vem som röstade när. En röst som lämnas ut med sitt innehåll är ett resultat med en enda röst"
             >
-              Kuvertmodellen räknar ingenting under röstningen:{' '}
-              {CURRENTLY.decryptionNotBuilt.text} I designen får en dekryptering inte beställas
-              förrän fasen är STRIPPED. {CURRENTLY.oldFlowLiveResults.text}{' '}
-              <LimitationReference entry={liveResults} />
+              I kuvertmodellens design räknas ingenting under röstningen, och en dekryptering får
+              inte beställas förrän fasen är STRIPPED. {CURRENTLY.decryptionNotBuilt.text}{' '}
+              {CURRENTLY.oldFlowLiveResults.text} <LimitationReference entry={liveResults} />
             </MetadataRow>
             <MetadataRow
               risk="Personröst och små alternativ"

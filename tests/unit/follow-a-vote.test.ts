@@ -251,3 +251,83 @@ describe('efter stängningen', () => {
     expect(strippedElections(inconsistent)[0]).toMatchObject({ remainingEnvelopes: 1 })
   })
 })
+
+describe('en bild som går baklänges tas inte emot', () => {
+  /**
+   * Löpnumret avgör i vilken ordning FRÅGORNA skickades, inte i vilken ordning
+   * servern läste databasen. Två frågor i luften samtidigt kan läsas i omvänd
+   * ordning, och då bär den nyare frågan den äldre bilden: från före
+   * stängningen, med kopplingen. Faserna går bara framåt och kopplingen
+   * återuppstår aldrig (spec 6.1), så en sådan bild kan bara vara gammal.
+   */
+  const OPEN = snapshot('OPEN', [pendingRow()], [])
+  const STRIPPED = snapshot('STRIPPED', [], [encryptedRow()])
+
+  it('en fas som går baklänges vägras, och de raderade raderna kommer inte tillbaka', () => {
+    const afterClose = receive(INITIAL_FOLLOW_STATE, STRIPPED, 1)
+    const stale = receive(afterClose, OPEN, 2)
+
+    expect(stale.snapshot).toBe(STRIPPED)
+    expect(stale.snapshot?.votersDb.pendingVote).toEqual([])
+    expect(stale.refused).toBe(true)
+  })
+
+  it('en koppling som åter står som oraderad vägras, också när fasen inte ändrats', () => {
+    // Fasen står kvar, men linkClearedAt har blivit null: samma sak sedd från
+    // det andra fältet. Ingen av dem får gå tillbaka.
+    const cleared = snapshot('STRIPPED', [], [encryptedRow()])
+    const unCleared: DatabaseState = {
+      ...cleared,
+      elections: cleared.elections.map((election) => ({ ...election, linkClearedAt: null })),
+    }
+
+    const afterClose = receive(INITIAL_FOLLOW_STATE, cleared, 1)
+    const stale = receive(afterClose, unCleared, 2)
+
+    expect(stale.snapshot).toBe(cleared)
+    expect(stale.refused).toBe(true)
+  })
+
+  it('en fas som går framåt tas emot som vanligt', () => {
+    const open = receive(INITIAL_FOLLOW_STATE, OPEN, 1)
+    const closed = receive(open, STRIPPED, 2)
+
+    expect(closed.snapshot).toBe(STRIPPED)
+    expect(closed.refused).toBe(false)
+  })
+
+  it('en omröstning som inte fanns i den förra bilden jämförs inte', () => {
+    // Nollställs och seedas databasen får omröstningen ett nytt id. Den nya
+    // omröstningen i OPEN är inte den gamla som gått baklänges.
+    const reseeded: DatabaseState = {
+      ...OPEN,
+      elections: OPEN.elections.map((election) => ({ ...election, id: 'omrostning-2' })),
+    }
+
+    const afterClose = receive(INITIAL_FOLLOW_STATE, STRIPPED, 1)
+    const next = receive(afterClose, reseeded, 2)
+
+    expect(next.snapshot).toBe(reseeded)
+    expect(next.refused).toBe(false)
+  })
+
+  it('beskedet om en vägrad bild försvinner när nästa giltiga bild kommer', () => {
+    const afterClose = receive(INITIAL_FOLLOW_STATE, STRIPPED, 1)
+    const refused = receive(afterClose, OPEN, 2)
+    const later = receive(refused, snapshot('STRIPPED', [], [encryptedRow()]), 3)
+
+    expect(refused.refused).toBe(true)
+    expect(later.refused).toBe(false)
+    expect(later.sequence).toBe(3)
+  })
+
+  it('en vägrad bild flyttar inte fram löpnumret', () => {
+    // Annars skulle ett svar som skickades före det vägrade, men lästes efter
+    // stängningen, kastas som gammalt trots att det är det nyaste som finns.
+    const afterClose = receive(INITIAL_FOLLOW_STATE, STRIPPED, 1)
+    const refused = receive(afterClose, OPEN, 3)
+
+    expect(refused.sequence).toBe(1)
+    expect(receive(refused, STRIPPED, 2).sequence).toBe(2)
+  })
+})

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CHECKABLE_LIMITATIONS, KNOWN_LIMITATIONS } from '@/lib/known-limitations'
 
@@ -47,29 +47,36 @@ describe('kända begränsningar', () => {
   it.each(CHECKABLE_LIMITATIONS)(
     'begränsningen "$id" är fortfarande sann i koden',
     (limitation) => {
-      const marker = limitation.stillTrueIf!
-      const path = join(process.cwd(), marker.file)
+      // En post kan bära flera markörer, en per sak den påstår om koden. Alla
+      // måste hålla, annars stämmer inte längre allt i texten.
+      const markers = [limitation.stillTrueIf!].flat()
+      expect(markers.length, `${limitation.id} saknar markör`).toBeGreaterThan(0)
 
-      /**
-       * Filen saknas — antingen har den flyttats eller så har den funktion den
-       * bar tagits bort. Båda betyder att listan behöver ses över.
-       */
-      expect(
-        existsSync(path),
-        `${limitation.id}: filen ${marker.file} finns inte längre. ` +
-          'Har begränsningen lösts? Ta då bort posten ur src/lib/known-limitations.ts.',
-      ).toBe(true)
+      for (const marker of markers) {
+        const path = join(process.cwd(), marker.file)
 
-      const content = readFileSync(path, 'utf8')
+        /**
+         * Filen saknas — antingen har den flyttats eller så har den funktion den
+         * bar tagits bort. Båda betyder att listan behöver ses över.
+         */
+        expect(
+          existsSync(path),
+          `${limitation.id}: filen ${marker.file} finns inte längre. ` +
+            'Har begränsningen lösts? Ta då bort posten ur src/lib/known-limitations.ts.',
+        ).toBe(true)
 
-      expect(
-        content.includes(marker.contains),
-        `\n\n  BEGRÄNSNINGEN "${limitation.id}" SER UT ATT VARA LÖST.\n\n` +
-          `  Markören "${marker.contains}" finns inte längre i ${marker.file}.\n\n` +
-          '  Om du har löst problemet: ta bort posten ur src/lib/known-limitations.ts.\n' +
-          '  Arkitektursidan läser listan därifrån och uppdateras då av sig själv.\n\n' +
-          '  Om du bara har flyttat eller döpt om kod: peka om markören.\n',
-      ).toBe(true)
+        const content = readFileSync(path, 'utf8')
+
+        expect(
+          content.includes(marker.contains),
+          `\n\n  BEGRÄNSNINGEN "${limitation.id}" SER UT ATT VARA LÖST.\n\n` +
+            `  Markören "${marker.contains}" finns inte längre i ${marker.file}.\n\n` +
+            '  Om du har löst problemet: ta bort posten ur src/lib/known-limitations.ts.\n' +
+            '  Arkitektursidan läser listan därifrån och uppdateras då av sig själv.\n' +
+            '  Har du löst en del av det posten beskriver: skriv om texten och stryk markören.\n\n' +
+            '  Om du bara har flyttat eller döpt om kod: peka om markören.\n',
+        ).toBe(true)
+      }
     },
   )
 })
@@ -134,10 +141,99 @@ describe('ingen dokumentation upprepar listan', () => {
 })
 
 describe('arkitektursidan läser listan i stället för att upprepa den', () => {
-  const page = readFileSync(join(process.cwd(), 'src/app/architecture/page.tsx'), 'utf8')
+  /**
+   * Listan visas på Tekniska detaljer, inte på huvudsidan. Huvudsidan är
+   * skriven för den som aldrig hört ordet kryptering, och tabellen med
+   * begränsningarna är inte det. Men ingen läsare får kunna missa riskerna,
+   * så huvudsidan måste länka dit.
+   *
+   * Kontrollerna gäller filerna som faktiskt gör jobbet: den som renderar
+   * tabellen, sidan som visar den och huvudsidan som länkar dit. En kontroll
+   * av bara page.tsx hade passerat en tabell som slutat läsa listan, eftersom
+   * tabellen ligger i en sektionskomponent.
+   */
+  const ROOT = process.cwd()
+  const PAGE_DIRECTORY = join(ROOT, 'src/app/architecture')
 
-  it('importerar begränsningarna', () => {
-    expect(page).toMatch(/from '@\/lib\/known-limitations'/)
+  function sourceFilesUnder(directory: string): string[] {
+    return readdirSync(directory).flatMap((entry) => {
+      const full = join(directory, entry)
+      if (statSync(full).isDirectory()) return sourceFilesUnder(full)
+      return /\.tsx?$/.test(entry) ? [full] : []
+    })
+  }
+
+  const toRelative = (file: string) => relative(ROOT, file).split(sep).join('/')
+  const read = (file: string) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+  const files = sourceFilesUnder(PAGE_DIRECTORY)
+
+  /**
+   * Huvudsidans egna filer: page.tsx och det den importerar under
+   * src/app/architecture, utom livevyn. Livevyn visas bara i demoläget, och en
+   * länk som bara finns där når inte den som läser sidan i skarpt läge.
+   */
+  function mainPageFiles(): string[] {
+    const seen = new Set<string>()
+    const visit = (file: string) => {
+      if (seen.has(file) || /LiveDatabaseView\.tsx$/.test(file)) return
+      seen.add(file)
+      for (const [, specifier] of read(file).matchAll(/from '(\.{1,2}\/[^']+|@\/app\/architecture\/[^']+)'/g)) {
+        const base = specifier.startsWith('@/')
+          ? join(ROOT, 'src', specifier.slice(2))
+          : join(dirname(file), specifier)
+        const resolved = [`${base}.tsx`, `${base}.ts`].find((candidate) => existsSync(candidate))
+        if (resolved) visit(resolved)
+      }
+    }
+    visit(join(PAGE_DIRECTORY, 'page.tsx'))
+    return [...seen]
+  }
+
+  /**
+   * Texten som en läsare skulle se, ungefär: utan taggar, med `{' '}` och
+   * hopfogade strängar som ett enda mellanslag respektive en sträng, och med
+   * radbrytningar och indrag som ett mellanslag.
+   *
+   * Tidigare jämfördes bara formen `<td>Rubrik</td>`. Listans egen form är
+   * `<td><strong>…</strong></td>`, och en rubrik som radbryts i JSX hade inte
+   * heller hittats. Båda hade alltså kunnat stå hårdkodade utan att testet sa
+   * något.
+   */
+  function visibleText(source: string): string {
+    return source
+      .replace(/(['"])\s*\+\s*\1/g, '')
+      .replace(/\{\s*(['"])\s*\1\s*\}/g, ' ')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+  }
+
+  it('tabellen renderas av en enda fil, och den läser listan', () => {
+    const renderers = files.filter((file) => read(file).includes('KNOWN_LIMITATIONS.map('))
+
+    expect(renderers.map(toRelative)).toEqual(['src/app/architecture/sections/LimitationsList.tsx'])
+    expect(read(renderers[0]!)).toMatch(
+      /import \{[^}]*\bKNOWN_LIMITATIONS\b[^}]*\} from '@\/lib\/known-limitations'/,
+    )
+  })
+
+  it('tabellen visas på Tekniska detaljer', () => {
+    const showing = files
+      .filter((file) => file.endsWith('page.tsx'))
+      .filter((file) => /<LimitationsList\b/.test(read(file)))
+
+    expect(showing.map(toRelative)).toEqual(['src/app/architecture/technical/page.tsx'])
+    expect(read(showing[0]!)).toMatch(/import \{ LimitationsList \} from '\.\.\/sections\/LimitationsList'/)
+    // Ankaret som huvudsidans länk pekar på.
+    expect(read(join(PAGE_DIRECTORY, 'sections/LimitationsList.tsx'))).toContain('id="begransningar"')
+  })
+
+  it('huvudsidan länkar till listan, också utanför demoläget', () => {
+    const linking = mainPageFiles().filter((file) =>
+      read(file).includes('/architecture/technical#begransningar'),
+    )
+
+    expect(mainPageFiles().map(toRelative)).toContain('src/app/architecture/page.tsx')
+    expect(linking.length, 'ingen av huvudsidans filer länkar till begränsningslistan').toBeGreaterThan(0)
   })
 
   it('upprepar inga rubriker som fri text', () => {
@@ -145,32 +241,39 @@ describe('arkitektursidan läser listan i stället för att upprepa den', () => 
      * Det här är felet som orsakade problemet från början: samma påstående
      * skrivet på flera ställen, och bara ett av dem uppdaterat.
      *
-     * Rubrikerna ska komma från listan, inte stå i JSX. Hittas en rubrik som
-     * hårdkodad text betyder det att någon lagt tillbaka en dubblett.
-     *
-     * Hela sidans katalog granskas, inte bara page.tsx. Sidan är uppdelad i
-     * sektionskomponenter, och tabellen med listan ligger i en av dem; en
-     * kontroll av bara page.tsx hade passerat en dubblett där.
+     * Rubrikerna ska komma från listan, inte stå i koden. Hittas en rubrik som
+     * hårdkodad text betyder det att någon lagt tillbaka en dubblett. Hela
+     * sidans katalog granskas, med undersidorna.
      */
-    function componentsUnder(directory: string): string[] {
-      return readdirSync(directory).flatMap((entry) => {
-        const full = join(directory, entry)
-        if (statSync(full).isDirectory()) return componentsUnder(full)
-        return entry.endsWith('.tsx') ? [full] : []
-      })
-    }
-
-    const files = componentsUnder(join(process.cwd(), 'src/app/architecture'))
     expect(files.length).toBeGreaterThan(1)
 
     for (const file of files) {
-      const content = readFileSync(file, 'utf8')
+      const text = visibleText(read(file))
       for (const limitation of KNOWN_LIMITATIONS) {
         expect(
-          content.includes(`<td>${limitation.title}</td>`),
-          `${limitation.id}: rubriken står hårdkodad i ${file} i stället för att läsas ur listan`,
+          text.includes(limitation.title),
+          `${limitation.id}: rubriken står hårdkodad i ${toRelative(file)} i stället för att läsas ur listan`,
         ).toBe(false)
       }
     }
+  })
+
+  it('kontrollen hittar en rubrik i listans egen form, radbruten och uppdelad', () => {
+    // Kontrasten. Utan den kunde en normalisering som äter all text få
+    // kontrollen ovan att passera för evigt.
+    const title = KNOWN_LIMITATIONS[0]!.title
+    const [first, ...rest] = title.split(' ')
+    const forms = [
+      `<td>${title}</td>`,
+      `<td>\n  <strong>${title}</strong>\n</td>`,
+      `<td>\n  ${first}\n  ${rest.join('\n  ')}\n</td>`,
+      `<p>${first}{' '}\n${rest.join(' ')}</p>`,
+      `const x = '${first} ' +\n  '${rest.join(' ')}'`,
+    ]
+
+    for (const form of forms) {
+      expect(visibleText(form).includes(title), form).toBe(true)
+    }
+    expect(visibleText('<td>{entry.title}</td>').includes(title)).toBe(false)
   })
 })

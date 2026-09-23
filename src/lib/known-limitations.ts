@@ -24,19 +24,26 @@
  * hand, och de är markerade så.
  */
 
+/**
+ * Markör i källkoden som bevisar att begränsningen finns kvar.
+ *
+ * `file` läses relativt projektroten. `contains` måste förekomma i den.
+ * Försvinner strängen har problemet antagligen lösts, och testet kräver att
+ * posten tas bort härifrån.
+ */
+export type LimitationMarker = { file: string; contains: string }
+
 export type KnownLimitation = {
   id: string
   title: string
   /** Varför det är allvarligt, i klartext för den som läser arkitektursidan. */
   why: string
   /**
-   * Markör i källkoden som bevisar att begränsningen finns kvar.
-   *
-   * `file` läses relativt projektroten. `contains` måste förekomma i den.
-   * Försvinner strängen har problemet antagligen lösts, och testet kräver att
-   * posten tas bort härifrån.
+   * En markör, eller flera när posten påstår flera saker om koden. Med flera
+   * måste alla hålla: posten står kvar så länge vart och ett av påståendena i
+   * den är sant, och den som löser en del av problemet får skriva om texten.
    */
-  stillTrueIf?: { file: string; contains: string }
+  stillTrueIf?: LimitationMarker | LimitationMarker[]
 }
 
 export const KNOWN_LIMITATIONS: KnownLimitation[] = [
@@ -148,36 +155,38 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     id: 'receipt-proves-choice',
     title: 'Kvittot bevisar hur du röstat',
     why:
-      'Verifieringen visar vilket alternativ token gäller. Det gör att en väljare kan bevisa sin ' +
-      'röst för någon annan, vilket öppnar för röstköp. Det gäller varje val på valsedeln, inte ' +
-      'bara personröster — kvittot är problemet, inte hur finfördelat valet är. ' +
-      'LÖSNINGEN ÄR INTE ATT TA BORT KVITTOT. Att kvittot visar valet är också det som låter ' +
-      'väljaren kontrollera att rösten räknats rätt, och den kontrollen är hela skälet att ett ' +
-      'digitalt val alls går att lita på. Vägen framåt är kvittofrihet genom FÖRNEKBARHET: ' +
-      'väljaren ska kunna framställa ett kvitto som ser äkta ut men visar ett annat val, och som ' +
-      'en köpare inte kan skilja från ett riktigt. Då är ett kvitto inget bevis längre, och den ' +
-      'som betalar för röster köper luft. Kravet är att äkta och falskt kvitto ska vara ' +
-      'omöjliga att skilja på för alla utom väljaren själv.',
+      'Det gamla flödets verifiering visar vilket alternativ token gäller. Det gör att en väljare ' +
+      'kan bevisa sin röst för någon annan, vilket öppnar för röstköp. Det gäller varje val på ' +
+      'valsedeln, inte bara personröster — kvittot är problemet, inte hur finfördelat valet är. ' +
+      'Kuvertmodellen är därför utformad utan kvitto (spec 3.1). Före stängningen ska väljaren se ' +
+      'sin nuvarande röst på enheten hon röstade från, men enheten ska aldrig spara slumptalet, så ' +
+      'det den visar bevisar ingenting för någon annan. Ingen kod ska visas, och efter ' +
+      'stängningen ska bara summorna publiceras, så att det inte finns något per röst att visa ' +
+      'upp eller matcha mot. Posten gäller det gamla flödet och försvinner med det.',
     // `choice` i verifieringssvaret är precis det som bevisar valet.
     stillTrueIf: { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
   },
   {
     id: 'live-results-in-old-flow',
-    title: 'Det gamla flödets resultat är öppna medan röstningen pågår',
+    title: 'Det gamla flödets resultat och röster är öppna medan röstningen pågår',
     why:
       'Observatörsgränssnittet, som är öppet utan inloggning, lämnar ut antalet röster per parti ' +
-      'ur det gamla flödets tabell vote medan röstningen pågår. Det är ett löpande resultat, och ' +
-      'det får inte finnas: delsiffror påverkar dem som ännu inte röstat, och differensen mellan ' +
-      'två hämtningar är rösterna som lades däremellan. Har bara en person röstat under tiden är ' +
-      'differensen den personens röst. Kuvertmodellen räknar ingenting förrän kopplingen ' +
-      'raderats, men det gamla flödet räknar i klartext, när som helst.',
-    // Rutten räknar ur tabellen vote vid varje anrop, utan att fråga om
-    // röstningen stängt. När den under röstningen bara visar valdeltagandet,
-    // och resultat först när en valsedel räknats, försvinner anropet.
-    stillTrueIf: {
-      file: 'src/app/api/observer/election/route.ts',
-      contains: 'getElectionResults(election.id)',
-    },
+      'ur det gamla flödets tabell vote medan röstningen pågår. Rutten /api/observer/votes går ' +
+      'längre och lämnar ut varje röst en och en, med sitt innehåll: parti, kandidat eller ' +
+      'svarsalternativ. Det är ett löpande resultat, och det får inte finnas: delsiffror påverkar ' +
+      'dem som ännu inte röstat, och differensen mellan två hämtningar är rösterna som lades ' +
+      'däremellan. Har bara en person röstat under tiden är differensen den personens röst. I ' +
+      'kuvertmodellens design räknas ingenting förrän kopplingen raderats, men det gamla flödet ' +
+      'räknar i klartext, när som helst.',
+    stillTrueIf: [
+      // Rutten räknar ur tabellen vote vid varje anrop, utan att fråga om
+      // röstningen stängt. När den under röstningen bara visar valdeltagandet,
+      // och resultat först när en valsedel räknats, försvinner anropet.
+      { file: 'src/app/api/observer/election/route.ts', contains: 'getElectionResults(election.id)' },
+      // Varje röst lämnas ut med sitt val. Tas valet bort ur svaret, eller
+      // rutten helt, försvinner raden.
+      { file: 'src/app/api/observer/votes/route.ts', contains: 'ballotPartyId: true,' },
+    ],
   },
   {
     id: 'municipality-beside-identity-hash',

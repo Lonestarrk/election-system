@@ -1,8 +1,10 @@
-import { CURRENTLY, PHASES } from '../code-facts'
+import Link from 'next/link'
+import { PHASES } from '../code-facts'
+import { STATUS_PATH } from './shared'
 
 /**
- * Faserna, med specens tabell (6.1) och en kolumn om vad koden gör med varje
- * fas i dag. Den kolumnen läses ur code-facts.ts och bär markörer.
+ * Faserna, med specens tabell (6.1). Vad koden gör med varje fas i dag står
+ * på Utvecklingsstatus, som läser samma rader ur code-facts.ts.
  */
 export function Phases() {
   return (
@@ -12,7 +14,7 @@ export function Phases() {
         Ordningen ska vara omöjlig att kasta om, inte bara osannolik. Därför är fasen ett fält på
         omröstningen och inte en jämförelse mot klockan: en klocka som går fel ändrar beteendet
         tyst, medan en fasövergång är en händelse som någon utfört. Enligt specen går fasen bara
-        framåt. {CURRENTLY.castOnlyWhileOpen.text}
+        framåt.
       </p>
 
       <div className="table-wrap" style={{ marginTop: '1rem' }}>
@@ -23,7 +25,6 @@ export function Phases() {
               <th>Kopplingen finns</th>
               <th>Röster tas emot</th>
               <th>Härnäst</th>
-              <th>I koden i dag</th>
             </tr>
           </thead>
           <tbody>
@@ -41,7 +42,6 @@ export function Phases() {
                     {yesNo(row.acceptsVotes, previous?.acceptsVotes)}
                   </td>
                   <td data-label="Härnäst">{row.next}</td>
-                  <td data-label="I koden i dag">{row.today.text}</td>
                 </tr>
               )
             })}
@@ -50,11 +50,11 @@ export function Phases() {
       </div>
 
       <p className="muted small" style={{ marginTop: '1rem' }}>
-        De fyra första kolumnerna är specens tabell. Att CLOSED och STRIPPED är skilda tillstånd
-        gör valideringsfönstret synligt: kopplingen finns, men ingen röst tas emot. I specen är
-        övergången till STRIPPED dessutom villkoret för att något ska få dekrypteras, så att
-        ingen dekryptering kan beställas förrän kopplingen bevisligen är borta.{' '}
-        {CURRENTLY.decryptionGateNotBuilt.text}
+        Tabellen är specens. Att CLOSED och STRIPPED är skilda tillstånd gör valideringsfönstret
+        synligt: kopplingen finns, men ingen röst tas emot. I specen är övergången till STRIPPED
+        dessutom villkoret för att något ska få dekrypteras, så att ingen dekryptering kan beställas
+        förrän kopplingen bevisligen är borta. Vilka faser koden skriver i dag står på{' '}
+        <Link href={`${STATUS_PATH}#faserna-i-dag`}>Utvecklingsstatus</Link>.
       </p>
       <p className="muted small">
         &quot;Nej&quot; om kopplingen betyder att raderna är borta ur den levande databasen.

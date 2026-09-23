@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { DatabaseState, ForeignKey } from '@/app/api/demo/database-state/route'
 import { ColumnList, DbTable, preStyle, rowCount, type Row } from './db-table'
 
@@ -12,24 +13,32 @@ import { ColumnList, DbTable, preStyle, rowCount, type Row } from './db-table'
  *
  * Allt räknas fram ur den aktuella bilden av databaserna. Frågan är den som
  * rutten körde, och nycklarna och kolumnerna kommer ur information_schema.
+ *
+ * Avsnittet står på Tekniska detaljer och hämtar sin bild genom
+ * `LiveLinkQuestion` i ./LiveDatabaseView.tsx, med samma skydd som livevyn på
+ * huvudsidan.
  */
 export function LinkQuestion({
   snapshot,
   anyStripped,
+  status,
 }: {
   snapshot: DatabaseState
   /** Om någon omröstning har fått sin koppling raderad. */
   anyStripped: boolean
+  /** När bilden hämtades, och knappen som hämtar den igen. */
+  status?: ReactNode
 }) {
   const { analysis } = snapshot
 
   return (
     <section className="card" aria-labelledby="koppling">
       <h2 id="koppling">Finns det någon koppling?</h2>
+      {status}
       <p className="muted small">
         Ja, med flit, medan röstningen pågår. Det är skillnaden mot den gamla modellen, där
         kopplingen inte gick att skapa. Frågan man skulle vilja ställa, vem som röstade på vad, går
-        nu att skriva. Den här körs mot röstlängden varje gång livevyn hämtas:
+        nu att skriva. Den här körs mot röstlängden varje gång databasernas innehåll hämtas:
       </p>
       <pre className="mono small" style={preStyle}>
         {analysis.linkQuery.sql}

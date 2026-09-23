@@ -1,11 +1,18 @@
 'use client'
 
-import { useEffect, useMemo, useReducer, useState } from 'react'
+import Link from 'next/link'
+import { useEffect, useMemo, useReducer, useState, type Dispatch } from 'react'
 import type { DatabaseState, ElectionState } from '@/app/api/demo/database-state/route'
 import { CURRENTLY } from './code-facts'
 import { Cipher, DbTable, headerRowStyle, PhaseBadge, timestamp } from './db-table'
 import { FollowAVote } from './FollowAVote'
-import { followedRow, followReducer, INITIAL_FOLLOW_STATE } from './follow-a-vote'
+import {
+  followedRow,
+  followReducer,
+  INITIAL_FOLLOW_STATE,
+  type FollowAction,
+  type FollowState,
+} from './follow-a-vote'
 import { LinkQuestion } from './LinkQuestion'
 import {
   createSnapshotLoader,
@@ -17,13 +24,22 @@ import {
 /**
  * LIVEVYN.
  *
- * Visar båda databasernas innehåll som det ser ut just nu, och bär avsnitten
- * "Finns det någon koppling?" och "Följ en röst", som båda läser samma bild.
+ * Visar båda databasernas innehåll som det ser ut just nu. Den finns i två
+ * delar som läser samma sorts bild: `LiveDatabaseView` på huvudsidan, med
+ * tabellerna och "Följ en röst", och `LiveLinkQuestion` på Tekniska detaljer,
+ * med "Finns det någon koppling?". Frågan och databasgränsen är tekniska och
+ * hör hemma där; tabellerna och "Följ en röst" är det användaren bad att få
+ * behålla på huvudsidan.
  *
- * KOMPONENTEN AVGÖR INTE SJÄLV OM DEN FÅR VISAS. Sidan renderar den bara när
- * `isDemoMode()` säger ja, så i skarpt läge finns den inte i sidan alls och
- * ingen hämtning görs. Rutten den hämtar från frågar samma funktion och
- * svarar 404 annars. Ett eget villkor här hade varit ett ställe till att
+ * HÄMTNINGEN FINNS BARA HÄR. Båda delarna hämtar genom `useLiveSnapshot`
+ * nedan, och ingen annan fil frågar efter /api/demo/database-state
+ * (tests/security/architecture-page.test.ts). Två ställen att hämta från hade
+ * varit två ställen där skyddet nedan kunde glömmas.
+ *
+ * KOMPONENTERNA AVGÖR INTE SJÄLVA OM DE FÅR VISAS. Varje sida renderar dem
+ * bara när `isDemoMode()` säger ja, så i skarpt läge finns de inte i sidan
+ * alls och ingen hämtning görs. Rutten de hämtar från frågar samma funktion
+ * och svarar 404 annars. Ett eget villkor här hade varit ett ställe till att
  * glömma när uppgift 17 byter predikatet.
  *
  * Tillståndet hålls av `followReducer` i follow-a-vote.ts, och hämtningen av
@@ -36,12 +52,19 @@ import {
 /** Hur ofta bilden hämtas om medan fliken syns. */
 const REFRESH_INTERVAL_MS = 10_000
 
-type Props = {
-  /** Rubriken på begränsningen link-exists-during-voting, läst ur listan av sidan. */
-  linkLimitationTitle: string
+type LiveSnapshot = {
+  state: FollowState
+  dispatch: Dispatch<FollowAction>
+  loadError: string | null
+  load: () => Promise<void>
 }
 
-export function LiveDatabaseView({ linkLimitationTitle }: Props) {
+/**
+ * Hämtar bilden direkt, sedan var tionde sekund medan fliken syns, och direkt
+ * när den blir synlig igen. Varje bild går genom `followReducer`, som vägrar
+ * en bild som är äldre än den som visas.
+ */
+function useLiveSnapshot(): LiveSnapshot {
   const [state, dispatch] = useReducer(followReducer, INITIAL_FOLLOW_STATE)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -79,6 +102,37 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
     [load],
   )
 
+  return { state, dispatch, loadError, load }
+}
+
+/** När bilden hämtades, felet om den senaste hämtningen misslyckades, och en vägrad bild. */
+function FetchStatus({ state, loadError }: Pick<LiveSnapshot, 'state' | 'loadError'>) {
+  return (
+    <>
+      <p className="muted small" style={{ marginTop: '0.5rem' }}>
+        Hämtad kl {state.fetchedAt}. Uppdateras var tionde sekund medan fliken syns, och direkt
+        när den blir synlig igen.
+        {loadError && <span style={{ color: 'var(--danger)' }}> {loadError}</span>}
+      </p>
+      {state.refused && (
+        <p className="small" style={{ color: 'var(--warning)' }} role="status">
+          Den senaste hämtningen visas inte. I den hade en omröstning gått tillbaka till en tidigare
+          fas, eller fått sin koppling oraderad igen, och det kan inte hända: en fas går bara
+          framåt. Hämtningen var alltså äldre än det som visas. Har databasen nollställts, ladda om
+          sidan.
+        </p>
+      )}
+    </>
+  )
+}
+
+type Props = {
+  /** Rubriken på begränsningen link-exists-during-voting, läst ur listan av sidan. */
+  linkLimitationTitle: string
+}
+
+export function LiveDatabaseView({ linkLimitationTitle }: Props) {
+  const { state, dispatch, loadError, load } = useLiveSnapshot()
   const snapshot = state.snapshot
 
   if (snapshot === null) {
@@ -104,11 +158,12 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
             Uppdatera nu
           </button>
         </div>
-        <p className="muted small" style={{ marginTop: '0.5rem' }}>
-          Hämtad kl {state.fetchedAt}. Uppdateras var tionde sekund medan fliken syns, och direkt
-          när den blir synlig igen.
-          {loadError && <span style={{ color: 'var(--danger)' }}> {loadError}</span>}
+        <p style={{ marginTop: '0.75rem' }}>
+          De två urnorna i tidslinjen finns här på riktigt, som två databaser: röstlängden, som vet
+          vem som har röstat, och röstdatabasen, som aldrig får veta det. Vyn är teknisk, eftersom
+          den visar databaserna precis som de ser ut inifrån.
         </p>
+        <FetchStatus state={state} loadError={loadError} />
 
         <div className="notice warning">
           <strong>Det här är en insiders vy.</strong>
@@ -144,7 +199,13 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
         <p className="muted small" style={{ marginTop: '0.75rem' }}>
           Fasen och kuvertroten står i röstlängden, nyckeln och räkningen i röstdatabasen.
           Kuvertroten är ett åtagande om exakt vilka kuvert som fanns vid stängningen, se
-          granskningen längre ned. {CURRENTLY.envelopeRootNotPublished.text}
+          granskningen på Tekniska detaljer. {CURRENTLY.envelopeRootNotPublished.text}
+        </p>
+        <p className="muted small">
+          Frågan &quot;vem röstade på vad&quot;, körd mot databaserna just nu, och vad den visar om
+          gränsen mellan dem står under{' '}
+          <Link href="/architecture/technical#koppling">Finns det någon koppling?</Link> på Tekniska
+          detaljer.
         </p>
       </section>
 
@@ -313,8 +374,6 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
         />
       </section>
 
-      <LinkQuestion snapshot={snapshot} anyStripped={anyStripped} />
-
       <FollowAVote
         state={state}
         snapshot={snapshot}
@@ -322,6 +381,41 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
         linkLimitationTitle={linkLimitationTitle}
       />
     </>
+  )
+}
+
+/**
+ * "Finns det någon koppling?", på Tekniska detaljer. Samma hämtning och samma
+ * skydd som huvudsidans livevy, men bara frågan och databasgränsen.
+ */
+export function LiveLinkQuestion() {
+  const { state, loadError, load } = useLiveSnapshot()
+  const snapshot = state.snapshot
+
+  if (snapshot === null) {
+    return (
+      <section className="card" aria-labelledby="koppling">
+        <h2 id="koppling">Finns det någon koppling?</h2>
+        <p className="muted small">{loadError ?? 'Hämtar databasernas innehåll …'}</p>
+      </section>
+    )
+  }
+
+  return (
+    <LinkQuestion
+      snapshot={snapshot}
+      anyStripped={snapshot.elections.some((election) => election.linkClearedAt !== null)}
+      status={
+        <>
+          <div className="button-row" style={{ marginTop: '0.25rem' }}>
+            <button type="button" className="secondary" onClick={() => void load()}>
+              Uppdatera nu
+            </button>
+          </div>
+          <FetchStatus state={state} loadError={loadError} />
+        </>
+      }
+    />
   )
 }
 

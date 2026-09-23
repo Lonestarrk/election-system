@@ -147,24 +147,50 @@ export function FollowAVote({
       {stripped.length === 0 ? (
         <p className="muted small">Ingen omröstning har stängts än.</p>
       ) : (
-        stripped.map((election) => (
-          <div
-            key={election.electionId}
-            className="notice success"
-            style={{ marginTop: '0.75rem' }}
-            role="status"
-          >
-            <strong>
-              {election.name}: {rowCount(election.anonymousRows)} i encrypted_vote,{' '}
-              {rowCount(election.remainingEnvelopes)} kvar i pending_vote.
-            </strong>
-            <div style={{ marginTop: '0.35rem' }}>
-              Ingen av raderna i encrypted_vote pekar på en väljare, och sidan märker ingen av dem.
-              Vilken som var en viss väljares går inte att säga ur databasen längre, inte heller för
-              väljaren själv.
+        stripped.map((election) => {
+          /**
+           * Kopplingen står som raderad, men kuvert ligger ändå kvar. Då finns
+           * kopplingen för dem, och rutan får inte säga motsatsen i grönt. Det
+           * ska inte kunna hända efter en stängning, eftersom raderingen och
+           * fasövergången sker i samma transaktion, och därför är det värt en
+           * varning och inte en fotnot.
+           */
+          const linkRemains = election.remainingEnvelopes > 0
+
+          return (
+            <div
+              key={election.electionId}
+              className={linkRemains ? 'notice warning' : 'notice success'}
+              style={{ marginTop: '0.75rem' }}
+              role="status"
+            >
+              <strong>
+                {election.name}: {rowCount(election.anonymousRows)} i encrypted_vote,{' '}
+                {rowCount(election.remainingEnvelopes)} kvar i pending_vote.
+              </strong>
+              <div style={{ marginTop: '0.35rem' }}>
+                {linkRemains ? (
+                  <>
+                    Kopplingen står som raderad, men{' '}
+                    {election.remainingEnvelopes === 1
+                      ? 'ett kuvert ligger'
+                      : `${election.remainingEnvelopes} kuvert ligger`}{' '}
+                    ändå kvar i pending_vote. För{' '}
+                    {election.remainingEnvelopes === 1 ? 'det' : 'dem'} finns kopplingen kvar:
+                    varje sådan rad pekar på en väljare och bär ett chiffer. Det ska inte kunna
+                    hända efter en stängning, och det behöver utredas.
+                  </>
+                ) : (
+                  <>
+                    Ingen av raderna i encrypted_vote pekar på en väljare, och sidan märker ingen av
+                    dem. Vilken som var en viss väljares går inte att säga ur databasen längre, inte
+                    heller för väljaren själv.
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        ))
+          )
+        })
       )}
 
       <div className="notice danger" style={{ marginTop: '1.5rem' }}>
