@@ -2867,6 +2867,265 @@ git add -A && git commit -m "Arkitekturen beskriver dubbla kuvert; fyra begräns
 
 ---
 
+## Task 16: Demoläge och skarpt läge
+
+**Files:**
+- Create: `src/lib/runtime-mode.ts`, `src/app/api/mode/route.ts`
+- Modify: `src/modules/eligibility/bankid/index.ts`, `prisma/votes/schema.prisma`, `prisma/voters/schema.prisma`
+- Test: `tests/unit/runtime-mode.test.ts`, `tests/security/demo-mode-cannot-reach-production.test.ts`
+
+**Interfaces:**
+- Produces:
+  ```ts
+  export type RuntimeMode = 'DEMO' | 'SHARP'
+  export type Requirement = { id: string; met: boolean; detail: string }
+  export function runtimeMode(): RuntimeMode
+  export function sharpModeRequirements(): Requirement[]
+  export function assertBootable(): void
+  ```
+
+- [ ] **Steg 1: Skriv de fallerande testerna**
+
+```ts
+// tests/unit/runtime-mode.test.ts
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+async function load(env: Record<string, string>) {
+  vi.resetModules()
+  for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value)
+  return import('@/lib/runtime-mode')
+}
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
+describe('vilket läge appen kör i', () => {
+  it('skarpt är förvalt — demoläge kräver ett aktivt val', async () => {
+    // Förvalet måste vara det säkra. En glömd variabel ska inte kunna
+    // innebära att vem som helst kan logga in som vem som helst.
+    const { runtimeMode } = await load({ NODE_ENV: 'development' })
+
+    expect(runtimeMode()).toBe('SHARP')
+  })
+
+  it('demoläge kräver både flaggan och att det inte är produktion', async () => {
+    const demo = await load({ NODE_ENV: 'development', DEMO_MODE: 'true' })
+    expect(demo.runtimeMode()).toBe('DEMO')
+
+    const prod = await load({ NODE_ENV: 'production', DEMO_MODE: 'true' })
+    expect(prod.runtimeMode()).toBe('SHARP')
+  })
+})
+
+describe('produktion med demoflaggan satt', () => {
+  it('kraschar vid start i stället för att välja ett läge', async () => {
+    /**
+     * DET FARLIGASTE UTFALLET I HELA APPEN.
+     *
+     * I demoläge kringgår demoidentiteterna BankID helt — vem som helst kan
+     * rösta som vem som helst. En produktionsdeploy som tyst hamnar i demoläge
+     * vore därför inte en felkonfiguration utan ett totalhaveri för valet.
+     *
+     * Att tyst falla tillbaka till skarpt läge vore heller inte rätt: då döljer
+     * vi att någon försökt sätta flaggan. Ett valsystem som inte startar är
+     * bättre än ett som startar i fel läge.
+     */
+    const { assertBootable } = await load({ NODE_ENV: 'production', DEMO_MODE: 'true' })
+
+    expect(() => assertBootable()).toThrow(/DEMO_MODE/)
+  })
+})
+
+describe('skarpt läge är en checklista, inte en boolean', () => {
+  it('räknar upp exakt vad som saknas', async () => {
+    const { sharpModeRequirements } = await load({
+      NODE_ENV: 'production',
+      COOKIE_SECURE: 'false',
+      APP_ORIGIN: 'http://val.example',
+      IDENTITY_PEPPER: 'byt-ut-mig-detta-ar-bara-for-lokal-utveckling-0000',
+    })
+
+    const unmet = sharpModeRequirements().filter((requirement) => !requirement.met)
+
+    expect(unmet.map((requirement) => requirement.id).sort()).toEqual([
+      'bankid-real',
+      'cookie-secure',
+      'https-origin',
+      'pepper-changed',
+      'trustee-passphrases-changed',
+    ])
+  })
+
+  it('vägrar starta så länge något krav är ouppfyllt', async () => {
+    const { assertBootable } = await load({ NODE_ENV: 'production', COOKIE_SECURE: 'false' })
+
+    // Meddelandet ska räkna upp vad som saknas. Ett "konfigurationsfel" utan
+    // lista tvingar den som driftsätter att gissa.
+    expect(() => assertBootable()).toThrow(/cookie-secure/)
+  })
+
+  it('demoläge behöver inte uppfylla listan', async () => {
+    const { assertBootable } = await load({ NODE_ENV: 'development', DEMO_MODE: 'true' })
+
+    expect(() => assertBootable()).not.toThrow()
+  })
+})
+```
+
+```ts
+// tests/security/demo-mode-cannot-reach-production.test.ts
+import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+
+describe('demoläget kan inte nå produktion', () => {
+  it('varje demorutt är villkorad på lägesfunktionen', () => {
+    // Statisk kontroll, av samma skäl som api-surface-testet: en ny demorutt
+    // ska inte kunna glömmas bort.
+    for (const route of ['bankid-scan', 'reset-rate-limits', 'database-state']) {
+      const content = readFileSync(`src/app/api/demo/${route}/route.ts`, 'utf8')
+
+      expect(content, `${route} saknar lägeskontroll`).toMatch(
+        /runtimeMode\(\) !== 'DEMO'|!isDemoMode/,
+      )
+    }
+  })
+
+  it('lägesfunktionen läser inte bara en enda variabel', () => {
+    // Ett `DEMO_MODE === 'true'` utan NODE_ENV-villkor vore en enda felsatt
+    // miljövariabel från katastrof.
+    const content = readFileSync('src/lib/runtime-mode.ts', 'utf8')
+
+    expect(content).toContain('NODE_ENV')
+    expect(content).toContain('DEMO_MODE')
+  })
+})
+```
+
+- [ ] **Steg 2: Kör och se att de fallerar**
+
+Kör: `npx vitest run tests/unit/runtime-mode.test.ts`
+Förväntat: FAIL, modulen saknas
+
+- [ ] **Steg 3: Implementera `runtime-mode.ts`**
+
+```ts
+/**
+ * DEMOLÄGE OCH SKARPT LÄGE.
+ *
+ * I demoläge kringgår demoidentiteterna BankID helt — vem som helst kan rösta
+ * som vem som helst. Det är hela poängen med en demo, och det är också därför
+ * den här filen är en av de farligaste i projektet.
+ *
+ * TRE REGLER, OCH DE ÄR ALLA DEFENSIVA
+ *
+ *   1. Skarpt läge är förvalt. En glömd variabel ger det säkra utfallet.
+ *   2. Demoläge kräver BÅDE flaggan och att det inte är produktion. En enda
+ *      felsatt variabel räcker alltså inte.
+ *   3. Produktion med flaggan satt KRASCHAR. Att tyst falla tillbaka till
+ *      skarpt läge vore att dölja att någon försökt.
+ *
+ * Ett valsystem som inte startar är bättre än ett som startar i fel läge.
+ *
+ * SKARPT LÄGE ÄR EN CHECKLISTA
+ *
+ * Ett läge som bara betyder "inte demo" ger falsk trygghet: appen kan köra med
+ * exempelpeppar över http med demofraser för förtroendemännen och ändå kalla
+ * sig skarp. Kraven räknas därför upp, och appen vägrar starta tills alla är
+ * uppfyllda — med en lista på vad som saknas, så att den som driftsätter
+ * slipper gissa.
+ */
+
+export type RuntimeMode = 'DEMO' | 'SHARP'
+export type Requirement = { id: string; met: boolean; detail: string }
+
+const EXAMPLE_PEPPER = 'byt-ut-mig-detta-ar-bara-for-lokal-utveckling-0000'
+
+export function runtimeMode(): RuntimeMode {
+  if (process.env.NODE_ENV === 'production') return 'SHARP'
+  return process.env.DEMO_MODE === 'true' ? 'DEMO' : 'SHARP'
+}
+
+export function sharpModeRequirements(): Requirement[] {
+  return [
+    {
+      id: 'bankid-real',
+      met: process.env.BANKID_CERT_PATH !== undefined,
+      detail: 'BANKID_CERT_PATH saknas — ingen riktig legitimering är konfigurerad.',
+    },
+    {
+      id: 'cookie-secure',
+      met: process.env.COOKIE_SECURE === 'true',
+      detail: 'COOKIE_SECURE måste vara true, annars går sessionscookien i klartext.',
+    },
+    {
+      id: 'https-origin',
+      met: (process.env.APP_ORIGIN ?? '').split(',').every((o) => o.trim().startsWith('https://')),
+      detail: 'Varje origin i APP_ORIGIN måste vara https.',
+    },
+    {
+      id: 'pepper-changed',
+      met: process.env.IDENTITY_PEPPER !== EXAMPLE_PEPPER,
+      detail: 'IDENTITY_PEPPER är kvar på exempelvärdet — hela röstlängden vore läsbar.',
+    },
+    {
+      id: 'trustee-passphrases-changed',
+      met: process.env.SEEDED_TRUSTEE_PASSPHRASES !== 'true',
+      detail: 'Förtroendemännens fraser är de seedade, som står i repot.',
+    },
+  ]
+}
+
+export function assertBootable(): void {
+  if (process.env.NODE_ENV === 'production' && process.env.DEMO_MODE === 'true') {
+    throw new Error(
+      'DEMO_MODE är satt i produktion. I demoläge kan vem som helst rösta som vem som ' +
+        'helst. Appen startar inte.',
+    )
+  }
+
+  if (runtimeMode() === 'DEMO') return
+
+  const unmet = sharpModeRequirements().filter((requirement) => !requirement.met)
+  if (unmet.length === 0) return
+
+  throw new Error(
+    'Skarpt läge kan inte startas. Följande krav är ouppfyllda:\n' +
+      unmet.map((requirement) => `  ${requirement.id}: ${requirement.detail}`).join('\n'),
+  )
+}
+```
+
+- [ ] **Steg 4: Låt omröstningen bära sitt läge**
+
+Lägg till på `Election` i båda schemana:
+
+```prisma
+  /// Vilket läge omröstningen skapades i.
+  ///
+  /// En server i skarpt läge vägrar röra en DEMO-omröstning, och tvärtom.
+  /// Utan det kan demoröster hamna i ett skarpt val — och en demoomröstning
+  /// skulle kunna fastställas som riktig.
+  mode String @default("DEMO")
+```
+
+`castEncryptedBallot`, `closeElection` och `certifyElection` avvisar en omröstning vars
+`mode` skiljer sig från `runtimeMode()`.
+
+- [ ] **Steg 5: Kör testerna**
+
+Kör: `npx vitest run tests/unit/runtime-mode.test.ts tests/security/demo-mode-cannot-reach-production.test.ts`
+Förväntat: PASS, 8 tester
+
+- [ ] **Steg 6: Committa**
+
+```bash
+git add src/lib/runtime-mode.ts src/app/api/mode/route.ts prisma/ tests/unit/runtime-mode.test.ts tests/security/demo-mode-cannot-reach-production.test.ts
+git commit -m "Demoläge och skarpt läge, med produktion som felläge"
+```
+
+---
+
 ## Sjalvgranskning
 
 **Spec-tackning.** Avsnitt 4.1–4.5 till uppgift 1–3. Avsnitt 4.3 till uppgift 4. Avsnitt
@@ -2886,14 +3145,19 @@ funktioner som maste vara bitidentiska pa bada sidor.
 4 till uppgift 3 och 12. 5 till uppgift 2. 6 till uppgift 1 och 12. 7 och 8 till uppgift
 8 och 10.
 
-**Oppna beslut som inte hor till nagon uppgift, och som star i specen:**
+**Beslut som tagits och som uppgifterna maste folja:**
 
-- **Vem som haller de tre andelarna.** Planen lagrar dem skyddade i databasen, vilket
-  demonstrerar mekaniken men inte skyddet. Star som `trusted-dealer`.
-- **Om signaturerna sparas eller forstors vid skalningen.** Forstorda ger starkast
-  valhemlighet men lamnar bara rapportens ord som bevis; ett forseglat arkiv kraver tva
-  oberoende intrang i stallet for ett. Spec avsnitt 7.3.
-- **En valjare som stryks ur rostlangden efter att ha rostat.** Kaskaden raderar hennes
-  liggande rost tyst. Antagligen ratt, men det ska vara ett beslut. Spec avsnitt 7.4.
-- **Ingen preliminar rakning under pagaende rostning.** Spec avsnitt 6.1. Det ar ett
-  avsiktligt bortval, inte en glomd funktion.
+- **Andelarna krypteras med en losenfras per fortroendeman**, aldrig lagrad. Uppgift 6
+  maste alltsa ta emot tre fraser vid valets skapande, och uppgift 12 begara dem vid
+  dekrypteringen. Demofraser seedas och skrivs ut. Spec 4.5.
+- **Signaturerna forstors vid skalningen, men en Merklerot over (ciphertextHash,
+  signatur) publiceras forst.** Uppgift 11 maste berakna och publicera roten fore
+  raderingen, inte efter. Spec 7.3.
+- **En struken valjares rost raknas anda.** Uppgift 5 far darfor INTE satta kaskad fran
+  VoterStatus till PendingVote, och uppgift 10 far INTE kontrollera nuvarande
+  rostberattigande. Spec 7.4.
+- **Ingen preliminar rakning under pagaende rostning.** Spec 6.2. Ett avsiktligt bortval,
+  inte en glomd funktion — och satsvis overforing loser tidskopplingen men inte
+  andringsdriften eller det juridiska.
+- **Skarpt lage ar forvalt och ar en checklista.** Uppgift 16. Demolage kraver bade
+  flaggan och att det inte ar produktion; produktion med flaggan satt kraschar vid start.

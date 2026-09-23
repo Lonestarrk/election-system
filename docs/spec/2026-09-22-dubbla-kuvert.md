@@ -143,6 +143,20 @@ Nyckeln genereras av en betrodd utdelare vid valets skapande och den ursprunglig
 nyckeln raderas direkt efter delningen. Det är svagare än distribuerad nyckelgenerering
 och står som känd begränsning.
 
+**Varje andel krypteras med scrypt av en lösenfras som förtroendemannen sätter och som
+aldrig lagras.** Skälet är att alternativet inte skyddar något: en andel krypterad med en
+nyckel härledd ur appens miljö är läsbar för var och en som har databasen och miljön —
+alltså precis vad en komprometterad appserver ger, eftersom appen behöver båda för att
+fungera. Tre andelar i samma låda är inte tre innehavare.
+
+Med lösenfraser ger en databasdump plus miljön ingenting. Kvarvarande svaghet: frasen
+skrivs in på vår egen sida, så en komprometterad app kan fånga den i det ögonblicket. Det
+kräver intrång vid ceremonin och inte mot data i vila — och ceremonin sker efter
+skalningen, när det farliga fönstret redan är stängt.
+
+I demoläge seedas tre kända fraser som skrivs ut av `npm run seed`, så att en person kan
+spela alla tre. I skarpt läge vägrar appen starta om fraserna är de seedade.
+
 Varje förtroendeman bidrar med en partiell dekryptering `c1^{x_i}` plus ett
 Chaum–Pedersen-bevis att samma `x_i` användes som i hens publika andel. Bidragen
 kombineras med Lagrange-koefficienter.
@@ -413,7 +427,7 @@ svagare på valhemlighet än den föregående. Därför:
   administratören att utreda, och inte längre än så.
 - **Loggas:** att valideringen körts, av vem och när. Att läsa kopplingen ska synas.
 
-### 7.3 Öppet beslut: sparas signaturerna eller förstörs de?
+### 7.3 Beslut: signaturerna förstörs, men en rot publiceras först
 
 Signaturen bär väljarens certifikat, alltså personnummer och namn. Den får därför aldrig
 följa med till `votes_db`. Men förstörs den vid skalningen försvinner också möjligheten
@@ -424,16 +438,34 @@ att i efterhand bevisa att rösterna var äkta — kvar finns bara valideringsra
 | **A: förstör vid skalning** | k av n andelar | ingenting utöver rapporten |
 | **B: förseglat arkiv, skilt från rösterna** | arkivet **och** k av n andelar | varje rösts äkthet |
 
-B kräver alltså två oberoende intrång i stället för ett, och Estland har valt den vägen.
-A är strikt starkare på valhemlighet och strikt svagare på granskning. Detta är ett
-beslut om vilken risk som väger tyngst, inte en teknisk fråga, och det ska tas medvetet.
+B kräver två oberoende intrång i stället för ett, och Estland har valt den vägen. A är
+strikt starkare på valhemlighet och strikt svagare på granskning.
 
-### 7.4 Öppen policyfråga
+**Valt: A, med ett tillägg som återtar det mesta av granskbarheten.** Innan kuverten
+skalas beräknas en Merklerot över alla par av `(ciphertextHash, signatur)` och
+publiceras. Roten avslöjar ingenting — den är en hash — men binder oss vid exakt vilka
+signerade kuvert som fanns.
 
-En väljare som stryks ur röstlängden efter att ha röstat får sin liggande röst raderad av
-kaskaden på `VoterStatus`. Rösten försvinner alltså tyst. Det är antagligen rätt utfall,
-men det ska vara ett beslut och inte en följd av en främmande nyckel. Frågan lämnas
-öppen här och bör avgöras innan systemet används skarpt.
+Två saker följer. En väljare som sparat sitt eget kuvert kan i efterhand bevisa att det
+räknades, genom en inklusionsväg upp till den publicerade roten. Och vi kan inte senare
+påstå att andra kuvert fanns, eftersom roten redan är ute. Valhemligheten blir samtidigt
+lika stark som vid full radering: efter skalningen krävs bara k av n andelar för att
+bryta den, och roten hjälper ingen angripare.
+
+### 7.4 Beslut: en struken väljares röst räknas ändå
+
+Hon var röstberättigad när hon röstade, och det är den tidpunkten som gäller. Det
+motsvarar svensk praxis för förtidsröster: en röst från någon som avlidit efter
+röstningen räknas, eftersom valsedeln då redan är anonym.
+
+Två konsekvenser för bygget, och båda är lätta att missa:
+
+**Kaskaden från `VoterStatus` till `PendingVote` måste bort.** Annars tar en radering
+tyst rösten med sig, vilket är precis det utfall beslutet avvisar.
+
+**Valideringen får inte kontrollera nuvarande röstberättigande.** Att rösten var legitim
+när den lades framgår av signaturen, inte av röstlängdens tillstånd i efterhand. En
+kontroll mot nuläget skulle förkasta giltiga röster.
 
 ## 8. Vad som raderas
 
