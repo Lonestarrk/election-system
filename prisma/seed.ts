@@ -193,6 +193,7 @@ async function main() {
         encryptedShare: encryptShare(
           share.value,
           TRUSTEE_PASSPHRASES[share.index - 1]!,
+          election.id,
           share.index,
         ),
       })),

@@ -134,7 +134,12 @@ export async function createElection(
         electionId: created.id,
         trusteeIndex: share.index,
         publicShare: publicShare(share).toString(),
-        encryptedShare: encryptShare(share.value, input.trusteePassphrases[share.index - 1]!, share.index),
+        encryptedShare: encryptShare(
+          share.value,
+          input.trusteePassphrases[share.index - 1]!,
+          created.id,
+          share.index,
+        ),
       })),
     })
     // `keys.privateKey` och `shares` går nu ur skop. Ingen referens till den
