@@ -104,9 +104,10 @@ export const TEST_DATABASES: readonly TestDatabase[] = [
 export type ResolvedTestDatabase = TestDatabase & {
   url: string
   /**
-   * 'explicit' när adressen kom från TEST_*-variabeln. Då har någon bett om
-   * just den databasen, och en server som inte svarar är ett fel — inte ett
-   * skäl att hoppa över testerna.
+   * 'explicit' när adressen kom från TEST_*-variabeln, 'derived' när den
+   * räknades fram ur utvecklingsadressen. Det avgör inte om testerna körs —
+   * en server som inte svarar är ett fel i båda fallen — men felmeddelandet
+   * måste peka på variabeln som faktiskt ska rättas.
    */
   source: 'explicit' | 'derived'
 }
@@ -195,12 +196,32 @@ export function redirectToTestDatabases(
 }
 
 /**
+ * Variabeln som uttryckligen ber om att de databasberoende testerna hoppas
+ * över. Den enda vägen till ett hoppat databastest när en adress är satt.
+ */
+export const SKIP_DATABASE_TESTS_VARIABLE = 'SKIP_DB_TESTS'
+
+/**
+ * Har någon uttryckligen bett om att slippa de databasberoende testerna?
+ *
+ * Bara "1" och "true" räknas. "0", "false" eller ett felskrivet värde betyder
+ * att testerna körs: en feltolkning ska hellre ge ett rött test för mycket än
+ * tyst hoppa över dem, eftersom en hoppad körning ser lika grön ut som en
+ * lyckad.
+ */
+export function isDatabaseSkipRequested(env: EnvironmentVariables = process.env): boolean {
+  const value = env[SKIP_DATABASE_TESTS_VARIABLE]?.trim().toLowerCase()
+  return value === '1' || value === 'true'
+}
+
+/**
  * Beskedet från tests/global-setup.ts till testfilerna, via `provide`/`inject`.
  *
  * - ready: testdatabaserna finns och har aktuellt schema.
- * - skip: ingen databas är konfigurerad, eller servern bakom en härledd adress
- *   svarar inte — en maskin utan Docker. Bara då får testerna hoppas över.
- * - broken: något som borde fungera gör det inte. Testfilerna fallerar på det.
+ * - skip: ingen databasadress är satt alls, eller SKIP_DB_TESTS=1 ber om det.
+ *   Bara då får testerna hoppas över — i båda fallen har någon valt det.
+ * - broken: något som borde fungera gör det inte, till exempel en satt adress
+ *   vars server inte svarar. Testfilerna fallerar på det.
  */
 export type TestDatabaseStatus =
   | { state: 'ready' }

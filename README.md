@@ -167,9 +167,11 @@ modulerna, eller om någon lägger in ett `console.log` som kringgår loggmasker
 > vars namn inte slutar på `_test`, så utvecklingsdatabasen och demodatan rörs inte.
 > Testdatabaserna skapas och migreras automatiskt före varje körning.
 
-Enhets- och säkerhetstesterna kräver ingen databas. Svarar ingen databasserver hoppas de
-databasberoende testerna över, utom när `TEST_*`-adresserna är uttryckligen satta. Svarar
-servern men testdatabaserna går inte att migrera, fallerar de i stället — en trasig
+Enhetstesterna och de statiska säkerhetstesterna kräver ingen databas. De databasberoende
+testerna hoppas bara över i två lägen: när ingen databasadress är satt alls (ingen `.env`),
+eller när `SKIP_DB_TESTS=1` uttryckligen ber om det. Är en adress satt men servern svarar
+inte — Docker är stoppat, värden eller porten är fel, en tjänstecontainer i CI har inte
+startat — eller går testdatabaserna inte att migrera, fallerar de i stället. En trasig
 uppsättning ska inte se ut som en grön körning.
 
 ### De sexton testpunkterna

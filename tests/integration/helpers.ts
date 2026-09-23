@@ -24,11 +24,12 @@ import { TEST_DATABASE_SUFFIX, isTestDatabaseName } from '../test-databases'
  * Avgör om de databasberoende testerna ska köras, hoppas över eller fallera.
  *
  * Beskedet kommer från tests/global-setup.ts, som redan har försökt migrera
- * testdatabaserna. Bara två lägen får bli ett hoppat test: ingen databas är
- * konfigurerad, eller servern bakom en härledd adress svarar inte — en maskin
- * utan Docker. Allt annat kastar, så att det syns som ett rött test i stället
- * för ett grönt som aldrig kördes: servern svarar men testdatabasen saknas,
- * migreringen gick inte, eller klienterna hamnade i fel databas.
+ * testdatabaserna. Bara två lägen får bli ett hoppat test, och i båda har
+ * någon valt det: ingen databasadress är satt alls, eller SKIP_DB_TESTS=1 ber
+ * uttryckligen om det. Allt annat kastar, så att det syns som ett rött test i
+ * stället för ett grönt som aldrig kördes: en satt adress vars server inte
+ * svarar, en testdatabas som saknas, en migrering som inte gick, eller klienter
+ * som hamnade i fel databas.
  *
  * Tidigare räckte ett misslyckat `SELECT 1` för att allt skulle hoppas över,
  * och en körning utan testdatabas såg då likadan ut som en lyckad.
