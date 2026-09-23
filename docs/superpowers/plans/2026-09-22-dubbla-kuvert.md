@@ -23,14 +23,14 @@
 
 ## Review Focus
 
-1. **Gruppelement utanfor primtalsundergruppen.** En klient som skickar `c1` av ordning 2 kan lacka en bit av nyckeln vid partiell dekryptering. Varje inkommande `c1`/`c2` maste avvisas om `y^q` inte ar 1. *(Uppgift 1, test i uppgift 9)*
-2. **Rost som anlander efter `closesAt`.** Maste avvisas med tydligt besked, inte tyst sparas — en rost som accepteras efter skalningen hamnar aldrig i rakningen och valjaren tror att hon rostat. *(Uppgift 9)*
-3. **Skalningen kors tva ganger.** Ett avbrott mellan infogning och radering far inte ge dubbletter eller forlorade roster vid omkorning. *(Uppgift 11)*
-4. **Partiellt dekrypteringsbevis fran ett annat chiffer.** En fortroendeman som ateranvander ett tidigare bevis maste avvisas, annars kan k-1 arliga kombineras med ett falskt bidrag. *(Uppgift 3, test i uppgift 12)*
-5. **Enhetsvektor som summerar till 2.** Varje komponent kan vara giltigt 0-eller-1 och anda ge tva roster. Summabeviset ar enda skyddet. *(Uppgift 2)*
-6. **Noll roster pa en valsedel.** Dekrypteringen ger `g^0 = 1` och diskreta logaritmen maste svara `0`, inte loopa. *(Uppgift 1 och 12)*
-7. **Rost lagd i nagon annans namn.** En rad som skrivs direkt i databasen pekar pa en verklig, rostberattigad valjare och passerar varje relationell kontroll. Bara signaturen avslojar att valjaren aldrig godkant innehallet. *(Uppgift 8, test i uppgift 10)*
-8. **Ateruppspelat aldre kuvert.** Den som fangat valjarens forsta signerade kuvert skickar in det igen efter att hon andrat sig, och rosten atergar till den kopta — ett rostkop som overlever hela andringsmojligheten. Raknaren maste ligga inuti det signerade. *(Uppgift 8, test i uppgift 10)*
+1. **Gruppelement utanfor primtalsundergruppen.** En klient som skickar `c1` av ordning 2 kan lacka en bit av nyckeln vid partiell dekryptering. Varje inkommande `c1`/`c2` måste avvisas om `y^q` inte ar 1. *(Uppgift 1, test i uppgift 9)*
+2. **Rost som anlander efter `closesAt`.** Maste avvisas med tydligt besked, inte tyst sparas — en rost som accepteras efter skalningen hamnar aldrig i rakningen och väljaren tror att hon rostat. *(Uppgift 9)*
+3. **Skalningen kors två gånger.** Ett avbrott mellan infogning och radering far inte ge dubbletter eller forlorade roster vid omkorning. *(Uppgift 11)*
+4. **Partiellt dekrypteringsbevis fran ett annat chiffer.** En förtroendeman som ateranvander ett tidigare bevis måste avvisas, annars kan k-1 arliga kombineras med ett falskt bidrag. *(Uppgift 3, test i uppgift 12)*
+5. **Enhetsvektor som summerar till 2.** Varje komponent kan vara giltigt 0-eller-1 och anda ge två roster. Summabeviset ar enda skyddet. *(Uppgift 2)*
+6. **Noll roster pa en valsedel.** Dekrypteringen ger `g^0 = 1` och diskreta logaritmen måste svara `0`, inte loopa. *(Uppgift 1 och 12)*
+7. **Rost lagd i någon annans namn.** En rad som skrivs direkt i databasen pekar pa en verklig, röstberättigad väljare och passerar varje relationell kontroll. Bara signaturen avslöjar att väljaren aldrig godkant innehallet. *(Uppgift 8, test i uppgift 10)*
+8. **Ateruppspelat aldre kuvert.** Den som fangat väljarens forsta signerade kuvert skickar in det igen efter att hon ändrat sig, och rosten atergar till den kopta — ett röstköp som overlever hela andringsmojligheten. Raknaren måste ligga inuti det signerade. *(Uppgift 8, test i uppgift 10)*
 
 ---
 
@@ -628,11 +628,11 @@ export function proveZeroOrOne(
   /**
    * DE TVA GRENARNAS MAL, UTSKRIVNA VAR FOR SIG.
    *
-   * Gren 0 pastar att chiffret kodar 0, alltsa att c2 = h^r. Malet ar c2.
-   * Gren 1 pastar 1, alltsa att c2 = h^r * g. Malet ar c2 / g.
+   * Gren 0 påstår att chiffret kodar 0, alltså att c2 = h^r. Malet ar c2.
+   * Gren 1 påstår 1, alltså att c2 = h^r * g. Malet ar c2 / g.
    *
-   * Den SIMULERADE grenen ar den vi inte kan bevisa arligt, alltsa motsatsen
-   * till `message`. Tas fel mal har blir simuleringen ogiltig, och verifieraren
+   * Den SIMULERADE grenen ar den vi inte kan bevisa arligt, alltså motsatsen
+   * till `message`. Tas fel mål här blir simuleringen ogiltig, och verifieraren
    * underkanner ett arligt bevis — ett fel som bara syns som att giltiga roster
    * avvisas.
    */
@@ -1110,7 +1110,7 @@ describe('enhetsvektor', () => {
     ).toBe(3)
   })
 
-  it('hittar valet oavsett i vilken ordning faltet skrevs', () => {
+  it('hittar valet oavsett i vilken ordning fältet skrevs', () => {
     // Serialiseringsjamforelse hade fallit har, och felmeddelandet hade pekat
     // pa datan nar felet lag i formen.
     const options = canonicalOptions(SHAPE)
@@ -1286,8 +1286,8 @@ model PendingVote {
 
   /// RESTRICT, INTE CASCADE.
   ///
-  /// En struken valjares rost ska raknas (spec 7.4), sa en radering far inte
-  /// tyst ta rosten med sig. Restrict betyder att en valjare inte kan
+  /// En struken väljares rost ska räknas (spec 7.4), sa en radering far inte
+  /// tyst ta rosten med sig. Restrict betyder att en väljare inte kan
   /// hardraderas medan hon har en liggande rost. Efter skalningen ar raden
   /// borta och raderingen fri igen.
   voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Restrict)
@@ -1306,14 +1306,14 @@ model PendingVote {
 
   /// Okar vid varje laggning och ligger INUTI det signerade.
   ///
-  /// Utan den kan den som fangat valjarens forsta signerade kuvert skicka in
-  /// det igen efter att hon andrat sig, och rosten atergar till den kopta.
+  /// Utan den kan den som fangat väljarens forsta signerade kuvert skicka in
+  /// det igen efter att hon ändrat sig, och rosten atergar till den kopta.
   castSequence Int @map("cast_sequence")
 
   /// Valjarens egen signatur over kuvertet, fran BankID /sign.
   bankIdSignature String @map("bankid_signature")
 
-  /// Certifikatet ur signaturen. Bar personnummer och namn — far darfor
+  /// Certifikatet ur signaturen. Bar personnummer och namn — far därför
   /// ALDRIG folja med till votes_db vid skalningen.
   bankIdCertificate String @map("bankid_certificate")
 
@@ -1334,16 +1334,16 @@ Lägg till på `Election` i samma fil:
 
   /// OPEN | CLOSED | VALIDATED | STRIPPED | TALLIED | CERTIFIED.
   ///
-  /// Enkelriktad. Ordningen maste vara omojlig att kasta om, inte bara
+  /// Enkelriktad. Ordningen måste vara omöjlig att kasta om, inte bara
   /// osannolik — se spec 6.1. Att fasen ar ett falt och inte en jamforelse mot
   /// klockan spelar roll: en klocka som gar fel andrar beteendet tyst, medan en
-  /// fasovergang ar en handelse nagon utfort.
+  /// fasovergang ar en handelse någon utfort.
   phase String @default("OPEN")
 
   /// Merklerot over (ciphertextHash, bankIdSignature) fore skalningen.
   ///
   /// Det enda som overlever raderingen av signaturerna, och det som later en
-  /// valjare med sparat kuvert bevisa att det raknades. Se spec 7.3.
+  /// väljare med sparat kuvert bevisa att det räknades. Se spec 7.3.
   envelopeRoot String? @map("envelope_root")
 ```
 
@@ -1446,14 +1446,14 @@ Och på `ElectionBallot`:
 Granskningen av uppgift 4 hittade detta, och det hor hemma har.
 
 `canonicalOptions` sorterar pa `displayOrder`. Men varken `BallotParty` eller
-`Candidate` har ett unikhetsvillkor pa faltet, sa tva partier pa samma valsedel
+`Candidate` har ett unikhetsvillkor pa fältet, sa två partier pa samma valsedel
 kan dela ordningsnummer. `Array.prototype.sort` ar stabil, vilket betyder att
 ordningen da faller tillbaka pa **insattningsordningen** — som kan skilja mellan
 klienten och servern, eftersom de laser raderna ur olika fragor.
 
-Foljden vore att en rost raknas pa fel alternativ, och ingenting i bevisen
-fangar det: de bevisar att vektorn ar valformad, inte att den betyder samma sak
-for bada parter. Sorteringen ar alltsa bara total om databasen garanterar det.
+Foljden vore att en rost räknas pa fel alternativ, och ingenting i bevisen
+fångar det: de bevisar att vektorn ar valformad, inte att den betyder samma sak
+for bada parter. Sorteringen ar alltså bara total om databasen garanterar det.
 
 Lagg till i `prisma/votes/schema.prisma`:
 
@@ -1470,7 +1470,7 @@ Och ett test i `tests/security/schema-separation.test.ts`:
 ```ts
 it('ordningsnumren ar unika, sa den kanoniska ordningen ar total', () => {
   /**
-   * Utan detta faller sorteringen tillbaka pa insattningsordning nar tva
+   * Utan detta faller sorteringen tillbaka pa insättningsordning nar två
    * alternativ delar displayOrder — och klient och server kan da numrera
    * valsedeln olika. Rosten hamnar pa fel alternativ, och inget bevis ser det.
    */
@@ -1590,7 +1590,7 @@ describe.skipIf(!databaseAvailable)('tröskelnyckel vid skapande', () => {
   })
 
   it('andelen gar inte att lasa upp med fel fras', async () => {
-    // Hela skyddet. Gar den upp med vad som helst ar losenfrasen dekoration.
+    // Hela skyddet. Gar den upp med vad som helst ar lösenfrasen dekoration.
     const id = await newElection()
     const share = await votesDb.trusteeShare.findFirstOrThrow({ where: { electionId: id } })
 
@@ -1663,11 +1663,11 @@ import { env } from '@/lib/env'
  * Nyckeln harleds ur FORTROENDEMANNENS LOSENFRAS, aldrig ur appens miljo.
  *
  * Alternativet skyddar ingenting: en andel krypterad med en nyckel harledd ur
- * IDENTITY_PEPPER ar lasbar for var och en som har databasen och miljon — och
- * appen behover bada for att fungera, sa en komprometterad appserver ger
+ * IDENTITY_PEPPER ar läsbar for var och en som har databasen och miljön — och
+ * appen behöver bada for att fungera, sa en komprometterad appserver ger
  * batteri. Tre andelar i samma lada ar inte tre innehavare.
  *
- * Saltet ar andelens index, sa att tva fortroendeman med samma fras anda far
+ * Saltet ar andelens index, sa att två förtroendeman med samma fras anda far
  * olika nycklar.
  */
 function keyFor(passphrase: string, trusteeIndex: number): Buffer {
@@ -1818,8 +1818,8 @@ describe('krypterad valsedel', () => {
   it('en pahittad hash avvisas', async () => {
     /**
      * Klienten far inte kunna pasta vad som helst om sitt eget chiffer.
-     * Godtas hashen pa ord letar valjarens inklusionskontroll senare efter ett
-     * varde som inte finns i den publicerade mangden — och felet syns forst
+     * Godtas hashen pa ord letar väljarens inklusionskontroll senare efter ett
+     * värde som inte finns i den publicerade mangden — och felet syns forst
      * efter att kopplingen raderats.
      */
     const keys = generateKeyPair()
@@ -1870,16 +1870,16 @@ export type EncryptedBallot = {
  * Kanonisk hash over chifferlistan.
  *
  * Bor har och inte i klientmodulen, eftersom BADE bevisaren och verifieraren
- * maste rakna fram exakt samma varde. Tva implementationer som glider isar ger
+ * måste rakna fram exakt samma värde. Tva implementationer som glider isar ger
  * ett fel som ser ut som en manipulerad rost.
  */
 export function hashCiphertext(ciphertext: Array<{ c1: string; c2: string }>): string {
   const hash = createHash('sha256')
   hash.update('valsystem/chiffer/v1')
   for (const pair of ciphertext) {
-    hash.update(' ')
+    hash.update('\u0000')
     hash.update(pair.c1)
-    hash.update(' ')
+    hash.update('\u0000')
     hash.update(pair.c2)
   }
   return hash.digest('hex')
@@ -1911,13 +1911,13 @@ export function verifyEncryptedBallot(
    *
    * Klienten skickar bade chiffret och dess hash. Godtar vi hashen som den ar
    * kan en klient skicka en hash som inte hor till chiffret — och eftersom
-   * signaturen i uppgift 8 binder just den pastadda hashen skulle aven den
+   * signaturen i uppgift 8 binder just den påstådda hashen skulle aven den
    * verifiera.
    *
-   * Foljden vore tyst och sen: valjarens inklusionskontroll letar efter en hash
+   * Foljden vore tyst och sen: väljarens inklusionskontroll letar efter en hash
    * som inte finns i den publicerade mangden, och Merkleroten over kuverten
-   * beraknas over varden utan motsvarande chiffer. Felet syns forst efter att
-   * kopplingen raderats, alltsa nar ingen langre kan fraga valjaren.
+   * beraknas over värden utan motsvarande chiffer. Felet syns forst efter att
+   * kopplingen raderats, alltså nar ingen langre kan fraga väljaren.
    */
   if (ballot.ciphertextHash !== hashCiphertext(ballot.ciphertext)) return false
 
@@ -2390,9 +2390,9 @@ it('ett chiffer utanför undergruppen avvisas', async () => {
   expect((await castRaw(voter, ballot)).status).toBe('invalid_proof')
 })
 
-it('en rost signerad av nagon annan avvisas', async () => {
-  // REVIEW FOCUS 7. Raden pekar pa en verklig, rostberattigad valjare och
-  // passerar varje relationell kontroll — bara signaturen avslojar den.
+it('en rost signerad av någon annan avvisas', async () => {
+  // REVIEW FOCUS 7. Raden pekar pa en verklig, röstberättigad väljare och
+  // passerar varje relationell kontroll — bara signaturen avslöjar den.
   const ballot = await buildBallot('bp-s')
   const envelope = await signAs(kim, ballot, 1)
 
@@ -2400,7 +2400,7 @@ it('en rost signerad av nagon annan avvisas', async () => {
 })
 
 it('ett ateruppspelat aldre kuvert avvisas', async () => {
-  // REVIEW FOCUS 8. Utan detta overlever ett rostkop hela andringsmojligheten.
+  // REVIEW FOCUS 8. Utan detta overlever ett röstköp hela andringsmojligheten.
   const first = await buildBallot('bp-s')
   await cast(voter, first, await signAs(voter, first, 1))
   const second = await buildBallot('bp-m')
@@ -2473,9 +2473,9 @@ export async function castEncryptedBallot(
   /**
    * RAKNAREN MASTE OKA, OCH KONTROLLEN MASTE LIGGA HAR.
    *
-   * Den som fangat valjarens forsta signerade kuvert kan annars skicka in det
-   * igen efter att hon andrat sig, och rosten atergar till den kopta — ett
-   * rostkop som overlever hela andringsmojligheten.
+   * Den som fangat väljarens forsta signerade kuvert kan annars skicka in det
+   * igen efter att hon ändrat sig, och rosten atergar till den kopta — ett
+   * röstköp som overlever hela andringsmojligheten.
    */
   if (existing && envelope.castSequence <= existing.castSequence) {
     return { status: 'stale_sequence' }
@@ -2484,8 +2484,8 @@ export async function castEncryptedBallot(
   /**
    * SIGNATUREN AR DEN ENDA KONTROLL SOM STANGER "ROST LAGD I NAGON ANNANS NAMN".
    *
-   * En rad som skrivs direkt i databasen pekar pa en verklig valjare och
-   * passerar varje relationell kontroll. Bara signaturen avslojar att valjaren
+   * En rad som skrivs direkt i databasen pekar pa en verklig väljare och
+   * passerar varje relationell kontroll. Bara signaturen avslöjar att väljaren
    * aldrig godkant innehallet. Se spec 4.6.
    */
   const voter = await votersDb.voterStatus.findUnique({
@@ -2649,13 +2649,13 @@ describe('validering medan kopplingen finns kvar', () => {
     expect(report.summary.byKind).toMatchObject({ BAD_SIGNATURE: 1 })
   })
 
-  it('en struken valjares rost underkanns INTE', async () => {
+  it('en struken väljares rost underkanns INTE', async () => {
     /**
      * Beslutet i spec 7.4, vaktat.
      *
      * Det ar latt att lagga till en rostberattigandekontroll "for sakerhets
-     * skull" — den kanns som en sjalvklarhet. Den skulle forkasta giltiga
-     * roster fran valjare som strukits efter att ha rostat.
+     * skull" — den kanns som en självklarhet. Den skulle förkasta giltiga
+     * roster fran väljare som strukits efter att ha rostat.
      */
     await castFor(anna, 'bp-s')
     await votersDb.voterStatus.update({ where: { id: anna }, data: { isEligible: false } })
@@ -2714,10 +2714,10 @@ Kontrollerna körs i ordning, billigast först:
 
 **VALIDERINGEN KONTROLLERAR INTE NUVARANDE ROSTBERATTIGANDE, och det ar ett
 beslut och inte en glomska.** Att rosten var legitim nar den lades framgar av
-signaturen, inte av rostlangdens tillstand i efterhand. En valjare som strukits
+signaturen, inte av rostlangdens tillstand i efterhand. En väljare som strukits
 efter att ha rostat — dodsfall ar det realistiska fallet — ska fa sin rost
 raknad, precis som en svensk fortidsrost. En kontroll mot nulaget skulle
-forkasta giltiga roster. Se spec 7.4.
+förkasta giltiga roster. Se spec 7.4.
 
 `passed` är sant enbart när `anomalies` är tom. Skriv `PRE_CLOSE_VALIDATION` till
 revisionsloggen med antal, aldrig med identiteter.
@@ -2810,7 +2810,7 @@ it('infogar sorterat på innehåll, inte i den ordning väljarna röstade', asyn
 
 it('publicerar en kuvertrot INNAN signaturerna raderas', async () => {
   /**
-   * Spec 7.3. Roten ar det enda som overlever, sa den maste beraknas medan
+   * Spec 7.3. Roten ar det enda som overlever, sa den måste beraknas medan
    * signaturerna finns. Ett test som bara kontrollerar att roten finns EFTERAT
    * skulle passera aven om den beraknats over en tom mangd.
    */
@@ -2823,7 +2823,7 @@ it('publicerar en kuvertrot INNAN signaturerna raderas', async () => {
   const election = await votersDb.election.findUniqueOrThrow({ where: { id: electionId } })
 
   expect(election.envelopeRoot).toMatch(/^[0-9a-f]{64}$/)
-  // Roten ska vara den over de tva faktiska kuverten, inte over ingenting.
+  // Roten ska vara den over de två faktiska kuverten, inte over ingenting.
   expect(election.envelopeRoot).not.toBe(envelopeRootOf([]))
 })
 
@@ -2869,13 +2869,13 @@ Förväntat: FAIL, modulen saknas
  *
  * Steg 1 ar en SPARR, inte en rapport. Att skala anda vore att kasta bort
  * bevismaterialet for det problem man just hittat: efter steg 6 finns ingen
- * valjare att fraga och ingen signatur att kontrollera.
+ * väljare att fraga och ingen signatur att kontrollera.
  *
  * Steg 2 MASTE ligga fore steg 6. Merkleroten over (ciphertextHash,
  * bankIdSignature), sorterade pa chifferhash, ar det enda som overlever
- * raderingen av signaturerna — och det som later en valjare med sparat kuvert
- * bevisa i efterhand att det raknades. Beraknas den efter raderingen finns
- * ingenting att berakna den over. Roten avslojar ingenting sjalv; den ar en
+ * raderingen av signaturerna — och det som later en väljare med sparat kuvert
+ * bevisa i efterhand att det räknades. Beraknas den efter raderingen finns
+ * ingenting att berakna den over. Roten avslöjar ingenting själv; den ar en
  * hash.
  *
  * Steg 3 känns överflödigt — bevisen kontrollerades ju när rösten lades. Det är
@@ -2895,9 +2895,9 @@ Förväntat: FAIL, modulen saknas
 Implementera enligt kommentaren. Uppdatera `Election.linkClearedAt` och
 `Election.phase` sist.
 
-**Kuvertrotens format maste vara utskrivet, inte uppfunnet.** Den oberoende
+**Kuvertrotens format måste vara utskrivet, inte uppfunnet.** Den oberoende
 verifieraren i uppgift 13 ska kunna rakna om den utan att lasa var kallkod, och
-en valjare ska kunna bevisa inklusion mot den. Aterbruka `src/lib/merkle.ts`,
+en väljare ska kunna bevisa inklusion mot den. Aterbruka `src/lib/merkle.ts`,
 som redan finns och bar domanseparerade prefix samt bladantalet i roten:
 
 ```ts
@@ -2906,7 +2906,7 @@ import { hashLeaf, merkleRoot } from '@/lib/merkle'
 /**
  * Ett blad per kuvert, sorterat pa chifferhash.
  *
- * Sorteringen gor roten oberoende av i vilken ordning valjarna rostade — samma
+ * Sorteringen gor roten oberoende av i vilken ordning väljarna rostade — samma
  * skal som infogningen i votes_db sorteras. Bladet binder BADE hashen och
  * signaturen: bara hashen hade latit en signatur bytas ut obemarkt, bara
  * signaturen hade inte pekat ut vilken rost den horde till.
@@ -2998,7 +2998,7 @@ it('räknar rätt utan att öppna någon enskild röst', async () => {
   expect((result as { counts: number[] }).counts).toEqual([0, 2, 1]) // blank, S, M
 })
 
-it('fel losenfras later ingen andel oppnas', async () => {
+it('fel lösenfras later ingen andel oppnas', async () => {
   // Utan detta ar frasen dekoration och andelen lika oskyddad som forut.
   await closeElection(electionId)
 
@@ -3060,20 +3060,20 @@ logaritmen med `maximum` satt till antalet röstberättigade.
 **TVA FYND FRAN TIDIGARE UPPGIFTER SOM DEN HAR UPPGIFTEN AGER.**
 
 Granskningen av uppgift 1 och 3 noterade att kryptoprimitiven medvetet inte
-sjalvforsvarar sig — de litar pa att anroparen validerar. Den har uppgiften ar
-anroparen, och far darfor inte arva den tilliten:
+självförsvarar sig — de litar pa att anroparen validerar. Den har uppgiften ar
+anroparen, och far därför inte arva den tilliten:
 
 1. **`combine` ska vagra dubbla `trusteeIndex`.** Utan vakten utesluter den inre
    loopens `j === i`-filter aven dubblettens eget index ur produkten, och
-   Lagrange-koefficienten blir fel — TYST. Ett felaktigt rostetal som inte kastar
-   ar den varsta felklassen i ett rakneverk. Det unika indexet
+   Lagrange-koefficienten blir fel — TYST. Ett felaktigt röstetal som inte kastar
+   ar den värsta felklassen i ett räkneverk. Det unika indexet
    `@@unique([ballotId, optionIndex, trusteeIndex])` hindrar det i praktiken, men
-   vakten ar tva rader och gor felet loud:
+   vakten ar två rader och gor felet loud:
 
    ```ts
    const indices = new Set(partials.map((partial) => partial.trusteeIndex))
    if (indices.size !== partials.length) {
-     throw new Error('Samma fortroendeman bidrog tva ganger.')
+     throw new Error('Samma förtroendeman bidrog två gånger.')
    }
    ```
 
@@ -3082,9 +3082,9 @@ anroparen, och far darfor inte arva den tilliten:
 
 2. **Validera gruppelement fran databasen innan de anvands.** Chiffren
    kontrollerades med `isInSubgroup` nar rosten lades, men aggregeringen laser dem
-   fran `votes_db` och ska inte forutsatta att ingen rort dem daremellan. Anropa
+   fran `votes_db` och ska inte forutsatta att ingen rort dem däremellan. Anropa
    `isInSubgroup` pa varje `c1` och `c2` innan de multipliceras ihop, och avbryt
-   rakningen med ett tydligt fel om nagot faller — en tyst felaktig summa ar sam re
+   rakningen med ett tydligt fel om något faller — en tyst felaktig summa ar sam re
    an ett avbrott.
 
 - [ ] **Steg 4: Kör testerna**
@@ -3520,26 +3520,26 @@ till uppgift 15. Ingen lucka.
 och 12. `EqualityProof` definieras i uppgift 2 och anvands i 3. `EncryptedBallot`
 definieras i uppgift 7 och konsumeras i 9. `BallotOption` definieras i uppgift 4 och
 anvands i 7. `EnvelopePayload` definieras i uppgift 8 och konsumeras i 9 och 10.
-`proofContext` och `envelopePayload` delas mellan bevisare och verifierare — de tva
-funktioner som maste vara bitidentiska pa bada sidor.
+`proofContext` och `envelopePayload` delas mellan bevisare och verifierare — de två
+funktioner som måste vara bitidentiska pa bada sidor.
 
 **Review Focus-tackning.** 1 till uppgift 1 och 9. 2 till uppgift 9. 3 till uppgift 11.
 4 till uppgift 3 och 12. 5 till uppgift 2. 6 till uppgift 1 och 12. 7 och 8 till uppgift
 8 och 10.
 
-**Beslut som tagits och som uppgifterna maste folja:**
+**Beslut som tagits och som uppgifterna måste folja:**
 
-- **Andelarna krypteras med en losenfras per fortroendeman**, aldrig lagrad. Uppgift 6
-  maste alltsa ta emot tre fraser vid valets skapande, och uppgift 12 begara dem vid
+- **Andelarna krypteras med en lösenfras per förtroendeman**, aldrig lagrad. Uppgift 6
+  måste alltså ta emot tre fraser vid valets skapande, och uppgift 12 begara dem vid
   dekrypteringen. Demofraser seedas och skrivs ut. Spec 4.5.
 - **Signaturerna forstors vid skalningen, men en Merklerot over (ciphertextHash,
-  signatur) publiceras forst.** Uppgift 11 maste berakna och publicera roten fore
+  signatur) publiceras forst.** Uppgift 11 måste berakna och publicera roten fore
   raderingen, inte efter. Spec 7.3.
-- **En struken valjares rost raknas anda.** Uppgift 5 far darfor INTE satta kaskad fran
+- **En struken väljares rost räknas anda.** Uppgift 5 far därför INTE satta kaskad fran
   VoterStatus till PendingVote, och uppgift 10 far INTE kontrollera nuvarande
-  rostberattigande. Spec 7.4.
-- **Ingen preliminar rakning under pagaende rostning.** Spec 6.2. Ett avsiktligt bortval,
+  röstberättigande. Spec 7.4.
+- **Ingen preliminar rakning under pagaende röstning.** Spec 6.2. Ett avsiktligt bortval,
   inte en glomd funktion — och satsvis overforing loser tidskopplingen men inte
-  andringsdriften eller det juridiska.
+  ändringsdriften eller det juridiska.
 - **Skarpt lage ar forvalt och ar en checklista.** Uppgift 16. Demolage kraver bade
   flaggan och att det inte ar produktion; produktion med flaggan satt kraschar vid start.
