@@ -1,0 +1,156 @@
+import { cookies } from 'next/headers'
+import { clearVotingCookies, SESSION_COOKIE } from '@/lib/cookies'
+import { isValidCsrfToken } from '@/lib/csrf'
+import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
+import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { castEncryptedBallotSchema, parseJsonBody } from '@/lib/validation'
+import { getEncryptedBallotShape } from '@/modules/ballot-box'
+import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { bankIdService } from '@/modules/eligibility/bankid'
+import { ballotBelongsToElection } from '@/modules/eligibility/election.service'
+import {
+  castEncryptedBallot,
+  nextCastSequence,
+  type CastOutcome,
+} from '@/modules/eligibility/pending-vote.service'
+import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
+/**
+ * POST /api/vote/encrypted
+ *
+ * Andra halvan av det tvådelade signeringsflödet: lämnar in den krypterade
+ * valsedeln, med signaturen hämtad från BankID i stället för från begäran.
+ *
+ * SIGNATUREN OCH CERTIFIKATET FÅR ALDRIG KOMMA FRÅN BEGÄRANS KROPP.
+ *
+ * Tog rutten emot dem från klienten kunde vem som helst skapa ett eget
+ * nyckelpar, formatera ett certifikat med valfritt personnummer, signera vad
+ * som helst med det och skicka in — `verifyEnvelopeSignature` skulle säga ja,
+ * eftersom den bara kontrollerar att signaturen och certifikatet hör ihop.
+ * Hela mekanismen vore dekoration. `castEncryptedBallotSchema` har därför
+ * inget fält för dem, och Zod stryper okända fält som standard, så de
+ * försvinner redan vid valideringen om en klient ändå skickar med dem.
+ *
+ * Servern hämtar i stället `signature` och `certificate` ur sitt eget
+ * `bankIdService.collect(orderRef)` — svaret BankID gav för just den order
+ * `/api/vote/sign-start` startade. `castSequence` räknas fram på nytt genom
+ * samma `nextCastSequence` som startade ordern (se den funktionens
+ * dokumentation för varför en andra uträkning här är säker snarare än ett
+ * mellanlagrat tillstånd), och `electionId`/`voterStatusId` kommer från
+ * röstsessionen. Ingenting som ingår i den signerade nyttolasten kommer från
+ * något klienten påstår.
+ *
+ * OMRÖSTNINGENS KRYPTERINGSNYCKEL OCH ANTAL ALTERNATIV HÄMTAS HÄR.
+ *
+ * `castEncryptedBallot` bor i väljarmodulen och får aldrig importera från den
+ * anonyma röstmodulen (tests/security/module-boundaries.test.ts). Den
+ * uppgiften finns bara på den anonyma sidan, så rutten — som får se båda
+ * modulerna — hämtar den via `getEncryptedBallotShape` och skickar med den.
+ */
+export async function POST(request: Request) {
+  if (!hasValidOrigin(request)) {
+    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
+  }
+
+  const rate = checkRateLimit('vote-encrypted', getClientIp(request), RATE_LIMITS.castVote)
+  if (!rate.allowed) {
+    await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+    return errorResponse('RATE_LIMITED', 'För många försök.', 429, {
+      'Retry-After': String(rate.retryAfterSeconds),
+    })
+  }
+
+  const cookieStore = await cookies()
+  const sessionId = cookieStore.get(SESSION_COOKIE)?.value
+
+  if (!sessionId) {
+    return errorResponse('NO_SESSION', 'Din röstsession har upphört. Legitimera dig igen.', 401)
+  }
+
+  const session = await getValidVotingSession(sessionId)
+  if (!session) {
+    const response = errorResponse(
+      'SESSION_EXPIRED',
+      'Din röstsession har upphört. Legitimera dig igen.',
+      401,
+    )
+    clearVotingCookies(response)
+    return response
+  }
+
+  if (!isValidCsrfToken(request, session.csrfSecret)) {
+    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    return errorResponse('CSRF_FAILED', 'Begäran avvisades.', 403)
+  }
+
+  const body = await parseJsonBody(request, castEncryptedBallotSchema)
+  if (!body.ok) {
+    return errorResponse('INVALID_INPUT', body.message, 400)
+  }
+
+  if (!(await ballotBelongsToElection(body.data.ballotId, session.electionId))) {
+    return errorResponse('INVALID_BALLOT', 'Valsedeln gäller inte den här omröstningen.', 400)
+  }
+
+  const collected = await bankIdService.collect(body.data.orderRef)
+
+  if (collected.status === 'pending') {
+    return jsonResponse({ status: 'pending', message: 'Väntar på BankID …' })
+  }
+
+  if (collected.status === 'failed') {
+    return jsonResponse({
+      status: 'failed',
+      message:
+        collected.hintCode === 'userCancel'
+          ? 'Signeringen avbröts.'
+          : 'Signeringen misslyckades. Försök igen.',
+    })
+  }
+
+  const [shape, castSequence] = await Promise.all([
+    getEncryptedBallotShape(body.data.ballotId),
+    nextCastSequence(session.voterStatusId, body.data.ballotId),
+  ])
+
+  const outcome = await castEncryptedBallot(
+    session.voterStatusId,
+    session.electionId,
+    body.data.ballotId,
+    body.data.ballot,
+    {
+      // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
+      signature: collected.completionData.signature,
+      certificate: collected.completionData.certificate,
+      castSequence,
+    },
+    shape,
+  )
+
+  return jsonResponse(outcome, httpStatusFor(outcome.status))
+}
+
+/**
+ * Rösten avslöjar aldrig VARFÖR den avvisades i sin HTTP-statuskod mer än
+ * grovt — svarskroppen bär redan `status`, och den detaljerade texten hör
+ * inte hemma här. Koderna följer ändå HTTP:s allmänna betydelse, så att
+ * proxyar och loggverktyg som bara tittar på statusraden inte vilseleds.
+ */
+function httpStatusFor(status: CastOutcome['status']): number {
+  switch (status) {
+    case 'recorded':
+      return 200
+    case 'closed':
+    case 'stale_sequence':
+      return 409
+    case 'invalid_proof':
+      return 400
+    case 'invalid_signature':
+    case 'not_eligible':
+      return 403
+  }
+}

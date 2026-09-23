@@ -97,6 +97,12 @@ describe('modulgränser', () => {
      *  – observer/election: samma siffra, publicerad. Utan den kan en
      *    observatör inte kontrollera att antalet godkända röstningar motsvarar
      *    antalet registrerade röster, vilket är ett uttryckligt krav.
+     *  – vote/encrypted: lägger det yttre kuvertet i röstlängden, men behöver
+     *    omröstningens krypteringsnyckel och valsedelns antal alternativ för
+     *    att kunna verifiera bevisen — och de uppgifterna finns bara i den
+     *    anonyma modulen. `castEncryptedBallot` själv importerar ingenting
+     *    därifrån (se `pending-vote.service.ts`); det är rutten som hämtar
+     *    formen via den anonyma modulens publika API och skickar med den in.
      */
     const allowed = [
       // Skapar omröstningen i båda databaserna. Rör bara offentlig metadata —
@@ -107,6 +113,7 @@ describe('modulgränser', () => {
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
       'src/app/api/observer/election/route.ts',
+      'src/app/api/vote/encrypted/route.ts',
     ]
 
     const filesSeeingBoth = sourceFiles

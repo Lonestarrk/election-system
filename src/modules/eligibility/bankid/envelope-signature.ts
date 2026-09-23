@@ -100,6 +100,27 @@ export function personalNumberFromCertificate(certificate: string): string | nul
   return match ? match[1] : null
 }
 
+/**
+ * Nyckelmaterialet ur certifikatet, utan det som identifierar personen.
+ *
+ * Certifikatet bär personnumret i klartext. Det som ska lagras och senare
+ * verifieras mot är nyckeln, inte påståendet om vem den tillhör — den
+ * kopplingen avgörs när rösten läggs och bärs därefter av radens koppling
+ * till väljaren, inte av en klartextuppgift i en kolumn.
+ *
+ * Attrappens format har personnumret på en rad före PEM-blocket. Ett riktigt
+ * X.509-certifikat har det i subject-fältet och saknar prefixet helt, så där
+ * returneras certifikatet oförändrat — nyckeln extraheras då av crypto vid
+ * verifieringen.
+ *
+ * Ligger bredvid personalNumberFromCertificate med flit: två funktioner som
+ * tolkar samma format på var sitt håll skulle kunna glida isär, och symptomet
+ * vore signaturer som verifierar mot fel nyckel.
+ */
+export function publicKeyFromCertificate(certificate: string): string {
+  return certificate.replace(MOCK_CERTIFICATE_PREFIX, '')
+}
+
 function certificateBelongsTo(certificate: string, expectedPersonalNumber: string): boolean {
   return personalNumberFromCertificate(certificate) === expectedPersonalNumber
 }

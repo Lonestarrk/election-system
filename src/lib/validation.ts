@@ -103,6 +103,82 @@ export const issueCredentialSchema = z.object({
   blinded: z.string().regex(/^[0-9a-f]{512}$/, 'Ogiltigt blindat värde.'),
 })
 
+/**
+ * En decimalsträng — grundformatet för allt kryptografiskt talmaterial i den
+ * krypterade valsedeln (chiffer och bevis).
+ *
+ * Kontrollerar bara att strängen går att tolka som ett heltal, inte att
+ * talet faktiskt ligger i undergruppen eller att beviset håller — det gör
+ * `verifyEncryptedBallot`. Utan den här spärren skulle ett ogiltigt tecken
+ * få `BigInt(...)` att kasta ett ofångat undantag långt in i
+ * verifieringskedjan, och en felformad begäran skulle ge ett serverfel i
+ * stället för ett tydligt 400-svar.
+ */
+const decimalStringSchema = z.string().regex(/^\d+$/, 'Ogiltigt talformat.')
+
+const zeroOrOneProofSchema = z.object({
+  a0: decimalStringSchema,
+  b0: decimalStringSchema,
+  a1: decimalStringSchema,
+  b1: decimalStringSchema,
+  challenge0: decimalStringSchema,
+  challenge1: decimalStringSchema,
+  response0: decimalStringSchema,
+  response1: decimalStringSchema,
+})
+
+const equalityProofSchema = z.object({
+  a: decimalStringSchema,
+  b: decimalStringSchema,
+  challenge: decimalStringSchema,
+  response: decimalStringSchema,
+})
+
+/** Den krypterade valsedeln, på trådformat — se `EncryptedBallot` i `verify-ballot.ts`. */
+export const encryptedBallotSchema = z.object({
+  ciphertext: z
+    .array(z.object({ c1: decimalStringSchema, c2: decimalStringSchema }))
+    .min(1)
+    .max(200),
+  proofs: z.object({
+    components: z.array(zeroOrOneProofSchema).min(1).max(200),
+    sum: equalityProofSchema,
+  }),
+  ciphertextHash: z.string().regex(/^[0-9a-f]{64}$/, 'Ogiltig hash.'),
+})
+
+/**
+ * Start av signeringen för en krypterad röst.
+ *
+ * Bär bara det väljaren redan vet: vilken valsedel, och hashen över det
+ * chiffer hon just krypterat i webbläsaren. `castSequence` finns INTE här —
+ * servern räknar själv fram den, se `nextCastSequence` i
+ * `pending-vote.service.ts`. Tog rutten emot den från klienten kunde en
+ * angripare ange ett godtyckligt högt tal och senare spela upp ett äldre,
+ * lägre kuvert utan att räknarspärren fångade det.
+ */
+export const signStartSchema = z.object({
+  ballotId: z.string().uuid('Ogiltig valsedel.'),
+  ciphertextHash: z.string().regex(/^[0-9a-f]{64}$/, 'Ogiltig hash.'),
+})
+
+/**
+ * Inlämning av den signerade, krypterade valsedeln.
+ *
+ * INGET SIGNATUR- ELLER CERTIFIKATFÄLT HÄR, OCH DET ÄR AVSIKTLIGT.
+ *
+ * Servern hämtar signaturen och certifikatet från sin egen BankID-hämtning
+ * (`bankIdService.collect(orderRef)`), aldrig från begärans kropp. Zod
+ * stryper okända fält som standard, så skickar en klient ändå med
+ * `signature`, `certificate` eller `castSequence` försvinner de redan här —
+ * innan rutten ens ser dem.
+ */
+export const castEncryptedBallotSchema = z.object({
+  ballotId: z.string().uuid('Ogiltig valsedel.'),
+  orderRef: z.string().uuid('Ogiltig referens.'),
+  ballot: encryptedBallotSchema,
+})
+
 /** Avslutad prenumeration. Bara endpointen behövs för att hitta raden. */
 export const pushUnsubscribeSchema = z.object({
   endpoint: z.string().url('Ogiltig endpoint.').max(2000),

@@ -1,3 +1,4 @@
+import { canonicalOptions } from '@/lib/crypto/ballot-encoding'
 import { votesDb } from './db'
 
 /**
@@ -186,6 +187,72 @@ export async function getBallotChoices(ballotId: string): Promise<BallotChoices 
       candidates: entry.candidates,
     })),
   }
+}
+
+/** Kryptonyckeln och antalet alternativ på en valsedel i det krypterade röstningsflödet. */
+export type EncryptedBallotShape = { publicKey: string; optionCount: number }
+
+/**
+ * Formen en krypterad valsedel måste ha för att kunna verifieras.
+ *
+ * VARFÖR DEN HÄR FUNKTIONEN FINNS HÄR OCH INTE I VÄLJARMODULEN.
+ *
+ * Röstläggningen (`castEncryptedBallot` i `pending-vote.service.ts`) behöver
+ * omröstningens krypteringsnyckel och antalet alternativ på valsedeln för att
+ * kunna verifiera bevisen. Bådadera finns bara här — partier, kandidater och
+ * `encryptionPublicKey` hör till den anonyma sidan — och väljarmodulen får
+ * aldrig importera därifrån (se tests/security/module-boundaries.test.ts,
+ * "väljarmodulen importerar ingenting från den anonyma röstmodulen"). Rutten
+ * hämtar därför formen HÄR och skickar med den till `castEncryptedBallot` som
+ * en parameter, i stället för att den anonyma modulens funktion importeras
+ * där rösten läggs.
+ *
+ * Bara PARTY-formade valsedlar (KOMMUN, LANDSTING, RIKSDAG) stöds av det
+ * krypterade flödet — en FRAGA-valsedel har inte någon motsvarande
+ * `BallotOption`-variant i den kanoniska kodningen (`ballot-encoding.ts`).
+ * Returnerar null för en sådan, för en okänd valsedel, och för en omröstning
+ * utan krypteringsnyckel (skulle bara kunna inträffa om tröskelnyckeln av
+ * något skäl inte skapades — se uppgift 6).
+ */
+export async function getEncryptedBallotShape(
+  ballotId: string,
+): Promise<EncryptedBallotShape | null> {
+  const ballot = await votesDb.electionBallot.findUnique({
+    where: { id: ballotId },
+    select: {
+      kind: true,
+      allowsCandidateVote: true,
+      election: { select: { encryptionPublicKey: true } },
+      parties: {
+        select: {
+          id: true,
+          candidates: { select: { id: true }, orderBy: { displayOrder: 'asc' } },
+        },
+        orderBy: { displayOrder: 'asc' },
+      },
+    },
+  })
+
+  if (!ballot || ballot.kind === 'FRAGA' || !ballot.election.encryptionPublicKey) return null
+
+  /**
+   * Frågorna redan sorterade av Prisma (orderBy ovan) — displayOrder byggs
+   * bara upp igen av positionen i listan, så att `canonicalOptions` (som
+   * kräver fältet för att kunna sortera) får en form den känner igen.
+   */
+  const options = canonicalOptions({
+    allowsCandidateVote: ballot.allowsCandidateVote,
+    parties: ballot.parties.map((party, partyIndex) => ({
+      id: party.id,
+      displayOrder: partyIndex,
+      candidates: party.candidates.map((candidate, candidateIndex) => ({
+        id: candidate.id,
+        displayOrder: candidateIndex,
+      })),
+    })),
+  })
+
+  return { publicKey: ballot.election.encryptionPublicKey, optionCount: options.length }
 }
 
 /** Det förskapade partiregistret. */

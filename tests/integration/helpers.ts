@@ -38,6 +38,16 @@ export async function resetElectionData(): Promise<void> {
   await votersDb.adminSession.deleteMany()
   await votersDb.votingSession.deleteMany()
   await votersDb.voterBallotStatus.deleteMany()
+  /**
+   * MÅSTE TÖMMAS FÖRE voterStatus.
+   *
+   * PendingVote.voterStatusId är RESTRICT, inte CASCADE (spec 7.4: en struken
+   * väljares röst ska räknas, en radering får aldrig tyst ta rösten med sig).
+   * Ligger en liggande röst kvar när voterStatus.deleteMany() körs avvisar
+   * databasen raderingen med ett främmande nyckel-fel i stället för att bara
+   * städa upp — så den här raden måste köras innan, inte efteråt.
+   */
+  await votersDb.pendingVote.deleteMany()
   await votersDb.election.deleteMany()
   await votersDb.voterStatus.deleteMany()
   await votersDb.auditEvent.deleteMany()

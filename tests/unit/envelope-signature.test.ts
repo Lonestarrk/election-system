@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { MockBankIdService, selectDemoIdentity } from '@/modules/eligibility/bankid/MockBankIdService'
 import {
   envelopePayload,
+  personalNumberFromCertificate,
+  publicKeyFromCertificate,
   verifyEnvelopeSignature,
 } from '@/modules/eligibility/bankid/envelope-signature'
 
@@ -113,5 +115,19 @@ describe('signaturen binder rösten till väljaren', () => {
     const b = envelopePayload({ ...PAYLOAD, ballotId: 'vs-1', ciphertextHash: '2' + 'c'.repeat(63) })
 
     expect(a).not.toBe(b)
+  })
+
+  it('nyckel och personnummer läses ur samma certifikat utan att störa varandra', async () => {
+    /**
+     * Uppgift 9 lagrar nyckeln (via `publicKeyFromCertificate`) och en HASH av
+     * personnumret `personalNumberFromCertificate` läser — aldrig
+     * certifikatet i sin helhet. Vaktar att de två funktionerna, som tolkar
+     * samma radprefix var för sig, fortsätter vara konsekventa med varandra.
+     */
+    const data = await signAs('199001011234')
+
+    expect(personalNumberFromCertificate(data.certificate)).toBe('199001011234')
+    expect(publicKeyFromCertificate(data.certificate)).toMatch(/^-----BEGIN PUBLIC KEY-----/)
+    expect(publicKeyFromCertificate(data.certificate)).not.toContain('personnummer:')
   })
 })

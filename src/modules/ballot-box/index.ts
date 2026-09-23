@@ -65,6 +65,7 @@ import {
   getBallotChoices as getBallotChoicesInternal,
   getBallotPublicKey as getBallotPublicKeyInternal,
   getElection as getElectionInternal,
+  getEncryptedBallotShape as getEncryptedBallotShapeInternal,
   listElections as listElectionsInternal,
   listOpenElections as listOpenElectionsInternal,
   listRegisteredParties as listRegisteredPartiesInternal,
@@ -112,6 +113,7 @@ export const listOpenElections = listOpenElectionsInternal
 export const getElection = getElectionInternal
 export const getBallotChoices = getBallotChoicesInternal
 export const getBallotPublicKey = getBallotPublicKeyInternal
+export const getEncryptedBallotShape = getEncryptedBallotShapeInternal
 export const listRegisteredParties = listRegisteredPartiesInternal
 export const createElection = createElectionInternal
 export const deleteElection = deleteElectionInternal
@@ -129,5 +131,6 @@ export type {
   CreatedElection,
   Election,
   ElectionKind,
+  EncryptedBallotShape,
   PartyChoice,
 } from './election.service'

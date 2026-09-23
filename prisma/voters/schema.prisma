@@ -363,9 +363,17 @@ model PendingVote {
   /// Väljarens egen signatur över kuvertet, från BankID /sign.
   bankIdSignature String @map("bankid_signature")
 
-  /// Certifikatet ur signaturen. Bär personnummer och namn — får därför
-  /// ALDRIG följa med till votes_db vid skalningen.
-  bankIdCertificate String @map("bankid_certificate")
+  /// Nyckelmaterialet ur certifikatet — INTE certifikatet självt.
+  ///
+  /// Certifikatet bär personnumret i klartext (attrappens radprefix, och
+  /// subject-fältet i ett riktigt BankID-certifikat). Att lagra det i råform
+  /// skulle sätta ett klartextpersonnummer bredvid identitetshashen i
+  /// röstlängden och upphäva hela skälet att hasha. Det som behövs senare är
+  /// bara nyckeln — för att kunna verifiera signaturen vid en framtida validering —
+  /// och att underskrivaren var rätt person, vilket redan avgjorts av
+  /// hashkontrollen vid läggningen och bärs av radens koppling till
+  /// voterStatusId. Se `publicKeyFromCertificate` i `envelope-signature.ts`.
+  bankIdPublicKey String @map("bankid_public_key")
 
   /// Dygnsupplöst, som all annan tidsdata i röstlängden.
   updatedAt DateTime @map("updated_at")

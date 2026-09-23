@@ -71,7 +71,9 @@ describe('API-ytan', () => {
       'src/app/api/vote/ballot/route.ts',
       'src/app/api/vote/cast/route.ts',
       'src/app/api/vote/credential/route.ts',
+      'src/app/api/vote/encrypted/route.ts',
       'src/app/api/vote/session/route.ts',
+      'src/app/api/vote/sign-start/route.ts',
     ])
   })
 
