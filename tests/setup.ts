@@ -1,29 +1,27 @@
-import { readFileSync, existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { loadDotEnvFile, redirectToTestDatabases } from './test-databases'
 
 /**
- * Laddar .env för testkörningen.
+ * Förbereder miljön i varje testprocess, innan testfilen importeras.
  *
- * Enkel egen parser i stället för dotenv: det är tjugo rader, och ett
- * beroende mindre i ett projekt vars hela poäng är att gå att granska.
+ * Ordningen är hela poängen:
+ *
+ * 1. .env läses in, utan att skriva över det som redan finns i miljön.
+ * 2. Databasvariablerna pekas om till voters_test och votes_test — och skrivs
+ *    över utan villkor. Annars skulle en VOTERS_DATABASE_URL från skalet, eller
+ *    den som .env just fyllde i, gå rakt igenom till klienterna, och testerna
+ *    skulle tömma utvecklingsdatabasen.
+ * 3. Först därefter importerar testfilen något som skapar en Prisma-klient.
+ *    Klienten läser adressen ur miljön, och när den skapas står bara
+ *    testadressen där. Därför får den här filen inte själv importera någon
+ *    databasmodul, inte ens indirekt.
+ *
+ * Saknas databasadresserna helt pekas ingenting om. Integrationstesterna får
+ * då beskedet "skip" från tests/global-setup.ts och hoppas över, och
+ * enhetstesterna kör som vanligt.
  */
 
-const envPath = resolve(process.cwd(), '.env')
-
-if (existsSync(envPath)) {
-  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-
-    const separator = trimmed.indexOf('=')
-    if (separator === -1) continue
-
-    const key = trimmed.slice(0, separator).trim()
-    const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, '')
-
-    if (!(key in process.env)) process.env[key] = value
-  }
-}
+loadDotEnvFile()
+redirectToTestDatabases()
 
 // Standardvärden så att enhetstesterna kan köras utan .env och utan databas.
 process.env.IDENTITY_PEPPER ??= 'test-pepper-minst-trettiotva-tecken-langt-0000'

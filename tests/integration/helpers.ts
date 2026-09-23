@@ -1,3 +1,4 @@
+import { inject } from 'vitest'
 import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { hashPersonalNumber } from '@/modules/eligibility/identity'
@@ -8,29 +9,131 @@ import {
   createBlindedCredential,
   unblindSignature,
 } from '@/lib/blind-client'
+import { TEST_DATABASE_SUFFIX, isTestDatabaseName } from '../test-databases'
 
 /**
  * Hjälpfunktioner för integrationstesterna.
  *
  * OBSERVERA: `resetElectionData` tömmer röstlängd, sessioner, omröstningar,
- * röster och revisionslogg. Kör testerna mot utvecklingsdatabasen och du
- * förlorar demodatan — kör `npm run seed` efteråt. Partiregistret lämnas kvar
- * eftersom det är referensdata.
+ * röster och revisionslogg. Partiregistret lämnas kvar eftersom det är
+ * referensdata. Funktionen vägrar köra om inte båda klienterna är anslutna till
+ * testdatabaser — se `assertConnectedToTestDatabases` nedan.
  */
 
+/**
+ * Avgör om de databasberoende testerna ska köras, hoppas över eller fallera.
+ *
+ * Beskedet kommer från tests/global-setup.ts, som redan har försökt migrera
+ * testdatabaserna. Bara två lägen får bli ett hoppat test: ingen databas är
+ * konfigurerad, eller servern bakom en härledd adress svarar inte — en maskin
+ * utan Docker. Allt annat kastar, så att det syns som ett rött test i stället
+ * för ett grönt som aldrig kördes: servern svarar men testdatabasen saknas,
+ * migreringen gick inte, eller klienterna hamnade i fel databas.
+ *
+ * Tidigare räckte ett misslyckat `SELECT 1` för att allt skulle hoppas över,
+ * och en körning utan testdatabas såg då likadan ut som en lyckad.
+ */
 export async function isDatabaseAvailable(): Promise<boolean> {
-  if (!process.env.VOTERS_DATABASE_URL || !process.env.VOTES_DATABASE_URL) return false
+  const status = inject('testDatabases')
 
+  if (status?.state === 'skip') return false
+  if (status?.state === 'broken') throw new Error(status.reason)
+
+  // 'ready' — eller inget besked alls, om global-setup inte har körts. I båda
+  // fallen ska databasen finnas, och saknas den är det ett fel.
   try {
     await votersDb.$queryRaw`SELECT 1`
     await votesDb.$queryRaw`SELECT 1`
-    return true
-  } catch {
-    return false
+  } catch (error) {
+    throw new Error(
+      'Testdatabaserna ska finnas men går inte att nå. Kontrollera att databasservern kör ' +
+        'och att voters_test och votes_test finns (tests/global-setup.ts skapar och migrerar ' +
+        'dem före varje körning).',
+      { cause: error },
+    )
   }
+
+  // Vakten redan här, och inte bara i resetElectionData: då fallerar hela
+  // testfilen innan något test hunnit skriva — även ett test som raderar på
+  // egen hand, som "rösterna överlever att hela röstlängden raderas".
+  await assertConnectedToTestDatabases()
+
+  return true
+}
+
+type DatabaseClients = {
+  voters: Pick<typeof votersDb, '$queryRaw'>
+  votes: Pick<typeof votesDb, '$queryRaw'>
+}
+
+async function connectedDatabaseName(
+  client: DatabaseClients[keyof DatabaseClients],
+): Promise<string> {
+  // `::text` eftersom current_database() är av typen `name`, som Prisma inte
+  // lovar att kunna läsa ur en rå fråga.
+  const rows = await client.$queryRaw<Array<{ name: string }>>`SELECT current_database()::text AS name`
+  const name = rows[0]?.name
+  if (!name) throw new Error('Databasservern svarade inte på vilken databas anslutningen gäller.')
+  return name
+}
+
+/**
+ * Vägrar fortsätta om inte BÅDA klienterna är anslutna till testdatabaser.
+ *
+ * Kontrollen frågar servern vilken databas anslutningen faktiskt hamnade i
+ * (`current_database()`) i stället för att läsa miljövariabeln. En adress kan
+ * innehålla "_test" i lösenordet, värdnamnet eller frågesträngen och ändå leda
+ * till utvecklingsdatabasen; det enda som avgör vad en radering träffar är
+ * vilken databas servern kopplade upp oss mot.
+ *
+ * Båda måste klara kontrollen, inte bara den ena. Tömningen rör båda
+ * databaserna, och en halvt omdirigerad körning skulle radera röstlängden men
+ * lämna rösterna — eller tvärtom — i någons riktiga data.
+ *
+ * Klienterna går att skicka in, så att vakten kan provas mot en anslutning som
+ * inte är en testdatabas utan att något raderas.
+ */
+export async function assertConnectedToTestDatabases(
+  clients: DatabaseClients = { voters: votersDb, votes: votesDb },
+): Promise<void> {
+  const connections = [
+    {
+      label: 'röstlängden',
+      variable: 'VOTERS_DATABASE_URL',
+      name: await connectedDatabaseName(clients.voters),
+    },
+    {
+      label: 'röstdatabasen',
+      variable: 'VOTES_DATABASE_URL',
+      name: await connectedDatabaseName(clients.votes),
+    },
+  ]
+
+  const wrong = connections.filter((connection) => !isTestDatabaseName(connection.name))
+  if (wrong.length === 0) return
+
+  const described = connections
+    .map((connection) => `${connection.label} → "${connection.name}"`)
+    .join(', ')
+
+  throw new Error(
+    `Testerna vägrar röra databaserna: klienterna är anslutna till ${described}. ` +
+      `Bara databaser vars namn slutar på "${TEST_DATABASE_SUFFIX}" får tömmas av testerna, ` +
+      `eftersom allt annat antas vara riktig data — till exempel den som utvecklingsservern ` +
+      `visar. Ingenting har raderats.\n` +
+      `Åtgärd: kör testerna via vitest, så att tests/setup.ts hinner peka om ` +
+      `${wrong.map((connection) => connection.variable).join(' och ')} till testdatabaserna ` +
+      `(voters_test och votes_test på samma server) innan någon klient skapas, eller sätt ` +
+      `TEST_VOTERS_DATABASE_URL och TEST_VOTES_DATABASE_URL till databaser vars namn slutar ` +
+      `på "${TEST_DATABASE_SUFFIX}".`,
+  )
 }
 
 export async function resetElectionData(): Promise<void> {
+  // Vakten FÖRST, före den första raderingen. En kontroll efteråt, eller mellan
+  // två tömningar, skulle bara kunna berätta vad som redan gått förlorat.
+  await assertConnectedToTestDatabases()
+
   // Ordningen följer beroendena: rösterna först, sedan valsedlarna de pekar på.
   await votesDb.vote.deleteMany()
   await votesDb.election.deleteMany()

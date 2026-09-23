@@ -159,11 +159,18 @@ fråga än integrationstesterna: inte "saknas kopplingen just nu?" utan "kan den
 misstag?". Ett test misslyckas till exempel om en ny fil börjar importera från båda
 modulerna, eller om någon lägger in ett `console.log` som kringgår loggmaskeringen.
 
-> **Integrationstesterna tömmer röstlängd, röster, sessioner och revisionslogg.** Kör
-> `npm run seed` efteråt för att få tillbaka demodatan.
+> **Integrationstesterna kör mot egna databaser, `voters_test` och `votes_test`,** och
+> tömmer dem före varje test. Adresserna härleds ur `VOTERS_DATABASE_URL` och
+> `VOTES_DATABASE_URL` genom att bara databasnamnet byts ut; sätt
+> `TEST_VOTERS_DATABASE_URL` och `TEST_VOTES_DATABASE_URL` för att peka någon annanstans.
+> Testhjälparen frågar servern vilken databas den är ansluten till och vägrar tömma en
+> vars namn inte slutar på `_test`, så utvecklingsdatabasen och demodatan rörs inte.
+> Testdatabaserna skapas och migreras automatiskt före varje körning.
 
-Enhets- och säkerhetstesterna kräver ingen databas — de hoppar över databasberoende
-tester automatiskt om ingen är tillgänglig.
+Enhets- och säkerhetstesterna kräver ingen databas. Svarar ingen databasserver hoppas de
+databasberoende testerna över, utom när `TEST_*`-adresserna är uttryckligen satta. Svarar
+servern men testdatabaserna går inte att migrera, fallerar de i stället — en trasig
+uppsättning ska inte se ut som en grön körning.
 
 ### De sexton testpunkterna
 

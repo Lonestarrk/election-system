@@ -18,3 +18,23 @@ CREATE DATABASE votes_db;
 
 GRANT ALL PRIVILEGES ON DATABASE votes_db TO election;
 GRANT ALL PRIVILEGES ON DATABASE voters_db TO election;
+
+-- ---------------------------------------------------------------------------
+-- Testdatabaser för integrationstesterna.
+--
+-- Testerna tömmer databaserna före varje test. Mot voters_db/votes_db skulle
+-- det radera det som utvecklingsservern visar i webbläsaren, så testerna har
+-- ett eget par med samma uppdelning — två databaser, av samma skäl som ovan.
+-- tests/setup.ts pekar om klienterna hit, och testhjälparen vägrar tömma en
+-- databas vars namn inte slutar på _test.
+--
+-- Skriptet körs bara när volymen är tom. En befintlig installation får
+-- databaserna ändå: tests/global-setup.ts kör `prisma migrate deploy` mot dem
+-- före varje testkörning, och det skapar en databas som saknas.
+-- ---------------------------------------------------------------------------
+
+CREATE DATABASE voters_test;
+CREATE DATABASE votes_test;
+
+GRANT ALL PRIVILEGES ON DATABASE voters_test TO election;
+GRANT ALL PRIVILEGES ON DATABASE votes_test TO election;
