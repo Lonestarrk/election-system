@@ -243,6 +243,26 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     expect((await cast(voter, 'bp-s')).status).toBe('closed')
   })
 
+  it('en röst avvisas när fasen är stängd, fast klockan är kvar i framtiden', async () => {
+    /**
+     * FASEN ÄR AUKTORITATIV DÄR DEN FINNS (uppgift 9:s granskning).
+     *
+     * `Election.phase` finns sedan uppgift 11 och sätts av `closeElection`.
+     * En klocka som går fel ändrar beteendet tyst; en fasövergång är en
+     * händelse någon utfört. Testet håller klockan kvar i framtiden just för
+     * att visa att det är fasen — och inte tiden — som avgör här.
+     */
+    await votersDb.election.update({ where: { id: electionId }, data: { phase: 'CLOSED' } })
+
+    const stored = await votersDb.election.findUniqueOrThrow({
+      where: { id: electionId },
+      select: { closesAt: true },
+    })
+    expect(stored.closesAt.getTime()).toBeGreaterThan(Date.now())
+
+    expect((await cast(voter, 'bp-s')).status).toBe('closed')
+  })
+
   it('en valsedel med manipulerat bevis avvisas', async () => {
     const ballot = await buildBallot('bp-s')
     // Fälten på tråden är decimalsträngar (se EncryptedBallot), inte bigint —

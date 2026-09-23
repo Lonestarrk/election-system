@@ -1,6 +1,7 @@
 import { verify } from '@/lib/blind-signature'
 import { canonicalVoteRecord, hashLeaf, merkleRoot } from '@/lib/merkle'
 import { votesDb } from '@/modules/ballot-box/db'
+import { votersDb } from '@/modules/eligibility/db'
 import {
   getElection,
   getElectionResults,
@@ -333,7 +334,37 @@ export async function runFinalCheck(electionId: string): Promise<FinalCheckRepor
     })
   }
 
-  // --- 9. Utestående röstintyg (varning, inte kritiskt) -------------------
+  // --- 9. Kopplingen mellan väljare och röst är raderad -------------------
+  {
+    /**
+     * RADERINGEN BLIR ETT KONTROLLERAT VILLKOR I STÄLLET FÖR ETT LÖFTE.
+     *
+     * `closeElection` raderar kopplingen som sista steg i skalningen. Att den
+     * körde säger ingenting om att den lyckades — en avbruten körning, eller
+     * en rad som skrivits tillbaka efteråt, lämnar kvar precis det som gör
+     * valhemligheten återkallelsebar. Kontrollen läser därför efter, i stället
+     * för att lita på att steget utfördes.
+     *
+     * Antalet är det enda som publiceras. Vilka väljare det gällde finns i
+     * raderna, och stannar där.
+     */
+    const remaining = await votersDb.pendingVote.count({
+      where: { ballotId: { in: election.ballots.map((ballot) => ballot.id) } },
+    })
+
+    checks.push({
+      id: 'link_cleared',
+      question: 'Är kopplingen mellan väljare och röst raderad?',
+      severity: 'CRITICAL',
+      passed: remaining === 0,
+      detail:
+        remaining === 0
+          ? 'Inga kopplingar finns kvar.'
+          : `${remaining} kopplingar finns kvar. Valet får inte fastställas.`,
+    })
+  }
+
+  // --- 10. Utestående röstintyg (varning, inte kritiskt) ------------------
   {
     /**
      * VARFÖR DETTA ÄR EN VARNING OCH INTE ETT KRITISKT FEL

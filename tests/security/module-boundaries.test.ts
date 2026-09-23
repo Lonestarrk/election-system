@@ -118,6 +118,18 @@ describe('modulgränser', () => {
       'src/orchestration/create-election.usecase.ts',
       'src/orchestration/final-check.usecase.ts',
       'src/orchestration/validate-before-close.usecase.ts',
+      /**
+       * Skalningen (uppgift 11). Den ENDA filen som med flit läser kuverten
+       * på den ena sidan och skriver dem på den andra — det är själva
+       * flytten, och den kan per definition inte göras av en modul som bara
+       * ser en databas.
+       *
+       * Vad som flyttas är chiffret, bevisen och chifferhashen. Väljaren
+       * följer inte med: `voterStatusId` läses aldrig ut ur `PendingVote`
+       * här, och raderna infogas sorterade på chifferhash så att ordningen på
+       * den anonyma sidan inte bär någon information om vem som röstade när.
+       */
+      'src/orchestration/close-election.usecase.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
       'src/app/api/observer/election/route.ts',

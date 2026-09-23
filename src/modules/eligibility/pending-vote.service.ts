@@ -95,11 +95,31 @@ export async function castEncryptedBallot(
 ): Promise<CastOutcome> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
-    select: { closesAt: true, linkClearedAt: true },
+    select: { closesAt: true, linkClearedAt: true, phase: true },
   })
 
-  // Stängd, eller redan skalad. Båda betyder att rösten aldrig skulle räknas.
-  if (!election || election.linkClearedAt !== null || election.closesAt <= new Date()) {
+  /**
+   * Stängd, eller redan skalad. Alla tre villkoren betyder att rösten aldrig
+   * skulle räknas.
+   *
+   * FASEN ÄR AUKTORITATIV DÄR DEN FINNS (uppgift 9:s granskning).
+   *
+   * `Election.phase`s egen dokumentation säger varför: en klocka som går fel
+   * ändrar beteendet tyst, medan en fasövergång är en händelse någon utfört.
+   * Fram till uppgift 11 fanns ingen fas att läsa, och kontrollen kunde bara
+   * fråga klockan.
+   *
+   * KLOCKKONTROLLEN ÄR KVAR, OCH DET ÄR INTE EN DUBBLERING. Den fångar det
+   * omvända fallet: att tiden gått ut men stängningen ännu inte körts, alltså
+   * att fasen fortfarande står i OPEN. Utan den skulle röster kunna tillkomma
+   * i glappet mellan `closesAt` och den administratör som trycker på knappen.
+   */
+  if (
+    !election ||
+    election.phase !== 'OPEN' ||
+    election.linkClearedAt !== null ||
+    election.closesAt <= new Date()
+  ) {
     return { status: 'closed' }
   }
 

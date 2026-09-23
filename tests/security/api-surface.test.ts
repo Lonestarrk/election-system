@@ -39,6 +39,16 @@ describe('API-ytan', () => {
     expect(paths).toEqual([
       'src/app/api/admin/elections/certify/route.ts',
       'src/app/api/admin/elections/check/route.ts',
+      /**
+       * Stängningen: flyttar chiffren till den anonyma sidan och raderar
+       * kopplingen mellan väljare och röst.
+       *
+       * Den enda oåterkalleliga rutten i systemet, och därför den enda som
+       * med flit INTE är schemalagd — se rutten själv för varför skalningen
+       * måste vara en åtgärd någon utför och inte något som sker när klockan
+       * slår.
+       */
+      'src/app/api/admin/elections/close/route.ts',
       'src/app/api/admin/elections/commit/route.ts',
       'src/app/api/admin/elections/route.ts',
       'src/app/api/admin/login/route.ts',
