@@ -3331,6 +3331,114 @@ databasen faktiskt innehåller och inte påstå att ett steg körts.
 
 ---
 
+## Task 11f: Arkitektursidan för alla, med en klickbar tidslinje
+
+**Beslut av användaren 2026-09-23:** *"Gör arkitektursidan mindre teknisk men
+behåll en förklaring hur dubbla kuvert funkar, fast med språk för otekniska
+personer. Behåll Databaserna just nu. Flytta resten till tekniska detaljer och
+till utvecklingsstatus, som undersidor. Lägg till en interaktiv sektion där man
+kan klicka sig igenom de olika momenten och se en animation som visar hur din röst
+förblir hemlig och hur den kan läsas och avkodas. Allt ska visas tydligt med
+animation som triggas av klick på en knapp för varje delmoment, i en slags
+tidslinje för hela omröstningen."*
+
+Uppgiften körs efter att fixrundorna i 11c är klara, så att innehållet är rätt
+innan det flyttas.
+
+**Sidorna**
+
+| Sökväg | Rubrik | Innehåll |
+|---|---|---|
+| `/architecture` | Arkitektur | Kuvertmodellen på vardagsspråk, den klickbara tidslinjen, *Databaserna just nu* (bara i demoläge, med "Följ en röst") och länkar till undersidorna |
+| `/architecture/technical` | Tekniska detaljer | Allt tekniskt som står på sidan i dag: faserna, kryptografin, vad signaturen skyddar mot och inte, databasgränsen och SQL-demonstrationen, vad som publiceras, metadatarisker, begränsningslistan och varför detta inte räcker för ett riktigt val |
+| `/architecture/status` | Utvecklingsstatus | Vad som är byggt och inte (code-facts), vad det gamla flödet fortfarande gör och vad som återstår |
+
+**Inget innehåll försvinner, det flyttas.** code-facts-markörerna och deras
+tester följer med innehållet. `tests/security/known-limitations.test.ts` läser i
+dag `src/app/architecture/page.tsx` och kräver att den importerar listan. Peka om
+testet till den sida som visar listan, och kräv att huvudsidan länkar dit, så att
+ingen läsare kan missa riskerna.
+
+**Språket på huvudsidan**
+
+Skriv för någon som aldrig har hört ordet kryptering. Använd inga fackord på
+huvudsidan, alltså inte kryptering, chiffer, homomorf, tröskel, hash, Merkle eller
+signatur i teknisk mening. Säg i stället vad sakerna gör, till exempel *"ett lås
+som bara går upp när två av tre förtroendepersoner vrider om sina nycklar
+samtidigt"*. Fackorden står på Tekniska detaljer, och huvudsidan länkar dit för
+den som vill veta mer. Skriv korta meningar och säg det viktigaste först.
+
+**Liknelsen ska vara rätt, inte bara begriplig.** Varje förenkling måste
+fortfarande vara sann. Det här får tidslinjen och texten inte visa fel:
+
+- De inre kuverten **öppnas aldrig ett och ett**, inte i någon animation. Bara
+  summan öppnas.
+- Summan går bara att öppna med **två av tre** förtroendepersoner. Ingen kan öppna
+  den ensam, inte heller den som driver systemet.
+- Före stängningen står ditt namn på det yttre kuvertet **med avsikt**, så att du
+  kan byta röst.
+- Din skärm **visar** din röst men kan **inte bevisa** den för någon (spec 3.1).
+- Vid skalningen slängs de yttre kuverten, och de inre **sorteras** så att
+  ordningen inte avslöjar vem som röstade när.
+- Efter stängningen kan ingen se din röst, inte heller du. Du ser *att* du röstat.
+- Svagheten ska nämnas på vardagsspråk och länka vidare: den som kopierade urnan
+  med namnen före stängningen, till exempel via en säkerhetskopia, har kopplingen.
+
+**Tidslinjen**
+
+Ett moment per steg, i ordning, med en knapp för varje moment. Ett klick spelar
+momentets animation och visar en till tre meningar. Momenten nedan ska alla
+täckas. Slå ihop eller dela upp dem om det blir tydligare.
+
+1. Valet förbereds: låset delas i tre nycklar till tre förtroendepersoner
+2. Du legitimerar dig med BankID
+3. Du röstar: ditt val läggs i ett inre kuvert som ingen kan öppna ensam
+4. Du skriver under med BankID, och ditt namn hamnar på det yttre kuvertet
+5. Kuvertet läggs i urnan
+6. Du ändrar dig: det gamla kuvertet byts ut, och din skärm visar din nuvarande röst
+7. Röstningen stänger
+8. Kontrollen: varje yttre kuvert granskas medan namnet finns kvar
+9. Namnen tas bort: de yttre kuverten slängs, och de inre sorteras och flyttas till en urna utan namn
+10. Räkningen: kuverten läggs ihop till ett summakuvert, utan att något öppnas
+11. Summan öppnas: två av tre förtroendepersoner vrider om samtidigt, och bara summan blir läsbar
+12. Resultatet publiceras med bevis, så att vem som helst kan kontrollera att summan öppnades rätt
+13. Efteråt: du ser att du röstat, inte vad, och ingen kan se din röst
+
+Tidslinjen ska fungera så här:
+
+- **Knapparna:** en knapp per moment. På bred skärm står de i en vågrät
+  tidslinje, på mobil lodrätt eller skrollbart. Aktuellt moment är markerat, och
+  det finns Föregående och Nästa. Ett nytt klick på samma moment spelar
+  animationen igen.
+- **`prefers-reduced-motion`:** ingen rörelse. Visa momentets slutläge direkt,
+  med texten.
+- **Tangentbord:** alla knappar ska gå att nå, och fokus ska synas.
+- **Skärmläsare:** momentets text står i en `aria-live`-region. Animationen är
+  dekorativ (`aria-hidden`), och texten ensam ska berätta hela historien.
+- **Ingen data:** tidslinjen är en simulering. Den hämtar ingenting och fungerar
+  därför också utanför demoläge.
+- **Ärlighet:** tidslinjen visar hur valet är tänkt att fungera. En kort rad
+  säger det och länkar till Utvecklingsstatus för vad som är byggt.
+
+**Teknik**
+
+- Inga nya npm-beroenden. Bygg med SVG, CSS-animationer och övergångar, och
+  React-tillstånd. Håll det lätt nog för en mobil.
+- Kontrollera under CSP:n i en riktig webbläsare. Ta skärmdumpar i 390 och
+  1280 px av minst momenten 3, 9, 10 och 11, mitt i animationen och i slutläget,
+  och samla konsolfel.
+
+- [ ] **Tester**
+  - enhetstest för momentlistan: ordningen, att alla moment finns och att vart och
+    ett har en text
+  - e2e: ett klick på varje knapp visar momentets text, Föregående och Nästa
+    fungerar, emulerad `reduced-motion` visar slutläget, och inga konsolfel
+  - de uppdaterade säkerhetstesterna för begränsningslistan och code-facts
+- [ ] Hela sviten, och playwright en gång i slutet eftersom den nollställer
+      dev-databasen. Committa.
+
+---
+
 ## Task 11d: Faserna blir verkliga tillstånd
 
 **Varför:** spec 6.1 säger att fasen går enkelriktat `OPEN → CLOSED → VALIDATED →
@@ -3409,8 +3517,9 @@ och controllern stoppar och startar om den.
 
 ---
 
-**Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → 11d →
-11e → **14** → 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 14 flyttades upp eftersom "Följ en
+**Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
+11d → 11e → **14** → 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 11f ligger före
+11d eftersom användaren prioriterade arkitektursidan. Uppgift 14 flyttades upp eftersom "Följ en
 röst" inte kan visas live förrän röstsidan lägger kuvert. Beroendet är
 kontrollerat: uppgift 14 använder bara rutterna från uppgift 7–9, som är klara.
 
