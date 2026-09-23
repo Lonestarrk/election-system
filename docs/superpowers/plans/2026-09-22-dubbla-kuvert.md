@@ -3274,8 +3274,50 @@ gamla, eftersom den visar skyddet ändra form.
    för ett riktigt val"*, uppdaterade. Minst: kopplingen finns under röstningen;
    backuper, läsreplikor och WAL-loggen omfattas inte av raderingen; betrodd
    utdelare av tröskelnyckeln; ingen validering av BankID-certifikatkedjan
-   (spec 4.6). Håll listan i linje med `src/lib/known-limitations.ts`, så att
-   sidan inte lovar mer än begränsningslistan medger.
+   (spec 4.6).
+
+   **Sidan läser begränsningarna, den skriver dem inte.**
+   `tests/security/known-limitations.test.ts` kräver att sidan importerar
+   `@/lib/known-limitations` och att ingen rubrik står hårdkodad i JSX. Sidans
+   riskavsnitt blir alltså aldrig mer rätt än listan. Listan beskriver i dag bara
+   den gamla modellen, så **lägg till de tre begränsningar som redan är sanna i
+   koden**:
+
+   ```ts
+   {
+     id: 'link-exists-during-voting',
+     title: 'Kopplingen väljare↔röst finns medan röstningen pågår',
+     why:
+       'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar och ' +
+       'därmed röstköp meningslöst. Priset är att "kan inte existera" blivit "raderas enligt ' +
+       'schema". Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen, och rösten är ' +
+       'bara skyddad av att chiffret inte går att läsa utan k av n andelar. Det är den ' +
+       'huvudsakliga akademiska invändningen mot Estlands system.',
+     stillTrueIf: { file: 'prisma/voters/schema.prisma', contains: 'model PendingVote' },
+   },
+   {
+     id: 'trusted-dealer',
+     title: 'Tröskelnyckeln delas av en betrodd utdelare',
+     why:
+       'Vid valets skapande existerar hela den privata nyckeln på ett ställe under ett ögonblick ' +
+       'innan den delas och raderas. Riktig distribuerad nyckelgenerering låter förtroendemännen ' +
+       'bygga nyckeln utan att den någonsin sätts ihop.',
+     stillTrueIf: { file: 'src/orchestration/create-election.usecase.ts', contains: 'splitSecret' },
+   },
+   ```
+
+   Den tredje skriver du själv, med samma ton: **BankID-certifikatkedjan valideras
+   inte.** Signaturen på det yttre kuvertet kontrolleras mot den publika nyckel som
+   står i certifikatet, men certifikatet prövas inte mot BankID:s CA. Den som har
+   skrivrättighet i databasen kan därför bygga ett eget nyckelpar och en egen
+   självkonsekvent rad som valideringen godkänner (spec 4.6, och testet med den
+   äkta förfalskningen i `validate-before-close.test.ts`). Välj en `stillTrueIf`-markör
+   som finns i koden SÅ LÄNGE kedjan inte valideras, och motivera valet i en
+   kommentar på samma sätt som de befintliga posterna gör.
+
+   **Ta inte bort några befintliga poster.** De beskriver det gamla röstflödet,
+   som finns kvar tills uppgift 15. Testet tvingar bort var och en i den uppgift
+   som löser den, eftersom dess markör då försvinner.
 
 Beskriv bara det som finns. Tröskeldekrypteringen och publiceringen byggs i
 uppgift 12 och 13. Sidan får förklara dem som design, men livevyn ska visa vad
@@ -3763,7 +3805,12 @@ Fyra poster försvinner: `signing-keys-in-database`, `receipt-proves-choice`,
 `known-limitations.test.ts` går rött tills de tas bort — det är meningen, det failar
 när något blir bättre.
 
-- [ ] **Steg 2: Lägg till de nya**
+- [ ] **Steg 2: Kontrollera de nya**
+
+**`link-exists-during-voting`, `trusted-dealer` och posten om BankID-certifikatkedjan
+lades till i uppgift 11c**, eftersom arkitektursidan läser listan och annars hade
+visat kuvertmodellen utan dess risker. Lägg inte till dem igen; kontrollera att
+de fortfarande stämmer. Koden nedan står kvar som referens för formuleringen.
 
 ```ts
 {
