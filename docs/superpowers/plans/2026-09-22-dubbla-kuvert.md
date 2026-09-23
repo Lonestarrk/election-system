@@ -3364,8 +3364,8 @@ ingen läsare kan missa riskerna.
 Skriv för någon som aldrig har hört ordet kryptering. Använd inga fackord på
 huvudsidan, alltså inte kryptering, chiffer, homomorf, tröskel, hash, Merkle eller
 signatur i teknisk mening. Säg i stället vad sakerna gör, till exempel *"ett lås
-som bara går upp när två av tre förtroendepersoner vrider om sina nycklar
-samtidigt"*. Fackorden står på Tekniska detaljer, och huvudsidan länkar dit för
+som bara går upp när två av tre förtroendepersoner har lämnat
+var sin nyckel"*. Fackorden står på Tekniska detaljer, och huvudsidan länkar dit för
 den som vill veta mer. Skriv korta meningar och säg det viktigaste först.
 
 **Liknelsen ska vara rätt, inte bara begriplig.** Varje förenkling måste
@@ -3373,14 +3373,19 @@ fortfarande vara sann. Det här får tidslinjen och texten inte visa fel:
 
 - De inre kuverten **öppnas aldrig ett och ett**, inte i någon animation. Bara
   summan öppnas.
-- Summan går bara att öppna med **två av tre** förtroendepersoner. Ingen kan öppna
-  den ensam, inte heller den som driver systemet.
+- Summan går bara att öppna med **två av tre** förtroendepersoner. Ingen av dem kan
+  öppna den ensam. Skriv inte att den som driver systemet inte kan det. När låset
+  tillverkas finns hela nyckeln ett ögonblick på ett ställe (spec 4.5 och 10), och
+  svagheten ska nämnas i samma andetag.
 - Före stängningen står ditt namn på det yttre kuvertet **med avsikt**, så att du
   kan byta röst.
 - Din skärm **visar** din röst men kan **inte bevisa** den för någon (spec 3.1).
 - Vid skalningen slängs de yttre kuverten, och de inre **sorteras** så att
   ordningen inte avslöjar vem som röstade när.
-- Efter stängningen kan ingen se din röst, inte heller du. Du ser *att* du röstat.
+- Efter stängningen kan ingen se din röst i urnan, inte heller du. Du ser *att* du
+  röstat. Den som kopierade urnan med namnen före stängningen kan fortfarande veta
+  vilket kuvert som är ditt. Skriv därför aldrig att *ingen* kan peka ut det, bara
+  att det inte går att se i urnan.
 - Svagheten ska nämnas på vardagsspråk och länka vidare: den som kopierade urnan
   med namnen före stängningen, till exempel via en säkerhetskopia, har kopplingen.
 
@@ -3400,7 +3405,7 @@ täckas. Slå ihop eller dela upp dem om det blir tydligare.
 8. Kontrollen: varje yttre kuvert granskas medan namnet finns kvar
 9. Namnen tas bort: de yttre kuverten slängs, och de inre sorteras och flyttas till en urna utan namn
 10. Räkningen: kuverten läggs ihop till ett summakuvert, utan att något öppnas
-11. Summan öppnas: två av tre förtroendepersoner vrider om samtidigt, och bara summan blir läsbar
+11. Summan öppnas: två av tre förtroendepersoner lämnar var sin del av nyckeln, och bara summan blir läsbar
 12. Resultatet publiceras med bevis, så att vem som helst kan kontrollera att summan öppnades rätt
 13. Efteråt: du ser att du röstat, inte vad, och ingen kan se din röst
 
