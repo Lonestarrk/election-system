@@ -8,12 +8,15 @@ import { createElection } from '@/orchestration/create-election.usecase'
 import { validateBeforeClose } from '@/orchestration/validate-before-close.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
-import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
+import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  envelopePayload,
+  publicKeyFromCertificate,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -466,6 +469,79 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       .sort()
 
     expect(forGunvor).toEqual(['BAD_SIGNATURE', 'WRONG_BALLOT'])
+  })
+
+  it('en rad med missformat chiffer kraschar inte valideringen', async () => {
+    /**
+     * Fixrunda 2, uppgift 10:s granskning.
+     *
+     * Innan `proofHoldsSafely` fanns gjorde `verifyEncryptedBallot`
+     * `BigInt(...)` på chifferfälten utan eget felfång. Kombinerat med att
+     * alla fyra kontroller nu körs för varje rad (fixrunda 1, fynd 3) skulle
+     * en rad som BÅDE har fel valsedel OCH ett missformat chiffer krascha
+     * HELA `validateBeforeClose` i stället för att rapporteras som två
+     * avvikelser — den skyddet som `continue` råkade ge innan var en slump,
+     * inte en design.
+     *
+     * `ciphertextHash` måste stämma mot det missformade chiffret (precis som
+     * `hashCiphertext` skulle räkna fram det) för att `verifyEncryptedBallot`
+     * ens ska HINNA fram till `BigInt`-konverteringen — annars fångas raden
+     * redan av den tidigare hashkontrollen, utan att någonsin nå det som en
+     * gång kraschade. Signaturen är däremot äkta (genererad precis som en
+     * riktig röstläggning), så att testet isolerar EXAKT kombinationen
+     * WRONG_BALLOT + missformat bevis, utan att blanda in en tredje
+     * BAD_SIGNATURE-avvikelse.
+     */
+    const shape = await getEncryptedBallotShape(kommunBallotId)
+    if (!shape) throw new Error('Kommunvalsedeln saknar form.')
+
+    const malformedCiphertext = Array.from({ length: shape.optionCount }, () => ({
+      c1: 'inte-ett-tal',
+      c2: 'inte-heller-ett-tal',
+    }))
+    const malformedProofs = {
+      components: Array.from({ length: shape.optionCount }, () => ({})),
+      sum: {},
+    }
+    const ciphertextHash = hashCiphertext(malformedCiphertext)
+
+    const castSequence = await nextCastSequence(gunvor, kommunBallotId)
+    const envelope = await signAs(gunvor, kommunBallotId, ciphertextHash, castSequence)
+
+    await votersDb.pendingVote.upsert({
+      where: { voterStatusId_ballotId: { voterStatusId: gunvor, ballotId: kommunBallotId } },
+      create: {
+        voterStatusId: gunvor,
+        ballotId: kommunBallotId,
+        ciphertext: malformedCiphertext as unknown as Prisma.InputJsonValue,
+        proofs: malformedProofs as unknown as Prisma.InputJsonValue,
+        ciphertextHash,
+        castSequence,
+        bankIdSignature: envelope.signature,
+        bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
+        updatedAt: new Date(),
+      },
+      update: {
+        ciphertext: malformedCiphertext as unknown as Prisma.InputJsonValue,
+        proofs: malformedProofs as unknown as Prisma.InputJsonValue,
+        ciphertextHash,
+        castSequence,
+        bankIdSignature: envelope.signature,
+        bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
+        updatedAt: new Date(),
+      },
+    })
+
+    // Den avgörande skillnaden: detta får inte kasta. Innan fixrunda 2
+    // hade `await` här avslutats med en okatchad `SyntaxError`.
+    const report = await validateBeforeClose(electionId)
+
+    const forGunvor = report.anomalies
+      .filter((anomaly) => anomaly.voterStatusId === gunvor)
+      .map((anomaly) => anomaly.kind)
+      .sort()
+
+    expect(forGunvor).toEqual(['BAD_PROOF', 'WRONG_BALLOT'])
   })
 
   it('rapportens sammanfattning namnger ingen väljare', async () => {

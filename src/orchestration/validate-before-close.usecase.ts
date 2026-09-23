@@ -206,9 +206,9 @@ function mismatchesVoterArea(
 
 /**
  * `ciphertext`/`proofs` lagras som Prisma `Json` och har därför ingen statisk
- * form i klienten. Formen kontrolleras av `verifyEncryptedBallot` självt —
- * precis som vid läggningen — så felaktig form upptäcks som ett underkänt
- * bevis (BAD_PROOF), inte som en krasch här.
+ * form i klienten. Bara ett typläge — ingen runtime-kontroll sker här. Formen
+ * kontrolleras av `verifyEncryptedBallot`, som anropas via `proofHoldsSafely`
+ * nedan, INTE direkt: se den funktionens dokumentation för varför.
  */
 function toEncryptedBallot(vote: {
   ciphertext: unknown
@@ -219,6 +219,58 @@ function toEncryptedBallot(vote: {
     ciphertext: vote.ciphertext as EncryptedBallot['ciphertext'],
     proofs: vote.proofs as EncryptedBallot['proofs'],
     ciphertextHash: vote.ciphertextHash,
+  }
+}
+
+/**
+ * BAD_PROOF-kontrollen, skyddad mot kast (fixrunda 2, uppgift 10:s
+ * granskning).
+ *
+ * `verifyEncryptedBallot` (src/lib/crypto/verify-ballot.ts) gör `BigInt(...)`
+ * på chiffer- och bevisfälten utan eget felfång. Det är rätt för dess EGNA
+ * normala anropskedja: `castEncryptedBallot` når den bara med en valsedel som
+ * redan passerat `castEncryptedBallotSchema` (`decimalStringSchema`, se
+ * `src/lib/validation.ts`) — fälten är garanterat decimalsträngar innan de
+ * når fram, så ett kast där vore ett verkligt programmeringsfel att stanna
+ * på.
+ *
+ * HÄR FINNS INGEN SÅDAN GARANTI. Raden kommer direkt ur databasen, förbi
+ * varje Zod-schema, och den här filens dokumentationshuvud handlar
+ * genomgående om att en angripare med skrivrättighet kan ha skrivit precis
+ * den raden. Ett missformat chiffer (icke-numeriska strängar, `null` i
+ * stället för en array, fel längd) är då inte ett programmeringsfel — det ÄR
+ * avvikelsen valideringen finns för att hitta, och ska rapporteras som
+ * BAD_PROOF precis som ett välformat men matematiskt ogiltigt bevis.
+ *
+ * VALIDERINGEN ÄR EN SPÄRR (spec 7.1), OCH EN SPÄRR SOM KRASCHAR HAR HJÄLPT
+ * ANGRIPAREN I STÄLLET FÖR ATT STOPPA HONOM. Ett okatchat undantag här skulle
+ * få hela `validateBeforeClose` att kasta för HELA omröstningen — administratören
+ * får en stacktrace i stället för en avvikelserapport, och valet går inte att
+ * stänga alls. En enda missformad rad, skriven av vem som helst med
+ * skrivrättighet, vore då en spärr mot att någonsin stänga valet — strax
+ * effektivare för en angripare än den avvikelse raden annars hade orsakat.
+ *
+ * Att linda in HELA anropet (i stället för att härda `BigInt(...)` punktvis
+ * inne i `verifyEncryptedBallot`) är avsiktligt: den funktionens kryptologik
+ * rörs inte alls här, och skyddet täcker varje sätt den kan kasta på skräp —
+ * chiffer, bevis eller längder — utan att räkna upp dem en och en.
+ */
+function proofHoldsSafely(
+  shape: { publicKey: string; optionCount: number },
+  electionId: string,
+  ballotId: string,
+  vote: { ciphertext: unknown; proofs: unknown; ciphertextHash: string },
+): boolean {
+  try {
+    return verifyEncryptedBallot(
+      shape.publicKey,
+      electionId,
+      ballotId,
+      shape.optionCount,
+      toEncryptedBallot(vote),
+    )
+  } catch {
+    return false
   }
 }
 
@@ -312,15 +364,7 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
       shapeCache.set(vote.ballotId, shape)
     }
 
-    const proofHolds =
-      shape !== null &&
-      verifyEncryptedBallot(
-        shape.publicKey,
-        electionId,
-        vote.ballotId,
-        shape.optionCount,
-        toEncryptedBallot(vote),
-      )
+    const proofHolds = shape !== null && proofHoldsSafely(shape, electionId, vote.ballotId, vote)
 
     if (!proofHolds) {
       anomalies.push(anomaly('BAD_PROOF'))
