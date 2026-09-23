@@ -2747,7 +2747,7 @@ it('publicerar en kuvertrot INNAN signaturerna raderas', async () => {
 
   expect(election.envelopeRoot).toMatch(/^[0-9a-f]{64}$/)
   // Roten ska vara den over de tva faktiska kuverten, inte over ingenting.
-  expect(election.envelopeRoot).not.toBe(await merkleRootOf([]))
+  expect(election.envelopeRoot).not.toBe(envelopeRootOf([]))
 })
 
 it('vagrar skala nar valideringen hittar en avvikelse', async () => {
@@ -2815,7 +2815,39 @@ Förväntat: FAIL, modulen saknas
  */
 ```
 
-Implementera enligt kommentaren. Uppdatera `Election.linkClearedAt` sist.
+Implementera enligt kommentaren. Uppdatera `Election.linkClearedAt` och
+`Election.phase` sist.
+
+**Kuvertrotens format maste vara utskrivet, inte uppfunnet.** Den oberoende
+verifieraren i uppgift 13 ska kunna rakna om den utan att lasa var kallkod, och
+en valjare ska kunna bevisa inklusion mot den. Aterbruka `src/lib/merkle.ts`,
+som redan finns och bar domanseparerade prefix samt bladantalet i roten:
+
+```ts
+import { hashLeaf, merkleRoot } from '@/lib/merkle'
+
+/**
+ * Ett blad per kuvert, sorterat pa chifferhash.
+ *
+ * Sorteringen gor roten oberoende av i vilken ordning valjarna rostade — samma
+ * skal som infogningen i votes_db sorteras. Bladet binder BADE hashen och
+ * signaturen: bara hashen hade latit en signatur bytas ut obemarkt, bara
+ * signaturen hade inte pekat ut vilken rost den horde till.
+ */
+export function envelopeLeaf(envelope: { ciphertextHash: string; bankIdSignature: string }): string {
+  return hashLeaf(`${envelope.ciphertextHash}|${envelope.bankIdSignature}`)
+}
+
+export function envelopeRootOf(
+  envelopes: Array<{ ciphertextHash: string; bankIdSignature: string }>,
+): string {
+  const sorted = [...envelopes].sort((a, b) => a.ciphertextHash.localeCompare(b.ciphertextHash))
+  return merkleRoot(sorted.map(envelopeLeaf))
+}
+```
+
+Bada funktionerna exporteras ur `close-election.usecase.ts`, sa att bade testet
+och den oberoende verifieraren kan anropa dem.
 
 - [ ] **Steg 4: Lägg till kontrollen i `final-check.usecase.ts`**
 
