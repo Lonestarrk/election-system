@@ -27,3 +27,6 @@ digitalt_valsystem_prompt.txt
 test-results/
 playwright-report/
 *.stackdump
+
+# Arbetsyta för subagent-driven exekvering. Scratch, inte projektfil.
+.superpowers/
