@@ -143,15 +143,52 @@ const MAX_SEQUENCE_ATTEMPTS = 5
  */
 export type AuditClient = Pick<typeof votersDb, 'auditEvent'>
 
+/**
+ * Skriver en revisionshändelse.
+ *
+ * @param client Utelämnas i normalfallet. Skickas bara in av en anropare som
+ *   redan kör i en transaktion — och DET BYTER SAMTIDIGT FELBETEENDET, se
+ *   nedan. Parametern är valfri för att alla befintliga anropare ska slippa
+ *   ändras, vilket är en fälla värd att känna till: en framtida rad inuti en
+ *   transaktion som GLÖMMER att skicka `tx` hamnar tyst utanför den, och
+ *   varken TypeScript eller testerna säger ifrån. Skriver du ett anrop inuti
+ *   ett `$transaction`, skicka alltid med `tx`.
+ */
 export async function recordAuditEvent(
   eventType: AuditEventType,
-  client: AuditClient = votersDb,
+  client?: AuditClient,
 ): Promise<void> {
+  /**
+   * INUTI NÅGON ANNANS TRANSAKTION ÄR ETT SVALT FEL INTE SNÄLLT — DET ÄR
+   * FARLIGT (fixrunda 2, uppgift 11).
+   *
+   * Svälj-grenen längre ned är RÄTT för den normala vägen: en väljare ska inte
+   * nekas för att revisionsloggen strulade. Den är FEL innanför en transaktion,
+   * och skälet är att felet där inte stannar hos den här funktionen.
+   *
+   * PostgreSQL avbryter hela transaktionen vid första fel i den. Varje följande
+   * sats svarar 25P02 ("current transaction is aborted"), och ett COMMIT görs
+   * om till ROLLBACK — utan att fela. Sväljer vi felet och returnerar normalt
+   * får anroparen alltså tillbaka ett `$transaction` som RESOLVAR, medan
+   * ingenting av det den skrev finns kvar. I `closeElection` betydde det att
+   * stängningen svarade "kopplingen är raderad" med kuverten kvar i
+   * röstlängden och roten oskriven. Ett svalt fel förstör anroparens
+   * atomicitetskontrakt.
+   *
+   * Fick funktionen en klient inskickad kör den därför inuti någon annans
+   * transaktion, och varje fel den inte kan hantera lämnas vidare så att
+   * `$transaction` rejectar. Det gäller ALLA fel utom den unikhetskonflikt som
+   * slingan nedan är byggd för att retas med — poängen är inte att känna igen
+   * 25P02, utan att ingenting okänt får sväljas här.
+   */
+  const inTransaction = client !== undefined
+  const db = client ?? votersDb
+
   const occurredAt = truncateToHour(new Date())
 
   for (let attempt = 1; attempt <= MAX_SEQUENCE_ATTEMPTS; attempt += 1) {
     try {
-      const previous = await client.auditEvent.findFirst({
+      const previous = await db.auditEvent.findFirst({
         orderBy: { sequence: 'desc' },
         select: { sequence: true, entryHash: true },
       })
@@ -159,7 +196,7 @@ export async function recordAuditEvent(
       const sequence = (previous?.sequence ?? 0) + 1
       const previousHash = previous?.entryHash ?? null
 
-      await client.auditEvent.create({
+      await db.auditEvent.create({
         data: {
           eventType,
           occurredAt,
@@ -175,6 +212,11 @@ export async function recordAuditEvent(
         typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
 
       if (isUniqueViolation && attempt < MAX_SEQUENCE_ATTEMPTS) continue
+
+      // Inuti någon annans transaktion: låt felet gå vidare, så att
+      // $transaction rejectar i stället för att tyst rulla tillbaka. Se
+      // resonemanget vid `inTransaction` ovan.
+      if (inTransaction) throw error
 
       // En revisionslogg som inte går att skriva får inte stoppa en väljare
       // från att rösta. Felet loggas, men rösträtten går före.

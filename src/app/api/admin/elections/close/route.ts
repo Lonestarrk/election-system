@@ -88,14 +88,15 @@ export async function POST(request: Request) {
   /**
    * ETT KAST HÄR ÄR INTE ETT OKÄNT FEL — DET ÄR SKYDDSMEKANISMEN SOM LÖSTE UT.
    *
-   * `closeElection` kastar när antalet flyttade kuvert inte stämmer, i stället
-   * för att gå vidare och radera de enda kopior som finns. Precis då betyder
-   * beskedet som mest, och precis då hade en naken 500 sagt minst: en
-   * administratör som ser "Internal Server Error" har ingen aning om huruvida
-   * kopplingen finns kvar eller är borta.
+   * `closeElection` kastar hellre än att gå vidare när ett antagande brustit:
+   * när antalet flyttade kuvert inte stämmer, och när skrivningarna i
+   * röstlängden inte finns kvar efter transaktionen. Gemensamt för de vägarna
+   * är att INGENTING ÄR RADERAT — och det är det administratören behöver veta.
+   * En naken 500 hade sagt minst precis där beskedet betyder mest.
    *
-   * Ingenting i den kastande vägen raderar, så svaret kan säga det rakt ut.
-   * Övriga grenar svarar med 409 och en förklaring; den här gör samma sak.
+   * SVARET PÅSTÅR INGEN ORSAK. Rutten kan inte veta vilken av vägarna som
+   * löste ut, och en gissning som råkar peka fel skickar utredningen åt fel
+   * håll. Orsaken står i loggen, säkerhetspåståendet i svaret.
    */
   let outcome: Awaited<ReturnType<typeof closeElection>>
 
@@ -111,9 +112,8 @@ export async function POST(request: Request) {
         status: 'aborted',
         message:
           'Stängningen avbröts innan något raderades. Kopplingen mellan väljare och röst är ' +
-          'ORÖRD och omröstningen kan stängas om när felet är utrett. Kontrollera att ' +
-          'chiffren hunnit fram till röstdatabasen — antalet där stämde inte med antalet ' +
-          'liggande kuvert.',
+          'ORÖRD, ingen röst är förlorad, och omröstningen kan stängas om när felet är ' +
+          'utrett. Vad som gick fel framgår av serverloggen — svaret gissar medvetet inte.',
       },
       409,
     )

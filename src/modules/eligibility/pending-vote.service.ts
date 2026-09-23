@@ -327,6 +327,14 @@ export async function pendingVoteFor(
  *   transaktion, så att raderingen och fasövergången blir odelbara — en krasch
  *   däremellan hade lämnat en omröstning i OPEN utan kuvert kvar, vilket en
  *   omkörning inte kan skilja från en omröstning där ingen röstat.
+ *
+ *   PARAMETERN ÄR VALFRI, OCH DET ÄR EN FÄLLA VÄRD ATT KÄNNA TILL. Ett
+ *   framtida anrop inuti ett `$transaction` som glömmer att skicka `tx` kör
+ *   raderingen UTANFÖR transaktionen, och varken TypeScript eller testerna
+ *   säger ifrån — raderingen skulle då ligga kvar även när resten rullas
+ *   tillbaka. Den är valfri bara för att de befintliga anroparna (testerna för
+ *   uppgift 9) ska slippa ändras. Skriver du ett anrop inuti en transaktion,
+ *   skicka alltid med `tx`.
  */
 export async function clearPendingVotes(
   electionId: string,

@@ -358,26 +358,85 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
    * då posten med sig — en logg som påstår att kopplingen raderats när den
    * ligger kvar vore värre än ingen logg alls.
    */
-  const cleared = await votersDb.$transaction(async (tx) => {
-    // Skriv-en-gång: en redan publicerad rot får aldrig ersättas. `updateMany`
-    // och inte `update`, eftersom en träfflös `update` kastar — här ska en
-    // redan satt rot hoppas över, inte fälla körningen.
-    await tx.election.updateMany({
-      where: { id: electionId, envelopeRoot: null },
-      data: { envelopeRoot },
-    })
+  const cleared = await votersDb.$transaction(
+    async (tx) => {
+      // Skriv-en-gång: en redan publicerad rot får aldrig ersättas. `updateMany`
+      // och inte `update`, eftersom en träfflös `update` kastar — här ska en
+      // redan satt rot hoppas över, inte fälla körningen.
+      await tx.election.updateMany({
+        where: { id: electionId, envelopeRoot: null },
+        data: { envelopeRoot },
+      })
 
-    const removed = await clearPendingVotes(electionId, tx)
+      const removed = await clearPendingVotes(electionId, tx)
 
-    await tx.election.update({
-      where: { id: electionId },
-      data: { phase: 'STRIPPED', linkClearedAt: new Date() },
-    })
+      await tx.election.update({
+        where: { id: electionId },
+        data: { phase: 'STRIPPED', linkClearedAt: new Date() },
+      })
 
-    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
+      await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
 
-    return removed
+      return removed
+    },
+    /**
+     * TIDSGRÄNSEN ÄR VALD, INTE ÄRVD (fixrunda 2, uppgift 11).
+     *
+     * Prismas standard är 5 sekunder, och `db.ts` sätter ingen
+     * `transactionOptions`. Raderingen är en enda `deleteMany` över samtliga
+     * kuvert i omröstningen — i ett riktigt val hundratusentals rader — och
+     * den kan mycket väl ta längre tid än så. En P2028 hade rullat tillbaka
+     * allt: utfallet är säkert (ingenting raderat, roten oskriven), men det är
+     * en felväg som inte fanns när raderingen låg utanför en transaktion, och
+     * den ska inte uppstå av att ingen valde något.
+     *
+     * Två minuter är tilltaget för att rymma en radering i den storleken utan
+     * att vara obegränsat: en transaktion som hänger håller lås på
+     * `pending_vote` och `election`, så den får inte tillåtas leva hur länge
+     * som helst. `maxWait` är tiden att få en anslutning ur poolen, inte tid i
+     * transaktionen.
+     */
+    { timeout: 120_000, maxWait: 20_000 },
+  )
+
+  /**
+   * --- 7. STÄNGNINGEN KONTROLLERAR SITT EGET UTFALL ----------------------
+   *
+   * ATT SÄGA ATT KOPPLINGEN ÄR RADERAD ÄR DET MEST KONSEKVENSRIKA BESKED
+   * SYSTEMET KAN GE. Det måste vara kontrollerat, aldrig antaget.
+   *
+   * Bakgrunden är konkret (fixrunda 2): en revisionsskrivning som fallerade
+   * inuti transaktionen sveptes undan av `recordAuditEvent`s svälj-gren.
+   * Callbacken returnerade normalt, PostgreSQL gjorde om COMMIT till ROLLBACK
+   * utan att fela, och `$transaction` RESOLVADE — varpå den här funktionen
+   * svarade `closed` medan kuverten låg kvar, roten var oskriven och fasen
+   * stod i OPEN. Administratören fick veta att valhemligheten uppstått när den
+   * inte hade det.
+   *
+   * `recordAuditEvent` kastar numera i det läget, men det rättar bara den
+   * kända vägen. Den här kontrollen stänger hela klassen: vilken framtida väg
+   * som helst som får transaktionen att tyst rulla tillbaka fångas här, av att
+   * det påstådda tillståndet inte finns i databasen.
+   *
+   * KASTAR I STÄLLET FÖR EN NY `CloseOutcome`-GREN. Varje gren i `CloseOutcome`
+   * beskriver ett begripligt tillstånd hos omröstningen — för tidigt, redan
+   * stängd, en avvikelse att utreda. "Skrivningen försvann utan att någon
+   * felade" är inget sådant tillstånd; det är ett brutet antagande, samma sort
+   * som antalskontrollen i steg 5 redan kastar på, och rutten har en gren som
+   * svarar 409 med beskedet att kopplingen ligger kvar.
+   */
+  const after = await votersDb.election.findUniqueOrThrow({
+    where: { id: electionId },
+    select: { phase: true, envelopeRoot: true },
   })
+
+  if (after.phase !== 'STRIPPED' || after.envelopeRoot === null) {
+    throw new Error(
+      'Stängningen gick inte igenom: skrivningarna i röstlängden finns inte kvar efter ' +
+        `transaktionen (fas ${after.phase}, rot ${after.envelopeRoot === null ? 'oskriven' : 'skriven'}). ` +
+        'Kopplingen mellan väljare och röst ligger kvar och stängningen kan köras om.',
+    )
+  }
 
   return { status: 'closed', moved, cleared, envelopeRoot }
 }

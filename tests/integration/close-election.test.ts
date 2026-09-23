@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Prisma } from '.prisma/voters'
 import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
@@ -17,6 +17,7 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
+import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
@@ -24,6 +25,50 @@ import {
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+
+/**
+ * EN KONSTRUERAD TYST ROLLBACK (fixrunda 2, uppgift 11).
+ *
+ * Felet som en gång fanns: `recordAuditEvent` svalde ett fel som uppstått
+ * inuti `closeElection`s transaktion. PostgreSQL hade då redan avbrutit
+ * transaktionen, COMMIT gjordes om till ROLLBACK utan att fela, och
+ * `$transaction` RESOLVADE — varpå stängningen svarade `closed` med kuverten
+ * kvar och roten oskriven.
+ *
+ * Wrappern nedan härmar exakt den vägen, på begäran: den kör en sats som
+ * avbryter transaktionen och sväljer felet, precis som svälj-grenen gjorde.
+ * Felet konstrueras alltså i stället för att inväntas — det ursprungliga
+ * utlösandet krävde en samtidig revisionsskrivning, vilket är en
+ * tidssammanträffning ett test aldrig ska hänga på.
+ *
+ * Alla andra anrop går till den äkta funktionen, så resten av sviten — och
+ * `validateBeforeClose`s egen revisionspost — är opåverkade.
+ */
+const auditControl = vi.hoisted(() => ({ poisonTransaction: false }))
+
+vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/modules/eligibility/audit.service')>()
+
+  return {
+    ...actual,
+    recordAuditEvent: async (eventType: string, client?: unknown) => {
+      if (auditControl.poisonTransaction && client) {
+        try {
+          await (
+            client as { $queryRawUnsafe: (sql: string) => Promise<unknown> }
+          ).$queryRawUnsafe('select 1 / 0')
+        } catch {
+          // Svälj — det är hela poängen. Transaktionen är nu avbruten, men
+          // anroparen får aldrig veta det.
+        }
+        return
+      }
+
+      return actual.recordAuditEvent(eventType as never, client as never)
+    },
+  }
+})
 
 /**
  * Uppgift 11: stängningen — den punkt där valhemligheten uppstår.
@@ -93,6 +138,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
   }
 
   beforeEach(async () => {
+    auditControl.poisonTransaction = false
     await resetElectionData()
 
     // Partiregistret är delad referensdata och tas inte bort av
@@ -516,6 +562,76 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       select: { status: true },
     })
     expect(stored.status).toBe('OPEN')
+  })
+
+  it('revisionsskrivningen kastar inuti en transaktion i stället för att svälja felet', async () => {
+    /**
+     * SVÄLJ-GRENEN ÄR RÄTT FÖR EN VÄLJARE OCH FEL FÖR EN TRANSAKTION.
+     *
+     * Utanför en transaktion ska `recordAuditEvent` aldrig stoppa någon från
+     * att rösta — den loggar och går vidare. Fick den en klient inskickad kör
+     * den däremot inuti någon annans transaktion, där ett svalt fel förstör
+     * anroparens atomicitetskontrakt: PostgreSQL har redan avbrutit
+     * transaktionen, COMMIT görs om till ROLLBACK utan att fela, och anroparen
+     * tror att allt gick bra.
+     *
+     * Transaktionen förgiftas här med flit, precis som en samtidig
+     * revisionsskrivning hade gjort i drift. Felet som når `recordAuditEvent`
+     * är då 25P02 — ett fel UTAN Prismas `code`-fält, alltså inte den
+     * unikhetskonflikt slingan retas med. Varje sådant fel ska lämnas vidare.
+     */
+    await expect(
+      votersDb.$transaction(async (tx) => {
+        try {
+          await tx.$queryRawUnsafe('select 1 / 0')
+        } catch {
+          // Transaktionen är nu avbruten. Anroparen vet ännu ingenting.
+        }
+
+        await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('påstår inte att kopplingen raderats när transaktionen tyst rullat tillbaka', async () => {
+    /**
+     * DET MEST KONSEKVENSRIKA BESKED SYSTEMET KAN GE MÅSTE VARA KONTROLLERAT.
+     *
+     * Med en tyst rollback ser `closeElection` ut att ha lyckats: `$transaction`
+     * resolvar, `cleared` är ett trovärdigt tal, och ingenting har felat. Men
+     * kuverten ligger kvar, roten är oskriven och fasen står i OPEN. Utan en
+     * kontroll av det faktiska utfallet hade funktionen svarat `closed` — och
+     * rutten 200 med beskedet att valhemligheten uppstått.
+     *
+     * Testet kräver att stängningen INTE rapporterar `closed`, och att
+     * röstlängden är orörd efteråt. Rutten svarar 200 bara i `closed`-grenen,
+     * så ett kast fångas i stället av dess 409-gren ("kopplingen är ORÖRD").
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+
+    auditControl.poisonTransaction = true
+
+    await expect(closeElection(electionId)).rejects.toThrow()
+
+    const election = await votersDb.election.findUniqueOrThrow({
+      where: { id: electionId },
+      select: { phase: true, envelopeRoot: true, linkClearedAt: true },
+    })
+
+    // Ingenting av det transaktionen påstod sig ha gjort finns kvar.
+    expect(election.phase).toBe('OPEN')
+    expect(election.envelopeRoot).toBeNull()
+    expect(election.linkClearedAt).toBeNull()
+    expect(await votersDb.pendingVote.count()).toBe(2)
+
+    /**
+     * Och stängningen går att köra om när felet är åtgärdat — det är hela
+     * skälet att kasta i stället för att fortsätta.
+     */
+    auditControl.poisonTransaction = false
+    expect((await closeElection(electionId)).status).toBe('closed')
+    expect(await votersDb.pendingVote.count()).toBe(0)
   })
 
   it('slutkontrollen är kritisk om en koppling finns kvar EFTER skalningen', async () => {
