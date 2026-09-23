@@ -66,19 +66,45 @@ export function redact(input: string): string {
  *
  * Kedjan följs med både djupgräns och cykelskydd: `cause` sätts av
  * anropskoden och kan peka var som helst, även tillbaka på sig själv.
+ *
+ * FUNKTIONEN KASTAR ALDRIG (fixrunda 5, uppgift 11). Ett led i kedjan kan vara
+ * vad som helst — `String(Object.create(null))` kastar `TypeError`, och en
+ * getter på `name`, `message` eller `cause` kan kasta vad den vill. Det här
+ * anropas bland annat INNE i stängningsruttens catch-block, före svaret med
+ * säkerhetsbeskedet: ett kast där hade blivit en naken 500 i stället för
+ * beskedet om huruvida kopplingen mellan väljare och röst finns kvar. Ett led
+ * som inte går att beskriva ersätts därför med en reservtext, och kedjan
+ * avbryts där i stället för att ta loggraden med sig.
  */
 export function describeErrorChain(error: unknown): string {
   const seen = new Set<unknown>()
   const parts: string[] = []
   let current: unknown = error
 
-  while (current !== undefined && current !== null && !seen.has(current) && parts.length < 5) {
-    seen.add(current)
-    parts.push(current instanceof Error ? `${current.name}: ${current.message}` : String(current))
-    current = current instanceof Error ? current.cause : undefined
+  try {
+    while (current !== undefined && current !== null && !seen.has(current) && parts.length < 5) {
+      seen.add(current)
+      parts.push(describeLink(current))
+      current = current instanceof Error ? current.cause : undefined
+    }
+  } catch {
+    // `instanceof` eller en getter på `cause` kastade. Det som redan hunnit
+    // beskrivas behålls; resten av kedjan går inte att följa.
+    parts.push(UNDESCRIBABLE_LINK)
   }
 
   return parts.join(' <- orsakat av: ')
+}
+
+const UNDESCRIBABLE_LINK = '[led i orsakskedjan kunde inte beskrivas]'
+
+/** Ett enskilt led. Kastar aldrig — se `describeErrorChain`. */
+function describeLink(value: unknown): string {
+  try {
+    return value instanceof Error ? `${value.name}: ${value.message}` : String(value)
+  } catch {
+    return UNDESCRIBABLE_LINK
+  }
 }
 
 function serialise(value: unknown): string {
@@ -112,10 +138,33 @@ function normaliseContext(context: Record<string, unknown>): Record<string, unkn
   return normalised
 }
 
+/**
+ * Kontexten som text. Kastar aldrig.
+ *
+ * `normaliseContext` läser varje värde genom `Object.entries`, och det
+ * anropar getters — en getter som kastar gjorde förut att `serialise`s egen
+ * try/catch svarade med reservtexten, men sedan normaliseringen infördes låg
+ * läsningen UTANFÖR det skyddet och tog hela loggraden med sig. Hela vägen från
+ * kontextobjekt till sträng ligger därför inom samma skydd.
+ *
+ * Loggerns invariant: en loggrad som kastar är värre än en som saknas. Loggern
+ * anropas från felhanterare, och ett kast där ersätter det fel som skulle
+ * loggas med ett nytt, som ingen ser.
+ */
+function serialiseContext(context: Record<string, unknown>): string | null {
+  try {
+    if (Object.keys(context).length === 0) return null
+    return serialise(normaliseContext(context))
+  } catch {
+    return '[kunde inte serialiseras]'
+  }
+}
+
 function write(level: Level, message: string, context?: Record<string, unknown>): void {
   const parts = [`[${level.toUpperCase()}]`, redact(message)]
-  if (context && Object.keys(context).length > 0) {
-    parts.push(redact(serialise(normaliseContext(context))))
+  const serialisedContext = context ? serialiseContext(context) : null
+  if (serialisedContext !== null) {
+    parts.push(redact(serialisedContext))
   }
   const line = parts.join(' ')
 

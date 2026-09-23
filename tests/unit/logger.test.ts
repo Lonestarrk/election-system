@@ -106,3 +106,44 @@ describe('orsakskedjan i ett fel', () => {
     expect(written).toContain('yttre')
   })
 })
+
+describe('loggern kastar aldrig själv', () => {
+  /**
+   * INVARIANTEN: EN LOGGRAD SOM KASTAR ÄR VÄRRE ÄN EN SOM SAKNAS.
+   *
+   * Loggern anropas bland annat inifrån felhanterare — i stängningsrutten
+   * ligger anropet INNE i catch-blocket, före svaret med säkerhetsbeskedet.
+   * Kastar loggern där blir svaret en naken 500 i stället för beskedet om
+   * huruvida kopplingen mellan väljare och röst finns kvar. Därför ska ingen
+   * indata, hur trasig den än är, kunna få en loggrad att kasta.
+   */
+  it('en kontext med en getter som kastar ger en loggrad, inte ett kast', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const context = {
+      get farlig(): string {
+        throw new Error('getter kastade')
+      },
+    }
+
+    expect(() => logger.error('Fel', context)).not.toThrow()
+
+    const written = spy.mock.calls.flat().join(' ')
+    expect(written).toContain('Fel')
+    expect(written).toContain('[kunde inte serialiseras]')
+  })
+
+  it('ett led utan prototyp i orsakskedjan ger en loggrad, inte ett kast', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    // `String(Object.create(null))` kastar TypeError — objektet saknar både
+    // toString och valueOf.
+    const yttre = new Error('yttre', { cause: Object.create(null) })
+
+    expect(() => describeErrorChain(yttre)).not.toThrow()
+    expect(describeErrorChain(yttre)).toContain('yttre')
+
+    expect(() => logger.error('Fel', { error: yttre })).not.toThrow()
+    expect(spy.mock.calls.flat().join(' ')).toContain('yttre')
+  })
+})

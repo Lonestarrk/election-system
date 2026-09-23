@@ -101,14 +101,6 @@ export class CloseAbortedError extends Error {
 }
 
 /**
- * Beskedet som ska visas när stängningen kastat.
- *
- * Bor här och inte i rutten: det är ett påstående om vad som hänt med
- * kopplingen mellan väljare och röst, alltså en domänfråga, och det är den
- * enda platsen där påståendets sanning går att härleda. Rutten väljer bara
- * statuskod.
- */
-/**
  * Vad som är känt om kopplingen efter ett kast.
  *
  * Allt som INTE är en `CloseAbortedError` räknas som `unknown`: påståendet att
@@ -122,6 +114,14 @@ export function linkStateOf(error: unknown): LinkState {
   return error instanceof CloseAbortedError ? error.linkState : 'unknown'
 }
 
+/**
+ * Beskedet som ska visas när stängningen kastat.
+ *
+ * Bor här och inte i rutten: det är ett påstående om vad som hänt med
+ * kopplingen mellan väljare och röst, alltså en domänfråga, och det är den
+ * enda platsen där påståendets sanning går att härleda. Rutten väljer bara
+ * statuskod.
+ */
 export function abortedMessageFor(error: unknown): string {
   const linkState = linkStateOf(error)
 
@@ -457,7 +457,7 @@ async function prepareClose(electionId: string): Promise<Preparation> {
  */
 export async function closeElection(electionId: string): Promise<CloseOutcome> {
   /**
-   * ALLT SOM KASTAR FÖRE TRANSAKTIONEN LÄMNAR KOPPLINGEN BEVISBART ORÖRD.
+   * ALLT SOM KASTAR INUTI `prepareClose` LÄMNAR KOPPLINGEN BEVISBART ORÖRD.
    *
    * Det är en egenskap hos VAR I FLÖDET felet uppstod, inte hos vilken
    * funktion som råkade kasta — `prepareClose` läser, validerar, verifierar
@@ -465,6 +465,13 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
    * sätts påståendet här, på gränsen, i stället för vid varje enskilt
    * anropsställe. En uppräkning av anropsställen hade ruttnat vid nästa
    * ändring; gränsen gör det inte.
+   *
+   * GRÄNSEN ÄR `prepareClose`, INTE TRANSAKTIONEN. Det är anropet nedan som
+   * drar den. En framtida rad som hamnar mellan det här catch-blocket och
+   * `$transaction` ligger utanför skyddet: kastar den blir felet inte en
+   * `CloseAbortedError`, och `linkStateOf` räknar det som `unknown`. Det felar
+   * åt det försiktiga hållet och gör ingen skada — men ska en sådan rad få
+   * säga "orörd" hör den hemma inuti `prepareClose`.
    *
    * Det spelar roll för att de vanligaste verkliga felen bor här — databasen
    * nere under valideringen är långt mer sannolikt än ett avbrott vid COMMIT.
