@@ -249,4 +249,46 @@ describe('databasseparation', () => {
     expect(ballotParty).toContain('@@unique([ballotId, displayOrder])')
     expect(candidate).toContain('@@unique([ballotPartyId, displayOrder])')
   })
+
+  it('pending_votes främmande nyckel mot voter_status är RESTRICT i den applicerade SQL:en, inte bara i schemat', () => {
+    /**
+     * En kaskad hade tyst tagit en struken väljares röst med sig, och det är
+     * precis det beslutet avvisar: en struken väljares röst ska räknas
+     * (spec 7.4). Schemat säger `onDelete: Restrict`, men det är SQL:en som
+     * faktiskt körs mot databasen — och den här migreringen skrevs för hand
+     * i stället för att genereras av CLI:t, så den är precis där en
+     * felskriven eller ihop-slarvad CASCADE skulle smita förbi ett test som
+     * bara läser schema.prisma.
+     *
+     * Mönstret binder till hela ALTER TABLE-satsen för just
+     * pending_vote_voter_status_id_fkey, så det inte kan träffa någon annan
+     * RESTRICT eller CASCADE någon annanstans i filen.
+     */
+    expect(votersMigrations).toMatch(
+      /ALTER TABLE "pending_vote" ADD CONSTRAINT "pending_vote_voter_status_id_fkey" FOREIGN KEY \("voter_status_id"\) REFERENCES "voter_status"\("id"\) ON DELETE RESTRICT/,
+    )
+  })
+
+  it('displayOrder-unikheten finns även i den applicerade SQL:en, inte bara i schemat', () => {
+    // Samma skäl som ovan: den kanoniska ordningen är bara total om
+    // databasen faktiskt stoppar en dubblett, inte bara om schemat påstår
+    // att den gör det. Mönstren binder till index- och tabellnamnet
+    // tillsammans, så de inte kan träffa något annat unikt index i filen.
+    expect(votesMigrations).toMatch(
+      /CREATE UNIQUE INDEX "ballot_party_ballot_id_display_order_key" ON "ballot_party"\("ballot_id", "display_order"\)/,
+    )
+    expect(votesMigrations).toMatch(
+      /CREATE UNIQUE INDEX "candidate_ballot_party_id_display_order_key" ON "candidate"\("ballot_party_id", "display_order"\)/,
+    )
+  })
+
+  it('ciphertextHash är unik på encrypted_vote i SQL:en, så skalningen blir idempotent', () => {
+    // En avbruten skalningskörning kan köras om utan att skapa dubbletter —
+    // men bara om databasen faktiskt stoppar en andra insättning av samma
+    // chiffer. Ett unikt fält i schema.prisma utan ett unikt index i den
+    // körda SQL:en vore ingen spärr alls.
+    expect(votesMigrations).toMatch(
+      /CREATE UNIQUE INDEX "encrypted_vote_ciphertext_hash_key" ON "encrypted_vote"\("ciphertext_hash"\)/,
+    )
+  })
 })
