@@ -366,9 +366,10 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
      * Raden är fullständigt självkonsekvent — `classifySignature` kan bara
      * pröva att signaturen håller mot nyckeln SOM STÅR I RADEN, inte att den
      * nyckeln verkligen tillhör Kim. Se dokumentationshuvudet i
-     * `validate-before-close.usecase.ts` för vad som skulle stänga det här
-     * (CA-kedjevalidering vid läggningstillfället, eller ett
-     * identitetsbundet värde kvar i raden). Luckan står som posten
+     * `validate-before-close.usecase.ts` för vad som skulle stänga det här:
+     * kedjevalidering i själva valideringen, mot något i raden som BankIDs
+     * CA står för. Vid läggningen räcker inte, eftersom den här raden aldrig
+     * passerade läggningen. Luckan står som posten
      * `bankid-chain-not-validated` i `src/lib/known-limitations.ts`.
      *
      * Testet ska gå RÖTT den dag hålet stängs. Det är ett medvetet

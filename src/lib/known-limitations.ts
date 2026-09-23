@@ -43,24 +43,44 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   /**
    * KUVERTMODELLENS BEGRÄNSNINGAR.
    *
-   * De tre första posterna gäller modellen med dubbla kuvert och är sanna i
-   * koden redan i dag. Posterna efter dem beskriver det gamla röstflödet med
-   * röstintyg och blinda signaturer, som röstsidan fortfarande kör. De står
-   * kvar tills det flödet tas bort, och testet tvingar bort var och en när
-   * dess markör försvinner.
+   * De fyra första posterna gäller modellen med dubbla kuvert och är sanna i
+   * koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
+   * med röstintyg och blinda signaturer, som röstsidan fortfarande kör, eller
+   * gäller oavsett modell. Det gamla flödets poster står kvar tills flödet tas
+   * bort, och testet tvingar bort var och en när dess markör försvinner.
    */
   {
     id: 'link-exists-during-voting',
     title: 'Kopplingen väljare↔röst finns medan röstningen pågår',
     why:
-      'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar och ' +
-      'därmed röstköp meningslöst. Priset är att "kan inte existera" blivit "raderas enligt ' +
-      'schema". Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen, och rösten är ' +
-      'bara skyddad av att chiffret inte går att läsa utan k av n andelar. Det är den ' +
-      'huvudsakliga akademiska invändningen mot Estlands system.',
+      'Modellen med dubbla kuvert kräver kopplingen — det är den som gör rösten utbytbar, så ' +
+      'att en köpt röst kan ersättas ända fram till stängningen. Priset är att "kan inte ' +
+      'existera" blivit "raderas enligt schema". Backuper, läsreplikor och WAL-loggen omfattas ' +
+      'inte av raderingen, och rösten är bara skyddad av att chiffret inte går att läsa utan k ' +
+      'av n andelar. Det är den huvudsakliga akademiska invändningen mot Estlands system.',
     // PendingVote är det yttre kuvertet: väljarens id i samma rad som chiffret.
     // Så länge modellen finns, finns kopplingen medan röstningen pågår.
     stillTrueIf: { file: 'prisma/voters/schema.prisma', contains: 'model PendingVote' },
+  },
+  {
+    id: 'bankid-order-carries-link',
+    title: 'BankID-ordern bär kopplingen ut ur systemet',
+    why:
+      'Det väljaren signerar innehåller chifferhashen, och samma BankID-order bär hennes ' +
+      'identitet. BankID sparar signaturer, bland annat för tvister, så med skarp BankID finns ' +
+      'kopplingen mellan väljaren och chiffret kvar hos BankID efter att den raderats här, och ' +
+      'hashen står kvar i encrypted_vote och pekar ut chiffret. Raderingen vid stängningen når ' +
+      'inte dit. I demoläget håller attrappen dessutom övergivna signeringsordrar i ' +
+      'processminnet tills servern startas om, med det signerade och, om ordern hunnit skannas, ' +
+      'personnumret.',
+    // sign-start lägger chifferhashen oförändrad i det signerade. När det
+    // signerade i stället bär en saltad hash av den, med ett salt som bara
+    // finns i PendingVote och raderas med raden, ändras just den här raden, och
+    // BankID:s kopia slutar gå att matcha mot något efter stängningen.
+    stillTrueIf: {
+      file: 'src/app/api/vote/sign-start/route.ts',
+      contains: 'ciphertextHash: body.data.ciphertextHash',
+    },
   },
   {
     id: 'trusted-dealer',
@@ -71,7 +91,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'bygga nyckeln utan att den någonsin sätts ihop.',
     // Att dela en färdig nyckel ÄR den betrodda utdelaren. Vid distribuerad
     // nyckelgenerering finns ingen hel nyckel att dela, och anropet försvinner.
-    stillTrueIf: { file: 'src/orchestration/create-election.usecase.ts', contains: 'splitSecret' },
+    // Markören är anropet med den hela nyckeln, inte bara namnet: namnet står
+    // också i importraden och hade överlevt att anropet togs bort.
+    stillTrueIf: {
+      file: 'src/orchestration/create-election.usecase.ts',
+      contains: 'splitSecret(keys.privateKey',
+    },
   },
   {
     id: 'bankid-chain-not-validated',
@@ -82,18 +107,20 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'kan därför skapa ett eget nyckelpar, signera ett välformat kuvert och lägga nyckel, ' +
       'signatur och en verklig väljare i en helt självkonsekvent rad, som valideringen före ' +
       'stängningen godkänner. Signaturen skyddar alltså mot en klient som skickar in ett eget ' +
-      'kuvert, men inte mot den som driver systemet. Förfalskningen finns som körbart test i ' +
-      'tests/integration/validate-before-close.test.ts.',
-    // Signaturen prövas mot den PEM-text som skickas in, vad den än är: Nodes
-    // PEM-tolkning tar ut nyckeln utan att fråga vem som utfärdat den, och
-    // valideringen före stängningen skickar in nyckeln ur raden. Med
-    // kedjevalidering prövas certifikatet först mot BankID:s CA och nyckeln
-    // tas ur det prövade certifikatet, och då ändras just det här anropet.
-    // Läggs en kontroll bara till bredvid anropet, utan att röra det, måste
-    // markören pekas om för hand.
+      'kuvert, men inte mot den som driver systemet. Att pröva kedjan när rösten läggs räcker ' +
+      'inte, eftersom den som skriver direkt i databasen aldrig passerar läggningen; det är ' +
+      'valideringen före stängningen som måste pröva ett certifikat mot BankID:s CA. ' +
+      'Förfalskningen finns som körbart test i tests/integration/validate-before-close.test.ts.',
+    // Valideringen före stängningen prövar signaturen mot nyckeln som raden
+    // själv bär. Så länge den gör det kan den som skriver i databasen lägga in
+    // ett eget nyckelpar tillsammans med en signatur som håller, och det är
+    // hela luckan. När raden i stället bär något som BankID:s CA står för, och
+    // valideringen prövar det, ändras just det här anropet. En kontroll som
+    // bara läggs till vid läggningen lämnar anropet orört, och då är det rätt
+    // att posten står kvar: förfalskningen går ändå igenom.
     stillTrueIf: {
-      file: 'src/modules/eligibility/bankid/envelope-signature.ts',
-      contains: "verifier.verify(certificate, signature, 'base64')",
+      file: 'src/orchestration/validate-before-close.usecase.ts',
+      contains: 'verifySignedPayload(vote.bankIdSignature, vote.bankIdPublicKey',
     },
   },
   {
@@ -133,6 +160,24 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'omöjliga att skilja på för alla utom väljaren själv.',
     // `choice` i verifieringssvaret är precis det som bevisar valet.
     stillTrueIf: { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
+  },
+  {
+    id: 'live-results-in-old-flow',
+    title: 'Det gamla flödets resultat är öppna medan röstningen pågår',
+    why:
+      'Observatörsgränssnittet, som är öppet utan inloggning, lämnar ut antalet röster per parti ' +
+      'ur det gamla flödets tabell vote medan röstningen pågår. Det är ett löpande resultat, och ' +
+      'det får inte finnas: delsiffror påverkar dem som ännu inte röstat, och differensen mellan ' +
+      'två hämtningar är rösterna som lades däremellan. Har bara en person röstat under tiden är ' +
+      'differensen den personens röst. Kuvertmodellen räknar ingenting förrän kopplingen ' +
+      'raderats, men det gamla flödet räknar i klartext, när som helst.',
+    // Rutten räknar ur tabellen vote vid varje anrop, utan att fråga om
+    // röstningen stängt. När den under röstningen bara visar valdeltagandet,
+    // och resultat först när en valsedel räknats, försvinner anropet.
+    stillTrueIf: {
+      file: 'src/app/api/observer/election/route.ts',
+      contains: 'getElectionResults(election.id)',
+    },
   },
   {
     id: 'municipality-beside-identity-hash',

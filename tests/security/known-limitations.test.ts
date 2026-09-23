@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CHECKABLE_LIMITATIONS, KNOWN_LIMITATIONS } from '@/lib/known-limitations'
@@ -147,12 +147,30 @@ describe('arkitektursidan läser listan i stället för att upprepa den', () => 
      *
      * Rubrikerna ska komma från listan, inte stå i JSX. Hittas en rubrik som
      * hårdkodad text betyder det att någon lagt tillbaka en dubblett.
+     *
+     * Hela sidans katalog granskas, inte bara page.tsx. Sidan är uppdelad i
+     * sektionskomponenter, och tabellen med listan ligger i en av dem; en
+     * kontroll av bara page.tsx hade passerat en dubblett där.
      */
-    for (const limitation of KNOWN_LIMITATIONS) {
-      expect(
-        page.includes(`<td>${limitation.title}</td>`),
-        `${limitation.id}: rubriken står hårdkodad i sidan i stället för att läsas ur listan`,
-      ).toBe(false)
+    function componentsUnder(directory: string): string[] {
+      return readdirSync(directory).flatMap((entry) => {
+        const full = join(directory, entry)
+        if (statSync(full).isDirectory()) return componentsUnder(full)
+        return entry.endsWith('.tsx') ? [full] : []
+      })
+    }
+
+    const files = componentsUnder(join(process.cwd(), 'src/app/architecture'))
+    expect(files.length).toBeGreaterThan(1)
+
+    for (const file of files) {
+      const content = readFileSync(file, 'utf8')
+      for (const limitation of KNOWN_LIMITATIONS) {
+        expect(
+          content.includes(`<td>${limitation.title}</td>`),
+          `${limitation.id}: rubriken står hårdkodad i ${file} i stället för att läsas ur listan`,
+        ).toBe(false)
+      }
     }
   })
 })

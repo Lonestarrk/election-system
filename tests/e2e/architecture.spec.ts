@@ -23,8 +23,6 @@ import { expect, test } from './fixtures'
 const ELECTION = '11111111-1111-4111-8111-111111111111'
 const ANNA = 'aaaa1111-aaa…'
 const HASH = '3fa2b1c9d0e1'
-/** Verifikationskoden: chifferhashen, 64 hextecken, som väljaren fick när hon röstade. */
-const ANNAS_CODE = HASH + 'ab'.repeat(26)
 
 function snapshot(phase: 'OPEN' | 'STRIPPED'): DatabaseState {
   const cipher = { pairs: 3, c1: '182364591027…', c2: '998124570013…', digits: 617 }
@@ -149,7 +147,7 @@ test.describe('arkitektursidan', () => {
     }
   })
 
-  test('Följ en röst: sidan glömmer kuvertet vid stängningen och hittar rösten bara med koden', async ({
+  test('Följ en röst: sidan glömmer kuvertet vid stängningen och märker inget chiffer', async ({
     page,
   }) => {
     let current = snapshot('OPEN')
@@ -170,25 +168,64 @@ test.describe('arkitektursidan', () => {
     await page.getByRole('button', { name: 'Uppdatera nu' }).click()
 
     await expect(follow.getByText('Kuvertet du följde finns inte längre i pending_vote.')).toBeVisible()
-    // Sidan minns inte vem den följde, och märker inget chiffer på eget bevåg.
-    await expect(follow.getByText(ANNA)).toHaveCount(0)
-    await expect(votesDb.getByText('din kod')).toHaveCount(0)
+    await expect(follow.getByText(/1 rad i encrypted_vote, 0 rader kvar i pending_vote/)).toBeVisible()
 
-    // Bara koden hittar rösten, och raden den hittar bär ingen väljare.
-    await follow.getByLabel('Verifikationskod').fill(ANNAS_CODE.toUpperCase())
-    await expect(follow.getByText('Hittad i encrypted_vote, i röstdatabasen.')).toBeVisible()
-    await expect(votesDb.getByText('din kod')).toHaveCount(1)
+    // Sidan minns inte vem den följde, och märker ingen rad i röstdatabasen.
     await expect(follow.getByText(ANNA)).toHaveCount(0)
+    await expect(votesDb.getByText('följs', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('väljaren', { exact: true })).toHaveCount(0)
+
+    // Spec 3.1: ingen ruta att söka med en kod. Den var köparens verktyg.
+    await expect(page.getByLabel(/verifikationskod/i)).toHaveCount(0)
   })
 
-  test('sidan säger rakt ut att den som kopierade pending_vote har kopplingen', async ({ page }) => {
+  test('en flik som blir synlig hämtar direkt, utan att vänta på nästa tick', async ({ page }) => {
+    /**
+     * En dold flik hämtar inte. Var den dold under stängningen visar den
+     * bilden från före, med kopplingen, och ska inte fortsätta med det i upp
+     * till tio sekunder efter att den syns igen.
+     *
+     * Synligheten spelas upp med visibilitychange. Det räcker för att pröva
+     * kopplingen i komponenten; logiken prövas för sig i
+     * tests/unit/live-refresh.test.ts.
+     */
+    let requests = 0
+    await page.route('**/api/demo/database-state', (route) => {
+      requests += 1
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(snapshot('OPEN')),
+      })
+    })
+
+    await page.goto('/architecture')
+    await expect(page.getByText(/Hämtad kl/)).toBeVisible()
+    const afterLoad = requests
+
+    const setVisibility = (state: 'hidden' | 'visible') =>
+      page.evaluate((next) => {
+        Object.defineProperty(document, 'visibilityState', { value: next, configurable: true })
+        document.dispatchEvent(new Event('visibilitychange'))
+      }, state)
+
+    await setVisibility('hidden')
+    expect(requests).toBe(afterLoad)
+
+    await setVisibility('visible')
+    // Långt före nästa tick, som kommer tio sekunder efter att sidan laddats.
+    await expect.poll(() => requests, { timeout: 3_000 }).toBe(afterLoad + 1)
+  })
+
+  test('sidan säger rakt ut att livevyn är en insiders vy, och vad det betyder', async ({ page }) => {
     await page.goto('/architecture')
     const follow = page.getByRole('region', { name: 'Följ en röst' })
 
+    await expect(page.getByText('Det här är en insiders vy.')).toBeVisible()
     await expect(
-      follow.getByText('Den som kopierade pending_vote före stängningen har kopplingen.'),
+      follow.getByText('Livevyn är en insiders vy, och den som antecknar ur den har kopplingen.'),
     ).toBeVisible()
-    await expect(follow.getByText(/backup, en läsreplik eller WAL-loggen/)).toBeVisible()
+    await expect(follow.getByText(/BankID:s kopia av det väljaren signerade/)).toBeVisible()
   })
 
   test('sidan skrollar inte i sidled på en telefon', async ({ page }) => {

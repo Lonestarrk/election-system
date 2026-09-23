@@ -15,9 +15,10 @@ import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
  *
  * Sidan beskriver en modell som byggs i etapper, och en del av det den säger
  * gäller just nu: att röstsidan fortfarande kör det gamla flödet, att
- * dekrypteringen inte är byggd, vilka faser som faktiskt skrivs. Varje sådant
- * påstående står i src/app/architecture/code-facts.ts med markörer som är sanna
- * så länge påståendet är sant. Testet här prövar markörerna.
+ * dekrypteringen inte är byggd, vilka faser som faktiskt skrivs, hur
+ * tidsstämplar lagras. Varje sådant påstående står i
+ * src/app/architecture/code-facts.ts med markörer som är sanna så länge
+ * påståendet är sant. Testet här prövar markörerna.
  *
  * Det går rött när systemet blir BÄTTRE, precis som
  * tests/security/known-limitations.test.ts. Den som bygger dekrypteringen får
@@ -28,14 +29,19 @@ import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
 const ROOT = process.cwd()
 
 /**
- * Sidans egna filer räknas aldrig. De innehåller påståendena och deras
- * markörer, och en markör som letar efter "phase: 'CLOSED'" skulle annars
- * hitta sig själv i fastabellen.
+ * Sidans egna filer räknas aldrig när en markör letar efter något som INTE
+ * ska finnas. De innehåller påståendena och deras mönster, och en markör som
+ * letar efter "phase: 'CLOSED'" skulle annars hitta sig själv i fastabellen.
  */
 const PAGE_DIRECTORY = 'src/app/architecture'
 
 function toRelative(path: string): string {
   return relative(ROOT, path).split(sep).join('/')
+}
+
+/** Radslut normaliseras: arbetskopian har CRLF på Windows, markörerna har \n. */
+function read(path: string): string {
+  return readFileSync(join(ROOT, path), 'utf8').replace(/\r\n/g, '\n')
 }
 
 function sourceFilesUnder(path: string, { skipPage }: { skipPage: boolean }): string[] {
@@ -55,21 +61,20 @@ function sourceFilesUnder(path: string, { skipPage }: { skipPage: boolean }): st
 /** Sant eller falskt, med en förklaring som går att agera på när det är falskt. */
 function check(marker: Marker): { holds: boolean; detail: string } {
   if ('file' in marker) {
-    const path = join(ROOT, marker.file)
-    if (!existsSync(path)) {
+    if (!existsSync(join(ROOT, marker.file))) {
       return { holds: false, detail: `filen ${marker.file} finns inte längre` }
     }
-    return readFileSync(path, 'utf8').includes(marker.contains)
+    return read(marker.file).includes(marker.contains)
       ? { holds: true, detail: '' }
       : { holds: false, detail: `"${marker.contains}" finns inte längre i ${marker.file}` }
   }
 
   const files = sourceFilesUnder(marker.nowhereIn, { skipPage: true })
   if (files.length === 0) {
-    return { holds: false, detail: `${marker.nowhereIn} innehåller inga källfiler att granska` }
+    return { holds: false, detail: `${marker.nowhereIn} innehåller inga filer att granska` }
   }
 
-  const offenders = files.filter((file) => marker.matches.test(readFileSync(join(ROOT, file), 'utf8')))
+  const offenders = files.filter((file) => marker.matches.test(read(file)))
   return offenders.length === 0
     ? { holds: true, detail: '' }
     : { holds: false, detail: `${marker.matches} finns nu i ${offenders.join(', ')}` }
@@ -115,6 +120,19 @@ describe('arkitektursidans påståenden om koden', () => {
     // Utan det kunde ett mönster som inte matchar någonting alls hålla
     // fastabellen grön för varje fas, också den dag koden börjar skriva dem.
     expect(check(neverWritten('STRIPPED')).holds).toBe(false)
+
+    // Schemamönstren håller sig inom sin modell: PendingVote har ett
+    // voterStatusId, och det får inte räknas som ett fält i AuditEvent.
+    const auditActor: Marker | undefined = CURRENTLY.auditChain.holdsWhile.find(
+      (marker) => 'nowhereIn' in marker && marker.nowhereIn === 'prisma/voters/schema.prisma',
+    )
+    if (!auditActor || !('matches' in auditActor)) {
+      throw new Error('Markören för revisionsloggens fält saknas eller har fel form.')
+    }
+    expect(check(auditActor).holds).toBe(true)
+    expect(auditActor.matches.test('model AuditEvent {\n  id String\n  actorId String\n}')).toBe(
+      true,
+    )
   })
 })
 
@@ -138,8 +156,21 @@ describe('fastabellen', () => {
 })
 
 describe('arkitektursidan skriver inte själv det den läser', () => {
-  const page = readFileSync(join(ROOT, 'src/app/architecture/page.tsx'), 'utf8')
-  const liveView = readFileSync(join(ROOT, 'src/app/architecture/LiveDatabaseView.tsx'), 'utf8')
+  const pageFiles = sourceFilesUnder(PAGE_DIRECTORY, { skipPage: false }).filter((file) =>
+    file.endsWith('.tsx'),
+  )
+  const page = read('src/app/architecture/page.tsx')
+
+  it('hittar sidans komponenter', () => {
+    expect(pageFiles).toEqual(
+      expect.arrayContaining([
+        'src/app/architecture/page.tsx',
+        'src/app/architecture/LiveDatabaseView.tsx',
+        'src/app/architecture/FollowAVote.tsx',
+        'src/app/architecture/LinkQuestion.tsx',
+      ]),
+    )
+  })
 
   it('hänvisar bara till begränsningar som finns i listan', () => {
     const referenced = [...page.matchAll(/limitation\('([a-z0-9-]+)'\)/g)].map((match) => match[1])
@@ -158,35 +189,59 @@ describe('arkitektursidan skriver inte själv det den läser', () => {
      * code-facts.ts, inte kopieras in i sidan.
      */
     const facts = [...Object.values(CURRENTLY), ...PHASES.map((row) => row.today)]
-    for (const fact of facts) {
-      expect(page.includes(fact.text), `sidan upprepar "${fact.text}"`).toBe(false)
-      expect(liveView.includes(fact.text), `livevyn upprepar "${fact.text}"`).toBe(false)
+    for (const file of pageFiles) {
+      const content = read(file)
+      for (const fact of facts) {
+        expect(content.includes(fact.text), `${file} upprepar "${fact.text}"`).toBe(false)
+      }
+    }
+  })
+
+  it('ingen del av sidan söker på en verifikationskod', () => {
+    /**
+     * Spec 3.1. En sökning på kod efter stängningen var köparens verktyg: den
+     * som sett en röst läggas kunde se om koden fanns kvar, och alltså om
+     * väljaren ändrat sig. Sidan får beskriva att ingen kod visas, men inte
+     * erbjuda en ruta att klistra in en.
+     */
+    for (const file of pageFiles) {
+      expect(read(file), `${file} har ett fält för kod`).not.toMatch(
+        /(htmlFor|id)="verifikationskod"|lookUpVerificationCode|findInEncryptedVotes/,
+      )
     }
   })
 })
 
 describe('livevyn finns bara i demoläget', () => {
-  const page = readFileSync(join(ROOT, 'src/app/architecture/page.tsx'), 'utf8')
+  const page = read('src/app/architecture/page.tsx')
 
   it('bara livevyn frågar efter databasernas innehåll', () => {
     /**
      * Frågar någon annan sida efter /api/demo/database-state har den också
-     * ett eget villkor att hålla i demoläget, och det villkoret byts inte när
-     * uppgift 17 byter predikatet på arkitektursidan.
+     * ett eget ställe där demoläget måste respekteras, och det glöms när
+     * predikatet byts.
      */
     const askers = sourceFilesUnder('src', { skipPage: false })
       .filter((file) => file !== 'src/app/api/demo/database-state/route.ts')
-      .filter((file) => readFileSync(join(ROOT, file), 'utf8').includes("'/api/demo/database-state'"))
+      .filter((file) => read(file).includes("'/api/demo/database-state'"))
 
     expect(askers).toEqual(['src/app/architecture/LiveDatabaseView.tsx'])
   })
 
-  it('sidan avgör demoläget på ett enda ställe och renderar livevyn bara där', () => {
-    // En rad att byta i uppgift 17. Två definitioner vore två ställen att glömma.
-    expect(page.match(/const DEMO_MODE\b/g)).toHaveLength(1)
+  it('sidan frågar predikatet en gång och renderar livevyn bara när det säger ja', () => {
+    /**
+     * Demoläget avgörs i src/lib/demo-mode.ts, som också varje rutt under
+     * /api/demo frågar (se tests/security/api-surface.test.ts). Sidan läser
+     * aldrig bankIdIsMocked själv: gjorde den det kunde predikatet bytas på
+     * ett ställe och sidan fortsätta på det gamla.
+     */
+    expect(page).toMatch(/import \{ isDemoMode \} from '@\/lib\/demo-mode'/)
+    expect(page.match(/isDemoMode\(\)/g)).toHaveLength(1)
+    expect(page).not.toMatch(/bankIdIsMocked/)
 
     const renders = page.match(/<LiveDatabaseView\b/g) ?? []
     expect(renders).toHaveLength(1)
-    expect(page).toMatch(/\{DEMO_MODE \?\s*\(\s*<LiveDatabaseView\b/)
+    expect(page).toMatch(/const demo = isDemoMode\(\)/)
+    expect(page).toMatch(/\{demo \?\s*\(\s*<LiveDatabaseView\b/)
   })
 })

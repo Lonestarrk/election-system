@@ -38,21 +38,15 @@ import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOn
 /**
  * Demoläget går att slå av för ett enskilt test.
  *
- * Rutten läser `bankIdIsMocked` vid varje anrop, och vitest översätter
- * importen till en läsning ur modulen i samma ögonblick. En getter räcker
- * därför. Allt annat i modulen är det äkta.
+ * Rutten frågar `isDemoMode()` i src/lib/demo-mode.ts vid varje anrop, och
+ * det är den enda platsen där läget avgörs. Att byta ut just den funktionen
+ * prövar alltså det villkor rutten faktiskt har, och inget annat.
  */
-const bankIdControl = vi.hoisted(() => ({ mocked: true }))
+const demoControl = vi.hoisted(() => ({ demo: true }))
 
-vi.mock('@/modules/eligibility/bankid', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/modules/eligibility/bankid')>()
-  return {
-    ...actual,
-    get bankIdIsMocked() {
-      return bankIdControl.mocked
-    },
-  }
-})
+vi.mock('@/lib/demo-mode', () => ({
+  isDemoMode: () => demoControl.demo,
+}))
 
 const databaseAvailable = await isDatabaseAvailable()
 
@@ -104,7 +98,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
   }
 
   beforeEach(async () => {
-    bankIdControl.mocked = true
+    demoControl.demo = true
     await resetElectionData()
 
     const s = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'S' } })
@@ -159,7 +153,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
   })
 
   afterEach(() => {
-    bankIdControl.mocked = true
+    demoControl.demo = true
   })
 
   /** En fullständig, ärlig röstläggning med BankID-attrappens /sign. */
@@ -211,7 +205,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
      * svara. 404 och inte 403, som de andra rutterna under /api/demo.
      */
     await castFor(anna, 'S')
-    bankIdControl.mocked = false
+    demoControl.demo = false
 
     const response = await GET()
     const body = JSON.stringify(await response.json())

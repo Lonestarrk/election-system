@@ -49,13 +49,13 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  * här luckan — den är känd, inte förbisedd, och står som posten
  * `bankid-chain-not-validated` i `src/lib/known-limitations.ts`.
  *
- * Vad som SKULLE stänga den: antingen CA-kedjevalidering av certifikatet vid
- * LÄGGNINGSTILLFÄLLET, så att bara en nyckel utfärdad av BankIDs CA någonsin
- * kan bli en rad (redan utpekat som återstående arbete i
- * `personalNumberFromCertificate`s dokumentation), eller att behålla ett
- * identitetsbundet värde i raden i stället för bara nyckeln — vilket i sin
- * tur återöppnar exakt den avvägning som fick certifikatet att strykas till
- * förmån för bara nyckelmaterialet (samma dokumentation som ovan).
+ * Vad som SKULLE stänga den: kedjevalidering HÄR, i valideringen, inte bara
+ * när rösten läggs. Den som skriver direkt i databasen passerar aldrig
+ * läggningen, så en kontroll där stoppar bara klienter. Raden måste bära något
+ * som BankIDs CA står för, till exempel certifikatet, och valideringen pröva
+ * det mot CA:n — vilket återöppnar exakt den avvägning som fick certifikatet
+ * att strykas till förmån för bara nyckelmaterialet (se
+ * `personalNumberFromCertificate`s dokumentation).
  *
  * VAD DEN HÄR FILEN INTE GÖR
  *

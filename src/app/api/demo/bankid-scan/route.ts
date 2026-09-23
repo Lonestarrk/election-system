@@ -1,7 +1,7 @@
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { demoScanSchema, parseJsonBody } from '@/lib/validation'
-import { bankIdIsMocked } from '@/modules/eligibility/bankid'
+import { isDemoMode } from '@/lib/demo-mode'
 import { selectDemoIdentity } from '@/modules/eligibility/bankid/MockBankIdService'
 
 export const runtime = 'nodejs'
@@ -29,10 +29,11 @@ export const dynamic = 'force-dynamic'
  *     vad den är, i stället för att hitta en personnummerparameter begravd i
  *     legitimeringsflödet.
  *
- *  2. Rutten svarar 404 om BankID inte är en attrapp. Villkoret är skrivet mot
- *     implementationen, inte mot en miljövariabel — byts mocken ut blir svaret
- *     404 automatiskt, i stället för att hänga på att någon kommer ihåg att
- *     ändra konfigurationen.
+ *  2. Rutten svarar 404 utanför demoläget, alltså i dag om BankID inte är en
+ *     attrapp. Villkoret är `isDemoMode()` i src/lib/demo-mode.ts, samma som de
+ *     andra demorutterna läser. Det är skrivet mot implementationen, inte mot
+ *     en miljövariabel — byts mocken ut blir svaret 404 automatiskt, i stället
+ *     för att hänga på att någon kommer ihåg att ändra konfigurationen.
  *
  *  3. `selectDemoIdentity` finns inte i `IBankIdService`. Byts mocken mot en
  *     riktig implementation slutar funktionen existera, och den här filen
@@ -40,7 +41,7 @@ export const dynamic = 'force-dynamic'
  *     som kan råka bli sant.
  */
 export async function POST(request: Request) {
-  if (!bankIdIsMocked) {
+  if (!isDemoMode()) {
     // 404, inte 403: en rutt som inte finns ska inte gå att skilja från en som
     // finns men nekar. Med skarp BankID existerar den här funktionen inte.
     return errorResponse('NOT_FOUND', 'Rutten finns inte.', 404)

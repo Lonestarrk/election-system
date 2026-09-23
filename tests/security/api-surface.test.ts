@@ -62,10 +62,11 @@ describe('API-ytan', () => {
        * Nollställer hastighetsbegränsarens hinkar åt E2E-sviten.
        *
        * Hör hemma bland demorutterna av samma skäl som bankid-scan: den är
-       * villkorad på `bankIdIsMocked`, alltså på att `bankIdService` är en
-       * instans av MockBankIdService. Det är ett påstående om koden och inte
-       * en miljövariabel — byts attrappen mot skarp BankID svarar rutten 404
-       * utan att någon behöver komma ihåg att ändra konfigurationen.
+       * villkorad på `isDemoMode()`, som i dag betyder att `bankIdService` är
+       * en instans av MockBankIdService. Det är ett påstående om koden och
+       * inte en miljövariabel — byts attrappen mot skarp BankID svarar rutten
+       * 404 utan att någon behöver komma ihåg att ändra konfigurationen. Se
+       * "demorutterna" längst ned för kravet att varje demorutt gör så.
        *
        * Den rör inga gränser, den tömmer bara hinkarna. Alternativet — att
        * villkora bort `checkRateLimit` i attrappläge — hade passerat testet
@@ -232,5 +233,77 @@ describe('skydd på tillståndsändrande rutter', () => {
     expect(cast.content).not.toMatch(/SESSION_COOKIE/)
     expect(cast.content).not.toMatch(/getValidVotingSession/)
     expect(cast.content).not.toMatch(/@\/modules\/eligibility/)
+  })
+})
+
+describe('demorutterna', () => {
+  /**
+   * EN RUTT SOM GLÖMDE VILLKORET LÄMNADE UT RÖSTLÄNGDEN I SKARPT LÄGE.
+   *
+   * /api/demo/database-state hade inget villkor alls, medan arkitektursidan
+   * som visar svaret bara frågade i demoläget. Villkoret lästes dessutom på
+   * fyra ställen, var för sig. Det här testet hade fångat luckan: varje rutt
+   * under /api/demo ska börja med att fråga `isDemoMode()`, och ingen fil utom
+   * src/lib/demo-mode.ts får läsa `bankIdIsMocked` själv. Då är bytet i
+   * uppgift 17 en rad, och ingen rutt kan hamna utanför det.
+   *
+   * Kommentarerna tas bort före granskningen. Rutterna förklarar sitt villkor
+   * i löpande text, och en förklaring ska inte kunna fälla eller rädda testet.
+   */
+  function withoutComments(source: string): string {
+    return source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n')
+  }
+
+  const demoRoutes = routes.filter((route) => route.path.startsWith('src/app/api/demo/'))
+
+  it('hittar demorutterna', () => {
+    expect(demoRoutes.map((route) => route.path).sort()).toEqual([
+      'src/app/api/demo/bankid-scan/route.ts',
+      'src/app/api/demo/database-state/route.ts',
+      'src/app/api/demo/reset-rate-limits/route.ts',
+    ])
+  })
+
+  it.each(demoRoutes.map((route) => [route.path, route.content] as const))(
+    '%s börjar varje hanterare med att fråga om demoläget, och svarar 404 annars',
+    (path, content) => {
+      const code = withoutComments(content)
+
+      expect(code, `${path} importerar inte predikatet`).toMatch(
+        /import \{ isDemoMode \} from '@\/lib\/demo-mode'/,
+      )
+
+      const handlers = code.match(/export async function (GET|POST|PUT|PATCH|DELETE)\b/g) ?? []
+      const gated =
+        code.match(
+          /export async function (GET|POST|PUT|PATCH|DELETE)\([^)]*\)\s*\{\s*if \(!isDemoMode\(\)\) \{\s*return errorResponse\('NOT_FOUND'/g,
+        ) ?? []
+
+      expect(handlers.length, `${path} har ingen hanterare`).toBeGreaterThan(0)
+      expect(gated.length, `${path}: varje hanterare ska börja med villkoret`).toBe(handlers.length)
+      expect(code, `${path} läser bankIdIsMocked direkt`).not.toMatch(/bankIdIsMocked/)
+    },
+  )
+
+  it('ingen fil utom predikatet läser bankIdIsMocked', () => {
+    function sourceFiles(directory: string): string[] {
+      return readdirSync(directory).flatMap((entry) => {
+        const full = join(directory, entry)
+        if (statSync(full).isDirectory()) return sourceFiles(full)
+        return /\.tsx?$/.test(entry) ? [full] : []
+      })
+    }
+
+    const readers = sourceFiles(join(process.cwd(), 'src'))
+      .filter((file) => /bankIdIsMocked/.test(withoutComments(readFileSync(file, 'utf8'))))
+      .map((file) => relative(process.cwd(), file).split(sep).join('/'))
+      .sort()
+
+    // Definitionen, och den enda som läser den.
+    expect(readers).toEqual(['src/lib/demo-mode.ts', 'src/modules/eligibility/bankid/index.ts'])
   })
 })

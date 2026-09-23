@@ -1,6 +1,6 @@
+import { isDemoMode } from '@/lib/demo-mode'
 import { errorResponse, jsonResponse } from '@/lib/http'
 import { votesDb } from '@/modules/ballot-box/db'
-import { bankIdIsMocked } from '@/modules/eligibility/bankid'
 import { votersDb } from '@/modules/eligibility/db'
 
 export const runtime = 'nodejs'
@@ -16,11 +16,12 @@ export const dynamic = 'force-dynamic'
  * FINNS BARA I DEMOLÄGET.
  *
  * Svaret visar röstlängden: varje väljares id och identitetshash, och medan
- * röstningen pågår vilken väljare som lagt vilket kuvert. Det får ingen sida
- * visa i skarpt läge. Rutten svarar därför 404 när BankID inte är en attrapp,
- * med samma villkor och av samma skäl som de andra rutterna under /api/demo.
- * Uppgift 17 byter villkoret mot lägesväxeln. 404 och inte 403: en rutt som
- * inte finns ska inte gå att skilja från en som finns men nekar.
+ * röstningen pågår vilken väljare som lagt vilket kuvert. Det är en insiders
+ * vy av databasen, och den får ingen sida visa i skarpt läge. Rutten svarar
+ * därför 404 utanför demoläget, med samma villkor och av samma skäl som de
+ * andra rutterna under /api/demo: `isDemoMode()` i src/lib/demo-mode.ts, det
+ * enda ställe där läget avgörs. 404 och inte 403: en rutt som inte finns ska
+ * inte gå att skilja från en som finns men nekar.
  *
  * Villkoret saknades här fram till uppgift 11c, fast rutten redan då lämnade
  * ut röstlängden. Arkitektursidan anropar den bara i demoläget, men en sida som
@@ -295,12 +296,29 @@ function previewCiphertext(value: unknown): CiphertextPreview | null {
 // Rutten
 // ---------------------------------------------------------------------------
 
+/**
+ * Väntar in ett objekt av frågor och ger tillbaka svaren under samma namn.
+ *
+ * Arton frågor körs samtidigt. Med `Promise.all` över en lista packas svaren
+ * upp på position, och två svar av samma typ, till exempel de två listorna
+ * med främmande nycklar, kan byta plats utan att kompilatorn märker något.
+ * Med namn kan de inte det.
+ */
+async function awaitAll<T extends Record<string, PromiseLike<unknown>>>(
+  queries: T,
+): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
+  const entries = await Promise.all(
+    Object.entries(queries).map(async ([name, query]) => [name, await query] as const),
+  )
+  return Object.fromEntries(entries) as { [K in keyof T]: Awaited<T[K]> }
+}
+
 export async function GET() {
-  if (!bankIdIsMocked) {
+  if (!isDemoMode()) {
     return errorResponse('NOT_FOUND', 'Rutten finns inte.', 404)
   }
 
-  const [
+  const {
     elections,
     voterBallots,
     voters,
@@ -319,8 +337,9 @@ export async function GET() {
     legacyVotes,
     voteKeys,
     voteTables,
-  ] = await Promise.all([
-    votersDb.election.findMany({
+  } = await awaitAll({
+    // --- voters_db ---------------------------------------------------------
+    elections: votersDb.election.findMany({
       orderBy: { closesAt: 'asc' },
       select: {
         id: true,
@@ -333,12 +352,14 @@ export async function GET() {
     }),
     // Bara id, omröstning och etikett. Spegeln bär också valsedelns privata
     // signeringsnyckel, och den väljs aldrig ut.
-    votersDb.electionBallot.findMany({ select: { id: true, electionId: true, label: true } }),
-    votersDb.voterStatus.findMany({
+    voterBallots: votersDb.electionBallot.findMany({
+      select: { id: true, electionId: true, label: true },
+    }),
+    voters: votersDb.voterStatus.findMany({
       orderBy: { id: 'asc' },
       select: { id: true, externalIdentityHash: true, isEligible: true, isAdmin: true },
     }),
-    votersDb.pendingVote.findMany({
+    pendingVotes: votersDb.pendingVote.findMany({
       orderBy: { id: 'asc' },
       // Varken signaturen, nyckeln ur certifikatet eller bevisen. Se punkt 4 ovan.
       select: {
@@ -351,44 +372,51 @@ export async function GET() {
         updatedAt: true,
       },
     }),
-    votersDb.$queryRawUnsafe<Array<{ column_name: string }>>(columnsQuery('pending_vote')),
-    votersDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
-    votersDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
-    votersDb.$queryRawUnsafe<Array<{ rows: number }>>(
+    pendingVoteColumns: votersDb.$queryRawUnsafe<Array<{ column_name: string }>>(
+      columnsQuery('pending_vote'),
+    ),
+    voterKeys: votersDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
+    voterTables: votersDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
+    linkRows: votersDb.$queryRawUnsafe<Array<{ rows: number }>>(
       `SELECT count(*)::int AS rows FROM (${LINK_QUERY}) AS link`,
     ),
 
-    votesDb.election.findMany({
+    // --- votes_db ----------------------------------------------------------
+    voteElections: votesDb.election.findMany({
       select: { id: true, encryptionPublicKey: true, tallyCompletedAt: true },
     }),
-    votesDb.electionBallot.findMany({ select: { id: true, electionId: true, label: true } }),
-    votesDb.encryptedVote.findMany({
+    voteBallots: votesDb.electionBallot.findMany({
+      select: { id: true, electionId: true, label: true },
+    }),
+    encryptedVotes: votesDb.encryptedVote.findMany({
       orderBy: { id: 'asc' },
       select: { id: true, ballotId: true, ciphertext: true, ciphertextHash: true },
     }),
-    votesDb.$queryRawUnsafe<Array<{ column_name: string }>>(columnsQuery('encrypted_vote')),
+    encryptedVoteColumns: votesDb.$queryRawUnsafe<Array<{ column_name: string }>>(
+      columnsQuery('encrypted_vote'),
+    ),
     // Den publika andelen, aldrig den krypterade.
-    votesDb.trusteeShare.findMany({
+    trusteeShares: votesDb.trusteeShare.findMany({
       orderBy: [{ electionId: 'asc' }, { trusteeIndex: 'asc' }],
       select: { electionId: true, trusteeIndex: true, publicShare: true },
     }),
-    votesDb.partialDecryption.findMany({
+    partialDecryptions: votesDb.partialDecryption.findMany({
       orderBy: [{ ballotId: 'asc' }, { optionIndex: 'asc' }, { trusteeIndex: 'asc' }],
       select: { ballotId: true, optionIndex: true, trusteeIndex: true, value: true },
     }),
-    votesDb.ballotTally.findMany({
+    ballotTallies: votesDb.ballotTally.findMany({
       orderBy: [{ ballotId: 'asc' }, { optionIndex: 'asc' }],
       select: { ballotId: true, optionIndex: true, count: true },
     }),
-    votesDb.vote.findMany({
+    legacyVotes: votesDb.vote.findMany({
       orderBy: { id: 'asc' },
       // Bara valsedeln, inte partiet. Livevyn behöver inte avslöja vad någon
       // röstat på för att visa hur tabellen ser ut.
       select: { id: true, tokenHash: true, ballotId: true, createdAt: true },
     }),
-    votesDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
-    votesDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
-  ])
+    voteKeys: votesDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
+    voteTables: votesDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
+  })
 
   const voterBallotById = new Map(voterBallots.map((ballot) => [ballot.id, ballot]))
   const voteBallotById = new Map(voteBallots.map((ballot) => [ballot.id, ballot]))

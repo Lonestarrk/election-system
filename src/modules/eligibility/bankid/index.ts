@@ -12,10 +12,10 @@ export const bankIdService: IBankIdService = new MockBankIdService()
 /**
  * Om legitimeringen är en attrapp.
  *
- * Styr om demoflödets "skanna QR-koden"-genväg finns. Uttrycket är medvetet
- * skrivet mot implementationen och inte mot en miljovariabel: byts mocken ut
- * blir värdet falskt automatiskt, i stället för att hänga på att någon kommer
- * ihåg att ändra konfigurationen.
+ * Läses bara av `isDemoMode` i src/lib/demo-mode.ts, det enda ställe där
+ * demoläget avgörs. Uttrycket är medvetet skrivet mot implementationen och
+ * inte mot en miljövariabel: byts mocken ut blir värdet falskt automatiskt, i
+ * stället för att hänga på att någon kommer ihåg att ändra konfigurationen.
  */
 export const bankIdIsMocked: boolean = bankIdService instanceof MockBankIdService
 

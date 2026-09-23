@@ -1,16 +1,13 @@
-import type {
-  DatabaseState,
-  EncryptedVoteRow,
-  PendingVoteRow,
-} from '@/app/api/demo/database-state/route'
+import type { DatabaseState, PendingVoteRow } from '@/app/api/demo/database-state/route'
 
 /**
  * "FÖLJ EN RÖST" UTAN ATT SIDAN SJÄLV BLIR KOPPLINGEN.
  *
  * Före stängningen syns kopplingen i databasen: en rad i pending_vote pekar på
- * en väljare. Efter stängningen är raden raderad, och chiffret ligger i
- * encrypted_vote utan någon kolumn som pekar tillbaka. Det enda som då hittar
- * en röst är verifikationskoden, och den har väljaren.
+ * en väljare. Efter stängningen är raden raderad, och chiffret är en av många
+ * rader i encrypted_vote utan någon kolumn som pekar tillbaka. Ingen kan då
+ * säga vilken som var väljarens, inte heller väljaren själv: i kuvertmodellen
+ * får hon ingen kod, och ingenting per röst publiceras (spec 3.1).
  *
  * En sida som mindes vad den såg före stängningen kunde göra exakt det
  * modellen raderar: hämta pending_vote medan kopplingen finns, spara
@@ -29,15 +26,17 @@ import type {
  *
  * 3. Ett äldre svar kan aldrig ersätta ett nyare. Annars kunde en långsam
  *    hämtning från före stängningen landa efter en från efter, och väcka de
- *    raderade raderna till liv i fliken.
+ *    raderade raderna till liv i fliken. Löpnumren delas ut av
+ *    ./live-refresh.ts när frågan skickas.
  *
- * 4. Rader i encrypted_vote märks bara med en kod som besökaren själv klistrat
- *    in. Funktionen som letar där tar aldrig emot pending_vote.
+ * 4. Ingenting märker en rad i encrypted_vote. Det enda sidan säger om den
+ *    tabellen efter stängningen är hur många anonyma rader den har.
  *
- * Det sidan inte kan hindra är att en människa minns vad hon såg, eller att
- * någon kopierade tabellen innan den raderades. Den som har en kopia av
- * pending_vote från före stängningen har kopplingen kvar. Det är begränsningen
- * link-exists-during-voting i praktiken, och sidan säger det rakt ut.
+ * Det sidan inte kan hindra är att någon minns eller kopierar vad livevyn
+ * visade. Livevyn är en insiders vy av databasen, och den som antecknade en
+ * chifferhash i pending_vote före stängningen hittar den i encrypted_vote
+ * efteråt. Det är begränsningen link-exists-during-voting i praktiken, och
+ * sidan säger det rakt ut.
  */
 
 export type ForgetReason = 'row-gone' | 'left-open'
@@ -77,8 +76,8 @@ function phaseOf(snapshot: DatabaseState, electionId: string | null): string | n
  * Går raden att följa i den här bilden?
  *
  * Bara så länge dess omröstning står i OPEN. I specens CLOSED och VALIDATED
- * finns raden kvar, men då har röstningen stängt, och från och med då ska en
- * röst bara gå att hitta med sin verifikationskod.
+ * finns raden kvar, men då har röstningen stängt, och från och med då ska
+ * ingenting på sidan peka ut en enskild röst.
  */
 export function canFollow(snapshot: DatabaseState, row: PendingVoteRow): boolean {
   return phaseOf(snapshot, row.electionId) === 'OPEN'
@@ -92,22 +91,33 @@ export function followReducer(state: FollowState, action: FollowAction): FollowS
       if (action.sequence <= state.sequence) return state
 
       const next = action.snapshot
-      const replaced = { ...state, snapshot: next, sequence: action.sequence, fetchedAt: action.fetchedAt }
+      const replaced = {
+        ...state,
+        snapshot: next,
+        sequence: action.sequence,
+        fetchedAt: action.fetchedAt,
+      }
 
       if (state.followedPendingVoteId === null) return replaced
 
       // Punkt 2: det följda id:t prövas mot den NYA bilden, aldrig mot den gamla.
-      const row = next.votersDb.pendingVote.find((pending) => pending.id === state.followedPendingVoteId)
+      const row = next.votersDb.pendingVote.find(
+        (pending) => pending.id === state.followedPendingVoteId,
+      )
 
       if (!row) return { ...replaced, followedPendingVoteId: null, forgotten: 'row-gone' }
-      if (!canFollow(next, row)) return { ...replaced, followedPendingVoteId: null, forgotten: 'left-open' }
+      if (!canFollow(next, row)) {
+        return { ...replaced, followedPendingVoteId: null, forgotten: 'left-open' }
+      }
 
       return replaced
     }
 
     case 'follow': {
       const snapshot = state.snapshot
-      const row = snapshot?.votersDb.pendingVote.find((pending) => pending.id === action.pendingVoteId)
+      const row = snapshot?.votersDb.pendingVote.find(
+        (pending) => pending.id === action.pendingVoteId,
+      )
 
       if (!snapshot || !row || !canFollow(snapshot, row)) return state
 
@@ -129,79 +139,32 @@ export function followedRow(state: FollowState): PendingVoteRow | null {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Verifikationskoden
-// ---------------------------------------------------------------------------
+export type StrippedElection = {
+  electionId: string
+  name: string
+  /** Kuvert i pending_vote som ändå finns kvar. Ska vara 0. */
+  remainingEnvelopes: number
+  /** Chiffer i encrypted_vote för omröstningen, utan någon kolumn som pekar på en väljare. */
+  anonymousRows: number
+}
 
 /**
- * Kortaste kod som prövas: lika många tecken som livevyn hämtar av varje hash.
+ * Omröstningar vars koppling raderats, med vad som finns kvar av dem.
  *
- * Rutten skickar bara de första tolv tecknen, så längre än så kan jämförelsen
- * inte gå. Kortare koder vägras, eftersom de skulle träffa mer än de pekar ut.
+ * Räknas bara ur den aktuella bilden, och bara som antal. Punkt 4 ovan: efter
+ * stängningen är det enda sidan kan säga om en röst att den är en av så här
+ * många.
  */
-export const MINIMUM_CODE_LENGTH = 12
-
-/**
- * Koden som väljaren fick är chifferhashen: 64 hextecken. Den får klistras in
- * med versaler, mellanslag eller bindestreck, som när den skrivits av för hand.
- */
-export function normaliseVerificationCode(input: string): string | null {
-  const compact = input.toLowerCase().replace(/[\s-]/g, '')
-
-  if (!/^[0-9a-f]+$/.test(compact)) return null
-  if (compact.length < MINIMUM_CODE_LENGTH || compact.length > 64) return null
-
-  return compact
-}
-
-/** Den del av ett avkortat värde som faktiskt kom med, utan utelämningstecknet. */
-function prefixOf(shortened: string): string {
-  return shortened.endsWith('…') ? shortened.slice(0, -1) : shortened
-}
-
-function matchesCode(code: string, shortenedHash: string): boolean {
-  const prefix = prefixOf(shortenedHash)
-  const length = Math.min(code.length, prefix.length)
-  return length >= MINIMUM_CODE_LENGTH && code.slice(0, length) === prefix.slice(0, length)
-}
-
-/**
- * Letar efter koden i encrypted_vote.
- *
- * Tar bara emot de raderna. Punkt 4 ovan: en märkning av en rad här ska inte
- * kunna bygga på något annat än koden, och det enklaste sättet att garantera
- * det är att funktionen aldrig får se pending_vote.
- */
-export function findInEncryptedVotes(code: string, rows: EncryptedVoteRow[]): EncryptedVoteRow[] {
-  return rows.filter((row) => matchesCode(code, row.ciphertextHash))
-}
-
-/** Letar efter koden i pending_vote, där kopplingen finns så länge raden finns. */
-export function findInPendingVotes(code: string, rows: PendingVoteRow[]): PendingVoteRow[] {
-  return rows.filter((row) => matchesCode(code, row.ciphertextHash))
-}
-
-export type CodeLookup =
-  | { status: 'empty' }
-  | { status: 'invalid' }
-  | { status: 'searched'; pending: PendingVoteRow[]; encrypted: EncryptedVoteRow[] }
-
-/**
- * Söker koden i den senaste bilden, i båda tabellerna var för sig.
- *
- * Träffarna hålls isär. Under själva stängningen, eller om den avbrutits efter
- * flytten, kan samma hash finnas i båda, och då visar sidan båda träffarna. Den
- * parar aldrig ihop dem till en rad.
- */
-export function lookUpVerificationCode(input: string, snapshot: DatabaseState): CodeLookup {
-  if (input.trim() === '') return { status: 'empty' }
-
-  const code = normaliseVerificationCode(input)
-  if (code === null) return { status: 'invalid' }
-
-  return {
-    status: 'searched',
-    pending: findInPendingVotes(code, snapshot.votersDb.pendingVote),
-    encrypted: findInEncryptedVotes(code, snapshot.votesDb.encryptedVote),
-  }
+export function strippedElections(snapshot: DatabaseState): StrippedElection[] {
+  return snapshot.elections
+    .filter((election) => election.linkClearedAt !== null)
+    .map((election) => ({
+      electionId: election.id,
+      name: election.name,
+      remainingEnvelopes: snapshot.votersDb.pendingVote.filter(
+        (row) => row.electionId === election.id,
+      ).length,
+      anonymousRows: snapshot.votesDb.encryptedVote.filter((row) => row.electionId === election.id)
+        .length,
+    }))
 }

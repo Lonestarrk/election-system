@@ -6,12 +6,10 @@ import type {
 } from '@/app/api/demo/database-state/route'
 import {
   canFollow,
-  findInEncryptedVotes,
   followedRow,
   followReducer,
   INITIAL_FOLLOW_STATE,
-  lookUpVerificationCode,
-  normaliseVerificationCode,
+  strippedElections,
   type FollowState,
 } from '@/app/architecture/follow-a-vote'
 
@@ -24,7 +22,11 @@ import {
  * vilket chiffer i encrypted_vote som var vems. Testerna här prövar att
  * tillståndet inte kan göra det: en ny bild ersätter den förra helt, det följda
  * kuvertet glöms, ett gammalt svar kan inte väcka de raderade raderna till liv,
- * och en rad i encrypted_vote hittas bara med en kod som besökaren själv har.
+ * och efter stängningen säger sidan bara hur många anonyma rader som finns.
+ *
+ * Någon sökning på verifikationskod finns inte längre. Den var köparens
+ * verktyg: den som sett en röst läggas kunde efter stängningen se om koden fanns
+ * kvar, och alltså om väljaren ändrat sig (spec 3.1).
  *
  * Värdena är avkortade precis som rutten avkortar dem: tolv tecken och ett
  * utelämningstecken.
@@ -33,8 +35,6 @@ import {
 const ELECTION = 'omrostning-1'
 const ANNA = 'anna-111111…'
 const HASH = '3fa2b1c9d0e1'
-/** Hela verifikationskoden: 64 hextecken, varav livevyn bara har sett de första tolv. */
-const ANNAS_CODE = HASH + 'ab'.repeat(26)
 
 function pendingRow(overrides: Partial<PendingVoteRow> = {}): PendingVoteRow {
   return {
@@ -224,72 +224,30 @@ describe('Följ en röst: sidan blir aldrig själv kopplingen', () => {
   })
 })
 
-describe('verifikationskoden', () => {
-  it('före stängningen hittar koden kuvertet i pending_vote, med väljaren', () => {
-    const result = lookUpVerificationCode(ANNAS_CODE, BEFORE_CLOSE)
-
-    expect(result).toMatchObject({ status: 'searched', encrypted: [] })
-    if (result.status !== 'searched') throw new Error('Koden prövades inte.')
-    expect(result.pending.map((row) => row.voterStatusId)).toEqual([ANNA])
-  })
-
-  it('efter stängningen hittar koden chiffret i encrypted_vote, och raden bär ingen väljare', () => {
-    const result = lookUpVerificationCode(ANNAS_CODE, AFTER_CLOSE)
-
-    if (result.status !== 'searched') throw new Error('Koden prövades inte.')
-    expect(result.pending).toEqual([])
-    expect(result.encrypted).toHaveLength(1)
-    // Samma objekt som i bilden, inte ett nytt som satts ihop av något annat.
-    expect(result.encrypted[0]).toBe(AFTER_CLOSE.votesDb.encryptedVote[0])
-    expect(Object.keys(result.encrypted[0]!)).not.toContain('voterStatusId')
-  })
-
-  it('mitt i en stängning hålls träffarna i de två tabellerna isär', () => {
-    // Flytten är gjord men raderingen inte: samma hash i båda tabellerna.
-    const midClose = snapshot('OPEN', [pendingRow()], [encryptedRow()])
-    const result = lookUpVerificationCode(ANNAS_CODE, midClose)
-
-    if (result.status !== 'searched') throw new Error('Koden prövades inte.')
-    expect(result.pending).toHaveLength(1)
-    expect(result.encrypted).toEqual([midClose.votesDb.encryptedVote[0]])
-    expect(Object.keys(result.encrypted[0]!)).not.toContain('voterStatusId')
-  })
-
-  it('letandet i encrypted_vote hittar bara det koden pekar ut', () => {
+describe('efter stängningen', () => {
+  it('säger hur många anonyma rader omröstningen har, och ingenting om vilken som är vems', () => {
     const other = encryptedRow({ id: '0000aaaa-000…', ciphertextHash: '0000aaaa0000…' })
+    const closed = snapshot('STRIPPED', [], [encryptedRow(), other])
 
-    expect(findInEncryptedVotes(ANNAS_CODE, [other, encryptedRow()])).toEqual([encryptedRow()])
+    const summaries = strippedElections(closed)
+
+    expect(summaries).toEqual([
+      { electionId: ELECTION, name: 'Testvalet', remainingEnvelopes: 0, anonymousRows: 2 },
+    ])
+    // Bara antal. Ingen rad, ingen hash, inget id följer med.
+    expect(JSON.stringify(summaries)).not.toContain(HASH)
+    expect(JSON.stringify(summaries)).not.toContain(ANNA)
   })
 
-  it('en kod som bara delar början med hashen träffar inte', () => {
-    // Skiljer sig i det tolfte tecknet, det sista livevyn hämtar.
-    const almost = '3fa2b1c9d0e2' + ANNAS_CODE.slice(12)
-
-    expect(lookUpVerificationCode(almost, AFTER_CLOSE)).toMatchObject({
-      status: 'searched',
-      pending: [],
-      encrypted: [],
-    })
+  it('en omröstning vars koppling finns kvar räknas inte som stängd', () => {
+    expect(strippedElections(BEFORE_CLOSE)).toEqual([])
   })
 
-  it('får klistras in med versaler, mellanslag och bindestreck', () => {
-    // Grupper om fyra, versaler och ett bindestreck: "3FA2-B1C9 D0E1 ABAB …".
-    const typed = ANNAS_CODE.toUpperCase()
-      .replace(/(.{4})/g, '$1 ')
-      .trim()
-      .replace(' ', '-')
+  it('ett kuvert som ändå finns kvar efter raderingen syns i sammanställningen', () => {
+    // Raderingen påstås gjord, men en rad ligger kvar, till exempel skriven
+    // tillbaka efteråt. Då ska sidan inte säga noll.
+    const inconsistent = snapshot('STRIPPED', [pendingRow()], [encryptedRow()])
 
-    expect(normaliseVerificationCode(typed)).toBe(ANNAS_CODE)
-    expect(lookUpVerificationCode(typed, AFTER_CLOSE)).toMatchObject({ status: 'searched' })
-  })
-
-  it('en för kort eller ogiltig kod prövas inte alls', () => {
-    // Kortare än det livevyn hämtar skulle träffa mer än den pekar ut.
-    expect(normaliseVerificationCode('3fa2b1c9d0e')).toBeNull()
-    expect(normaliseVerificationCode('inte en kod alls, bara text')).toBeNull()
-    expect(normaliseVerificationCode('a'.repeat(65))).toBeNull()
-
-    expect(lookUpVerificationCode('   ', AFTER_CLOSE)).toEqual({ status: 'empty' })
-    expect(lookUpVerificationCode('3fa2', AFTER_CLOSE)).toEqual({ status: 'invalid' })
+    expect(strippedElections(inconsistent)[0]).toMatchObject({ remainingEnvelopes: 1 })
   })
 })

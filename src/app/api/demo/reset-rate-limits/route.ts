@@ -1,6 +1,6 @@
 import { errorResponse, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { resetRateLimits } from '@/lib/rate-limit'
-import { bankIdIsMocked } from '@/modules/eligibility/bankid'
+import { isDemoMode } from '@/lib/demo-mode'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -8,8 +8,8 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/demo/reset-rate-limits
  *
- * Nollställer hastighetsbegränsarens hinkar. Finns bara när BankID är en
- * attrapp.
+ * Nollställer hastighetsbegränsarens hinkar. Finns bara i demoläget, alltså i
+ * dag bara när BankID är en attrapp.
  *
  * VARFÖR DEN BEHÖVS
  *
@@ -26,23 +26,25 @@ export const dynamic = 'force-dynamic'
  * Det var min första tanke, och den var fel. Säkerhetstestet i
  * tests/security/api-surface.test.ts kräver att varje tillståndsändrande rutt
  * innehåller `checkRateLimit` — ett statiskt villkor. Ett
- * `if (!bankIdIsMocked)` runt anropet hade passerat texten men urholkat
+ * `if (!isDemoMode())` runt anropet hade passerat texten men urholkat
  * egenskapen testet finns för att garantera, alltså ett test som blir grönt
  * av fel skäl. Gränserna är därför orörda; det här är en nollställning
  * emellan, inte ett undantag.
  *
  * VARFÖR DEN INTE KAN FINNAS I DRIFT
  *
- * `bankIdIsMocked` är `bankIdService instanceof MockBankIdService`, alltså ett
- * påstående om implementationen och inte en miljövariabel. Byts attrappen mot
- * skarp BankID blir värdet falskt av sig själv — ingen konfiguration att komma
- * ihåg, ingen flagga att råka sätta.
+ * Villkoret är `isDemoMode()` i src/lib/demo-mode.ts, samma som de andra
+ * demorutterna och arkitektursidan läser. I dag betyder det att `bankIdService`
+ * är en instans av MockBankIdService, alltså ett påstående om implementationen
+ * och inte en miljövariabel. Byts attrappen mot skarp BankID blir värdet falskt
+ * av sig själv — ingen konfiguration att komma ihåg, ingen flagga att råka
+ * sätta.
  *
  * Svaret är 404 och inte 403: en rutt som inte finns ska inte gå att skilja
  * från en som finns men nekar.
  */
 export async function POST(request: Request) {
-  if (!bankIdIsMocked) {
+  if (!isDemoMode()) {
     return errorResponse('NOT_FOUND', 'Rutten finns inte.', 404)
   }
 
