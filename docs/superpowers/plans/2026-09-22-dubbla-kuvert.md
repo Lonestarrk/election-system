@@ -2572,6 +2572,64 @@ Följ mönstret i `src/app/api/vote/cast/route.ts`: origin-kontroll, hastighetsg
 `castVote`, CSRF-token, sessionsuppslag, anrop, svar. Rutten returnerar
 `{ status, ciphertextHash, replaced }` och aldrig något om innehållet.
 
+### SIGNATUREN OCH CERTIFIKATET FÅR ALDRIG KOMMA FRÅN BEGÄRANS KROPP
+
+Det här är uppgiftens farligaste detalj, och den avgör om signaturen betyder
+något alls.
+
+Tar rutten emot `signature` och `certificate` från klienten kan vem som helst
+skapa ett eget nyckelpar, formatera ett certifikat med valfritt personnummer,
+signera vad som helst med det, och skicka in. `verifyEnvelopeSignature` skulle
+säga ja: signaturen stämmer mot certifikatet, och certifikatet påstår rätt
+person. Hela mekanismen vore dekoration — och det är just det hål uppgift 8
+finns för att stänga.
+
+**Servern måste hämta båda från sin egen BankID-hämtning**, och den måste
+själv bygga den nyttolast den verifierar mot. Klienten skickar aldrig något
+som ingår i signaturen.
+
+Flödet blir därför tvådelat:
+
+```
+1. POST /api/vote/sign-start  { ballotId, ciphertextHash }
+   Servern räknar fram castSequence (befintlig + 1, eller 1), bygger
+   envelopePayload SJÄLV, och startar en BankID-signering med den i
+   userNonVisibleData. Returnerar orderRef, QR och autostart.
+
+2. POST /api/vote/encrypted   { ballotId, orderRef, ballot }
+   Servern hämtar completionData från BankID, tar signature och certificate
+   DÄRIFRÅN, och verifierar mot den nyttolast den byggde i steg 1 — inte mot
+   något klienten påstår.
+```
+
+`castSequence` kommer alltså också från servern. Fick klienten sätta den kunde
+den ange ett godtyckligt högt tal och sedan spela upp ett äldre kuvert med ett
+ännu högre — återuppspelningsskyddet skulle vara verkningslöst.
+
+Lägg till ett test som vaktar egenskapen:
+
+```ts
+it('en signatur som klienten skickar med i kroppen ignoreras', async () => {
+  /**
+   * Utan detta kan vem som helst skapa ett eget nyckelpar, formatera ett
+   * certifikat med valfritt personnummer, och signera vad som helst. Servern
+   * hämtar därför signaturen från BankID och aldrig från begäran.
+   */
+  const forged = await selfSignedEnvelopeFor('199001011234', ballot)
+
+  const response = await post('/api/vote/encrypted', {
+    ballotId,
+    orderRef: unsignedOrderRef,
+    ballot,
+    signature: forged.signature,
+    certificate: forged.certificate,
+    castSequence: 99,
+  })
+
+  expect(response.status).not.toBe('recorded')
+})
+```
+
 - [ ] **Steg 5: Kör testerna**
 
 Kör: `npx vitest run tests/integration/pending-vote.test.ts`
