@@ -1877,9 +1877,25 @@ import { isInSubgroup } from './group'
 import { multiply, type Ciphertext } from './elgamal'
 import { verifySumIsOne, verifyZeroOrOne, type EqualityProof, type ZeroOrOneProof } from './proofs'
 
+/**
+ * BEVISEN MASTE SERIALISERAS, PRECIS SOM CHIFFRET.
+ *
+ * ZeroOrOneProof och EqualityProof bar bigint-falt, och JSON.stringify kastar
+ * pa bigint. Kuvertet ska bade over HTTP och ner i en jsonb-kolumn, sa typerna
+ * fran proofs.ts kan inte anvandas direkt har.
+ *
+ * Samma monster som chiffret redan foljer: {c1, c2} lagras som strangar och
+ * parsas till bigint forst nar de ska raknas med. Rundgangen maste vara trogen
+ * — en parse som tyst ger ett annat varde an serialiseringen skrev skulle
+ * underkanna arliga bevis, och skulle kunna passera testerna eftersom samma kod
+ * bade skriver och laser.
+ */
+export type SerialisedZeroOrOneProof = Record<keyof ZeroOrOneProof, string>
+export type SerialisedEqualityProof = Record<keyof EqualityProof, string>
+
 export type EncryptedBallot = {
   ciphertext: Array<{ c1: string; c2: string }>
-  proofs: { components: ZeroOrOneProof[]; sum: EqualityProof }
+  proofs: { components: SerialisedZeroOrOneProof[]; sum: SerialisedEqualityProof }
   ciphertextHash: string
 }
 
