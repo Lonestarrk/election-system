@@ -65,15 +65,67 @@ inre kuvertet är chiffret som flyttas till `votes_db` vid stängning. Invariant
 | Egenskap | Mekanism |
 |---|---|
 | Valhemlighet | Enskilda röster dekrypteras **aldrig**. Bara summan öppnas. |
-| Motstånd mot röstköp | Rösten kan ändras fram till stängning. Köparen måste bevaka dig till kl 20. |
-| Kvittofrihet | Klienten kastar krypteringens slumptal. Väljaren håller bara ett chifferhash. |
-| Individuell verifierbarhet | Väljaren kontrollerar att hennes chifferhash finns i den publicerade mängden. |
-| Universell verifierbarhet | Vem som helst räknar om den homomorfa summan och kontrollerar dekrypteringsbevisen. |
+| Motstånd mot röstköp | Rösten kan ändras fram till stängning, och efter stängningen finns ingenting att matcha mot. En köpare måste se själva läggningen vid slutet. Se 3.1. |
+| Kvittofrihet | Klienten kastar krypteringens slumptal. Det enheten visar före stängningen går inte att bevisa för någon annan. Se 3.1. |
+| Individuell verifierbarhet | Före stängningen: väljaren ser sin nuvarande röst på enheten hon röstade från, kontrollerad mot det servern håller. Efter stängningen: att hon röstat, inte vad. Se 3.1. |
+| Universell verifierbarhet | Vem som helst kontrollerar att resultatet är en korrekt dekryptering av den publicerade summan. Att summan består av exakt de giltiga rösterna vilar på valideringen före stängningen och på slutkontrollen. Se 3.1. |
 | Ingen ensam administratör | k-av-n tröskeldekryptering. |
 
 Det avgörande greppet för kvittofrihet: **klienten behåller inte slumptalet.** Väljaren
-kan därför bevisa att hennes chiffer ingår i räkningen, men inte vad det innehåller.
-Inklusionen räcker för hennes egen kontroll, och saknar värde för en köpare.
+kan därför inte bevisa vad hennes chiffer innehåller.
+
+### 3.1 Beslut 2026-09-23: kontroll före stängningen, bara summor efter
+
+**Den första versionen av specen lovade två egenskaper som motsäger varandra.** Den sa
+att köparen måste bevaka väljaren fram till kl 20, och att väljaren efter stängningen
+kontrollerar att hennes chifferhash finns i den publicerade mängden. Men en köpare som
+en gång sett rösten läggas har sett chifferhashen. Efter stängningen kontrollerar han om
+den finns kvar. Finns den har väljaren inte ändrat sig; saknas den har hon det. Han
+behöver alltså bevaka en gång, inte till kl 20, och möjligheten att ändra rösten
+skyddar bara mot en köpare som betalar i förväg. Specen påstod att inklusionen *saknar
+värde för en köpare*. Det gäller innehållet, men inte frågan om rösten **ändrats**.
+
+Specen hade redan resonerat rätt om token: *vilket handtag som än tillåter väljaren att
+ändra sig tillåter köparen det.* Den publicerade chifferhashen är också ett handtag, och
+det missades. Felet hittades av implementeraren av arkitektursidan.
+
+**Beslutet följer användarens modell:** alla röster är förtidsröster. Fram till
+stängningen kan väljaren se, kontrollera och ändra sin röst. Efter stängningen kan
+ingen se eller ändra något; väljaren kan se *att* hon röstat, inte på vad.
+
+Konkret:
+
+1. **Före stängningen ser väljaren sin nuvarande röst på den enhet hon röstade från.**
+   Enheten sparar valet och chifferhashen för den senaste läggningen per valsedel, men
+   **inte slumptalet**. Sidan hämtar chifferhashen för väljarens liggande röst från
+   servern och jämför. Stämmer de visas valet, med beskedet att servern håller exakt den
+   röst som lades härifrån. Stämmer de inte har rösten ändrats från en annan enhet, och
+   innehållet visas inte.
+2. **Visningen är inget kvitto.** Utan slumptalet går det inte att bevisa att chiffret
+   innehåller det enheten visar. Det enheten visar kan dessutom ändras av väljaren
+   själv. En köpare kan därför inte lita på skärmen, bara på att själv se läggningen, och
+   den som ser läggningen kl 19 vet ingenting om vad som gäller kl 20.
+3. **Ingen verifikationskod visas.** En kod på skärmen är just det handtag en köpare
+   antecknar. Kontrollen i punkt 1 sker automatiskt och behöver ingen.
+4. **Vid stängningen raderar enheten sina uppgifter** när sidan ser att fasen lämnat
+   `OPEN`. Raderas de inte, därför att sidan aldrig öppnas igen, bevisar de ändå
+   ingenting (punkt 2).
+5. **Efter stängningen publiceras bara summorna** (se 7.2). Enskilda chiffer och deras
+   hashar publiceras aldrig. Det finns alltså ingenting publicerat som något väljaren
+   eller en köpare håller kan matchas mot.
+6. **Efter stängningen ser väljaren att hon röstat.** Det står i röstlängden och kräver
+   ingen koppling till rösten.
+
+**Priset är universell verifierbarhet röst för röst.** Allmänheten kan kontrollera att
+resultatet är en korrekt dekryptering av den publicerade summan, att k av n
+förtroendemän bidrog och att antalet röster stämmer med antalet som röstat. Att summan
+består av exakt de giltiga rösterna kan allmänheten inte räkna om; det vilar på
+valideringen medan kopplingen fanns (avsnitt 7) och på slutkontrollen. Estland har valt
+samma väg: de enskilda rösterna publiceras inte, och granskningen sker genom
+observatörer med åtkomst.
+
+Två kvarvarande svagheter står i avsnitt 10: tvång vid själva slutet, och en insider med
+läsrätt i `votes_db` som dessutom fått tag i en enhets sparade chifferhash.
 
 ## 4. Kryptografi
 
@@ -285,7 +337,9 @@ BallotTally
    räknaren och valsedelns id ligger i det icke synliga fältet. Se avsnitt 4.6.
 5. **Servern** verifierar bevisen, kontrollerar signaturen mot väljarens personnummer och
    att räknaren är högre än den lagrade, och gör upsert på `(voterStatusId, ballotId)`.
-6. **Klienten visar chifferhashen** som verifikationskod och **kastar slumptalet**.
+6. **Klienten kastar slumptalet** och sparar valet och chifferhashen lokalt, så att
+   väljaren kan se sin nuvarande röst fram till stängningen. Ingen verifikationskod
+   visas. Se 3.1.
 7. **Vid `closesAt`** kör administratören stängningen:
    validera enligt avsnitt 7 → avbryt vid allvarlig avvikelse → annars infoga i
    `votes_db` sorterat på chifferhash (idempotent på `ciphertextHash`) → jämför antal →
@@ -448,7 +502,11 @@ Valideringen kräver att kopplingen läses, alltså precis den förmåga som gö
 svagare på valhemlighet än den föregående. Därför:
 
 - **Publiceras:** antal, kategorier och utfall. "12 483 röster, 12 483 väljare, noll
-  avvikelser" är den sortens uppgift som gör ett resultat trovärdigt.
+  avvikelser" är den sortens uppgift som gör ett resultat trovärdigt. Efter
+  dekrypteringen dessutom, per valsedel: den krypterade summan, förtroendemännens
+  partiella dekrypteringar med bevis, resultatet och kuvertroten.
+- **Publiceras aldrig:** enskilda chiffer eller deras hashar. Se 3.1: vad som helst
+  publicerat per röst är ett handtag en köpare kan matcha mot.
 - **Publiceras inte:** vilka väljare som helst, i någon form. Detaljen finns för
   administratören att utreda, och inte längre än så.
 - **Loggas:** att valideringen körts, av vem och när. Att läsa kopplingen ska synas.
@@ -472,9 +530,11 @@ skalas beräknas en Merklerot över alla par av `(ciphertextHash, signatur)` och
 publiceras. Roten avslöjar ingenting — den är en hash — men binder oss vid exakt vilka
 signerade kuvert som fanns.
 
-Två saker följer. En väljare som sparat sitt eget kuvert kan i efterhand bevisa att det
-räknades, genom en inklusionsväg upp till den publicerade roten. Och vi kan inte senare
-påstå att andra kuvert fanns, eftersom roten redan är ute. Valhemligheten blir samtidigt
+Det som följer är att vi inte senare kan påstå att andra kuvert fanns, eftersom roten
+redan är ute. **Roten är ett åtagande, inte ett inklusionsbevis.** Den första versionen
+sa att en väljare med sparat kuvert kan bevisa att det räknades. Det stämmer inte, och
+det ska inte heller stämma: ingen inklusionsväg lagras, signaturerna raderas, och ett
+bevis som väljaren kan visa upp efter stängningen är samma handtag som 3.1 tar bort. Valhemligheten blir samtidigt
 lika stark som vid full radering: efter skalningen krävs bara k av n andelar för att
 bryta den, och roten hjälper ingen angripare.
 
@@ -523,6 +583,15 @@ kontroll mot nuläget skulle förkasta giltiga röster.
 - **Klientintegriteten är fortfarande olöst.** En manipulerad klient kan kryptera något
   annat än väljaren valde. Motmedlet är cast-or-audit (Benaloh) och ligger utanför denna
   spec.
-- **Tvång före stängning är fortfarande möjligt** om tvingaren kan bevaka väljaren fram
-  till kl 20. Estland lägger till att en pappersröst upphäver den digitala; det ligger
-  utanför denna spec.
+- **Tvång vid själva slutet är fortfarande möjligt.** En tvingare som ser väljaren lägga
+  rösten strax före stängningen vet att den gäller. Skärmen hjälper honom inte (3.1
+  punkt 2); han måste se läggningen. Estland lägger till att en pappersröst upphäver den
+  digitala; det ligger utanför denna spec.
+- **En insider med läsrätt i `votes_db` och en enhets sparade chifferhash** kan se om
+  den enhetens röst var den som räknades, men inte vad den innehöll. Det kräver både
+  intrång i databasen och tillgång till väljarens enhet.
+- **BankID-ordern bär chifferhashen ut ur systemet**, tillsammans med väljarens
+  identitet. BankID sparar signaturer, bland annat för tvister, så kopplingen skulle
+  finnas kvar hos BankID efter raderingen här. Åtgärdas genom att det signerade bär en
+  hash av chifferhashen och ett salt som bara finns i `PendingVote` och raderas med
+  raden. Efter stängningen går BankID:s kopia inte att matcha mot någonting.

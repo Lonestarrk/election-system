@@ -3331,8 +3331,86 @@ databasen faktiskt innehåller och inte påstå att ett steg körts.
 
 ---
 
-**Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **14**
-→ 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 14 flyttades upp eftersom "Följ en
+## Task 11d: Faserna blir verkliga tillstånd
+
+**Varför:** spec 6.1 säger att fasen går enkelriktat `OPEN → CLOSED → VALIDATED →
+STRIPPED → TALLIED → CERTIFIED`, och användaren beskrev samma ordning: *"röstning
+stängs först, sen validering, sen bort koppling, sen avkoda och räkna"*. Koden
+skriver i dag bara `STRIPPED`. Det upptäcktes av implementeraren av
+arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
+
+**Files:** `src/orchestration/close-election.usecase.ts`,
+`src/modules/eligibility/pending-vote.service.ts` om det behövs, tester.
+
+1. **`CLOSED` skrivs först i stängningen**, före valideringen, i en egen skrivning.
+   Från det ögonblicket öppnas röstningen aldrig igen, inte heller om valideringen
+   hittar en avvikelse. I dag står fasen kvar i `OPEN` efter en misslyckad
+   validering, och röster avvisas bara av klockan, alltså precis det spec 6.1
+   varnar för.
+2. **`VALIDATED` skrivs när valideringen passerat.**
+3. **`STRIPPED` skrivs som i dag, inuti den atomära transaktionen.** Ändra inte
+   det.
+4. **Övergångarna är jämför-och-sätt:** en uppdatering med villkor på nuvarande
+   fas, så att två samtidiga stängningar inte kan gå om varandra och ingen fas går
+   baklänges. Pröva det med ett test som kör två stängningar samtidigt.
+5. **`already_closed` betyder fas `STRIPPED` eller senare.** Från `CLOSED` eller
+   `VALIDATED` fortsätter en omkörning, eftersom administratören utreder en
+   avvikelse och kör om.
+
+**De invarianter som uppgift 11:s fem granskningsrundor slog fast ska hålla
+efteråt, och granskaren ska pröva dem med prober mot testdatabasen:**
+`STRIPPED` skrivs bara inuti transaktionen; allt som kastar i `prepareClose` är
+`untouched`; beskedet `already_closed` betyder att kopplingen bevisligen är raderad.
+
+`TALLIED` sätts i uppgift 12 och `CERTIFIED` i uppgift 12b. Arkitektursidans
+fastabell styrs av markörer i `src/app/architecture/code-facts.ts`, och testet
+tvingar fram en uppdatering när faserna blir verkliga. Gör uppdateringen.
+
+- [ ] Tester först, sedan implementation, hela sviten, committa.
+
+---
+
+## Task 11e: BankID-ordern bär inte kopplingen ut ur systemet
+
+**Varför (spec 10):** `sign-start` lägger chifferhashen i BankID-orderns
+`userNonVisibleData`, i samma order som bär väljarens identitet. BankID sparar
+signaturer, bland annat för tvister, så med skarp BankID skulle kopplingen mellan
+väljaren och rösten finnas kvar hos BankID efter att den raderats här. Hittat av
+granskningen av uppgift 11c.
+
+1. **Det signerade bär `SHA-256(chifferhash ‖ salt)` i stället för chifferhashen.**
+   Saltet är 32 slumpbyte som skapas i `sign-start`, hålls på serversidan med
+   ordern, aldrig skickas till klienten, sparas i `PendingVote` när rösten läggs och
+   raderas med raden vid skalningen. Efter stängningen går BankID:s kopia inte att
+   matcha mot någonting.
+2. **Kontrollera att `userVisibleData` inte heller bär hashen.**
+3. **Verifieringen** i `/api/vote/encrypted` och i `validateBeforeClose` räknar
+   fram åtagandet ur den lagrade chifferhashen och saltet och jämför. Använd en
+   längdprefixad eller annars entydig kodning av `chifferhash ‖ salt`, som resten
+   av nyttolasten.
+4. **Attrappens `orders`** behåller i dag övergivna signeringsordrar med
+   personnummer och `userNonVisibleData` tills processen startas om, eftersom de
+   bara rensas när de hämtas med collect. Låt dem förfalla efter orderns
+   livslängd.
+5. **Specen:** uppdatera 4.6 med vad som signeras, och stryk BankID-posten i
+   spec 10 när den är åtgärdad. Posten i `known-limitations.ts`, som lades till i
+   uppgift 11c, försvinner när dess markör försvinner.
+
+**Schemaändring:** `PendingVote` får en kolumn för saltet. Det kräver en migrering
+och `npm run generate`, och den körande dev-servern låser Prismas DLL på Windows.
+Implementeraren stoppar inte servern själv, utan rapporterar när generate behövs,
+och controllern stoppar och startar om den.
+
+- [ ] Tester först: det signerade innehåller inte chifferhashen; efter
+      skalningen finns inget i `voters_db` eller i attrappens tillstånd som gör
+      BankID:s kopia matchbar; den äkta förfalskningen från uppgift 10 beter sig
+      fortfarande som dokumenterat.
+- [ ] Implementation, hela sviten, committa.
+
+---
+
+**Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → 11d →
+11e → **14** → 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 14 flyttades upp eftersom "Följ en
 röst" inte kan visas live förrän röstsidan lägger kuvert. Beroendet är
 kontrollerat: uppgift 14 använder bara rutterna från uppgift 7–9, som är klara.
 
@@ -3515,7 +3593,8 @@ Kontroller som ska finnas efteråt, och som var och en ska kunna fallera:
    röster, och en omkombination av de lagrade partiella dekrypteringarna ger de
    publicerade talen.
 5. **Kuvertroten finns** och kopplingen är raderad (`link_cleared`, finns redan).
-6. **Fasen är `TALLIED`** innan fastställandet tillåts.
+6. **Fasen är `TALLIED`** innan fastställandet tillåts, och fastställandet sätter
+   fasen `CERTIFIED` med jämför-och-sätt, som övergångarna i uppgift 11d.
 7. **Revisionskedjan är obruten** (`audit_chain_intact`, finns redan).
 
 Behåll `PRECONDITION` kontra `CRITICAL` enligt den princip ruling 42 slog fast:
@@ -3534,52 +3613,118 @@ ett ärligt val bevisar ingenting om spärren.
 
 ---
 
-## Task 13: Publicering och oberoende verifiering
+## Task 13: Publicering av summorna och oberoende verifiering
 
 **Files:**
-- Modify: `src/app/api/observer/votes/route.ts`, `tools/verify-election.mjs`
+- Modify: `src/app/api/observer/votes/route.ts`, `src/app/api/observer/election/route.ts`, `tools/verify-election.mjs`
 - Create: `src/app/verify/page.tsx` (ersätter tokenflödet; sidan flyttades från `/verifiera` i uppgift 11b)
 - Test: `tests/integration/independent-verification.test.ts`
 
-- [ ] **Steg 1: Skriv det fallerande testet**
+**Varför uppgiften skrevs om (spec 3.1, användarens beslut 2026-09-23)**
+
+Den första versionen publicerade varje röst med sin chifferhash och lät väljaren
+hitta sin i mängden efter stängningen. Det är köparens verktyg. Den som en gång
+sett rösten läggas kontrollerar efteråt om hashen finns kvar och vet då om
+väljaren ändrat sig. Beslutet: efter stängningen publiceras **bara summorna med
+bevis**, och väljaren ser *att* hon röstat, inte vad.
+
+**Vad som publiceras, per valsedel, först när valsedeln räknats**
+
+- den krypterade summan per alternativ (`c1`, `c2`)
+- varje förtroendemans partiella dekryptering med DLEQ-bevis, och
+  förtroendemannens publika andel
+- resultatet per alternativ och antalet röster
+- kuvertroten och antalet kuvert som skalades
+
+**Vad som aldrig publiceras:** enskilda chiffer, deras hashar eller bevis, och
+ingenting per röst. Att ett fält läcker på ett ställe räcker för att bygga
+köparens verktyg.
+
+**Under röstningen publiceras bara valdeltagandet.** `/api/observer/election`
+lämnar i dag ut antal per parti ur den gamla tabellen `vote` medan röstningen
+pågår, till vem som helst. Det är ett löpande resultat, och spec 6.2 förbjuder
+det. Rutten ska under `OPEN` bara visa antalet som röstat, och resultat först när
+valsedeln har en `BallotTally`. Posten om löpande resultat i
+`known-limitations.ts`, som lades till i uppgift 11c, försvinner därmed; testet
+tvingar bort den.
+
+**Det oberoende verktyget** (`tools/verify-election.mjs`) importerar ingenting
+från `src` och kontrollerar det som går att kontrollera utan de enskilda rösterna:
+
+1. varje partiell dekryptering mot förtroendemannens publika andel och summans
+   `c1` (DLEQ)
+2. att Lagrange-kombinationen av k bidrag ger `g^antal` som `c2` delat med den
+   kombinerade dekrypteringen
+3. att summan av antalen per valsedel är lika med antalet röster
+4. att kuvertroten finns och att antalet kuvert stämmer med antalet röster
+
+Säg i verktygets utskrift och på sidan vad det **inte** kan kontrollera: att
+summan består av exakt de giltiga rösterna. Det vilar på valideringen medan
+kopplingen fanns och på slutkontrollen i uppgift 12b.
+
+**`/verify` efter stängningen:** väljaren legitimerar sig och ser per valsedel
+*"Du har röstat"* eller *"Du har inte röstat"*. Uppgiften kommer ur röstlängden
+och kräver ingen koppling till rösten. Sidan länkar till de publicerade summorna
+och säger hur man kör verktyget själv. **Före stängningen** hänvisar sidan till
+röstsidan, där väljaren ser sin nuvarande röst på enheten hon röstade från
+(uppgift 14). Byt komponentnamnet `VerifieraPage` mot ett engelskt.
+
+- [ ] **Steg 1: Skriv de fallerande testerna**
 
 ```ts
-it('verktyget räknar fram samma summa utan att importera något från src', async () => {
+it('verktyget kontrollerar dekrypteringen utan att importera något från src', async () => {
   // Bevisvärdet ligger i oberoendet. Delar verktyget kod med appen bevisar det
   // bara att appen är konsekvent med sig själv.
   const output = execSync('node tools/verify-election.mjs', { encoding: 'utf8' })
 
-  expect(output).toContain('summan stämmer')
+  expect(output).toContain('dekrypteringen stämmer')
 })
 
-it('en manipulerad röst upptäcks', async () => {
-  await votesDb.$executeRaw`update encrypted_vote set ciphertext_hash = 'manipulerad' where true`
+it('en manipulerad partiell dekryptering upptäcks', async () => {
+  await votesDb.$executeRaw`update partial_decryption set value = '2' where true`
 
   expect(() => execSync('node tools/verify-election.mjs', { encoding: 'utf8' })).toThrow()
 })
 
-it('väljaren hittar sin chifferhash i den publicerade mängden', async () => {
-  const { ciphertextHash } = await castFor(anna, 'bp-s')
-  await closeElection(electionId)
+it('ett manipulerat resultat upptäcks', async () => {
+  await votesDb.$executeRaw`update ballot_tally set counts = '[99,0,0]' where true`
 
-  const published = await fetch('/api/observer/votes', ...).then((r) => r.json())
-
-  expect(published.votes.map((v) => v.ciphertextHash)).toContain(ciphertextHash)
+  expect(() => execSync('node tools/verify-election.mjs', { encoding: 'utf8' })).toThrow()
 })
 
-it('den publicerade raden avslöjar inte valet', async () => {
-  const published = await fetch('/api/observer/votes', ...).then((r) => r.json())
+it('ingenting per röst publiceras', async () => {
+  // Spec 3.1. Allt publicerat per röst är ett handtag en köpare kan matcha mot.
+  const { ciphertextHash } = await castFor(anna, 'bp-s')
+  await closeAndTally(electionId)
 
-  for (const vote of published.votes) {
-    expect(Object.keys(vote)).toEqual(['ciphertextHash', 'ballotId', 'ciphertext', 'proofs'])
-  }
+  const published = JSON.stringify(await fetchPublished(electionId))
+
+  expect(published).not.toContain(ciphertextHash)
+  expect(published).not.toMatch(/ciphertextHash/)
+})
+
+it('inga delsummor under röstningen', async () => {
+  // Spec 6.2. Ett löpande resultat är en tröskeldekryptering per siffra, eller
+  // som i det gamla flödet en räkning i klartext.
+  await castFor(anna, 'bp-s')
+
+  const observed = JSON.stringify(await fetchObserverElection(electionId))
+
+  expect(observed).not.toMatch(/Socialdemokraterna.*\d|votesByParty|counts/)
+})
+
+it('verifieringssidan visar att man röstat, inte vad', async () => {
+  // Täcks i e2e om det är enklare; kravet är detsamma.
 })
 ```
+
+Anpassa kolumnnamnen i manipulationstesterna efter schemat, och håll dem riktade:
+varje test ska fällas av just sin kontroll i verktyget.
 
 - [ ] **Steg 2–4:** Implementera, kör, committa enligt mönstret ovan.
 
 ```bash
-git commit -m "Publicerad mängd och oberoende omräkning av summan"
+git commit -m "Bara summorna publiceras, och vem som helst kan kontrollera dekrypteringen"
 ```
 
 ---
@@ -3605,79 +3750,114 @@ Luckan upptäcktes av granskningen av uppgift 9: filen stod i planens
 filstruktur men ingen uppgift ägde den. Den ligger före raderingen med flit, så
 att sviten aldrig passerar ett tillstånd där appen inte går att rösta i.
 
-**Vad väljaren ska se, och varför**
+**Vad väljaren ska se, och varför (spec 3.1)**
 
-Modellen har tre egenskaper som måste synas i gränssnittet, annars finns de
-bara i koden:
+Användarens modell, beslutad 2026-09-23: alla röster är förtidsröster. Fram till
+stängningen kan väljaren se, kontrollera och ändra sin röst. Efter stängningen
+kan ingen se eller ändra något. Väljaren ser då *att* hon röstat, inte på vad.
+Läs spec 3.1 innan du börjar. Den förklarar varför den första versionen av den
+här uppgiften, som visade en verifikationskod och aldrig visade valet, var fel.
+
+Fyra egenskaper måste synas i gränssnittet:
 
 1. **Att rösten går att ändra.** Har väljaren redan lagt en röst på valsedeln
-   ska sidan säga det, visa att den kan ändras fram till stängning, och göra
-   ändringen lika lätt som den första röstningen. Det är hela skyddet mot
-   röstköp — en köpare måste bevaka väljaren till klockan 20 — och väljaren
-   måste förstå att hon har den möjligheten för att den ska betyda något.
+   ska sidan säga det, visa att den kan ändras fram till stängningen, och göra
+   ändringen lika lätt som den första röstningen. Det är skyddet mot röstköp: en
+   köpare måste se själva läggningen vid slutet, eftersom allt tidigare kan
+   ändras.
 
-2. **Verifikationskoden.** Chifferhashen visas efter varje läggning, med
-   beskedet att den ändras när rösten ändras och att den senaste är den som
-   gäller. Sidan ska säga vad koden är bra till: att kontrollera att rösten
-   finns i den publicerade mängden efter stängning.
+2. **Den nuvarande rösten, på den här enheten.** Efter varje läggning sparar
+   sidan valet och chifferhashen per valsedel i webbläsarens lagring. Slumptalet
+   sparas **aldrig**. När sidan laddas hämtar den chifferhashen för väljarens
+   liggande röst från servern och jämför. Utöka `/api/vote/session` eller
+   `/api/vote/ballot` om ingen av dem returnerar den i dag, och bara för den
+   inloggade väljarens egna valsedlar. Tre lägen:
+   - Hasharna stämmer: *"Din nuvarande röst: X"*, med beskedet att servern
+     håller exakt den röst som lades från den här enheten.
+   - Hasharna stämmer inte: *"Din röst har ändrats från en annan enhet.
+     Innehållet visas bara där rösten lades."*
+   - Inget sparat här: *"Du har en röst registrerad."* utan innehåll.
 
-3. **Att sidan inte kan visa vad du röstade.** Efter läggningen finns bara
-   chiffret. Sidan får inte spara valet i webbläsarens lagring för att kunna
-   visa det igen — det vore ett kvitto som bevisar innehållet, alltså precis
-   det modellen tar bort. Säg det i gränssnittet.
+3. **Att det enheten visar inte är ett bevis.** Säg det rakt ut: utan
+   slumptalet går det inte att bevisa för någon annan vad rösten innehåller, och
+   det enheten visar kan väljaren ändra själv. Ingen ska kunna kräva ett bevis av
+   henne, och ingen kan få ett. Det är skyddet mot röstköp i den här modellen.
+
+4. **Ingen verifikationskod.** Visa ingen chifferhash och ingen annan kod. En
+   kod på skärmen är just det handtag en köpare antecknar. När sidan ser att
+   valets fas lämnat `OPEN` raderar den sina sparade uppgifter för valet.
+
+Byt också komponentnamnen `RostaContent` och `RostaPage` mot engelska. Sidan
+flyttades i uppgift 11b men behöll de svenska namnen.
+
+**`prisma/reset-votes.ts` måste också tömma `pending_vote` och `encrypted_vote`**,
+och `partial_decryption` och `ballot_tally` om de finns. E2e-svitens globalSetup
+kör skriptet mot dev-databasen. Från och med den här uppgiften lägger e2e-testerna
+kuvert, och utan tömningen samlas de mellan körningar.
 
 - [ ] **Steg 1: Skriv de fallerande e2e-testerna**
 
 Skriv om `tests/e2e/voting-flow.spec.ts` mot det nya flödet. Behåll varje
-befintligt test som fortfarande beskriver en sann egenskap — särskilt att
-Gunvor får Faluns kommunvalsedel och inte Stockholms, att Elis avvisas, och att
-ingen kvittokod hamnar i webbläsarens lagring.
+befintligt test som fortfarande beskriver en sann egenskap, särskilt att Gunvor
+får Faluns kommunvalsedel och inte Stockholms och att Elis avvisas. Testet att
+ingen kvittokod hamnar i webbläsarens lagring skrivs om: lagringen innehåller nu
+avsiktligt valet och chifferhashen, men aldrig slumptalet och aldrig en token.
 
 Nya tester:
 
 ```ts
-test('en väljare kan ändra sin röst, och koden ändras med den', async ({ page }) => {
-  /**
-   * Hela skyddet mot röstköp. Kan rösten inte ändras är en köpt röst köpt.
-   */
+test('en väljare kan ändra sin röst, och enheten visar den nya', async ({ page }) => {
+  // Hela skyddet mot röstköp. Kan rösten inte ändras är en köpt röst köpt.
   await identify(page, VOTERS.canVote)
-  const first = await voteFor(page, 'Socialdemokraterna')
-
-  await expect(page.getByText(/du har röstat/i)).toBeVisible()
+  await voteFor(page, 'Socialdemokraterna')
+  await expect(page.getByText(/din nuvarande röst/i)).toContainText('Socialdemokraterna')
   await expect(page.getByText(/kan ändra/i)).toBeVisible()
 
-  const second = await voteFor(page, 'Moderaterna')
-
-  expect(second).not.toBe(first)
-})
-
-test('sidan visar aldrig vad väljaren röstade på', async ({ page }) => {
-  // Efter läggningen finns bara chiffret. Visade sidan valet vore det ett
-  // kvitto som bevisar innehållet.
-  await identify(page, VOTERS.verifiesReceipt)
   await voteFor(page, 'Moderaterna')
-  await page.reload()
-
-  await expect(page.getByText(/du har röstat/i)).toBeVisible()
-  await expect(page.getByText('Moderaterna')).toHaveCount(0)
+  await expect(page.getByText(/din nuvarande röst/i)).toContainText('Moderaterna')
 })
 
-test('signaturen begärs av BankID, inte av sidan', async ({ page }) => {
-  // Sidan får inte konstruera något som liknar ett kuvert. Den startar en
-  // signering och pollar; allt som signeras byggs av servern.
-  const bodies: string[] = []
-  page.on('request', (request) => {
-    if (request.url().includes('/api/vote/encrypted')) bodies.push(request.postData() ?? '')
-  })
+test('en annan enhet ser att rösten finns, men inte vad den innehåller', async ({ browser }) => {
+  // Innehållet finns bara där rösten lades. Servern vet det inte.
+  const here = await browser.newPage()
+  await identify(here, VOTERS.verifiesReceipt)
+  await voteFor(here, 'Moderaterna')
 
-  await identify(page, VOTERS.doubleVote)
-  await voteFor(page, 'Centerpartiet')
+  const elsewhere = await (await browser.newContext()).newPage()
+  await identify(elsewhere, VOTERS.verifiesReceipt)
+  await expect(elsewhere.getByText(/du har en röst registrerad/i)).toBeVisible()
+  await expect(elsewhere.getByText('Moderaterna')).toHaveCount(0)
+})
 
-  for (const body of bodies) {
-    expect(body).not.toMatch(/signature|certificate|castSequence/)
-  }
+test('en röst ändrad från en annan enhet visas inte längre på den första', async ({ browser }) => {
+  const first = await browser.newPage()
+  await identify(first, VOTERS.doubleVote)
+  await voteFor(first, 'Centerpartiet')
+
+  const second = await (await browser.newContext()).newPage()
+  await identify(second, VOTERS.doubleVote)
+  await voteFor(second, 'Liberalerna')
+
+  await first.reload()
+  await expect(first.getByText(/ändrats från en annan enhet/i)).toBeVisible()
+  await expect(first.getByText('Centerpartiet')).toHaveCount(0)
+})
+
+test('ingen verifikationskod visas och inget slumptal sparas', async ({ page }) => {
+  await identify(page, VOTERS.canVote)
+  await voteFor(page, 'Socialdemokraterna')
+
+  // En 64-teckens hex på skärmen vore ett handtag en köpare kan anteckna.
+  await expect(page.locator('body')).not.toContainText(/[0-9a-f]{64}/)
+
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }))
+  expect(stored).not.toMatch(/random|slump|nonce|token/i)
 })
 ```
+
+Behåll testet `signaturen begärs av BankID, inte av sidan` ur den tidigare
+versionen oförändrat. Att den sparade uppgiften raderas när fasen lämnat `OPEN`
+prövas i ett enhetstest av lagringsmodulen; en e2e-stängning är för tung.
 
 - [ ] **Steg 2: Kör och se dem falla**
 
@@ -3740,6 +3920,16 @@ git commit -m "Röstsidan lägger och ändrar krypterade röster"
 
 Ta bort `src/app/api/vote/credential/route.ts`, lägg till `src/app/api/vote/encrypted/route.ts`,
 `src/app/api/admin/elections/close/route.ts`, `src/app/api/admin/elections/decrypt/route.ts`.
+
+**Posten `client-code-from-server` försvinner här**, eftersom dess markör gäller
+blindningen. Men problemet finns kvar i kuvertmodellen: klientkoden kommer från
+servern, och en manipulerad klient kan kryptera ett annat val än väljaren gjorde
+(spec 10, *klientintegriteten är fortfarande olöst*). Lägg därför in en
+efterföljande post med en markör i kuvertflödets klientkod i samma uppgift, så att
+arkitektursidan aldrig visar problemet som löst.
+
+**Om ingenting längre skriver till den gamla tabellen `vote`** efter uppgift 14,
+ta bort modellen och allt som läser den, inte bara kolumnerna ovan.
 
 **Kontrollera listan mot vad som redan står där.** `close/route.ts` lades in i
 uppgift 11 och `decrypt/route.ts` i uppgift 12, eftersom testet annars fallerade.
@@ -3904,6 +4094,10 @@ Rätta också det som är konkret fel i dag:
   omdöpningen, och den nya tabellen för krypterade röster heter `encrypted_vote`.
   Kör kommandona innan du skriver in dem — ett exempel som inte fungerar är
   värre än inget exempel.
+- **Allt ska följa spec 3.1.** Ingen verifikationskod; väljaren ser sin nuvarande
+  röst på enheten hon röstade från fram till stängningen; efter stängningen
+  publiceras bara summorna med bevis. Det gäller README, ARCHITECTURE.md (särskilt
+  avsnitt 6 om verifierbarhet) och VERIFIABILITY.md i sin helhet.
 - **Behåll avsnittet om testdatabaserna** som lades in i uppgift 11a (att
   integrationstesterna kör mot `voters_test`/`votes_test`, att vakten frågar
   servern vilken databas den är ansluten till, och när testerna hoppas över
