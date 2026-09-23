@@ -3464,6 +3464,21 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
 5. **`already_closed` betyder fas `STRIPPED` eller senare.** Från `CLOSED` eller
    `VALIDATED` fortsätter en omkörning, eftersom administratören utreder en
    avvikelse och kör om.
+6. **Markeringen "har röstat", utan tidsstämpel.** Spec 3.1 punkt 6 säger att
+   väljaren efter stängningen ser att hon röstat, men i kuvertmodellen skriver
+   ingenting en sådan markering. `castEncryptedBallot` skriver bara `pending_vote`,
+   stängningen raderar raden, och `voter_ballot_status` skrivs bara av det gamla
+   flödet. Upptäckt av implementeraren av 11c.
+   Skriv markeringen per väljare och valsedel **inuti skalningens transaktion**,
+   ur de rader som raderas och före raderingen. Den ska inte ha någon tidsstämpel,
+   så att den säger att väljaren röstade men inte när. Den kan då aldrig säga
+   något annat än att väljarens kuvert räknades. Antalet markeringar per valsedel
+   ska vara lika med antalet kuvert som flyttades; kontrollera det i transaktionen.
+   Återanvänd `VoterBallotStatus` om dess betydelse passar, annars en ny modell. Är
+   det en schemaändring, samla den med 11e:s, så att dev-servern bara behöver
+   stoppas en gång. Rätta samtidigt schemakommentaren i
+   `prisma/voters/schema.prisma` som fortfarande kallar identitetshashen en HMAC.
+   Uppgift 12b:s kontroll att antalet stämmer ska jämföra mot markeringarna.
 
 **De invarianter som uppgift 11:s fem granskningsrundor slog fast ska hålla
 efteråt, och granskaren ska pröva dem med prober mot testdatabasen:**
@@ -3749,7 +3764,13 @@ bevis**, och väljaren ser *att* hon röstat, inte vad.
 ingenting per röst. Att ett fält läcker på ett ställe räcker för att bygga
 köparens verktyg.
 
-**Under röstningen publiceras bara valdeltagandet.** `/api/observer/election`
+**Under röstningen publiceras bara valdeltagandet, och ingen ser löpande
+resultat, inte heller administratören.** Adminvyn hämtar samma siffror ur `vote`
+under `OPEN` via `src/app/api/admin/stats/route.ts`. Arkitektursidans markör
+`oldFlowLiveResults` ligger i den rutten, och testet blir rött om bara
+observatörsrutten rättas. Spec 6.2 gäller
+alla: den som kan titta på ett löpande resultat kan också påverka när det slutliga
+kommer. `/api/observer/election`
 lämnar i dag ut antal per parti ur den gamla tabellen `vote` medan röstningen
 pågår, till vem som helst. Det är ett löpande resultat, och spec 6.2 förbjuder
 det. Rutten ska under `OPEN` bara visa antalet som röstat, och resultat först när

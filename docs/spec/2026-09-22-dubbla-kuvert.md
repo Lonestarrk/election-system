@@ -114,7 +114,9 @@ Konkret:
    hashar publiceras aldrig. Det finns alltså ingenting publicerat som något väljaren
    eller en köpare håller kan matchas mot.
 6. **Efter stängningen ser väljaren att hon röstat.** Det står i röstlängden och kräver
-   ingen koppling till rösten.
+   ingen koppling till rösten. Markeringen skrivs i skalningens transaktion, ur de
+   kuvert som raderas, och har ingen tidsstämpel. Den säger att väljaren röstade,
+   inte när.
 
 **Priset är universell verifierbarhet röst för röst.** Allmänheten kan kontrollera att
 resultatet är en korrekt dekryptering av den publicerade summan, att k av n
