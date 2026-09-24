@@ -11,10 +11,13 @@ import { limitationHref, listItemStyle } from './shared'
  * var gränsen går. Den viktigaste luckan står först: den som kopierade urnan
  * medan namnen fanns kvar har kopplingen.
  *
- * Spec 4.6 kräver att det sägs rakt ut att underskriften i dag inte skyddar
- * mot den som driver systemet, och spec 10 räknar upp insidern som både kan
- * läsa databasen och kommer åt en enhet. Båda står här, inte bara på Tekniska
- * detaljer.
+ * Spec 4.6 kräver att det sägs rakt ut vad underskriften inte skyddar mot.
+ * Sedan uppgift 14f prövas den mot BankID:s rot, så den som bara kan skriva i
+ * databasen kan inte längre förfalska en röst. Kvar är att den som driver
+ * systemet kan ta bort ett äkta kuvert eller lägga tillbaka ett tidigare, och
+ * att attrappen i demon utfärdar certifikaten själv. Spec 10 räknar dessutom
+ * upp insidern som både kan läsa databasen och kommer åt en enhet. Allt det
+ * står här, inte bara på Tekniska detaljer.
  *
  * Där en punkt motsvarar en post i listan över kända begränsningar tar sidan
  * emot posten och länkar dit. Tas posten bort kastar uppslaget i page.tsx, och
@@ -24,15 +27,18 @@ import { limitationHref, listItemStyle } from './shared'
 export function Weaknesses({
   copies,
   bankIdOrder,
-  chain,
+  removal,
+  demoIssuer,
   dealer,
 }: {
   /** link-exists-during-voting */
   copies: KnownLimitation
   /** bankid-order-carries-link */
   bankIdOrder: KnownLimitation
-  /** bankid-chain-not-validated */
-  chain: KnownLimitation
+  /** operator-can-remove-or-restore-envelope */
+  removal: KnownLimitation
+  /** mock-issues-certificates-in-demo */
+  demoIssuer: KnownLimitation
   /** trusted-dealer */
   dealer: KnownLimitation
 }) {
@@ -52,11 +58,20 @@ export function Weaknesses({
           <Link href={limitationHref(bankIdOrder)}>Mer om BankID:s kopia</Link>
         </li>
         <li style={listItemStyle}>
-          <strong>Underskriften skyddar i dag inte mot den som driver systemet.</strong> Den stoppar
-          den som försöker skicka in ett kuvert i någon annans namn. Men den prövas inte mot BankID,
-          så den som kan skriva direkt i databasen kan lägga in röster som ser ut att vara
-          underskrivna av riktiga väljare, och kontrollen före stängningen godkänner dem.{' '}
-          <Link href={limitationHref(chain)}>Mer om underskriften</Link>
+          <strong>Den som driver systemet kan ta bort din röst eller lägga tillbaka en tidigare.</strong>{' '}
+          Varje underskrift prövas mot BankID:s rotcertifikat, så den som bara kan skriva direkt i
+          databasen kan inte längre lägga in röster för någon som inte skrivit under, och den som
+          granskar kontrollen före stängningen kan pröva varje underskrift själv. Men en äkta röst
+          kan tas bort, och en tidigare röst som du verkligen skrev under kan läggas tillbaka i
+          stället för din senaste. Enheten du röstade från märker det före stängningen: den säger då
+          att rösten har ändrats, eller att ingen röst finns.{' '}
+          <Link href={limitationHref(removal)}>Mer om underskriften</Link>
+        </li>
+        <li style={listItemStyle}>
+          <strong>I demon skriver systemet själv ut BankID-intygen.</strong> Här finns inget riktigt
+          BankID, så demon utfärdar själv de intyg som underskrifterna prövas mot, och den som driver
+          demon kan därför fortfarande förfalska en underskrift. Skyddet ovan gäller med riktigt
+          BankID. <Link href={limitationHref(demoIssuer)}>Mer om demon</Link>
         </li>
         <li style={listItemStyle}>
           <strong>Låset görs i ordning av den som driver systemet.</strong> Under ett ögonblick finns

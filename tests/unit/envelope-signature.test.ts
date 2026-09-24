@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { MockBankIdService, selectDemoIdentity } from '@/modules/eligibility/bankid/MockBankIdService'
 import {
-  certificateBelongsTo,
+  parseCertificateChain,
+  signedAt,
+  verifyCertificateChain,
+} from '@/modules/eligibility/bankid/certificate-chain'
+import {
   envelopePayload,
   parseEnvelopePayload,
-  personalNumberFromCertificate,
-  publicKeyFromCertificate,
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
+import { MOCK_ROOT } from './bankid/forged-certificates'
 
 const PAYLOAD = {
   electionId: 'val-1',
@@ -35,61 +38,122 @@ async function signAs(personalNumber: string, payload = PAYLOAD) {
   return result.completionData
 }
 
+/** Lövets nyckel, ur en kedja som prövats mot attrappens rot. */
+function signingKeyOf(certificateChain: readonly string[]) {
+  const chain = parseCertificateChain(certificateChain)
+  if (!chain) throw new Error('kedjan gick inte att läsa')
+
+  const verdict = verifyCertificateChain(chain, { roots: [MOCK_ROOT], signedDuring: signedAt(new Date()) })
+  if (!verdict.ok) throw new Error(`kedjan underkändes: ${verdict.reason}`)
+  return verdict
+}
+
+describe('attrappen är en certifikatutfärdare', () => {
+  it('ger varje underskrift en kedja till attrappens rot, med väljarens personnummer', async () => {
+    const data = await signAs('199001011234')
+
+    expect(data.certificateChain).toHaveLength(2)
+    expect(signingKeyOf(data.certificateChain).personalNumber).toBe('199001011234')
+  })
+
+  it('skriver väljarens namn i certifikatet, som BankID gör', async () => {
+    /**
+     * Namnet och personnumret i klartext är skälet till att kedjan lagras
+     * krypterad (src/modules/eligibility/sealed-chain.ts). Attrappen ska bära
+     * dem som ett riktigt BankID-certifikat gör, annars prövas inte det skälet.
+     */
+    const data = await signAs('199001011234')
+    const [leaf] = parseCertificateChain(data.certificateChain)!
+
+    expect(leaf!.toLegacyObject().subject).toMatchObject({
+      C: 'SE',
+      CN: 'Anna Lindqvist',
+      GN: 'Anna',
+      SN: 'Lindqvist',
+      serialNumber: '199001011234',
+    })
+  })
+
+  it('certifikatets giltighetstid säger vilken dag, men inte när, väljaren skrev under', async () => {
+    /**
+     * Attrappen utfärdar ett certifikat per underskrift, och kedjan lagras i
+     * röstlängden, där all tidsdata är avrundad till dygn. En giltighetstid från
+     * sekunden för utfärdandet hade varit underskriftens tidpunkt.
+     */
+    const data = await signAs('199001011234')
+    const [leaf] = parseCertificateChain(data.certificateChain)!
+    const validFrom = leaf!.validFromDate
+
+    expect([validFrom.getUTCHours(), validFrom.getUTCMinutes(), validFrom.getUTCSeconds()]).toEqual([0, 0, 0])
+    expect(Date.now() - validFrom.getTime()).toBeLessThan(86_400_000)
+  })
+
+  it('en legitimering bär ingen kedja, eftersom ingenting skrivs under', async () => {
+    const service = new MockBankIdService()
+    const order = await service.auth({ endUserIp: '127.0.0.1' })
+    selectDemoIdentity(order.orderRef, '199001011234')
+
+    let result = await service.collect(order.orderRef)
+    while (result.status === 'pending') result = await service.collect(order.orderRef)
+    if (result.status !== 'complete') throw new Error('legitimeringen blev inte klar')
+
+    expect(result.completionData.certificateChain).toEqual([])
+    expect(result.completionData.signature).toBe('')
+  })
+})
+
 /**
- * Uppdelningen nedan i två describe-block (`verifySignedPayload` och
- * `certificateBelongsTo`) ersätter den tidigare `verifyEnvelopeSignature`,
- * som slog ihop dem till en enda funktion. Fixrunda 1 av uppgift 9:s
- * granskning fångade att ett anropsställe hade blivit tautologiskt —
- * `certificateBelongsTo(certificate, personalNumberFromCertificate(certificate))`
- * är alltid sant — och att den kombinerade funktionens egen dokumentation då
- * gav en falsk trygghet om att "rätt person" verkligen kontrollerats. Genom
- * att dela upp dem kan den kryptografiska kontrollen (håller signaturen ihop
- * med certifikatet?) aldrig av misstag ersätta identitetskontrollen (är det
- * RÄTT certifikat, jämfört med något utifrån?) — se
- * `pending-vote.service.ts` för hur de två används tillsammans.
+ * `verifySignedPayload` prövar bara att signaturen håller ihop med nyckeln,
+ * för exakt det innehåll som påstås signerat. Att nyckeln är BankID:s prövas
+ * av kedjan, och att den tillhör rätt väljare av identitetshashen, var för sig.
  */
 describe('verifySignedPayload — den rena kryptografiska kontrollen', () => {
   it('en ärlig signatur håller mot sitt eget innehåll', async () => {
     const data = await signAs('199001011234')
+    const { signingKey } = signingKeyOf(data.certificateChain)
 
-    expect(verifySignedPayload(data.signature, data.certificate, envelopePayload(PAYLOAD))).toBe(
-      true,
-    )
+    expect(verifySignedPayload(data.signature, signingKey, envelopePayload(PAYLOAD))).toBe(true)
   })
 
   it('en signatur håller kryptografiskt även när certifikatet tillhör fel person', async () => {
     /**
      * Poängen med uppdelningen: den här funktionen kontrollerar bara att
-     * signaturen och innehållet hör ihop, aldrig vem. Kims signatur över
-     * exakt samma innehåll är fullt giltig kryptografiskt — vem certifikatet
-     * tillhör är `certificateBelongsTo`s jobb, prövat i egen describe nedan.
+     * signaturen och innehållet hör ihop, aldrig vem. Kims signatur över exakt
+     * samma innehåll är fullt giltig kryptografiskt. Vem certifikatet tillhör
+     * avgör identitetshashen, i pending-vote.service.ts och i valideringen.
      */
     const data = await signAs('198505152345')
+    const { signingKey } = signingKeyOf(data.certificateChain)
 
-    expect(verifySignedPayload(data.signature, data.certificate, envelopePayload(PAYLOAD))).toBe(
-      true,
-    )
+    expect(verifySignedPayload(data.signature, signingKey, envelopePayload(PAYLOAD))).toBe(true)
+  })
+
+  it('en signatur håller inte mot en annan väljares nyckel', async () => {
+    const anna = await signAs('199001011234')
+    const kim = await signAs('198505152345')
+
+    expect(
+      verifySignedPayload(anna.signature, signingKeyOf(kim.certificateChain).signingKey, envelopePayload(PAYLOAD)),
+    ).toBe(false)
   })
 
   it('en signatur för ett annat innehåll avvisas', async () => {
     const data = await signAs('199001011234')
+    const { signingKey } = signingKeyOf(data.certificateChain)
 
     expect(
-      verifySignedPayload(
-        data.signature,
-        data.certificate,
-        envelopePayload({ ...PAYLOAD, ballotId: 'vs-9' }),
-      ),
+      verifySignedPayload(data.signature, signingKey, envelopePayload({ ...PAYLOAD, ballotId: 'vs-9' })),
     ).toBe(false)
   })
 
   it('en signatur för ett annat chiffer avvisas', async () => {
     const data = await signAs('199001011234')
+    const { signingKey } = signingKeyOf(data.certificateChain)
 
     expect(
       verifySignedPayload(
         data.signature,
-        data.certificate,
+        signingKey,
         envelopePayload({ ...PAYLOAD, ciphertextHash: 'b'.repeat(64) }),
       ),
     ).toBe(false)
@@ -104,56 +168,18 @@ describe('verifySignedPayload — den rena kryptografiska kontrollen', () => {
      * Räknaren måste ligga INUTI det signerade — annars byts den bara ut.
      */
     const data = await signAs('199001011234', { ...PAYLOAD, castSequence: 1 })
+    const { signingKey } = signingKeyOf(data.certificateChain)
 
     expect(
-      verifySignedPayload(
-        data.signature,
-        data.certificate,
-        envelopePayload({ ...PAYLOAD, castSequence: 2 }),
-      ),
+      verifySignedPayload(data.signature, signingKey, envelopePayload({ ...PAYLOAD, castSequence: 2 })),
     ).toBe(false)
   })
 
   it('en trasig signatur avvisas utan att kasta', async () => {
     const data = await signAs('199001011234')
+    const { signingKey } = signingKeyOf(data.certificateChain)
 
-    expect(verifySignedPayload('inte-base64!!', data.certificate, envelopePayload(PAYLOAD))).toBe(
-      false,
-    )
-  })
-})
-
-describe('certificateBelongsTo — bara ett påstående, ingen kryptografi', () => {
-  it('stämmer när personnumret matchar', async () => {
-    const data = await signAs('199001011234')
-
-    expect(certificateBelongsTo(data.certificate, '199001011234')).toBe(true)
-  })
-
-  it('stämmer inte för fel personnummer', async () => {
-    /**
-     * HÅLET SOM STÄNGS.
-     *
-     * Utan den här kontrollen är det SERVERN som påstår att Anna lade
-     * rösten. Vem som helst med skrivrättighet till röstlängden kan påstå
-     * det om vilken väljare som helst som ännu inte röstat, och den
-     * relationella kontrollen i uppgift 10 fångar det inte — väljaren är ju
-     * verklig.
-     */
-    const data = await signAs('198505152345')
-
-    expect(certificateBelongsTo(data.certificate, '199001011234')).toBe(false)
-  })
-
-  it('jämförelsen mot certifikatet självt vore alltid sann — precis felet som stängdes', async () => {
-    // Vaktar mot att det tautologiska anropet från fixrunda 1, fynd 2
-    // (jämföra certifikatet mot sitt eget påstående) av misstag återinförs
-    // någonstans och tas för en riktig kontroll.
-    const data = await signAs('198505152345')
-
-    expect(certificateBelongsTo(data.certificate, personalNumberFromCertificate(data.certificate)!)).toBe(
-      true,
-    )
+    expect(verifySignedPayload('inte-base64!!', signingKey, envelopePayload(PAYLOAD))).toBe(false)
   })
 })
 
@@ -195,18 +221,4 @@ describe('BankID:s eget signerade innehåll', () => {
 
     expect(data.signedData).toBe(envelopePayload(PAYLOAD))
   })
-})
-
-it('nyckel och personnummer läses ur samma certifikat utan att störa varandra', async () => {
-  /**
-   * Uppgift 9 lagrar nyckeln (via `publicKeyFromCertificate`) och en HASH av
-   * personnumret `personalNumberFromCertificate` läser — aldrig
-   * certifikatet i sin helhet. Vaktar att de två funktionerna, som tolkar
-   * samma radprefix var för sig, fortsätter vara konsekventa med varandra.
-   */
-  const data = await signAs('199001011234')
-
-  expect(personalNumberFromCertificate(data.certificate)).toBe('199001011234')
-  expect(publicKeyFromCertificate(data.certificate)).toMatch(/^-----BEGIN PUBLIC KEY-----/)
-  expect(publicKeyFromCertificate(data.certificate)).not.toContain('personnummer:')
 })

@@ -4,12 +4,14 @@ import { VerificationAborted, verifyEncryptedBallotOnServer } from '@/lib/crypto
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
 import {
-  parseEnvelopePayload,
-  personalNumberFromCertificate,
-  publicKeyFromCertificate,
-  verifySignedPayload,
-} from './bankid/envelope-signature'
+  parseCertificateChain,
+  signedAt,
+  verifyCertificateChain,
+} from './bankid/certificate-chain'
+import { parseEnvelopePayload, verifySignedPayload } from './bankid/envelope-signature'
+import { trustedBankIdRoots } from './bankid/trusted-roots'
 import { votersDb } from './db'
+import { sealCertificateChain } from './sealed-chain'
 
 /**
  * DET YTTRE KUVERTET.
@@ -25,7 +27,12 @@ import { votersDb } from './db'
 
 export type SignedEnvelope = {
   signature: string
-  certificate: string
+
+  /**
+   * Certifikatkedjan ur BankID:s svar, lövet först, i PEM. Se
+   * `completionData.certificateChain` i `IBankIdService.ts`.
+   */
+  certificateChain: readonly string[]
 
   /**
    * Det faktiskt signerade innehållet, ordagrant — BankID:s eget
@@ -196,12 +203,33 @@ export async function castEncryptedBallot(
   }
 
   /**
+   * KEDJAN PRÖVAS MOT BANKID:S ROT INNAN NÅGOT ANNAT I SIGNATUREN (uppgift 14f).
+   *
+   * Signaturen är bara värd vad nyckeln bakom den är värd, och nyckeln är
+   * bara värd något om BankID står för den. Kedjan ska därför gå från lövet
+   * genom en mellannivå med CA-rätt till en betrodd rot, lövet ska få användas
+   * till underskrifter och ha gällt nu, när BankID just svarade. Först då
+   * lämnas lövets nyckel ut, och den är den enda signaturen prövas mot. Se
+   * `verifyCertificateChain` för varje kontroll.
+   *
+   * Rötterna läses ur konfigurationen. Går de inte att fastställa kastar
+   * `trustedBankIdRoots`, och rösten läggs inte, i stället för att prövas mot
+   * något annat än det som konfigurerats.
+   */
+  const chain = parseCertificateChain(envelope.certificateChain)
+  const certificate = chain
+    ? verifyCertificateChain(chain, { roots: trustedBankIdRoots(), signedDuring: signedAt(new Date()) })
+    : null
+
+  if (!chain || !certificate?.ok) return { status: 'invalid_signature' }
+
+  /**
    * SIGNATUREN VERIFIERAS MOT DET FAKTISKT SIGNERADE INNEHÅLLET.
    *
    * Inte mot en nyttolast som byggs om här — se `SignedEnvelope.signedData`
    * och `verifySignedPayload` för hela resonemanget.
    */
-  if (!verifySignedPayload(envelope.signature, envelope.certificate, envelope.signedData)) {
+  if (!verifySignedPayload(envelope.signature, certificate.signingKey, envelope.signedData)) {
     return { status: 'invalid_signature' }
   }
 
@@ -209,24 +237,18 @@ export async function castEncryptedBallot(
    * TVÅ SKILDA KONTROLLER, OCH DE FÅR INTE SLÅS IHOP (fixrunda 1 av uppgift
    * 9:s granskning, fynd 2).
    *
-   * 1. Ovan: är signaturen giltig för exakt det signerade innehållet? Rent
-   *    kryptografiskt, ingen identitet inblandad — `verifySignedPayload` tar
-   *    inte ens emot ett förväntat personnummer.
-   * 2. Nedan: tillhör certifikatet SAMMA person som väljarraden? Det avgörs
-   *    genom att HASHA personnumret certifikatet påstår och jämföra mot
-   *    röstlängdens identitetshash — aldrig genom att jämföra certifikatet
-   *    mot sig självt (`certificateBelongsTo(certificate,
-   *    personalNumberFromCertificate(certificate))` vore alltid sant, ett
-   *    no-op maskerat som en kontroll — se `certificateBelongsTo`s JSDoc).
+   * 1. Ovan: är signaturen giltig för exakt det signerade innehållet, med en
+   *    nyckel som BankID står för? Kryptografiskt, ingen väljare inblandad.
+   * 2. Nedan: tillhör lövet SAMMA person som väljarraden? Det avgörs genom att
+   *    HASHA personnumret i lövet och jämföra med röstlängdens identitetshash.
+   *    Personnumret är nu ett påstående som kedjan styrker, inte något som
+   *    certifikatet säger om sig självt.
    *
    * Granskningen av uppgift 8 fångade dessutom att ett tidigare utkast
    * skickade `voter.externalIdentityHash` direkt som förväntat personnummer
    * till signaturverifieringen, som jämför mot KLARTEXTSIFFROR — en hash
    * hade aldrig matchat, och varje giltig röst hade avvisats.
    */
-  const assertedPersonalNumber = personalNumberFromCertificate(envelope.certificate)
-  if (assertedPersonalNumber === null) return { status: 'invalid_signature' }
-
   const voter = await votersDb.voterStatus.findUnique({
     where: { id: voterStatusId },
     select: { externalIdentityHash: true },
@@ -243,8 +265,10 @@ export async function castEncryptedBallot(
    * och ett billigt sätt att belasta antagningskön utan en enda giltig
    * signatur.
    */
-  const signerIsTheVoter =
-    (await hashPersonalNumber(assertedPersonalNumber)) === voter.externalIdentityHash
+  const signerIsTheVoter = safeEqual(
+    await hashPersonalNumber(certificate.personalNumber),
+    voter.externalIdentityHash,
+  )
 
   if (!signerIsTheVoter) {
     return { status: 'invalid_signature' }
@@ -261,6 +285,17 @@ export async function castEncryptedBallot(
    */
   if (signal?.aborted) throw new VerificationAborted()
 
+  /**
+   * KEDJAN LAGRAS, KRYPTERAD OCH BUNDEN TILL RADEN.
+   *
+   * Valideringen före stängningen prövar kedjan en gång till, och det är den
+   * prövningen som stoppar den som skriver direkt i databasen, eftersom den
+   * aldrig passerar läggningen. Nyckeln för sig räckte inte: den kunde bytas
+   * mot en egen. Kedjan bär personnummer och namn i klartext och krypteras
+   * därför, se `sealed-chain.ts`.
+   */
+  const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })
+
   await votersDb.pendingVote.upsert({
     where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
     update: {
@@ -269,21 +304,7 @@ export async function castEncryptedBallot(
       ciphertextHash: ballot.ciphertextHash,
       castSequence: signedPayload.castSequence,
       bankIdSignature: envelope.signature,
-      /**
-       * DEN PUBLIKA NYCKELN, INTE CERTIFIKATET.
-       *
-       * Certifikatet bär personnumret i klartext — både i attrappens format
-       * och i riktiga svenska BankID-certifikat, där det ligger i subject.
-       * Att lagra det i råform skulle sätta ett klartextpersonnummer bredvid
-       * identitetshashen i röstlängden, alltså upphäva hela skälet att
-       * hasha.
-       *
-       * Det som behövs senare är (a) nyckeln, för att kunna verifiera
-       * signaturen vid en framtida validering, och (b) att underskrivaren var rätt
-       * person — och det andra är redan avgjort av kontrollen ovan och bärs
-       * av radens koppling till voterStatusId.
-       */
-      bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
+      bankIdCertificateChain,
       updatedAt: truncateToDay(new Date()),
     },
     create: {
@@ -294,7 +315,7 @@ export async function castEncryptedBallot(
       ciphertextHash: ballot.ciphertextHash,
       castSequence: signedPayload.castSequence,
       bankIdSignature: envelope.signature,
-      bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
+      bankIdCertificateChain,
       updatedAt: truncateToDay(new Date()),
     },
   })

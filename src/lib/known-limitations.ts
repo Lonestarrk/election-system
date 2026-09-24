@@ -50,7 +50,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   /**
    * KUVERTMODELLENS BEGRÄNSNINGAR.
    *
-   * De fem första posterna gäller modellen med dubbla kuvert och är sanna i
+   * De nio första posterna gäller modellen med dubbla kuvert och är sanna i
    * koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
    * med röstintyg och blinda signaturer, som ingen sida lägger röster i sedan
    * uppgift 14 men vars rutter och tabeller finns kvar, eller gäller oavsett
@@ -106,29 +106,117 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       contains: 'splitSecret(keys.privateKey',
     },
   },
+  /**
+   * UPPGIFT 14f ERSATTE POSTEN "BankID-certifikatkedjan valideras inte".
+   *
+   * Valideringen prövar nu varje kedja mot BankID:s rot och varje löv mot
+   * väljarens identitet, så den som bara kan skriva i databasen kan inte längre
+   * lägga in en röst för någon som inte skrivit under. De fyra första posterna
+   * nedan är det som kedjan inte ger, och den femte är priset för att den
+   * lagras.
+   */
   {
-    id: 'bankid-chain-not-validated',
-    title: 'BankID-certifikatkedjan valideras inte',
+    id: 'operator-can-remove-or-restore-envelope',
+    title: 'Den som driver systemet kan ta bort ett kuvert eller lägga tillbaka en tidigare röst',
     why:
-      'Signaturen på det yttre kuvertet prövas mot den publika nyckel som står i certifikatet, ' +
-      'men certifikatet prövas aldrig mot BankID:s CA. Den som har skrivrättighet i databasen ' +
-      'kan därför skapa ett eget nyckelpar, signera ett välformat kuvert och lägga nyckel, ' +
-      'signatur och en verklig väljare i en helt självkonsekvent rad, som valideringen före ' +
-      'stängningen godkänner. Signaturen skyddar alltså mot en klient som skickar in ett eget ' +
-      'kuvert, men inte mot den som driver systemet. Att pröva kedjan när rösten läggs räcker ' +
-      'inte, eftersom den som skriver direkt i databasen aldrig passerar läggningen; det är ' +
-      'valideringen före stängningen som måste pröva ett certifikat mot BankID:s CA. ' +
-      'Förfalskningen finns som körbart test i tests/integration/validate-before-close.test.ts.',
-    // Valideringen före stängningen prövar signaturen mot nyckeln som raden
-    // själv bär. Så länge den gör det kan den som skriver i databasen lägga in
-    // ett eget nyckelpar tillsammans med en signatur som håller, och det är
-    // hela luckan. När raden i stället bär något som BankID:s CA står för, och
-    // valideringen prövar det, ändras just det här anropet. En kontroll som
-    // bara läggs till vid läggningen lämnar anropet orört, och då är det rätt
-    // att posten står kvar: förfalskningen går ändå igenom.
+      'Varje underskrift prövas mot BankID:s rot och mot väljarens identitet, så den som kan skriva ' +
+      'i databasen kan inte längre förfalska en ny. Men en äkta underskrift går att ta bort, och ' +
+      'en väljares tidigare äkta kuvert går att lägga tillbaka i stället för hennes senaste. ' +
+      'Räknaren som visar vilket kuvert som är det senaste lagras i samma databas, och den som ' +
+      'lägger tillbaka det gamla kuvertet lägger tillbaka dess räknare, så valideringen före ' +
+      'stängningen ser ingenting fel. Väljaren kan upptäcka båda före stängningen på enheten hon ' +
+      'röstade från, där jämförelsen svarar att rösten ändrats eller att ingen röst finns. Efter ' +
+      'stängningen ska markeringen "har röstat" visa att hon röstat, men den är inte byggd än ' +
+      '(uppgift 11d).',
+    stillTrueIf: [
+      // Räknaren som valideringen jämför med är radens egen. Kom den från
+      // något som den som driver systemet inte kan skriva om, till exempel en
+      // publicerad logg, ändrades raden.
+      {
+        file: 'src/orchestration/validate-before-close.usecase.ts',
+        contains: 'castSequence: vote.castSequence,',
+      },
+      { file: 'prisma/voters/schema.prisma', contains: 'castSequence Int @map("cast_sequence")' },
+    ],
+  },
+  {
+    id: 'no-revocation-check',
+    title: 'Ingen spärrkontroll av BankID-certifikaten',
+    why:
+      'Kedjan prövas mot BankID:s rot och mot certifikatens giltighetstid, men ingen frågar om ' +
+      'certifikatet har spärrats. Ett BankID som spärrats, till exempel för att telefonen stulits, ' +
+      'godkänns alltså så länge certifikatet gäller i tid. Riktig BankID skickar med ett OCSP-svar ' +
+      'som visar certifikatets status vid underskriften, och det är det som ska prövas, både när ' +
+      'rösten läggs och i valideringen före stängningen. Attrappen har inget sådant svar, och ' +
+      'kedjeprövningen tar inte emot något.',
+    // Prövningen tar emot rötterna och tidpunkten för underskriften, och
+    // ingenting annat. En spärrkontroll behöver ett OCSP-svar in, och då
+    // ändras just den här raden.
     stillTrueIf: {
-      file: 'src/orchestration/validate-before-close.usecase.ts',
-      contains: 'verifySignedPayload(vote.bankIdSignature, vote.bankIdPublicKey',
+      file: 'src/modules/eligibility/bankid/certificate-chain.ts',
+      contains: 'options: { roots: readonly X509Certificate[]; signedDuring: SigningWindow },',
+    },
+  },
+  {
+    id: 'mock-issues-certificates-in-demo',
+    title: 'I demoläget utfärdar attrappen certifikaten själv',
+    why:
+      'Attrappen är sin egen certifikatutfärdare, och mellannivåns privata nyckel är incheckad i ' +
+      'koden som testfixtur. Den som driver en demo kan därför utfärda ett giltigt certifikat för ' +
+      'vilket personnummer som helst och förfalska en underskrift som valideringen godkänner. ' +
+      'Skyddet gäller med riktig BankID, där nyckeln finns hos BankID och inte hos den som driver ' +
+      'systemet. Testerna visar egenskapen mot attrappens inbyggda rot, vars privata nyckel ' +
+      'kastades när den skapats: en kedja till en annan rot, ett certifikat för fel väljare, ett ' +
+      'utgånget certifikat och ett löv med CA-rätt underkänns, var och ett av sin egen kontroll. ' +
+      'En mellannivå utan CA-rätt prövas under en egen rot som testet litar på, eftersom ingen ' +
+      'längre kan utfärda en mellannivå under attrappens.',
+    stillTrueIf: [
+      // Attrappen utfärdar med den incheckade nyckeln ...
+      {
+        file: 'src/modules/eligibility/bankid/MockBankIdService.ts',
+        contains: "from './mock-ca/issuing-ca-test-key'",
+      },
+      // ... och i demoläget är attrappens rot den som kedjan prövas mot.
+      {
+        file: 'src/modules/eligibility/bankid/trusted-roots.ts',
+        contains: 'if (isDemoMode()) return [mockBankIdRoot()]',
+      },
+    ],
+  },
+  {
+    id: 'bankid-xmldsig-adapter-missing',
+    title: 'Riktig BankID kräver en adapter för XML-signaturen',
+    why:
+      'BankID v6 returnerar underskriften som en XML-signatur, XMLDSig, med certifikatkedjan ' +
+      'inbäddad. Kedjeprövningen är oberoende av formatet: den tar certifikaten och det signerade ' +
+      'innehållet som de är. Men att läsa ut kedjan, signaturvärdet och den signerade texten ur ' +
+      'XML-signaturen, och att pröva XML-signaturen själv, är inte byggt och kan inte provas utan ' +
+      'BankID:s testmiljö. Tills adaptern finns är attrappen den enda implementationen, och ingen ' +
+      'del av systemet har prövats mot ett riktigt BankID-svar.',
+    // Attrappen är den enda implementationen av gränssnittet.
+    stillTrueIf: {
+      file: 'src/modules/eligibility/bankid/index.ts',
+      contains: 'export const bankIdService: IBankIdService = new MockBankIdService()',
+    },
+  },
+  {
+    id: 'pepper-holder-reads-voter-names',
+    title: 'Den som har pepparn kan läsa namn och personnummer för varje liggande kuvert',
+    why:
+      'Varje liggande kuvert bär väljarens BankID-certifikat, med personnummer och namn i klartext, ' +
+      'krypterat med en nyckel som härleds ur IDENTITY_PEPPER. Nyckeln måste finnas hos servern, ' +
+      'eftersom valideringen före stängningen öppnar varje kedja. En databasdump utan pepparn ' +
+      'avslöjar därför ingenting nytt, men den som har både databasen och pepparn öppnar varje ' +
+      'kedja och får namn och personnummer för alla som har röstat och ännu inte fått sitt kuvert ' +
+      'skalat, utan en enda hashning. Det är mer än röstlängden ger i dag: identitetshashen låter ' +
+      'den som har pepparn pröva ett personnummer i taget, och namnen finns ingen annanstans i ' +
+      'databasen. Pepparn ligger i samma miljö som applikationen, så den som tagit sig in i ' +
+      'servern har ofta båda. Kedjan raderas med raden vid skalningen.',
+    // Kedjans nyckel härleds ur pepparn. Kom den i stället från något som
+    // servern inte bär, till exempel förtroendemännens andelar, ändrades raden.
+    stillTrueIf: {
+      file: 'src/modules/eligibility/sealed-chain.ts',
+      contains: "hkdfSync('sha256', env.identityPepper,",
     },
   },
   {

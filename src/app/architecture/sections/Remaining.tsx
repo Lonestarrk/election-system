@@ -9,7 +9,9 @@ import { limitationHref, listItemStyle } from './shared'
  * Varje punkt bär markörer och stryks när det den beskriver byggs, så listan
  * kan inte påstå att något återstår som redan finns. Därtill de kända
  * begränsningar i kuvertmodellen som specen redan anger åtgärden för: BankID-
- * ordern (spec 10) och certifikatkedjan (spec 4.6), med länk till listan.
+ * ordern, spärrkontrollen och adaptern för XML-signaturen (spec 4.6 och 10),
+ * med länk till listan. Certifikatkedjan stod här fram till uppgift 14f, som
+ * byggde prövningen.
  */
 export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
   return (
@@ -23,8 +25,8 @@ export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
         ))}
       </ul>
       <p className="muted small">
-        Dessutom två kända begränsningar i kuvertmodellen som specen redan anger åtgärden för. Båda
-        står i listan på Tekniska detaljer:
+        Dessutom kända begränsningar i kuvertmodellen som specen redan anger åtgärden för. De står
+        i listan på Tekniska detaljer:
       </p>
       <ul className="small" style={{ paddingLeft: '1.25rem', marginBottom: 0 }}>
         {fixable.map((entry) => (

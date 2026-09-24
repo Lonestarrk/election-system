@@ -22,6 +22,17 @@ import {
   type CastOutcome,
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
+import { openCertificateChain } from '@/modules/eligibility/sealed-chain'
+import {
+  lookalikeHierarchy,
+  MOCK_INTERMEDIATE,
+  MOCK_ROOT,
+  pemChain,
+  rsaKeys,
+  signPayload,
+  voterLeaf,
+  type KeyPair,
+} from '../unit/bankid/forged-certificates'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
 /**
@@ -190,7 +201,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
 
     return {
       signature: result.completionData.signature,
-      certificate: result.completionData.certificate,
+      certificateChain: result.completionData.certificateChain,
       // Ordagrant det som skrevs under — inte castSequence vid sidan av. Se
       // SignedEnvelope.signedData för varför (fixrunda 1, fynd 1).
       signedData: result.completionData.signedData,
@@ -206,7 +217,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
   async function castRaw(
     voterStatusId: string,
     ballot: EncryptedBallot,
-    envelope: SignedEnvelope = { signature: '', certificate: '', signedData: '' },
+    envelope: SignedEnvelope = { signature: '', certificateChain: [], signedData: '' },
   ): Promise<CastOutcome> {
     const shape = await getEncryptedBallotShape(ballotId)
     return castEncryptedBallot(voterStatusId, electionId, ballotId, ballot, envelope, shape)
@@ -370,6 +381,97 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
   })
 
+  describe('kedjan prövas när rösten läggs (uppgift 14f)', () => {
+    /**
+     * Ett kuvert som en klient byggt själv, med ett eget nyckelpar och ett
+     * certifikat med väljarens personnummer. Rutten tar aldrig emot kedjan ur
+     * begärans kropp, men prövningen ska hålla också om den gjorde det, och
+     * den prövas därför direkt mot `castEncryptedBallot`.
+     */
+    async function forgedEnvelope(ballot: EncryptedBallot, chainFor: (pair: KeyPair) => string[]) {
+      const forger = rsaKeys('förfalskaren')
+      const signedData = envelopePayload({
+        electionId,
+        ballotId,
+        ciphertextHash: ballot.ciphertextHash,
+        castSequence: 1,
+      })
+      return {
+        signature: signPayload(forger.privateKey, signedData),
+        certificateChain: chainFor(forger),
+        signedData,
+      }
+    }
+
+    it('en kedja till en annan rot avvisas', async () => {
+      const ballot = await buildBallot('bp-s')
+      const lookalike = lookalikeHierarchy()
+      const envelope = await forgedEnvelope(ballot, (pair) =>
+        pemChain(voterLeaf(pair, { personalNumber: VOTER_PN, issuer: lookalike.issuer }), lookalike.intermediate),
+      )
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+
+    it('ett utgånget certifikat avvisas', async () => {
+      const ballot = await buildBallot('bp-s')
+      const envelope = await forgedEnvelope(ballot, (pair) =>
+        pemChain(
+          voterLeaf(pair, {
+            personalNumber: VOTER_PN,
+            notBefore: new Date(Date.now() - 30 * 86_400_000),
+            notAfter: new Date(Date.now() - 86_400_000),
+          }),
+          MOCK_INTERMEDIATE,
+        ),
+      )
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
+    })
+
+    it('kontrasten: ett korrekt utfärdat certifikat med väljarens personnummer godtas', async () => {
+      // Samma förfalskning som ovan, men med attrappens mellannivå. Det är
+      // begränsningen i demoläget: mellannivåns nyckel är incheckad.
+      const ballot = await buildBallot('bp-s')
+      const envelope = await forgedEnvelope(ballot, (pair) =>
+        pemChain(voterLeaf(pair, { personalNumber: VOTER_PN }), MOCK_INTERMEDIATE),
+      )
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('recorded')
+    })
+
+    it('en kedja med roten i stället för mellannivån avvisas', async () => {
+      // Roten får aldrig komma ur svaret. Här är den dessutom inte lövets utfärdare.
+      const ballot = await buildBallot('bp-s')
+      const envelope = await forgedEnvelope(ballot, (pair) =>
+        pemChain(voterLeaf(pair, { personalNumber: VOTER_PN }), MOCK_ROOT),
+      )
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
+    })
+
+    it('kedjan lagras krypterad, utan personnummer eller namn, och går bara att öppna för sin rad', async () => {
+      await cast(voter, 'bp-s')
+
+      const stored = await votersDb.pendingVote.findFirstOrThrow({
+        where: { voterStatusId: voter },
+        select: { bankIdCertificateChain: true, ballotId: true },
+      })
+
+      expect(stored.bankIdCertificateChain).not.toContain(VOTER_PN)
+      expect(stored.bankIdCertificateChain).not.toContain('Lindqvist')
+      expect(stored.bankIdCertificateChain).not.toContain('CERTIFICATE')
+
+      const opened = openCertificateChain(stored.bankIdCertificateChain, {
+        voterStatusId: voter,
+        ballotId: stored.ballotId,
+      })
+      expect(opened?.[0]?.toLegacyObject().subject).toMatchObject({ serialNumber: VOTER_PN })
+      expect(openCertificateChain(stored.bankIdCertificateChain, { voterStatusId: kim, ballotId })).toBeNull()
+    })
+  })
+
   it('en signatur för ett annat chiffer kan inte återanvändas mot ett nytt', async () => {
     /**
      * Fixrunda 1 av granskningen, fynd 1, krav 3.
@@ -450,12 +552,14 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       ballot: await buildBallot('bp-s'),
       signature: 'förfalskad-signatur',
       certificate: 'förfalskat-certifikat',
+      certificateChain: ['förfalskat-certifikat'],
       castSequence: 99,
     }
 
     const parsed = castEncryptedBallotSchema.parse(forgedBody)
     expect(parsed).not.toHaveProperty('signature')
     expect(parsed).not.toHaveProperty('certificate')
+    expect(parsed).not.toHaveProperty('certificateChain')
     expect(parsed).not.toHaveProperty('castSequence')
 
     const { readFileSync } = await import('node:fs')
@@ -467,7 +571,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
 
     expect(routeSource).not.toMatch(/body\.data\.(signature|certificate|castSequence|signedData)/)
     expect(routeSource).toMatch(/collected\.completionData\.signature/)
-    expect(routeSource).toMatch(/collected\.completionData\.certificate/)
+    expect(routeSource).toMatch(/collected\.completionData\.certificateChain/)
     expect(routeSource).toMatch(/collected\.completionData\.signedData/)
     // castSequence får inte räknas om av rutten längre — se fixrunda 1, fynd 1.
     expect(routeSource).not.toMatch(/nextCastSequence/)

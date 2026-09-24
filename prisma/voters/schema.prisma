@@ -373,17 +373,22 @@ model PendingVote {
   /// Väljarens egen signatur över kuvertet, från BankID /sign.
   bankIdSignature String @map("bankid_signature")
 
-  /// Nyckelmaterialet ur certifikatet — INTE certifikatet självt.
+  /// BankID-certifikatkedjan bakom signaturen, löv och mellannivå, KRYPTERAD.
   ///
-  /// Certifikatet bär personnumret i klartext (attrappens radprefix, och
-  /// subject-fältet i ett riktigt BankID-certifikat). Att lagra det i råform
-  /// skulle sätta ett klartextpersonnummer bredvid identitetshashen i
-  /// röstlängden och upphäva hela skälet att hasha. Det som behövs senare är
-  /// bara nyckeln — för att kunna verifiera signaturen vid en framtida validering —
-  /// och att underskrivaren var rätt person, vilket redan avgjorts av
-  /// hashkontrollen vid läggningen och bärs av radens koppling till
-  /// voterStatusId. Se `publicKeyFromCertificate` i `envelope-signature.ts`.
-  bankIdPublicKey String @map("bankid_public_key")
+  /// VARFÖR KEDJAN OCH INTE BARA NYCKELN (uppgift 14f). Fram till nu lagrades
+  /// bara den publika nyckeln, och valideringen före stängningen prövade
+  /// signaturen mot den. Den som kunde skriva i databasen lade då in ett eget
+  /// nyckelpar och en egen signatur, och raden godkändes. Nu prövar valideringen
+  /// kedjan mot BankID:s rot och personnumret i lövet mot väljarens
+  /// identitetshash, också för en rad som aldrig passerade läggningen. Nyckeln
+  /// kommer ur lövet.
+  ///
+  /// VARFÖR KRYPTERAD. Lövet bär personnummer och namn i klartext, och i
+  /// klartext hade en databasdump utan pepparn avslöjat vem som röstat.
+  /// AES-256-GCM under en nyckel ur IDENTITY_PEPPER, med väljarens och
+  /// valsedelns id som autentiserad data. Se src/modules/eligibility/sealed-chain.ts.
+  /// Raderas med raden vid skalningen.
+  bankIdCertificateChain String @map("bankid_certificate_chain")
 
   /// Dygnsupplöst, som all annan tidsdata i röstlängden.
   updatedAt DateTime @map("updated_at")

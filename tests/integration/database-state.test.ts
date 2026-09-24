@@ -188,7 +188,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
       ballot,
       {
         signature: result.completionData.signature,
-        certificate: result.completionData.certificate,
+        certificateChain: result.completionData.certificateChain,
         signedData: result.completionData.signedData,
       },
       await getEncryptedBallotShape(ballotId),
@@ -374,7 +374,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     })
     const envelope = await votersDb.pendingVote.findFirstOrThrow({
       where: { voterStatusId: anna },
-      select: { id: true, bankIdSignature: true, bankIdPublicKey: true, ciphertext: true },
+      select: { id: true, bankIdSignature: true, bankIdCertificateChain: true, ciphertext: true },
     })
     const shares = await votesDb.trusteeShare.findMany({
       where: { electionId },
@@ -395,7 +395,8 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
 
     // Hemligheter och sådant som bara behövs för valideringen.
     expect(state).not.toContain(envelope.bankIdSignature)
-    expect(state).not.toContain(envelope.bankIdPublicKey)
+    expect(state).not.toContain(envelope.bankIdCertificateChain)
+    expect(state).not.toContain('BEGIN CERTIFICATE')
     expect(state).not.toContain('BEGIN PUBLIC KEY')
     expect(state).not.toContain('PRIVATE KEY')
     expect(state).not.toContain(signingKey.signingPrivateKeyPem.slice(40, 80))
@@ -403,7 +404,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
       expect(state).not.toContain(share.encryptedShare)
       expect(state).not.toContain(share.publicShare)
     }
-    expect(state).not.toMatch(/"(proofs|bankIdSignature|bankIdPublicKey|encryptedShare)":/)
+    expect(state).not.toMatch(/"(proofs|bankIdSignature|bankIdCertificateChain|encryptedShare)":/)
   })
 
   it('det gamla flödets tabell redovisas som den är, märkt för sig', async () => {

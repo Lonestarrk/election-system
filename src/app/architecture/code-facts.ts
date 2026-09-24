@@ -483,19 +483,50 @@ export const CURRENTLY = {
   // Granskningstabellen
   // -------------------------------------------------------------------------
 
+  /**
+   * Uppgift 14f ersatte "signaturen prövas mot nyckeln som raden själv bär,
+   * inte mot BankID:s CA". Markörerna följer prövningen på båda ställena där
+   * den görs, och förvalet av attrappens rot i demoläget, som sidan nämner.
+   */
   validationGatesClose: {
     text:
-      'Byggt: valideringen körs inuti stängningen och stoppar den vid en avvikelse. Men ' +
-      'signaturen prövas mot nyckeln som raden själv bär, inte mot BankID:s CA.',
+      'Byggt: valideringen körs inuti stängningen och stoppar den vid en avvikelse. Varje ' +
+      'underskrift prövas mot BankID:s rotcertifikat och varje certifikat mot väljarens ' +
+      'identitetshash, både när rösten läggs och i valideringen, och kedjan lagras krypterad i ' +
+      'pending_vote. I demoläget är roten attrappens egen, och attrappen utfärdar certifikaten själv.',
     holdsWhile: [
       {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: 'const report = await validateBeforeClose(electionId)',
       },
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'if (!report.summary.passed)' },
+      // Valideringen öppnar kedjan, prövar den mot rötterna och jämför lövet med väljaren.
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
-        contains: 'verifySignedPayload(vote.bankIdSignature, vote.bankIdPublicKey',
+        contains: 'const chain = openCertificateChain(vote.bankIdCertificateChain, {',
+      },
+      {
+        file: 'src/orchestration/validate-before-close.usecase.ts',
+        contains: 'const certificate = verifyCertificateChain(chain, {',
+      },
+      {
+        file: 'src/orchestration/validate-before-close.usecase.ts',
+        contains: 'if (!safeEqual(identityHash, vote.voterStatus.externalIdentityHash)) {',
+      },
+      // Läggningen prövar samma kedja, och lagrar den krypterad.
+      {
+        file: 'src/modules/eligibility/pending-vote.service.ts',
+        contains:
+          'verifyCertificateChain(chain, { roots: trustedBankIdRoots(), signedDuring: signedAt(new Date()) })',
+      },
+      {
+        file: 'src/modules/eligibility/pending-vote.service.ts',
+        contains: 'const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })',
+      },
+      // I demoläget är attrappens rot den som kedjan prövas mot.
+      {
+        file: 'src/modules/eligibility/bankid/trusted-roots.ts',
+        contains: 'if (isDemoMode()) return [mockBankIdRoot()]',
       },
     ],
   },

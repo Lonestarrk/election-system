@@ -30,12 +30,14 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
     metaphor: 'Det yttre kuvertet med ditt namn',
     technology:
       'En rad i pending_vote i röstlängden, voters_db: väljarens id, chiffret, chifferhashen, ' +
-      'räknaren och BankID-signaturen (spec 5).',
+      'räknaren, BankID-signaturen och certifikatkedjan bakom den, krypterad (spec 5).',
   },
   {
     metaphor: 'Underskriften',
     technology:
-      'BankID /sign över chifferhashen, med räknaren och valsedelns id i det signerade (spec 4.6).',
+      'BankID /sign över chifferhashen, med räknaren och valsedelns id i det signerade. Kedjan ' +
+      'bakom signaturen prövas mot BankID:s rotcertifikat, och personnumret i certifikatet mot ' +
+      'väljarens identitetshash (spec 4.6).',
   },
   {
     metaphor: 'Kuvertet byts ut',
@@ -53,8 +55,9 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
   {
     metaphor: 'Kontrollen',
     technology:
-      'Valideringen före stängningen, medan kopplingen finns: signaturen, räknaren, att väljaren ' +
-      'finns i röstlängden, att valsedeln gäller henne, dubbletter och bevis. Den är en spärr och ' +
+      'Valideringen före stängningen, medan kopplingen finns: signaturen och kedjan mot BankID:s ' +
+      'rot, räknaren, att väljaren finns i röstlängden och att certifikatet är hennes, att ' +
+      'valsedeln gäller henne, dubbletter och bevis. Den är en spärr och ' +
       'inte en rapport (spec 7 och 7.1). Att hon fick rösta visar signaturen från när rösten lades, ' +
       'inte röstlängden i efterhand (spec 7.4).',
   },

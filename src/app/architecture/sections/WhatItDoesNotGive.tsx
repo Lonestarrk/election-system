@@ -6,7 +6,7 @@ import { LimitationReference, listItemStyle, type PageLimitations } from './shar
  * med listans egen rubrik.
  */
 export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitations }) {
-  const { link, bankIdOrder, chain, dealer } = limitations
+  const { link, bankIdOrder, removal, dealer } = limitations
 
   return (
     <section className="card" aria-labelledby="inte-ger">
@@ -27,10 +27,13 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
           kopplingen kvar hos BankID efter raderingen här. <LimitationReference entry={bankIdOrder} />
         </li>
         <li style={listItemStyle}>
-          <strong>Signaturen skyddar inte mot den som driver systemet.</strong> Den stoppar en
-          klient som skickar in ett eget kuvert. Men certifikatet prövas inte mot BankID:s CA, så
-          den som kan skriva i databasen kan förfalska en rad som valideringen godkänner.{' '}
-          <LimitationReference entry={chain} />
+          <strong>Signaturen hindrar inte att äkta kuvert tas bort eller läggs tillbaka.</strong>{' '}
+          Varje signatur prövas mot BankID:s rotcertifikat och varje certifikat mot väljarens
+          identitetshash, så den som kan skriva i databasen kan inte lägga in en röst för någon som
+          inte skrivit under, och en granskare med åtkomst under valideringen kan pröva varje
+          underskrift mot roten. Men ett kuvert kan raderas, och ett äldre äkta kuvert kan läggas
+          tillbaka med sin räknare, eftersom räknaren lagras i samma databas. Väljaren ser det på
+          sin enhet före stängningen. <LimitationReference entry={removal} />
         </li>
         <li style={listItemStyle}>
           <strong>Nyckeln har funnits hel.</strong> Tröskelnyckeln skapas av en betrodd utdelare

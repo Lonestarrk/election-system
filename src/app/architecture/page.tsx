@@ -50,7 +50,8 @@ export default function ArchitecturePage() {
         <Weaknesses
           copies={link}
           bankIdOrder={limitation('bankid-order-carries-link')}
-          chain={limitation('bankid-chain-not-validated')}
+          removal={limitation('operator-can-remove-or-restore-envelope')}
+          demoIssuer={limitation('mock-issues-certificates-in-demo')}
           dealer={limitation('trusted-dealer')}
         />
 

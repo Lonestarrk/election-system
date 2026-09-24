@@ -1,5 +1,19 @@
-import { createSign, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
+import {
+  createPrivateKey,
+  createSign,
+  generateKeyPairSync,
+  type KeyObject,
+  randomBytes,
+  randomUUID,
+  X509Certificate,
+} from 'node:crypto'
 import { env } from '@/lib/env'
+import { truncateToDay } from '@/lib/time'
+import { issueCertificate, issuerFrom } from './mock-ca/issue-certificate'
+import {
+  MOCK_BANKID_INTERMEDIATE_CERTIFICATE,
+  MOCK_BANKID_INTERMEDIATE_PRIVATE_KEY,
+} from './mock-ca/issuing-ca-test-key'
 import { computeQrData, QR_ORDER_LIFETIME_SECONDS } from './qr'
 import type {
   BankIdAuthOrder,
@@ -98,36 +112,61 @@ const DEMO_NAMES: Record<string, { givenName: string; surname: string }> = {
 }
 
 /**
- * Radprefix som markerar vem certifikatet tillhör.
+ * ATTRAPPEN ÄR SIN EGEN CERTIFIKATUTFÄRDARE (uppgift 14f).
  *
- * Ett riktigt BankID-certifikat är utfärdat av BankIDs CA och bär
- * personnumret i sitt subject-fält — ett påstående från utfärdaren, inte
- * något väljaren själv skriver under. Mockens "certifikat" är bara en publik
- * nyckel utan CA, så samma bindning simuleras här: personnumret skrivs som en
- * rad ovanför själva PEM-nyckeln.
+ * Ett riktigt BankID-certifikat är utfärdat av BankID:s CA och bär
+ * personnumret i subject, som ett påstående från utfärdaren. Attrappen gör
+ * likadant: vid varje underskrift utfärdar dess mellannivå ett X.509-certifikat
+ * för väljarens nyckel, med personnumret som `serialNumber`, namnet i subject,
+ * keyUsage digitalSignature och utan CA-rätt. Mellannivån är i sin tur utfärdad
+ * av attrappens rot, och i demoläget prövas varje kedja mot den roten, se
+ * `trusted-roots.ts`.
  *
- * Det fungerar därför att Node/OpenSSL:s PEM-parser hoppar över text före
- * "-----BEGIN"-raden, så nyckeln går ändå att använda direkt mot
- * `crypto.verify`.
+ * Tidigare var "certifikatet" en publik nyckel med personnumret på en rad
+ * ovanför, och ingenting prövade vem som stod för påståendet. Den som kunde
+ * skriva i databasen skapade ett eget nyckelpar och en rad som godkändes.
  *
- * BYTET TILL SKARPT BANKID ÄR TVÅ STEG, INTE ETT.
- *
- * (a) Radprefixet ersätts av en riktig avläsning av certifikatets
- *     subject-fält — det är den lätta delen.
- *
- * (b) CERTIFIKATETS KEDJA MÅSTE VALIDERAS MOT BANKIDS CA, som ett eget steg
- *     innan personnumret ens läses. Ett certifikat är bara ett påstående;
- *     det är CA-signaturen som gör påståendet tillförlitligt. Utan (b) kan
- *     vem som helst skapa ett eget nyckelpar, skriva in vilket personnummer
- *     som helst i subject-fältet och signera med sin egen privata nyckel —
- *     `personalNumberFromCertificate` i `envelope-signature.ts` skulle läsa
- *     av det påhittade personnumret som om det vore sant. Se den funktionens
- *     dokumentation för varför.
+ * VAD DET INTE GER I DEMOLÄGET. Mellannivåns privata nyckel är incheckad, så
+ * den som driver en demo kan utfärda ett giltigt certifikat för vem som helst.
+ * Skyddet gäller med riktig BankID, där nyckeln finns hos BankID. Det står som
+ * en känd begränsning i src/lib/known-limitations.ts.
  */
-const MOCK_CERTIFICATE_PREFIX = /^personnummer:(\d+)\n/
+const issuingCertificate = new X509Certificate(MOCK_BANKID_INTERMEDIATE_CERTIFICATE)
+const issuer = issuerFrom(issuingCertificate, createPrivateKey(MOCK_BANKID_INTERMEDIATE_PRIVATE_KEY))
 
-function formatMockCertificate(personalNumber: string, publicKey: string): string {
-  return `personnummer:${personalNumber}\n${publicKey}`
+/** Ett år, som ungefär ett riktigt BankID, men aldrig längre än mellannivån gäller. */
+const CERTIFICATE_LIFETIME_MS = 365 * 86_400_000
+
+function issueVoterChain(personalNumber: string, publicKey: KeyObject): string[] {
+  const { name, givenName, surname } = demoName(personalNumber)
+
+  /**
+   * GILTIGT FRÅN DYGNETS BÖRJAN, INTE FRÅN SEKUNDEN DÅ DET UTFÄRDADES.
+   *
+   * Attrappen utfärdar ett nytt certifikat vid varje underskrift, så en
+   * giltighetstid på sekunden vore underskriftens tidpunkt, och kedjan lagras i
+   * röstlängden, där all tidsdata är avrundad till dygn (se src/lib/time.ts).
+   * Krypterad är den visserligen, men den som har pepparn ska inte få veta mer
+   * om när någon röstade än röstlängden i övrigt säger. Ett riktigt
+   * BankID-certifikat har inte problemet: det utfärdas när personen skaffar sitt
+   * BankID, inte när hon skriver under.
+   */
+  const validFrom = truncateToDay(new Date())
+
+  const leaf = issueCertificate({
+    subject: { country: 'SE', surname, givenName, serialNumber: personalNumber, commonName: name },
+    publicKey,
+    issuer,
+    notBefore: validFrom,
+    notAfter: new Date(
+      Math.min(validFrom.getTime() + CERTIFICATE_LIFETIME_MS, issuingCertificate.validToDate.getTime()),
+    ),
+    ca: false,
+    keyUsage: ['digitalSignature'],
+  })
+
+  // Lövet först och sedan mellannivån, utan roten, som BankID:s svar.
+  return [leaf.toString(), issuingCertificate.toString()]
 }
 
 function demoName(personalNumber: string): { name: string; givenName: string; surname: string } {
@@ -148,17 +187,13 @@ export class MockBankIdService implements IBankIdService {
    * tills någon kopplar in skarp BankID — alltså precis när ett fel kostar
    * som mest.
    */
-  private readonly keys = new Map<string, { privateKey: string; publicKey: string }>()
+  private readonly keys = new Map<string, { privateKey: KeyObject; publicKey: KeyObject }>()
 
   private keysFor(personalNumber: string) {
     const existing = this.keys.get(personalNumber)
     if (existing) return existing
 
-    const pair = generateKeyPairSync('rsa', {
-      modulusLength: 2048,
-      publicKeyEncoding: { type: 'spki', format: 'pem' },
-      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-    })
+    const pair = generateKeyPairSync('rsa', { modulusLength: 2048 })
 
     this.keys.set(personalNumber, pair)
     return pair
@@ -249,11 +284,11 @@ export class MockBankIdService implements IBankIdService {
     // onödan. Fälten är ändå obligatoriska i typen, så att den som konsumerar
     // en sign-order aldrig behöver hantera att de saknas.
     let signature = ''
-    let certificate = ''
+    let certificateChain: string[] = []
     if (userNonVisibleData) {
       const { privateKey, publicKey } = this.keysFor(personalNumber)
       signature = createSign('sha256').update(userNonVisibleData).end().sign(privateKey, 'base64')
-      certificate = formatMockCertificate(personalNumber, publicKey)
+      certificateChain = issueVoterChain(personalNumber, publicKey)
     }
 
     return {
@@ -262,7 +297,7 @@ export class MockBankIdService implements IBankIdService {
         personalNumber,
         ...demoName(personalNumber),
         signature,
-        certificate,
+        certificateChain,
         // Ordagrant vad som signerades — se dokumentationen på fältet i
         // IBankIdService.ts för varför anroparen inte får bygga om det.
         signedData: userNonVisibleData ?? '',

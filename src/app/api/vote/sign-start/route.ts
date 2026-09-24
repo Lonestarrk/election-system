@@ -37,7 +37,7 @@ export const dynamic = 'force-dynamic'
  * annan väljares session.
  *
  * Andra halvan, /api/vote/encrypted, hämtar den färdiga signaturen och
- * certifikatet från BankID:s eget svar och verifierar mot exakt den här
+ * certifikatkedjan från BankID:s eget svar och verifierar mot exakt den här
  * nyttolasten — se den ruttens dokumentation.
  */
 export async function POST(request: Request) {

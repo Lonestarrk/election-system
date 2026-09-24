@@ -25,17 +25,17 @@ export const dynamic = 'force-dynamic'
  * Andra halvan av det tvådelade signeringsflödet: lämnar in den krypterade
  * valsedeln, med signaturen hämtad från BankID i stället för från begäran.
  *
- * SIGNATUREN OCH CERTIFIKATET FÅR ALDRIG KOMMA FRÅN BEGÄRANS KROPP.
+ * SIGNATUREN OCH CERTIFIKATKEDJAN FÅR ALDRIG KOMMA FRÅN BEGÄRANS KROPP.
  *
- * Tog rutten emot dem från klienten kunde vem som helst skapa ett eget
- * nyckelpar, formatera ett certifikat med valfritt personnummer, signera vad
- * som helst med det och skicka in — signaturkontrollen skulle säga ja,
- * eftersom den bara kontrollerar att signaturen och certifikatet hör ihop.
- * Hela mekanismen vore dekoration. `castEncryptedBallotSchema` har därför
- * inget fält för dem, och Zod stryper okända fält som standard, så de
- * försvinner redan vid valideringen om en klient ändå skickar med dem.
+ * Sedan uppgift 14f prövas kedjan mot BankID:s rot, så ett eget nyckelpar med
+ * ett påhittat certifikat underkänns också om en klient skickar in det. Att
+ * rutten ändå aldrig tar emot dem är en andra spärr, och den är billig: den
+ * som hittar ett fel i kedjeprövningen ska inte också få välja vad som prövas.
+ * `castEncryptedBallotSchema` har därför inget fält för dem, och Zod stryper
+ * okända fält som standard, så de försvinner redan vid valideringen om en
+ * klient ändå skickar med dem.
  *
- * Servern hämtar i stället `signature`, `certificate` OCH `signedData` ur
+ * Servern hämtar i stället `signature`, `certificateChain` OCH `signedData` ur
  * sitt eget `bankIdService.collect(orderRef)` — svaret BankID gav för just
  * den order `/api/vote/sign-start` startade. `castSequence` läses ur
  * `signedData` av `castEncryptedBallot` självt (se `SignedEnvelope`s
@@ -147,7 +147,7 @@ export async function POST(request: Request) {
       {
         // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
         signature: collected.completionData.signature,
-        certificate: collected.completionData.certificate,
+        certificateChain: collected.completionData.certificateChain,
         signedData: collected.completionData.signedData,
       },
       shape,

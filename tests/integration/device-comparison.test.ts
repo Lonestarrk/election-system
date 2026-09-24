@@ -166,7 +166,7 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
       ballot,
       {
         signature: result.completionData.signature,
-        certificate: result.completionData.certificate,
+        certificateChain: result.completionData.certificateChain,
         signedData: result.completionData.signedData,
       },
       await getEncryptedBallotShape(ballotId),

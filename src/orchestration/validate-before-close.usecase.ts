@@ -1,9 +1,19 @@
+import type { KeyObject, X509Certificate } from 'node:crypto'
+import { safeEqual } from '@/lib/crypto'
 import { votersDb } from '@/modules/eligibility/db'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import {
+  signedOnDay,
+  verifyCertificateChain,
+  type ChainFailure,
+} from '@/modules/eligibility/bankid/certificate-chain'
 import {
   envelopePayload,
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
+import { trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
+import { hashPersonalNumber } from '@/modules/eligibility/identity'
+import { openCertificateChain } from '@/modules/eligibility/sealed-chain'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
@@ -25,38 +35,36 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  *   Kryptografiska säger att raden bär ett bevis bara väljaren kunde
  *                  framställa. Ingen med databasåtkomst kan förfalska dem.
  *
- * VAD SIGNATURKONTROLLEN (STALE_SEQUENCE/BAD_SIGNATURE NEDAN) FAKTISKT STÄNGER
- * — OCH VAD DEN INTE GÖR.
+ * VAD SIGNATURKONTROLLEN (STALE_SEQUENCE/BAD_SIGNATURE NEDAN) STÄNGER, OCH
+ * VAD DEN INTE STÄNGER (uppgift 14f).
  *
- * Den stänger i DAG: förvanskat eller på annat sätt manipulerat
- * signaturmaterial i en rad som annars är äkta (ett fält som gått sönder
- * eller bytts ut efter att raden skrevs), och en klient som försöker skicka
- * med ett eget påhittat kuvert i stället för att gå via BankID —
- * `castEncryptedBallot` hämtar signatur och certifikat bara ur BankID:s eget
- * svar, aldrig ur begäran (se `pending-vote.service.ts` och
- * `/api/vote/encrypted`).
+ * Fram till uppgift 14f prövades signaturen mot den nyckel raden själv bar. En
+ * angripare med skrivrätt i databasen genererade ett eget nyckelpar, skrev
+ * under ett välformat kuvert och lade nyckel, signatur och ett verkligt
+ * `voterStatusId` i en rad som varje kontroll här godkände. Att pröva kedjan
+ * när rösten läggs hade inte räckt, eftersom den som skriver direkt i
+ * databasen aldrig passerar läggningen.
  *
- * DEN STÄNGER INTE EN ANGRIPARE MED SKRIVRÄTTIGHET TILL DATABASEN. En sådan
- * angripare kan generera ett eget nyckelpar, signera ett välformat kuvert med
- * sin egen privata nyckel, och skriva nyckeln, signaturen och ett verkligt
- * `voterStatusId` tillsammans i en rad som är fullständigt självkonsekvent.
- * `classifySignature` kan bara pröva att signaturen håller mot NYCKELN SOM
- * STÅR I RADEN — inte att den nyckeln verkligen tillhör väljaren radens
- * `voterStatusId` pekar på. Den bindningen finns inte kvar att kontrollera
- * här: `PendingVote` lagrar bara nyckelmaterialet, aldrig certifikatet (se
- * `PendingVote.bankIdPublicKey`s dokumentation för varför). Se testet
- * "en självkonsekvent förfalskning med eget nyckelpar fångas INTE" i
- * `validate-before-close.test.ts` för en körd demonstration av precis den
- * här luckan — den är känd, inte förbisedd, och står som posten
- * `bankid-chain-not-validated` i `src/lib/known-limitations.ts`.
+ * Nu bär raden BankID-kedjan, krypterad, och valideringen prövar den HÄR, för
+ * varje rad:
  *
- * Vad som SKULLE stänga den: kedjevalidering HÄR, i valideringen, inte bara
- * när rösten läggs. Den som skriver direkt i databasen passerar aldrig
- * läggningen, så en kontroll där stoppar bara klienter. Raden måste bära något
- * som BankIDs CA står för, till exempel certifikatet, och valideringen pröva
- * det mot CA:n — vilket återöppnar exakt den avvägning som fick certifikatet
- * att strykas till förmån för bara nyckelmaterialet (se
- * `personalNumberFromCertificate`s dokumentation).
+ *   1. kedjan går att öppna för just den här raden, se `sealed-chain.ts`
+ *   2. kedjan går till en betrodd rot, med de kontroller som
+ *      `verifyCertificateChain` gör, och gällde den dag kuvertet lades
+ *   3. signaturen håller mot lövets nyckel, för nuvarande eller en äldre räknare
+ *   4. personnumret i lövet är väljarens: hashat med samma peppar som
+ *      röstlängden ska det ge radens identitetshash
+ *
+ * Den som bara kan skriva i databasen kan därmed inte längre lägga in en röst
+ * för någon som inte skrivit under, och en granskare med åtkomst under
+ * valideringen kan pröva varje underskrift mot BankID:s rot.
+ *
+ * DET SOM INTE STÄNGS står i src/lib/known-limitations.ts. Den som driver
+ * systemet kan ta bort ett kuvert eller lägga tillbaka en väljares tidigare
+ * äkta kuvert med dess räknare, eftersom räknaren för den senaste
+ * underskriften lagras i samma databas. Inget certifikat prövas mot en
+ * spärrlista. Och i demoläget utfärdar attrappen certifikaten själv, med en
+ * incheckad nyckel, så den som driver en demo kan fortfarande förfalska.
  *
  * VAD DEN HÄR FILEN INTE GÖR
  *
@@ -67,11 +75,28 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  * filen levererar bara användningsfallet.
  */
 
+/**
+ * Vilken del av signaturkontrollen en rad föll på. Kedjans egna skäl kommer ur
+ * `verifyCertificateChain`, och därtill:
+ *
+ *   unreadable   kedjan går inte att öppna för raden: trasig, ändrad, flyttad
+ *                från en annan rad, eller aldrig förseglad
+ *   signature    signaturen håller inte mot lövets nyckel för någon räknare
+ *   other_voter  kedjan och signaturen håller, men lövet tillhör någon annan
+ */
+export type SignatureFault = ChainFailure | 'unreadable' | 'signature' | 'other_voter'
+
 export type Anomaly = {
   kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF'
   pendingVoteId: string
   /** Bara för administratörens utredning. Publiceras aldrig. */
   voterStatusId: string
+  /**
+   * Bara för BAD_SIGNATURE, och bara för administratörens utredning. Skälet
+   * skiljer en rad vars kedja inte går till roten från en rad som bär en annan
+   * väljares äkta underskrift, och det är två helt olika utredningar.
+   */
+  reason?: SignatureFault
 }
 
 export type ValidationReport = {
@@ -133,16 +158,17 @@ type SignatureVerdict = 'ok' | 'stale' | 'bad'
  * Avgör om den lagrade signaturen bevisar nuvarande innehåll, ett äldre
  * innehåll (återuppspelning), eller ingetdera.
  *
+ * Nyckeln är lövets, ur en kedja som just prövats mot en betrodd rot, och
+ * aldrig något som raden själv påstår. Se `judgeSignature`.
+ *
  * Bygger om det signerade innehållet ur radens EGNA lagrade fält —
  * `ciphertextHash` och `castSequence` — i stället för att förvänta sig
- * `signedData` bevarat ordagrant. Det finns ingen sådan kolumn (se
- * `PendingVote.bankIdPublicKey`s dokumentation för varför bara
- * nyckelmaterialet sparas): kolumnerna som SKREVS av `castEncryptedBallot`
- * kommer själva ur `signedData` vid läggningstillfället, och `envelopePayload`
- * är en entydig, längdprefixerad kodning — samma fält ger alltid samma
- * sträng. Återuppbyggnaden är alltså inte en gissning utan en exakt
- * återskapning av det som en gång verkligen signerades, förutsatt att fälten
- * inte ändrats var för sig sedan dess.
+ * `signedData` bevarat ordagrant. Det finns ingen sådan kolumn: kolumnerna som
+ * SKREVS av `castEncryptedBallot` kommer själva ur `signedData` vid
+ * läggningstillfället, och `envelopePayload` är en entydig, längdprefixerad
+ * kodning — samma fält ger alltid samma sträng. Återuppbyggnaden är alltså
+ * inte en gissning utan en exakt återskapning av det som en gång verkligen
+ * signerades, förutsatt att fälten inte ändrats var för sig sedan dess.
  */
 function classifySignature(
   electionId: string,
@@ -151,8 +177,8 @@ function classifySignature(
     ciphertextHash: string
     castSequence: number
     bankIdSignature: string
-    bankIdPublicKey: string
   },
+  signingKey: KeyObject,
   /** Delad mellan alla rader i körningen — se `MAX_TOTAL_STALE_PROBES`. */
   staleProbeBudget: { remaining: number },
 ): SignatureVerdict {
@@ -163,7 +189,7 @@ function classifySignature(
     castSequence: vote.castSequence,
   })
 
-  if (verifySignedPayload(vote.bankIdSignature, vote.bankIdPublicKey, current)) return 'ok'
+  if (verifySignedPayload(vote.bankIdSignature, signingKey, current)) return 'ok'
 
   const lowerBound = Math.max(1, vote.castSequence - MAX_STALE_LOOKBACK)
 
@@ -181,10 +207,81 @@ function classifySignature(
       castSequence: candidate,
     })
 
-    if (verifySignedPayload(vote.bankIdSignature, vote.bankIdPublicKey, older)) return 'stale'
+    if (verifySignedPayload(vote.bankIdSignature, signingKey, older)) return 'stale'
   }
 
   return 'bad'
+}
+
+type SignatureJudgement =
+  | { verdict: 'ok' }
+  | { verdict: 'stale' }
+  | { verdict: 'bad'; reason: SignatureFault }
+
+/**
+ * Hela signaturkontrollen för en rad: kedjan, signaturen och vem lövet tillhör.
+ *
+ * I DEN ORDNINGEN, OCH AV ETT SKÄL. Utan en kedja till roten finns ingen
+ * nyckel som BankID står för, och då säger en signatur ingenting. Utan en
+ * signatur som håller finns inget att knyta till väljaren. Och
+ * identitetshashen är dyr, 37 ms, så den räknas bara för en rad där allt annat
+ * redan håller.
+ *
+ * Varje fel blir en avvikelse med sitt skäl, aldrig ett undantag: raden kommer
+ * ur databasen, förbi varje schema, och en spärr som kraschar på en trasig rad
+ * har hjälpt den som skrev den, som `proofHoldsSafely` nedan säger. Undantaget
+ * är ett fel i driftsättningen, en rotfil eller peppar som saknas, och det ska
+ * stoppa hela körningen i stället för att bli en avvikelse per rad.
+ *
+ * EN ÄLDRE ÄKTA RÄKNARE PRÖVAS OCKSÅ MOT VÄLJAREN. Ett återuppspelat kuvert är
+ * STALE_SEQUENCE bara om det är väljarens eget. Bär det en annan väljares äkta
+ * underskrift är det en annans röst i hennes namn, och det väger tyngre än att
+ * räknaren är gammal.
+ */
+async function judgeSignature(
+  electionId: string,
+  vote: {
+    voterStatusId: string
+    ballotId: string
+    ciphertextHash: string
+    castSequence: number
+    bankIdSignature: string
+    bankIdCertificateChain: string
+    updatedAt: Date
+    voterStatus: { externalIdentityHash: string }
+  },
+  roots: X509Certificate[],
+  identityHashOf: (personalNumber: string) => Promise<string>,
+  staleProbeBudget: { remaining: number },
+): Promise<SignatureJudgement> {
+  const chain = openCertificateChain(vote.bankIdCertificateChain, {
+    voterStatusId: vote.voterStatusId,
+    ballotId: vote.ballotId,
+  })
+  if (!chain) return { verdict: 'bad', reason: 'unreadable' }
+
+  /**
+   * Giltighetstiden prövas mot dagen då kuvertet lades. Det är den enda
+   * tidpunkten för underskriften som finns kvar, och den finns med avsikt bara
+   * på dygnet när. Att pröva mot dagen för valideringen hade underkänt en röst
+   * vars certifikat gick ut efter att den lades, och det som gällde när
+   * väljaren skrev under är det som avgör, som i spec 7.4.
+   */
+  const certificate = verifyCertificateChain(chain, {
+    roots,
+    signedDuring: signedOnDay(vote.updatedAt),
+  })
+  if (!certificate.ok) return { verdict: 'bad', reason: certificate.reason }
+
+  const verdict = classifySignature(electionId, vote, certificate.signingKey, staleProbeBudget)
+  if (verdict === 'bad') return { verdict: 'bad', reason: 'signature' }
+
+  const identityHash = await identityHashOf(certificate.personalNumber)
+  if (!safeEqual(identityHash, vote.voterStatus.externalIdentityHash)) {
+    return { verdict: 'bad', reason: 'other_voter' }
+  }
+
+  return { verdict }
 }
 
 /**
@@ -289,8 +386,9 @@ async function proofHoldsSafely(
  * RAD, OAVSETT OM EN TIDIGARE REDAN TRÄFFAT.
  *
  *   1. WRONG_BALLOT    — en ren uppslagning mot spegeltabellen.
- *   2. STALE_SEQUENCE  — kryptografisk, men en enda `verify` i det vanliga
- *   3. BAD_SIGNATURE      fallet (bara en avvikande rad kostar flera).
+ *   2. STALE_SEQUENCE  — kryptografisk: kedjan mot roten och en `verify` av
+ *   3. BAD_SIGNATURE      signaturen i det vanliga fallet (bara en avvikande
+ *                        rad kostar flera), och en identitetshash per väljare.
  *   4. BAD_PROOF       — dyrast: en handfull modulär exponentiering per
  *                        alternativ på valsedeln.
  *
@@ -330,10 +428,40 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
       ciphertextHash: true,
       castSequence: true,
       bankIdSignature: true,
-      bankIdPublicKey: true,
-      voterStatus: { select: { municipalityCode: true, regionCode: true } },
+      bankIdCertificateChain: true,
+      updatedAt: true,
+      voterStatus: {
+        select: { municipalityCode: true, regionCode: true, externalIdentityHash: true },
+      },
     },
   })
+
+  /**
+   * Rötterna läses en gång per körning. Går de inte att fastställa kastar
+   * `trustedBankIdRoots`, och stängningen avbryts med kopplingen orörd. Det är
+   * ett fel i driftsättningen, och att då underkänna varje rad hade sett ut som
+   * ett angrepp på varje väljare.
+   */
+  const roots = trustedBankIdRoots()
+
+  /**
+   * EN HASHNING PER VÄLJARE OCH KÖRNING, INTE PER KUVERT.
+   *
+   * Identitetshashen är scrypt och tar 37 ms (se `identity.ts`). En väljare har
+   * ett kuvert per valsedel, alltså tre i ett riksdagsval, och samma personnummer
+   * i varje löv. Hashades varje kuvert för sig hade valideringen vuxit med 37 ms
+   * per kuvert i stället för per väljare. Löftet sparas, inte svaret, så att två
+   * kuvert för samma väljare aldrig räknar samma hash två gånger.
+   */
+  const identityHashes = new Map<string, Promise<string>>()
+  const identityHashOf = (personalNumber: string): Promise<string> => {
+    let hash = identityHashes.get(personalNumber)
+    if (!hash) {
+      hash = hashPersonalNumber(personalNumber)
+      identityHashes.set(personalNumber, hash)
+    }
+    return hash
+  }
 
   const anomalies: Anomaly[] = []
   const shapeCache = new Map<string, Awaited<ReturnType<typeof getEncryptedBallotShape>>>()
@@ -341,10 +469,11 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
   const staleProbeBudget = { remaining: MAX_TOTAL_STALE_PROBES }
 
   for (const vote of pendingVotes) {
-    const anomaly = (kind: Anomaly['kind']): Anomaly => ({
+    const anomaly = (kind: Anomaly['kind'], reason?: SignatureFault): Anomaly => ({
       kind,
       pendingVoteId: vote.id,
       voterStatusId: vote.voterStatusId,
+      ...(reason === undefined ? {} : { reason }),
     })
 
     // 1. WRONG_BALLOT — billigast: en uppslagning, ingen kryptografi.
@@ -353,14 +482,16 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
       anomalies.push(anomaly('WRONG_BALLOT'))
     }
 
-    // 2–3. STALE_SEQUENCE / BAD_SIGNATURE — kryptografiska, en verifiering i
-    // det vanliga (rena) fallet. Körs OAVSETT om WRONG_BALLOT redan träffade.
-    const signatureVerdict = classifySignature(electionId, vote, staleProbeBudget)
-    if (signatureVerdict === 'stale') {
+    // 2–3. STALE_SEQUENCE / BAD_SIGNATURE — kedjan, signaturen och vem lövet
+    // tillhör, se `judgeSignature`. En verifiering av signaturen och två av
+    // kedjan i det vanliga fallet, och en hashning per väljare. Körs OAVSETT om
+    // WRONG_BALLOT redan träffade.
+    const signature = await judgeSignature(electionId, vote, roots, identityHashOf, staleProbeBudget)
+    if (signature.verdict === 'stale') {
       anomalies.push(anomaly('STALE_SEQUENCE'))
     }
-    if (signatureVerdict === 'bad') {
-      anomalies.push(anomaly('BAD_SIGNATURE'))
+    if (signature.verdict === 'bad') {
+      anomalies.push(anomaly('BAD_SIGNATURE', signature.reason))
     }
 
     // 4. BAD_PROOF — dyrast, men körs ändå: en rad kan ha ett ogiltigt bevis

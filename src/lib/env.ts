@@ -97,6 +97,20 @@ export const env = {
     return process.env.NODE_ENV === 'production'
   },
 
+  /**
+   * Sökvägen till BankID:s rotcertifikat: en PEM-fil med ett eller flera
+   * självsignerade CA-certifikat. Varje underskrift prövas mot dem, se
+   * src/modules/eligibility/bankid/trusted-roots.ts.
+   *
+   * Frivillig bara i demoläget, där attrappens egen rot används när den
+   * saknas. Utanför demoläget vägrar varje prövning av en underskrift att
+   * köras utan den, så att systemet aldrig litar på en rot som ingen valt.
+   */
+  get bankIdRootCertificatesPath(): string | null {
+    const value = process.env.BANKID_ROOT_CERTIFICATES?.trim()
+    return value ? value : null
+  },
+
   get mockBankIdPollsUntilComplete(): number {
     const raw = process.env.MOCK_BANKID_POLLS_UNTIL_COMPLETE
     const parsed = raw ? Number.parseInt(raw, 10) : 2

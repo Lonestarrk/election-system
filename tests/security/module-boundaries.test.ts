@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { join, posix, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -255,5 +255,57 @@ describe('loggdisciplin', () => {
       expect(content).toMatch(/log: \['error'\]/)
       expect(content).not.toMatch(/'query'/)
     }
+  })
+})
+
+describe('attrappens certifikatutfärdare', () => {
+  /**
+   * Mellannivåns privata nyckel och koden som skapar certifikat hör bara till
+   * attrappen (uppgift 14f). En produktionsfil som importerade dem kunde
+   * utfärda certifikat som kedjeprövningen godkänner, alltså göra det som
+   * riktig BankID gör hos sig och ingen annanstans. Rotcertifikatet är
+   * offentligt och får läsas av de betrodda rötterna, men inte nyckeln.
+   */
+  const PRIVATE_TO_THE_MOCK = [
+    'src/modules/eligibility/bankid/mock-ca/issuing-ca-test-key',
+    'src/modules/eligibility/bankid/mock-ca/issue-certificate',
+    'src/modules/eligibility/bankid/mock-ca/der-encoder',
+  ]
+
+  const ALLOWED: Record<string, string[]> = {
+    'src/modules/eligibility/bankid/MockBankIdService.ts': [
+      'src/modules/eligibility/bankid/mock-ca/issuing-ca-test-key',
+      'src/modules/eligibility/bankid/mock-ca/issue-certificate',
+    ],
+    'src/modules/eligibility/bankid/mock-ca/issue-certificate.ts': [
+      'src/modules/eligibility/bankid/mock-ca/der-encoder',
+    ],
+  }
+
+  /** Varje import i filen, med @/ och relativa sökvägar lösta mot src. */
+  function importsOf(file: { path: string; content: string }): string[] {
+    return [...file.content.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map(([, specifier]) => {
+      if (specifier!.startsWith('@/')) return `src/${specifier!.slice(2)}`
+      if (specifier!.startsWith('.')) return posix.join(posix.dirname(file.path), specifier!)
+      return specifier!
+    })
+  }
+
+  it('importeras bara av attrappen', () => {
+    const found = sourceFiles.flatMap((file) =>
+      importsOf(file)
+        .filter((target) => PRIVATE_TO_THE_MOCK.includes(target))
+        .map((target) => ({ file: file.path, target })),
+    )
+
+    // Kontrasten: attrappen själv hittas, så att en lösning som inte hittar
+    // någonting inte kan få testet att gå grönt.
+    expect(found).toContainEqual({
+      file: 'src/modules/eligibility/bankid/MockBankIdService.ts',
+      target: 'src/modules/eligibility/bankid/mock-ca/issuing-ca-test-key',
+    })
+
+    const offenders = found.filter(({ file, target }) => !(ALLOWED[file] ?? []).includes(target))
+    expect(offenders).toEqual([])
   })
 })

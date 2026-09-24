@@ -88,26 +88,32 @@ export type BankIdCollectComplete = {
     signature: string
 
     /**
-     * Certifikatet signaturen verifieras mot.
+     * Certifikatkedjan signaturen verifieras mot, i PEM: lövet först och sedan
+     * den mellannivå som utfärdat det. Tom för `auth`-ordrar.
      *
-     * I attrappen den demoidentitetens publika nyckel i PEM-format. I skarpt
-     * BankID X.509-certifikatet ur svaret.
+     * ROTEN INGÅR INTE, OCH FÅR INTE GÖRA DET. Kedjan prövas mot rötter som är
+     * konfigurerade (se `trusted-roots.ts`). En rot som följde med svaret vore
+     * en rot som den som skrev svaret själv valt, och då vore prövningen
+     * ingenting värd.
      *
-     * BÄR SAMMA SKYDDSVÄRDA UPPGIFT SOM `personalNumber`, I KLARTEXT.
+     * I attrappen utfärdar attrappens mellannivå ett nytt löv vid varje
+     * underskrift. I skarpt BankID ligger kedjan i XML-signaturens `KeyInfo`,
+     * och att läsa ut den därifrån är inte byggt (se begränsningen
+     * `bankid-xmldsig-adapter-missing` i src/lib/known-limitations.ts).
      *
-     * I attrappens format ligger personnumret bokstavligen i en rad ovanför
-     * nyckeln (`personnummer:<nummer>\n<publik nyckel>`). I ett riktigt
-     * svenskt BankID-certifikat ligger det i subject-fältet — lika läsbart,
-     * bara i ett annat format. Certifikatet är med andra ord inte en ofarlig
-     * nyckel med ett bevis bifogat; det ÄR personnumret, plus ett bevis.
+     * BÄR SAMMA SKYDDSVÄRDA UPPGIFT SOM `personalNumber`, I KLARTEXT, OCH
+     * DESSUTOM NAMNET.
      *
-     * Får därför, precis som `personalNumber`, aldrig lämna
-     * eligibility-modulen eller lagras i råform. Uppgift 9 lagrar den publika
-     * nyckeln för sig och en HASH av det personnummer certifikatet påstår —
-     * se `personalNumberFromCertificate` i `envelope-signature.ts` — aldrig
-     * certifikatet självt.
+     * Lövets subject har personnumret som `serialNumber` och namnet som
+     * `commonName`, `givenName` och `surname`, i attrappen som i ett riktigt
+     * BankID-certifikat. Kedjan är med andra ord inte en ofarlig nyckel med ett
+     * bevis bifogat; den ÄR personnumret och namnet, plus ett bevis.
+     *
+     * Får därför, precis som `personalNumber`, aldrig lämna eligibility-modulen
+     * eller lagras i klartext. Rösten lagrar kedjan krypterad, se
+     * `sealed-chain.ts`.
      */
-    certificate: string
+    certificateChain: string[]
 
     /**
      * Det signerade innehållet, ordagrant — samma sträng som skickades in i

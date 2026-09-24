@@ -286,32 +286,72 @@ inte röstat. Den relationella kontrollen i avsnitt 7 fångar inte det, eftersom
 | `userNonVisibleData` | `electionId \| ballotId \| ciphertextHash \| castSequence` |
 
 BankID returnerar en XML-signatur ställd med väljarens eget certifikat. Raden lagrar
-signaturen och certifikatet, och valideringen vid stängning kontrollerar varje signatur
-mot chifferhashen och mot personnumret i röstlängden.
+signaturen och certifikatkedjan, krypterad, och valideringen vid stängning kontrollerar
+varje signatur mot chifferhashen, varje kedja mot BankID:s rot och varje certifikat mot
+personnumret i röstlängden.
 
-Därmed kan en röst inte förfalskas av **en klient**. Systemet slutar vara betrott att
-säga att en viss webbläsare talar för en viss väljare.
+Därmed kan en röst inte förfalskas av **en klient**, och inte heller av den som bara kan
+skriva i databasen. Systemet slutar vara betrott att säga att en viss webbläsare talar för
+en viss väljare.
 
-**MEN DEN SKYDDAR INTE MOT DEN SOM DRIVER SYSTEMET, OCH DET ÄR VIKTIGT ATT SÄGA RAKT UT.**
+**Beslut 2026-09-24: certifikatkedjan valideras (uppgift 14f).**
 
-En signatur är bara värd vad certifikatet bakom den är värt. Kontrollen jämför signaturen
-mot en nyckel, och att nyckeln tillhör en verklig väljare vilar helt på att certifikatet
-är utfärdat av BankID:s CA. Utan **kedjevalidering mot den CA:n** kan vem som helst med
-skrivrättighet till röstlängden generera ett eget nyckelpar, signera ett välformat kuvert,
-och skriva signatur, nyckel och väljarrad tillsammans i en fullt självkonsekvent post.
-Varje kontroll säger ja.
+En signatur är bara värd vad certifikatet bakom den är värt. Före uppgift 14f prövades
+signaturen mot den nyckel raden själv bar, och att nyckeln tillhörde en verklig väljare
+prövades aldrig. Vem som helst med skrivrättighet till röstlängden kunde generera ett eget
+nyckelpar, signera ett välformat kuvert och skriva signatur, nyckel och väljarrad
+tillsammans i en fullt självkonsekvent post, och varje kontroll sa ja. Signaturen skyddade
+mot en klient men inte mot den som driver systemet. Nu gäller:
 
-Kedjevalideringen finns inte i den här prototypen, eftersom BankID är en attrapp. Vad
-signaturen ger i dag är alltså:
+1. **Kedjan prövas mot en fast rot**, både när rösten läggs och i valideringen före
+   stängningen, och därmed i skalningen, som kör valideringen som spärr. Kedjan är lövet
+   och den mellannivå som utfärdat det. Roten är konfigurerad, med en sökväg i
+   `BANKID_ROOT_CERTIFICATES`, och följer aldrig med svaret: en rot som kom med kedjan vore
+   vald av den som skrev kedjan. Mellannivån ska vara utfärdad och signerad av roten och ha
+   CA-rätt. Lövet ska vara utfärdat och signerat av mellannivån, sakna CA-rätt och ha
+   keyUsage digitalSignature, och båda ska ha gällt vid underskriften. Vid läggningen är det
+   ögonblicket då BankID svarade, och i valideringen dagen då kuvertet lades, eftersom
+   tidpunkten bara lagras på dygnet när. Ett certifikat som gått ut efter att rösten lades
+   fäller inte rösten, av samma skäl som i 7.4.
+2. **Certifikatet knyts till väljaren.** Personnumret i lövets `serialNumber` hashas med
+   samma peppar som röstlängden, och hashen ska vara radens. En giltig kedja för en annan
+   väljare underkänns. Valideringen hashar en gång per väljare och körning, inte per kuvert.
+3. **Kedjan lagras krypterad** i `PendingVote`, med AES-256-GCM och en slumpad nonce per
+   kuvert, under en nyckel som härleds ur `IDENTITY_PEPPER` med HKDF och en egen
+   domänsträng, och med väljarens och valsedelns id som autentiserad data, så att en kedja
+   inte kan flyttas till en annan rad. Lövet bär personnummer och namn i klartext, och en
+   databasdump utan pepparn ska inte avslöja mer än i dag. Kedjan raderas med raden vid
+   skalningen.
+4. **Attrappen är en certifikatutfärdare.** Rot och mellannivå skapades en gång med openssl,
+   av `scripts/generate-mock-bankid-ca.ts`, och rotens privata nyckel kastades. Mellannivån
+   utfärdar ett certifikat vid varje underskrift, med personnumret som `serialNumber`. I
+   demoläget är attrappens rot den betrodda, och skarpt läge ska vägra starta med den
+   (uppgift 17).
+
+Ett trasigt certifikat i en rad är en avvikelse och ingen krasch, med ett skäl som går att
+utreda. En rotfil som inte går att läsa är däremot ett fel i driftsättningen, och då avbryts
+stängningen med kopplingen orörd.
+
+Vad signaturen ger nu:
 
 | Skyddar mot | Skyddar inte mot |
 |---|---|
-| En klient som skickar med ett eget kuvert | Den som kan skriva direkt i databasen |
-| Manipulation av en annars äkta rads innehåll | En självkonsekvent förfalskning med eget nyckelpar |
+| En klient som skickar med ett eget kuvert | Att den som driver systemet tar bort ett äkta kuvert |
+| Manipulation av en annars äkta rads innehåll | Att den som driver systemet lägger tillbaka en väljares tidigare äkta kuvert, med dess räknare |
+| En självkonsekvent förfalskning med eget nyckelpar, också från den som skriver direkt i databasen | Ett spärrat BankID-certifikat, eftersom ingen spärrkontroll görs |
+| En annan väljares äkta underskrift, lagd i fel rad | Den som driver en demo, eftersom attrappen utfärdar certifikaten själv |
 
-Skillnaden mellan de två kolumnerna är precis kedjevalideringen. Den står som känd
-begränsning, och konstruktionen är byggd för att den ska gå att lägga till utan att något
-annat ändras.
+Den som bara kan skriva i databasen kan alltså inte längre lägga in röster för någon som
+inte skrivit under, och en granskare med åtkomst under valideringen kan kontrollera varje
+underskrift mot BankID:s rot. Borttagning och återställning går inte att se i databasen,
+eftersom räknaren för den senaste underskriften lagras där. Väljaren kan däremot upptäcka
+båda själv: före stängningen svarar jämförelsen på hennes enhet "ändrad" eller "ingen röst",
+och efter stängningen ska markeringen "har röstat" visa att hon röstat (uppgift 11d).
+
+Riktig BankID kräver dessutom en adapter. BankID v6 returnerar en XMLDSig med kedjan
+inbäddad. Prövningen ovan är oberoende av formatet, men att läsa ut kedjan och den
+signerade texten ur XML-signaturen är inte byggt och kan inte provas utan BankID:s
+testmiljö. Begränsningarna står i avsnitt 10.
 
 **Återuppspelningen som också måste stoppas.** Utan räknaren i den signerade datan kan
 den som fångat väljarens *första* signerade kuvert skicka in det igen efter att hon ändrat
@@ -339,7 +379,8 @@ PendingVote
   ciphertextHash    text            SHA-256 över kanonisk serialisering
   castSequence      int             ökar vid varje läggning, ligger i det signerade
   bankIdSignature   text            XML-signatur från BankID /sign
-  bankIdCertificate text            väljarens certifikat, ur signaturen
+  bankIdCertificateChain text       certifikatkedjan ur signaturen, löv och mellannivå,
+                                    krypterad med AES-256-GCM, se 4.6
   updatedAt         timestamptz     dygnsupplöst, som övrig tidsdata
   @@unique([voterStatusId, ballotId])
 ```
@@ -392,8 +433,9 @@ BallotTally
    krypterar och bevisar.
 4. **Väljaren signerar** chifferhashen med BankID `/sign`. Appen visar vad hon godkänner;
    räknaren och valsedelns id ligger i det icke synliga fältet. Se avsnitt 4.6.
-5. **Servern** verifierar bevisen, kontrollerar signaturen mot väljarens personnummer och
-   att räknaren är högre än den lagrade, och gör upsert på `(voterStatusId, ballotId)`.
+5. **Servern** verifierar bevisen, prövar kedjan mot BankID:s rot, signaturen mot lövets
+   nyckel och personnumret i lövet mot väljarens, kontrollerar att räknaren är högre än den
+   lagrade, och gör upsert på `(voterStatusId, ballotId)` med kedjan krypterad (4.6).
 6. **Klienten kastar slumptalet** och sparar valet och chifferhashen lokalt, så att
    väljaren kan se sin nuvarande röst fram till stängningen. Ingen verifikationskod
    visas. Se 3.1.
@@ -510,7 +552,7 @@ före ombyggnaden fanns ingen koppling alls.
 
 | Kontroll | Vad den upptäcker | Gick det i blindsigneringsmodellen? |
 |---|---|---|
-| Varje röst bär väljarens egen BankID-signatur över sitt chiffer | Förfalskad röst från en klient; manipulation av en äkta rad | Nej |
+| Varje röst bär väljarens egen BankID-signatur över sitt chiffer, med en kedja till BankID:s rot | Förfalskad röst från en klient eller från den som skriver i databasen; manipulation av en äkta rad | Nej |
 | Räknaren i signaturen är den högsta väljaren ställt ut | Återuppspelad äldre röst, alltså ett röstköp som överlever ändringen | Nej |
 | Varje liggande röst tillhör en existerande, röstberättigad väljare | Rader som pekar på ingen | Nej |
 | Valsedeln gäller väljaren, alltså rätt kommun och region | Fel valsedel, oavsett om det är bugg eller angrepp | Nej |
@@ -523,10 +565,14 @@ de säger att raden hänger ihop med resten av databasen, vilket en angripare me
 skrivrättighet lätt ordnar. Med signaturen blir de **kryptografiska**: raden måste bära
 ett bevis.
 
-Hur mycket det beviset är värt avgörs dock av avsnitt 4.6. Utan kedjevalidering mot
-BankID:s CA kan den som skriver direkt i databasen framställa beviset själv, och då är
-kontrollen tillbaka på relationell nivå mot just den angriparen. Valideringen stänger
-alltså **klientsidan** helt, och serversidan först när kedjevalideringen finns.
+Hur mycket det beviset är värt avgörs av avsnitt 4.6. Utan kedjevalidering mot BankID:s
+rot kunde den som skriver direkt i databasen framställa beviset själv, och då var
+kontrollen tillbaka på relationell nivå mot just den angriparen. Sedan uppgift 14f prövar
+valideringen varje kedja mot roten och varje certifikat mot väljarens identitetshash, så
+den stänger både **klientsidan** och **serversidan** mot förfalskade röster. Den stänger
+inte att den som driver systemet tar bort ett äkta kuvert eller lägger tillbaka ett äldre,
+och i demoläget, där attrappen utfärdar certifikaten själv, stänger den ingenting mot den
+som driver demon.
 
 **Skillnaden är också att avvikelser blir spårbara.** Tidigare gav en felräkning ett tal: fler
 röster än markerade väljare. Ingen kunde säga vilka rösterna var. Nu ger samma kontroll
@@ -652,3 +698,26 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   finnas kvar hos BankID efter raderingen här. Åtgärdas genom att det signerade bär en
   hash av chifferhashen och ett salt som bara finns i `PendingVote` och raderas med
   raden. Efter stängningen går BankID:s kopia inte att matcha mot någonting.
+- **Den som driver systemet kan ta bort ett kuvert eller återställa en väljares tidigare
+  äkta röst.** Kedjevalideringen (4.6) hindrar att nya underskrifter förfalskas, men inte
+  att äkta tas bort eller spelas upp igen, eftersom räknaren för den senaste underskriften
+  lagras i samma databas: den som lägger tillbaka ett gammalt kuvert lägger tillbaka dess
+  räknare. Väljaren kan upptäcka båda på sin enhet före stängningen, där jämförelsen
+  svarar "ändrad" eller "ingen röst", och efter stängningen genom markeringen "har
+  röstat" (uppgift 11d).
+- **Ingen spärrkontroll (OCSP).** Ett spärrat BankID-certifikat godkänns så länge det
+  gäller i tid. Åtgärdas genom att OCSP-svaret som BankID skickar med prövas, både när
+  rösten läggs och i valideringen.
+- **I demoläget utfärdar attrappen certifikaten själv.** Mellannivåns privata nyckel är
+  incheckad, så den som driver en demo kan fortfarande förfalska en underskrift. Skyddet
+  gäller med riktig BankID, där nyckeln finns hos BankID. Testerna visar egenskapen mot
+  attrappens inbyggda rot, vars privata nyckel kastades.
+- **Riktig BankID kräver en adapter för XML-signaturen.** BankID v6 returnerar en XMLDSig
+  med kedjan inbäddad. Kedjevalideringen är oberoende av formatet, men att läsa ut kedjan
+  och den signerade texten ur XML-signaturen är inte byggt, och kan inte testas utan
+  BankID:s testmiljö.
+- **Den som har pepparn kan läsa namn och personnummer för varje liggande kuvert.** Kedjan
+  krypteras med en nyckel ur `IDENTITY_PEPPER`, eftersom valideringen måste kunna öppna
+  den. En databasdump utan pepparn avslöjar ingenting nytt, men den som har både dumpen och
+  pepparn får namnen direkt, medan identitetshashen bara låter honom pröva ett personnummer
+  i taget och aldrig ger namnet. Kedjan raderas med raden vid skalningen.

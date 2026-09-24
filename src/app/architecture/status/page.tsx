@@ -47,7 +47,9 @@ export default function StatusPage() {
             limitation('no-guaranteed-anonymity-set'),
           ]}
         />
-        <Remaining fixable={[limitations.bankIdOrder, limitations.chain]} />
+        <Remaining
+          fixable={[limitations.bankIdOrder, limitations.revocation, limitations.xmlAdapter]}
+        />
       </div>
     </main>
   )

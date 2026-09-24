@@ -249,8 +249,8 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
               Ytterkuvertet: vem som har röstat, i kolumnen{' '}
               <span className="mono">voter_status_id</span>, bredvid ett chiffer som inte går att
               läsa utan två av tre förtroendemäns andelar. Raden ersätts när väljaren röstar igen
-              och raderas vid stängningen. Signaturen och nyckeln ur certifikatet finns i raden men
-              visas inte här. Chifferhashen står med sina första tecken, som den som kan läsa
+              och raderas vid stängningen. Signaturen och den krypterade certifikatkedjan finns i
+              raden men visas inte här. Chifferhashen står med sina första tecken, som den som kan läsa
               databasen ser den. Röstsidan får den aldrig: enheten frågar bara om dess egen hash
               stämmer.
             </>

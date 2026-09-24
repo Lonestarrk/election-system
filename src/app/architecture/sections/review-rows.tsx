@@ -20,20 +20,22 @@ export type ReviewQuestion = {
   today: ReactNode
 }
 
-export function reviewQuestions({ chain }: PageLimitations): ReviewQuestion[] {
+export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] {
   return [
     {
       question: 'Är varje kuvert lagt av väljaren själv?',
       design: (
         <>
-          Varje rad bär väljarens BankID-signatur över chifferhashen och räknaren. Valideringen
-          före stängningen prövar signatur, räknare, valsedel och bevis medan kopplingen finns, och
-          stoppar skalningen vid en avvikelse. Röstningen förblir stängd, och ingenting raderas.
+          Varje rad bär väljarens BankID-signatur över chifferhashen och räknaren, och
+          certifikatkedjan bakom den. Valideringen före stängningen prövar kedjan mot BankID:s rot,
+          att certifikatet är väljarens, signatur, räknare, valsedel och bevis medan kopplingen
+          finns, och stoppar skalningen vid en avvikelse. Röstningen förblir stängd, och ingenting
+          raderas.
         </>
       ),
       today: (
         <>
-          {CURRENTLY.validationGatesClose.text} <LimitationReference entry={chain} from="status" />
+          {CURRENTLY.validationGatesClose.text} <LimitationReference entry={removal} from="status" />
         </>
       ),
     },

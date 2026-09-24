@@ -54,8 +54,8 @@ export const dynamic = 'force-dynamic'
  *    databaserna, och frågan som visar kopplingen körs på riktigt. Påståendena
  *    ska gå att kontrollera, inte behöva tros på.
  *
- * 4. Det hemliga väljs aldrig ut: väljarens BankID-signatur och nyckeln ur
- *    certifikatet, bevisen, förtroendemännens krypterade andelar och
+ * 4. Det hemliga väljs aldrig ut: väljarens BankID-signatur och den krypterade
+ *    certifikatkedjan, bevisen, förtroendemännens krypterade andelar och
  *    valsedlarnas privata signeringsnycklar. Kolumnerna finns, men ingenting ur
  *    dem lämnar databasen här.
  */
@@ -360,7 +360,7 @@ export async function GET() {
         }),
         pendingVotes: tx.pendingVote.findMany({
           orderBy: { id: 'asc' },
-          // Varken signaturen, nyckeln ur certifikatet eller bevisen. Se punkt 4 ovan.
+          // Varken signaturen, certifikatkedjan eller bevisen. Se punkt 4 ovan.
           select: {
             id: true,
             voterStatusId: true,

@@ -22,15 +22,14 @@ import {
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
-import {
-  envelopePayload,
-  publicKeyFromCertificate,
-} from '@/modules/eligibility/bankid/envelope-signature'
+import { parseCertificateChain } from '@/modules/eligibility/bankid/certificate-chain'
+import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
+import { sealCertificateChain } from '@/modules/eligibility/sealed-chain'
 import { forgeBallot } from '../unit/crypto/forged-ballot'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
@@ -331,7 +330,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     return {
       signature: result.completionData.signature,
-      certificate: result.completionData.certificate,
+      certificateChain: result.completionData.certificateChain,
       signedData: result.completionData.signedData,
     }
   }
@@ -391,7 +390,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       ciphertextHash: ballot.ciphertextHash,
       castSequence: 1,
       bankIdSignature: 'inte-en-äkta-signatur',
-      bankIdPublicKey: 'inte-en-äkta-nyckel',
+      bankIdCertificateChain: 'inte-en-äkta-kedja',
       updatedAt: new Date(),
     }
 
@@ -412,6 +411,8 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     const { ballot } = forgeBallot(BigInt(publicKey), electionId, ballotId, [-999n, 1000n, 0n])
     const castSequence = await nextCastSequence(voterStatusId, ballotId)
     const envelope = await signAs(voterStatusId, ballot.ciphertextHash, castSequence)
+    const chain = parseCertificateChain(envelope.certificateChain)
+    if (!chain) throw new Error('Kedjan i BankID-svaret gick inte att läsa.')
 
     const data = {
       ciphertext: ballot.ciphertext as unknown as Prisma.InputJsonValue,
@@ -419,7 +420,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       ciphertextHash: ballot.ciphertextHash,
       castSequence,
       bankIdSignature: envelope.signature,
-      bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
+      bankIdCertificateChain: sealCertificateChain(chain, { voterStatusId, ballotId }),
       updatedAt: new Date(),
     }
 
