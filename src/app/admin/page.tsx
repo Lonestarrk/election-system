@@ -207,7 +207,17 @@ export default function AdminPage() {
                   Merklerot <span className="mono">{report.merkleRoot.slice(0, 16)}…</span>
                 </p>
 
-                <table style={{ width: '100%', marginTop: '1rem' }}>
+                {/*
+                  Grundregeln i globals.css ger varje tabellcell white-space: nowrap,
+                  eftersom en hash som bryts mitt i blir oläslig. Här står löpande
+                  förklaringar i första kolumnen, och utan radbrytning blev tabellen
+                  1 267 px bred i ett kort på 620 px, och i ett kort på 350 px på en
+                  telefon. Första kolumnen bryter därför rad, långa tecknasträngar
+                  bryts var som helst, och behållaren skrollar om något ändå inte ryms,
+                  så att tabellen aldrig ritas utanför kortet.
+                */}
+                <div style={{ overflowX: 'auto', marginTop: '1rem' }}>
+                <table style={{ width: '100%' }}>
                   <thead>
                     <tr>
                       <th style={{ textAlign: 'left' }}>Kontroll</th>
@@ -217,7 +227,14 @@ export default function AdminPage() {
                   <tbody>
                     {report.checks.map((check) => (
                       <tr key={check.id}>
-                        <td style={{ verticalAlign: 'top', paddingRight: '1rem' }}>
+                        <td
+                          style={{
+                            verticalAlign: 'top',
+                            paddingRight: '1rem',
+                            whiteSpace: 'normal',
+                            overflowWrap: 'anywhere',
+                          }}
+                        >
                           {check.question}
                           <div className="muted small">{check.detail}</div>
                         </td>
@@ -234,6 +251,7 @@ export default function AdminPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
 
                 <div className="button-row" style={{ marginTop: '1.5rem' }}>
                   <button
