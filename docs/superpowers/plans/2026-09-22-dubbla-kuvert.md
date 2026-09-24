@@ -3621,6 +3621,91 @@ igen.
 
 ---
 
+## Task 11g: Arkitektursidan visar hur Key Vault används i hela flödet
+
+**Beslut av användaren 2026-09-24:** *"Uppdatera arkitektur att visa hur key vault
+används i hela flödet och ta med det i animationsstegen."* Körs direkt efter att
+uppgift 14f är godkänd, eftersom båda ändrar arkitektursidan.
+
+**Underlaget är Azure-infrastrukturen i `infra/azure/`**, som en annan session byggt och
+committat (6ba50ec). Den här uppgiften **läser** de filerna men ändrar dem inte. Varje
+påstående om Key Vault ska vara sant mot Bicep-filerna och mot koden, och bära en
+markör i `code-facts.ts`. Ändrar den andra sessionen infrastrukturen blir testet rött,
+och det är meningen.
+
+**Vad Key Vault gör i Azure, enligt filerna**
+
+| Hemlighet | Används till | Var |
+|---|---|---|
+| `identity-pepper` | Fingeravtrycket av personnumret (`hashPersonalNumber`, scrypt med pepparn som salt), och sedan 14f nyckeln som förseglar certifikatkedjan i kuvertet (HKDF i `sealed-chain.ts`) | `app.bicep`, `secretRef` |
+| `voters-database-url`, `votes-database-url` | Anslutningarna. **Varje databas har en egen roll som bara kan ansluta till sin egen databas** (`db-init.sql`: `REVOKE CONNECT … FROM PUBLIC`, `voters_app` och `votes_app`). Lokalt är det samma användare | `app.bicep`, `db-init.sql` |
+| `vapid-public-key`, `vapid-private-key` | Pushnotiser | `app.bicep` |
+| `pg-admin-password` | Läses av distributionen, inte av appen | `infra.bicep`, `getSecret` |
+
+Appens identitet har rollen Key Vault Secrets User på just det valvet och ingenting
+annat (`infra.bicep`). Valvet har RBAC och mjuk radering i 90 dagar
+(`keyvault.bicep`). `deploy.sh` skriver aldrig över en befintlig peppar, eftersom
+ingen hash i röstlängden stämmer om den byts. Hemligheterna sätts som miljövariabler
+när containern startar.
+
+**Vad valvet INTE innehåller, och det ska sägas lika tydligt:**
+- **förtroendepersonernas nycklar till summan.** Deras andelar ligger krypterade med
+  var sin lösenfras i röstdatabasen, med avsikt. Tre nycklar i samma valv är inte tre
+  innehavare (spec 4.5).
+- valets privata nyckel, som raderas när den delats
+- attrappens certifikatutfärdare, som ligger i repot som testnyckel
+
+**Huvudsidan, på vardagsspråk**
+
+Visa valvet i tidslinjen, i de moment där det används:
+
+- **1, valet förbereds:** valvet håller systemets hemligheter. Låsets tre nycklar finns
+  inte där.
+- **2, du legitimerar dig:** personnumret blir ett fingeravtryck med hjälp av en
+  hemlighet ur valvet, och databasen sparar bara fingeravtrycket.
+- **4, du skriver under:** ditt BankID-certifikat, med namn och personnummer, låses in i
+  det yttre kuvertet med en nyckel som görs av samma hemlighet.
+- **8, kontrollen:** hemligheten öppnar certifikaten så att underskrifterna kan prövas
+  medan namnen finns kvar.
+- **9, namnen tas bort:** de inlåsta certifikaten slängs med de yttre kuverten.
+  Efteråt kan hemligheten bara säga *att* någon röstat, inte vad.
+- **11, summan öppnas:** valvet används inte alls. Nyckeln till summan finns bara hos
+  förtroendepersonerna, och det ska synas i animationen.
+
+Visa också att de två databaserna har var sin nyckel i Azure, så att den som har
+röstlängdens nyckel inte ens kan öppna urnan.
+
+**De åtta liknelsekraven från 11f gäller fortfarande.** Valvet får inte se ut att hålla
+förtroendepersonernas nycklar, och ingenting får antyda att valvet gör kopplingen
+omöjlig. Det gör raderingen vid stängningen.
+
+**Svagheter, på huvudsidan och på Tekniska detaljer**
+
+- Den som får läsa valvet får pepparn. Med den kan hen göra fingeravtryck av
+  personnummer och, under röstningen, öppna certifikaten i kuverten, alltså namnen.
+  Det är samma sak som posten `pepper-holder-reads-voter-names` säger, och den ska
+  nämna valvet.
+- Appen har hemligheterna i minnet medan den kör. Valvet skyddar dem i vila och loggar
+  vem som läser, men en komprometterad app har dem.
+- Båda databasernas nycklar finns i samma app. Rollerna skyddar mot en läckt enskild
+  nyckel, inte mot appen. Avgör mot spec 2 om det ska bli en egen post i
+  `known-limitations.ts`.
+- Valvet är av typen Standard, alltså mjukvaruskyddat. Starkare vore att pepparn aldrig
+  lämnade en HSM och att fingeravtrycken räknades där. Det är inte byggt.
+- I demoläget och lokalt ligger hemligheterna i `.env`, inte i ett valv.
+
+**Tekniska detaljer** får ett avsnitt om hemligheterna, med tabellen ovan, rollerna och
+det valvet inte ger. **Utvecklingsstatus** säger att Azure-uppsättningen finns som Bicep
+och vad som är byggt.
+
+- [ ] Tester först: markörer mot `infra/azure/*.bicep`, `db-init.sql` och koden;
+      tidslinjens moment; att valvet aldrig visas med förtroendepersonernas nycklar.
+- [ ] Webbläsarkontroll i 390 och 1280 px med skärmdumpar av momenten 1, 2, 4, 8, 9
+      och 11, sparade i `screenshots/11g-*.png`.
+- [ ] Hela sviten, playwright en gång sist, committa. Rör inte `infra/`.
+
+---
+
 ## Task 14e: Pollningen bär bara orderRef, och bevakningen läser den offentliga listan
 
 **Varför:** två belastningsfel som granskningen av uppgift 14 hittade. De lyftes ur 14b,
@@ -3733,6 +3818,16 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
      felet: en radering efter id märker inte en rad som försvunnit mellan läsningarna.
      Kvar här är att en röst som skrivs efter läsningen varken försvinner eller räknas
      tyst: den ska ligga kvar, och skalningen ska avbrytas innan något raderas.
+   - **Omkörningen får inte låsas av rester i röstdatabasen.** Sedan 14f:s fixrunda
+     lämnar ett kuvert som tagits bort eller bytts ut efter läsningen ett chiffer kvar i
+     votes_db, eftersom infogningen sker före transaktionen i voters_db. Då stoppar
+     antalskontrollen varje omkörning tills någon städar för hand. Den som kan skriva i
+     databasen kan alltså låsa ett val. Städa automatiskt: ett chiffer i votes_db vars
+     hash inte finns i den nya, validerade läsningen kommer från en avbruten körning och
+     tas bort före infogningen. Det ska loggas och synas i rapporten.
+   - **En andra stängning ger i dag ett falskt `untouched`** om den läser fasen före den
+     förstas COMMIT men kuverten efter. Jämför-och-sätt på fasen, punkt 4 ovan, stänger
+     det.
    Skriv ett test som låter en röst skrivas mellan läsningen och raderingen, och som
    kräver att den antingen flyttas eller att väljaren får ett fel, aldrig "lagd".
 6. **Markeringen "har röstat", utan tidsstämpel.** Spec 3.1 punkt 6 säger att
@@ -3809,7 +3904,8 @@ och controllern stoppar och startar om den.
 ---
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
-**14** → **14b** → **14f** → **14e** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
+**14** → **14b** → **14f** → **11g** → **14e** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
+Uppgift 11g lades in 2026-09-24 på användarens begäran, direkt efter 14f.
 Uppgift 14f lades in 2026-09-24 på användarens begäran och körs direkt efter 14b.
 Uppgift 14b, 14c och 14d kom till efter uppgift 14 och ligger där de gör mest nytta:
 14b innan något mer verifieras i stor skala, 14e före 11e, som återanvänder dess lager
