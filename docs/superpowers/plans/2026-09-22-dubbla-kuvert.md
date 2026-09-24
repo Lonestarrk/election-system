@@ -3477,6 +3477,45 @@ den ändå rör filerna:
 
 ---
 
+## Task 14b: Kryptot blir snabbt nog, och servern står inte still
+
+**Varför:** implementeraren av uppgift 14 mätte cirka 40 ms per modexp med 2048
+bitar i ren BigInt, inte de 2 ms som planens globala regler och spec 4.1 bygger på.
+En riksdagsvalsedel med personval har 26 alternativ. Den tar 1,2–1,7 s att kryptera
+i Chromium, och servern verifierar den på cirka 11 s, **synkront i begäran**. Under
+den tiden står Nodes händelseslinga still för alla andra besökare. Valideringen före
+stängningen, omverifieringen vid skalningen och slutkontrollen verifierar dessutom
+varje röst igen, så stängningen av ett val med tusen röster skulle ta timmar.
+
+Regeln om inga nya npm-beroenden vilade på 2 ms. Den står kvar, eftersom det finns
+snabba vägar utan beroenden:
+
+1. **Mät först**, i Node och i Chromium: en modexp med full exponent, alltså mod `q`,
+   med `g`, med den publika nyckeln `h` och med godtycklig bas. Skriv in siffrorna i
+   spec 4.1 och i planens globala regler, där 2,0 ms står i dag.
+2. **Servern räknar nativt.** `node:crypto` har ingen modexp, men
+   `createDiffieHellman(p, bas)` med `setPrivateKey(exponent)` räknar `bas^exponent mod
+   p` i OpenSSL. Pröva att den ger exakt samma svar som BigInt-implementationen på
+   slumpade indata och på gränsfall: bas 0, 1 och p−1, och exponent 0, 1 och q. OpenSSL
+   kan vägra vissa värden som publik nyckel. Hantera det, och låt valideringen med
+   `isInSubgroup` fortfarande gå först.
+3. **Verifieringen flyttas från händelseslingan** till `worker_threads`, med ett litet
+   tak på samtidiga arbeten i samma anda som inträdeskön. Rutten väntar på svaret.
+   Ett test ska visa att en annan begäran besvaras medan en verifiering pågår.
+4. **Klienten får fasta baser.** `g` och `h` är desamma för varje röst i ett val, så
+   förberäknade fönstertabeller ger en snabbare exponentiering utan beroenden.
+   Mät före och efter.
+5. **Mål:** en riksdagsvalsedel med 26 alternativ verifieras på under en sekund på
+   servern och krypteras på under en sekund i Chromium. Mät också hur lång tid
+   valideringen före stängningen tar för 100 röster, och skriv in siffran.
+
+Den oberoende verifieraren i uppgift 13 får inte importera `src`. Den kör i Node och
+kan använda samma knep på egen hand.
+
+- [ ] Mätningar först, sedan tester, implementation, hela sviten, committa.
+
+---
+
 ## Task 11d: Faserna blir verkliga tillstånd
 
 **Varför:** spec 6.1 säger att fasen går enkelriktat `OPEN → CLOSED → VALIDATED →
@@ -3517,6 +3556,11 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
    stoppas en gång. Rätta samtidigt schemakommentaren i
    `prisma/voters/schema.prisma` som fortfarande kallar identitetshashen en HMAC.
    Uppgift 12b:s kontroll att antalet stämmer ska jämföra mot markeringarna.
+   **Obs:** sedan uppgift 14 tolkar röstsidan en markering i `voter_ballot_status` som
+   att väljaren röstat i det gamla flödet. Återanvänds modellen för den nya
+   markeringen måste tolkningen hållas isär. Före stängningen finns den nya
+   markeringen aldrig, och efter stängningen är röstsidan stängd, men säkerställ det
+   med ett test.
 
 **De invarianter som uppgift 11:s fem granskningsrundor slog fast ska hålla
 efteråt, och granskaren ska pröva dem med prober mot testdatabasen:**
@@ -3571,7 +3615,10 @@ och controllern stoppar och startar om den.
 ---
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
-**14** → 11d → 11e → 12 → 12b → 13 → 15 → 16 → 17 → 18. Uppgift 11f ligger först
+**14** → **14b** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18. Uppgift 14b
+och 14c kom till efter uppgift 14 och ligger där de gör mest nytta: 14b innan något
+mer verifieras i stor skala, och 14c före uppgift 15, som annars hade gjort
+folkomröstningar omöjliga. Uppgift 11f ligger först
 eftersom användaren prioriterade arkitektursidan. Uppgift 14 flyttades fram
 2026-09-23 på användarens begäran, så att det gamla tokenflödet försvinner ur det
 man klickar sig igenom. Beroendet är kontrollerat: uppgift 14 använder bara
@@ -3841,7 +3888,8 @@ kopplingen fanns och på slutkontrollen i uppgift 12b.
 och kräver ingen koppling till rösten. Sidan länkar till de publicerade summorna
 och säger hur man kör verktyget själv. **Före stängningen** hänvisar sidan till
 röstsidan, där väljaren ser sin nuvarande röst på enheten hon röstade från
-(uppgift 14). Byt komponentnamnet `VerifieraPage` mot ett engelskt.
+(uppgift 14). Komponentnamnet byttes till `VerifyPage` i uppgift 14. Uppgift 14 ersatte
+också tokenrutan med en förklaring, som den här uppgiften bygger ut.
 
 - [ ] **Steg 1: Skriv de fallerande testerna**
 
@@ -4094,6 +4142,23 @@ git commit -m "Röstsidan lägger och ändrar krypterade röster"
 
 ---
 
+## Task 14c: Folkomröstningsfrågor i kuvertmodellen
+
+**Varför:** implementeraren av uppgift 14 fann att valsedlar av typen `FRAGA`
+(folkomröstning) inte går att rösta på i kuvertmodellen. Röstsidan säger det. I det
+gamla flödet gick det, och ingen uppgift ägde det. Uppgiften måste vara klar **före
+uppgift 15**, som raderar det gamla flödet. Annars går en folkomröstning inte att
+genomföra alls.
+
+Ta reda på exakt vad som saknas, i valsedelns kanoniska alternativ, i formen på
+chiffret, i seeden eller någon annanstans, och bygg det. Blankt ska vara ett
+alternativ, så att summabeviset gäller som för de andra valsedlarna. Lägg ett e2e-test
+som röstar på en fråga, och ett integrationstest som räknar en.
+
+- [ ] Tester först, implementation, hela sviten, committa.
+
+---
+
 ## Task 15: Slakta blindsigneringen
 
 **Files:**
@@ -4105,12 +4170,16 @@ git commit -m "Röstsidan lägger och ändrar krypterade röster"
 Ta bort `src/app/api/vote/credential/route.ts`, lägg till `src/app/api/vote/encrypted/route.ts`,
 `src/app/api/admin/elections/close/route.ts`, `src/app/api/admin/elections/decrypt/route.ts`.
 
-**Posten `client-code-from-server` försvinner här**, eftersom dess markör gäller
-blindningen. Men problemet finns kvar i kuvertmodellen: klientkoden kommer från
+**Posten `client-code-from-server` skrevs om i uppgift 14** till kuvertmodellens
+klient, med en markör på röstsidan. Kontrollera att den fortfarande stämmer när
+blindningen raderas. Problemet finns kvar i kuvertmodellen: klientkoden kommer från
 servern, och en manipulerad klient kan kryptera ett annat val än väljaren gjorde
-(spec 10, *klientintegriteten är fortfarande olöst*). Lägg därför in en
-efterföljande post med en markör i kuvertflödets klientkod i samma uppgift, så att
-arkitektursidan aldrig visar problemet som löst.
+(spec 10, *klientintegriteten är fortfarande olöst*).
+
+**Röstsidans tolkning av det gamla flödets markering tas bort här.** Sedan uppgift 14
+visar röstsidan en valsedel med en markering i `voter_ballot_status` som att väljaren
+röstat i det gamla flödet och inte kan byta. När det gamla flödet raderas ska den
+tolkningen bort, och markeringarna från det gamla flödet med den.
 
 **Om ingenting längre skriver till den gamla tabellen `vote`** efter uppgift 14,
 ta bort modellen och allt som läser den, inte bara kolumnerna ovan.
