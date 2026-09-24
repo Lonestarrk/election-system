@@ -32,6 +32,9 @@ import { test as base, expect } from '@playwright/test'
  * Själva kapplöpningen är rättad i BankIdLogin (en fråga i taget), men
  * uppvärmningen står kvar: en svit vars första test betalar
  * kompileringstiden är ändå ojämn, och ojämna tester slutar man tro på.
+ *
+ * Röstsidans rutter är kuvertmodellens sedan uppgift 14. Det gamla flödets
+ * /api/vote/cast anropas inte längre av någon sida och värms därför inte.
  */
 const ROUTES_TO_WARM = [
   '/api/auth/bankid/start',
@@ -40,7 +43,10 @@ const ROUTES_TO_WARM = [
   '/api/admin/login',
   '/api/demo/bankid-scan',
   '/api/vote/session',
-  '/api/vote/cast',
+  '/api/vote/ballot',
+  '/api/vote/compare',
+  '/api/vote/sign-start',
+  '/api/vote/encrypted',
 ]
 
 let warmed = false

@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto'
 import { isInSubgroup } from './group'
 import { multiply, type Ciphertext } from './elgamal'
 import { verifySumIsOne, verifyZeroOrOne, type EqualityProof, type ZeroOrOneProof } from './proofs'
+import { sha256Hex } from './sha256'
 
 /**
  * Bevisen på trådformat.
@@ -80,17 +80,16 @@ function parseEqualityProof(proof: SerialisedEqualityProof): EqualityProof {
  * Bor har och inte i klientmodulen, eftersom BADE bevisaren och verifieraren
  * måste rakna fram exakt samma värde. Tva implementationer som glider isar ger
  * ett fel som ser ut som en manipulerad rost.
+ *
+ * Av samma skäl är hashen `sha256Hex`, som också finns i webbläsaren, och inte
+ * Nodes `createHash`. Indatan är oförändrad, och därmed hashen. Se ./sha256.ts.
  */
 export function hashCiphertext(ciphertext: Array<{ c1: string; c2: string }>): string {
-  const hash = createHash('sha256')
-  hash.update('valsystem/chiffer/v1')
+  const parts = ['valsystem/chiffer/v1']
   for (const pair of ciphertext) {
-    hash.update('\u0000')
-    hash.update(pair.c1)
-    hash.update('\u0000')
-    hash.update(pair.c2)
+    parts.push('\u0000', pair.c1, '\u0000', pair.c2)
   }
-  return hash.digest('hex')
+  return sha256Hex(parts.join(''))
 }
 
 /** Kontexten som binder ett bevis till sin plats. Måste vara identisk hos bevisaren. */

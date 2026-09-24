@@ -1,7 +1,7 @@
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { ballotLookupSchema, parseJsonBody } from '@/lib/validation'
-import { getBallotChoices } from '@/modules/ballot-box'
+import { getBallotChoices, getEncryptedBallotShape } from '@/modules/ballot-box'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -30,6 +30,19 @@ export const dynamic = 'force-dynamic'
  * att det fanns en enda partilista för hela systemet. Med kommun-, landstings-
  * och riksdagsvalsedlar som kan ha olika partier — och lokala partier som bara
  * står i en kommun — håller inte det antagandet.
+ *
+ * VALETS PUBLIKA NYCKEL FÖLJER MED
+ *
+ * Röstsidan krypterar valet i webbläsaren och behöver därför omröstningens
+ * publika krypteringsnyckel, och antalet alternativ servern kommer att pröva
+ * bevisen mot. Båda är offentliga: nyckeln finns till för att vem som helst
+ * ska kunna kryptera till den, och antalet följer av valsedeln. Sidan bygger
+ * själv den kanoniska listan ur partiernas och kandidaternas ordning och
+ * jämför längden med `optionCount` innan den krypterar, så att en lista som
+ * glidit isär stoppas i webbläsaren i stället för som ett underkänt bevis.
+ *
+ * `encryption` är null för en valsedel som kuvertmodellen inte kan ta emot,
+ * i dag en fråga i en allmän omröstning. Se `getEncryptedBallotShape`.
  */
 export async function POST(request: Request) {
   // Origin-kontroll och hastighetsbegränsning även här, trots att rutten bara
@@ -55,11 +68,18 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }
 
-  const choices = await getBallotChoices(body.data.ballotId)
+  const [choices, shape] = await Promise.all([
+    getBallotChoices(body.data.ballotId),
+    getEncryptedBallotShape(body.data.ballotId),
+  ])
 
   if (!choices) {
     return errorResponse('UNKNOWN_BALLOT', 'Valsedeln finns inte.', 404)
   }
 
-  return jsonResponse({ ballotId: body.data.ballotId, choices })
+  return jsonResponse({
+    ballotId: body.data.ballotId,
+    choices,
+    encryption: shape ? { publicKey: shape.publicKey, optionCount: shape.optionCount } : null,
+  })
 }

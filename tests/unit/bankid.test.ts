@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MockBankIdService,
   resetMockBankIdOrders,
@@ -241,5 +241,27 @@ describe('orderns livscykel', () => {
     await service.cancel(order.orderRef)
 
     expect(selectDemoIdentity(order.orderRef, '19900101-1234')).toBe(false)
+  })
+})
+
+describe('ordrarna delas mellan upplagor av modulen', () => {
+  it('en order som startats i en upplaga hittas i en annan', async () => {
+    /**
+     * Dev-servern laddar om modulerna för en rutt som byggs på nytt, medan en
+     * annan rutt behåller sin gamla upplaga. Låg ordrarna i modulen startade
+     * /api/auth/bankid/start en order som /api/auth/bankid/collect inte kunde
+     * hitta, och legitimeringen misslyckades. Här laddas modulen en gång till,
+     * som en rutt som byggts om, och ordern ska finnas kvar i den.
+     */
+    const order = await service.auth({ endUserIp: '198.51.100.7' })
+
+    vi.resetModules()
+    const reloaded = await import('@/modules/eligibility/bankid/MockBankIdService')
+    expect(reloaded.MockBankIdService).not.toBe(MockBankIdService)
+
+    expect(reloaded.selectDemoIdentity(order.orderRef, '19900101-1234')).toBe(true)
+    // "failed" är just felet: en order som inte finns ger expiredTransaction.
+    const result = await new reloaded.MockBankIdService().collect(order.orderRef)
+    expect(result.status).not.toBe('failed')
   })
 })

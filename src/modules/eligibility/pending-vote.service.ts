@@ -1,3 +1,4 @@
+import { safeEqual } from '@/lib/crypto'
 import { truncateToDay } from '@/lib/time'
 import { verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
@@ -300,7 +301,14 @@ export async function nextCastSequence(voterStatusId: string, ballotId: string):
   return (existing?.castSequence ?? 0) + 1
 }
 
-/** Väljarens liggande kuvert för en valsedel, om något. Används för att visa en verifikationskod. */
+/**
+ * Väljarens liggande kuvert för en valsedel, med chifferhash, om något.
+ *
+ * INGEN RUTT FÅR LÄMNA UT DET HÄR. Funktionen finns för testerna. Röstsidan
+ * jämför i stället med `compareWithPendingVotes`, som svarar lika, olika eller
+ * ingen röst och aldrig hashen själv; se den funktionen för varför. Ingen kod
+ * visas heller för väljaren (spec 3.1 punkt 3).
+ */
 export async function pendingVoteFor(
   voterStatusId: string,
   ballotId: string,
@@ -308,6 +316,107 @@ export async function pendingVoteFor(
   return votersDb.pendingVote.findUnique({
     where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
     select: { ciphertextHash: true },
+  })
+}
+
+/**
+ * Det röstsidan behöver veta om väljarens kuvert: valets fas, om en röst tas
+ * emot just nu, och vilka valsedlar som har ett liggande kuvert.
+ *
+ * BARA VALSEDLARNAS ID, ALDRIG NÅGON CHIFFERHASH. Att ett kuvert finns är vad
+ * sidan behöver för beskedet "Du har en röst registrerad". Hashen behövs inte
+ * för det, och en enhet som fick den skulle veta mer än den själv lagt; se
+ * `compareWithPendingVotes`.
+ *
+ * Uppgiften kommer ur pending_vote, kuvertmodellens egen tabell, och inte ur
+ * det gamla flödets markering. Ett kuvert kan bytas ut fram till stängningen,
+ * en markering i det gamla flödet kan det inte.
+ *
+ * `acceptsVotes` har samma villkor som `castEncryptedBallot` avvisar på, i
+ * omvänd form: fasen är OPEN, kopplingen är inte raderad och `closesAt` har
+ * inte passerats. Sidan ska inte erbjuda en röstning som servern sedan
+ * vägrar ta emot. Ändras villkoret där ska det ändras här.
+ */
+export type EnvelopeOverview = {
+  phase: string
+  closesAt: Date
+  acceptsVotes: boolean
+  ballotIdsWithEnvelope: string[]
+}
+
+export async function envelopeOverview(
+  voterStatusId: string,
+  electionId: string,
+): Promise<EnvelopeOverview | null> {
+  const election = await votersDb.election.findUnique({
+    where: { id: electionId },
+    select: {
+      phase: true,
+      closesAt: true,
+      linkClearedAt: true,
+      ballots: { select: { id: true } },
+    },
+  })
+
+  if (!election) return null
+
+  const envelopes = await votersDb.pendingVote.findMany({
+    where: { voterStatusId, ballotId: { in: election.ballots.map((ballot) => ballot.id) } },
+    select: { ballotId: true },
+  })
+
+  return {
+    phase: election.phase,
+    closesAt: election.closesAt,
+    acceptsVotes:
+      election.phase === 'OPEN' &&
+      election.linkClearedAt === null &&
+      election.closesAt > new Date(),
+    ballotIdsWithEnvelope: envelopes.map((envelope) => envelope.ballotId),
+  }
+}
+
+/** Utfallet av en jämförelse: samma kuvert, ett annat kuvert, eller inget kuvert alls. */
+export type DeviceComparison = 'same' | 'different' | 'none'
+
+/**
+ * Jämför enhetens sparade chifferhashar med väljarens liggande kuvert.
+ *
+ * SERVERN JÄMFÖR, DEN LÄMNAR INTE UT.
+ *
+ * Det enkla hade varit att ge sidan hashen för det liggande kuvertet och låta
+ * den jämföra själv. Då får en enhet veta hashen för en röst som lagts från en
+ * ANNAN enhet, alltså för den röst som faktiskt räknas. Tillsammans med
+ * läsrätt i votes_db pekar den ut rätt rad efter stängningen. Det är spec
+ * 10:s svaghet om insidern med en enhets sparade chifferhash, fast för den
+ * slutliga rösten i stället för en som kanske redan bytts ut.
+ *
+ * Här skickar enheten den hash den själv sparade när den lade rösten, och får
+ * tillbaka bara lika, olika eller ingen röst. Enheten vet därmed aldrig mer än
+ * sin egen hash, och den visste den redan.
+ *
+ * Jämförelsen görs i konstant tid, så att svarstiden inte berättar hur många
+ * tecken i början som stämde. Utan det hade hashen gått att gissa fram tecken
+ * för tecken över tillräckligt många anrop, och då vore den utlämnad ändå.
+ */
+export async function compareWithPendingVotes(
+  voterStatusId: string,
+  deviceHashes: Array<{ ballotId: string; ciphertextHash: string }>,
+): Promise<Array<{ ballotId: string; result: DeviceComparison }>> {
+  const envelopes = await votersDb.pendingVote.findMany({
+    where: { voterStatusId, ballotId: { in: deviceHashes.map((entry) => entry.ballotId) } },
+    select: { ballotId: true, ciphertextHash: true },
+  })
+
+  const held = new Map(envelopes.map((envelope) => [envelope.ballotId, envelope.ciphertextHash]))
+
+  return deviceHashes.map((entry): { ballotId: string; result: DeviceComparison } => {
+    const current = held.get(entry.ballotId)
+    if (current === undefined) return { ballotId: entry.ballotId, result: 'none' }
+    return {
+      ballotId: entry.ballotId,
+      result: safeEqual(current, entry.ciphertextHash) ? 'same' : 'different',
+    }
   })
 }
 

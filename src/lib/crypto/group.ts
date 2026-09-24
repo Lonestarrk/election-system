@@ -1,5 +1,3 @@
-import { randomBytes } from 'node:crypto'
-
 /**
  * RFC 3526 MODP Group 14, 2048 bitar.
  *
@@ -49,16 +47,39 @@ export function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint 
 }
 
 /**
+ * Kryptografiskt säkra slumpbytes, i Node och i webbläsaren.
+ *
+ * `crypto.getRandomValues` är WebCrypto och finns globalt på båda ställena,
+ * med operativsystemets slumpkälla bakom. Tidigare hämtades `randomBytes` ur
+ * node:crypto, men valsedeln krypteras i väljarens webbläsare, och där finns
+ * inte den modulen: röstsidan gick inte att bygga. Se ./sha256.ts för samma
+ * byte på hashsidan.
+ *
+ * Finns ingen slumpkälla kastar funktionen. Den får aldrig falla tillbaka på
+ * `Math.random`: ett förutsägbart slumptal avslöjar klartexten.
+ */
+function secureRandomBytes(length: number): Uint8Array {
+  const source = globalThis.crypto
+  if (!source || typeof source.getRandomValues !== 'function') {
+    throw new Error('Ingen kryptografisk slumpkälla finns i den här miljön.')
+  }
+  return source.getRandomValues(new Uint8Array(length))
+}
+
+/**
  * Enhetligt slumptal i [1, q-1].
  *
- * Avvisning i stället för modulo: `randomBytes % q` ger en snedfördelning mot
- * små tal, och ett förutsägbart slumptal i ElGamal avslöjar klartexten.
+ * Avvisning i stället för modulo: slumpbytes modulo q ger en snedfördelning
+ * mot små tal, och ett förutsägbart slumptal i ElGamal avslöjar klartexten.
  */
 export function randomScalar(): bigint {
   const byteLength = (Q.toString(16).length + 1) >> 1
 
   for (;;) {
-    const candidate = BigInt('0x' + randomBytes(byteLength).toString('hex'))
+    const hex = Array.from(secureRandomBytes(byteLength), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('')
+    const candidate = BigInt('0x' + hex)
     if (candidate > 0n && candidate < Q) return candidate
   }
 }

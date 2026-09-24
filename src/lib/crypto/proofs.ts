@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto'
 import { G, P, Q, modPow, randomScalar } from './group'
 import type { Ciphertext } from './elgamal'
+import { sha256Hex } from './sha256'
 
 /**
  * BEVISEN ÄR INTE VALFRIA.
@@ -35,16 +35,17 @@ export type EqualityProof = { a: bigint; b: bigint; challenge: bigint; response:
  *
  * `context` bär valets och valsedelns id samt komponentens index. Utan det kan
  * ett giltigt bevis klippas ut ur en valsedel och återanvändas i en annan.
+ *
+ * Hashen är `sha256Hex` och inte Nodes `createHash`, eftersom bevisen byggs i
+ * väljarens webbläsare, där node:crypto inte finns. Indatan är densamma som
+ * förut, byte för byte, och därmed också utmaningen. Se ./sha256.ts.
  */
 export function challengeHash(context: string, values: bigint[]): bigint {
-  const hash = createHash('sha256')
-  hash.update('valsystem/bevis/v1\u0000')
-  hash.update(context)
+  const parts = ['valsystem/bevis/v1\u0000', context]
   for (const value of values) {
-    hash.update('\u0000')
-    hash.update(value.toString(16))
+    parts.push('\u0000', value.toString(16))
   }
-  return BigInt('0x' + hash.digest('hex')) % Q
+  return BigInt('0x' + sha256Hex(parts.join(''))) % Q
 }
 
 export function proveZeroOrOne(

@@ -408,9 +408,10 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
 
   it('det gamla flödets tabell redovisas som den är, märkt för sig', async () => {
     /**
-     * Röstsidan lägger fortfarande röster med röstintyg och blind signatur.
-     * Livevyn får inte låtsas att det flödet är borta: rösten ska synas i
-     * tabellen vote, med timupplösning precis som den lagras.
+     * Det gamla flödets rutter tar fortfarande emot röster med röstintyg och
+     * blind signatur, fast röstsidan inte längre använder dem. Livevyn får inte
+     * låtsas att det flödet är borta: rösten ska synas i tabellen vote, med
+     * timupplösning precis som den lagras.
      */
     const attempt = await voteOnce(robin, { electionId, ballotId, ballotPartyId: bpS })
     expect(attempt.status).toBe('voted')

@@ -17,9 +17,9 @@ export function LimitationsList() {
         och publicera bara summorna. Den visar inte ett valsystem redo för drift.
       </p>
       <p className="muted small">
-        Listan gäller hela systemet, både kuvertmodellen och det gamla flödet som röstsidan
-        fortfarande kör. Poster som bara gäller det gamla flödet försvinner ur listan när det tas
-        bort.
+        Listan gäller hela systemet, både kuvertmodellen och det gamla flödet, vars rutter finns
+        kvar fast ingen sida använder dem längre. Poster som bara gäller det gamla flödet
+        försvinner ur listan när det tas bort.
       </p>
 
       <div className="table-wrap" style={{ marginTop: '1rem' }}>

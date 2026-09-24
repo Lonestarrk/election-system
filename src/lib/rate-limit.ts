@@ -83,6 +83,18 @@ export const RATE_LIMITS = {
    */
   castEncryptedBallot: { limit: 30, windowMs: 60_000 },
   /**
+   * Jämförelsen av enhetens sparade chifferhash med det liggande kuvertet
+   * (/api/vote/compare).
+   *
+   * Röstsidan frågar en gång när den laddas, för alla valsedlar på en gång,
+   * så en väljare kommer aldrig nära gränsen. Gränsen finns för att rutten är
+   * ett orakel: den svarar ja eller nej på om en viss hash är väljarens
+   * liggande kuvert. Att gissa en hash är hopplöst, men den som redan har en
+   * handfull kandidater, till exempel från en annan enhet, ska inte kunna
+   * pröva dem i hög takt.
+   */
+  compareDeviceVotes: { limit: 20, windowMs: 60_000 },
+  /**
    * Verifiering. Stramt satt trots att en 240-bitars token inte går att
    * gissa — gränsen finns för att stoppa uppräkning som lastangrepp.
    */

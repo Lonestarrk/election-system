@@ -1,140 +1,77 @@
-'use client'
-
-import { useState } from 'react'
+import Link from 'next/link'
 
 /**
- * Verifieringssidan.
+ * Verifieringssidan, medan den inte har något att verifiera.
  *
- * Token skickas i begärans kropp, aldrig i URL:en — och sidan har inget
- * formulärfält som ens kan ta emot något annat än en token. Det finns
- * medvetet ingen möjlighet att söka på personnummer: den funktionen saknas
- * inte bara i gränssnittet utan i hela systemet.
+ * HÄR STOD EN RUTA FÖR TOKEN. Röstsidan delar inte längre ut några tokens:
+ * kuvertmodellen har inget kvitto, eftersom ett kvitto som visar vad någon
+ * röstat på är just det en köpare ber att få se (spec 3.1). Rutan hade alltså
+ * ingenting att ta emot, och den som skrev in en gammal kod hade fått svar ur
+ * det gamla flödet, med partiet i klartext.
+ *
+ * Sidan förklarar i stället var kontrollen finns. Före stängningen: på
+ * röstsidan, på enheten väljaren röstade från, där servern varje gång sidan
+ * laddas bekräftar att den håller exakt den rösten. Efter stängningen ska den
+ * här sidan visa att väljaren röstat, men inte vad. Det är inte byggt än, och
+ * sidan säger det. Det byggs i uppgift 13, som behöver markeringen "har
+ * röstat" från uppgift 11d.
+ *
+ * Sidan anropar ingenting. /api/verify finns kvar med det gamla flödet och
+ * tas bort med det.
  */
-
-type Result =
-  | { state: 'idle' }
-  | { state: 'loading' }
-  | { state: 'registered'; election: string
-  ballot: string
-  choice: string
-  candidate: string | null }
-  | { state: 'not_found' }
-  | { state: 'error'; message: string }
-
-export default function VerifieraPage() {
-  const [token, setToken] = useState('')
-  const [result, setResult] = useState<Result>({ state: 'idle' })
-
-  async function verify(event: React.FormEvent) {
-    event.preventDefault()
-    setResult({ state: 'loading' })
-
-    try {
-      const response = await fetch('/api/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
-      })
-      const data = await response.json()
-
-      if (!response.ok) {
-        setResult({ state: 'error', message: data.error?.message ?? 'Verifieringen misslyckades.' })
-        return
-      }
-
-      setResult(
-        data.registered
-          ? {
-              state: 'registered',
-              election: data.election,
-              ballot: data.ballot,
-              choice: data.choice,
-              candidate: data.candidate,
-            }
-          : { state: 'not_found' },
-      )
-    } catch {
-      setResult({ state: 'error', message: 'Kunde inte nå tjänsten. Försök igen.' })
-    }
-  }
-
+export default function VerifyPage() {
   return (
     <main className="narrow">
       <div className="stack">
         <div>
-          <h1>Verifiera din röst</h1>
+          <h1>Kontrollera din röst</h1>
           <p className="muted">
-            Ange den token du fick när du röstade. Systemet svarar om rösten finns registrerad och
-            vilket parti den avsåg.
+            Du får ingen kod att spara, och det finns ingenting att skriva in här. Så här
+            kontrollerar du din röst i stället.
           </p>
         </div>
 
-        <form className="card" onSubmit={verify}>
-          <label htmlFor="token">Token</label>
-          <input
-            id="token"
-            type="text"
-            className="mono"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-            required
-          />
-          <p className="muted small" style={{ marginTop: '0.6rem' }}>
-            Bindestreck och versaler spelar ingen roll. Tecknen I, L och O tolkas som 1, 1 och 0.
+        <section className="card" aria-labelledby="fore-stangningen">
+          <h2 id="fore-stangningen">Medan röstningen pågår</h2>
+          <p>
+            Du ser din röst på röstsidan, på den enhet du röstade från. Varje gång sidan öppnas
+            frågar den servern om rösten som ligger där är exakt den som lades härifrån. Stämmer
+            det visas vad du röstade på. Har du ändrat rösten från en annan enhet visas bara att
+            den har ändrats.
           </p>
-
-          <div className="button-row" style={{ marginTop: '1rem' }}>
-            <button type="submit" disabled={result.state === 'loading'}>
-              {result.state === 'loading' ? 'Kontrollerar …' : 'Verifiera'}
-            </button>
+          <p className="small">
+            Det som visas bevisar ingenting för någon annan, och det är med avsikt. Ingen kan
+            kräva ett bevis av dig, och ingen kan få ett. Du kan rösta om så många gånger du vill
+            fram till stängningen, och det är den senaste rösten som räknas.
+          </p>
+          <div>
+            <Link href="/identify">
+              <button type="button">Till röstsidan</button>
+            </Link>
           </div>
+        </section>
 
-          {result.state === 'registered' && (
-            <div className="notice success" role="status" style={{ marginTop: '1.25rem' }}>
-              <strong>Din röst är registrerad.</strong>
-              <div style={{ marginTop: '0.35rem' }}>
-                <div>
-                  {result.election} — {result.ballot}
-                </div>
-                <div>Rösten avsåg: {result.choice}</div>
-                {result.candidate && <div>Personröst: {result.candidate}</div>}
-              </div>
-              <p className="muted small" style={{ marginTop: '0.75rem' }}>
-                Kvittot gäller en valsedel. Har du röstat på flera har du en kod per valsedel —
-                de är medvetet åtskilda, så att dina val inte kan läggas ihop till en profil.
-              </p>
-            </div>
-          )}
-
-          {result.state === 'not_found' && (
-            <div className="notice warning" role="status" style={{ marginTop: '1.25rem' }}>
-              Ingen röst hittades för den här token. Kontrollera att du skrivit av den rätt.
-            </div>
-          )}
-
-          {result.state === 'error' && (
-            <div className="notice danger" role="alert" style={{ marginTop: '1.25rem' }}>
-              {result.message}
-            </div>
-          )}
-        </form>
-
-        <div className="card">
-          <h3>Vad verifieringen inte kan göra</h3>
-          <p className="muted small">
-            Svaret innehåller aldrig någon uppgift om vem som röstat. Det finns heller ingen väg åt
-            andra hållet: ingen kan mata in ett personnummer och få ut en token. Den kopplingen
-            finns inte lagrad någonstans i systemet, så frågan saknar svar — även för den som har
-            full tillgång till databaserna.
+        <section className="card" aria-labelledby="efter-stangningen">
+          <h2 id="efter-stangningen">När röstningen har stängt</h2>
+          <p>
+            Då kommer den här sidan att visa att du har röstat, men inte vad. Röstsidan slutar
+            visa din röst och raderar det enheten sparat, första gången den öppnas efter
+            stängningen.
           </p>
-          <p className="muted small">
-            Att den som har din token också kan se vad du röstat på är en följd av att du ska kunna
-            kontrollera din egen röst. Behandla token som en privat uppgift.
+          <div className="notice warning">
+            Den delen är inte byggd än. Tills den finns visar sidan ingenting efter stängningen.
+          </div>
+        </section>
+
+        <section className="card" aria-labelledby="varfor-ingen-kod">
+          <h2 id="varfor-ingen-kod">Varför det inte finns någon kod</h2>
+          <p className="small" style={{ marginBottom: 0 }}>
+            Tidigare fick du en kod som visade vilket parti rösten gällde. Den som fick se koden
+            kunde alltså se hur du röstat, också någon som betalat för din röst. Därför finns den
+            inte längre. Mer om hur det fungerar står på sidan{' '}
+            <Link href="/architecture">Arkitektur</Link>.
           </p>
-        </div>
+        </section>
       </div>
     </main>
   )

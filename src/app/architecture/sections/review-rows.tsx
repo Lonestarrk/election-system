@@ -63,7 +63,7 @@ export function reviewQuestions({ chain }: PageLimitations): ReviewQuestion[] {
       ),
       today: (
         <>
-          {CURRENTLY.deviceViewNotBuilt.text} {CURRENTLY.votedMarkerNotKept.text}
+          {CURRENTLY.deviceViewBuilt.text} {CURRENTLY.votedMarkerNotKept.text}
         </>
       ),
     },

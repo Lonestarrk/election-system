@@ -179,6 +179,39 @@ export const castEncryptedBallotSchema = z.object({
   ballot: encryptedBallotSchema,
 })
 
+/**
+ * Enhetens sparade chifferhashar, en per valsedel, för jämförelsen i
+ * /api/vote/compare.
+ *
+ * I KROPPEN, INTE I URL:EN. En hash i en sökväg eller frågesträng hamnar i
+ * accessloggar, proxyloggar och webbläsarhistorik, och den här hashen är
+ * precis det handtag spec 10 varnar för tillsammans med läsrätt i votes_db.
+ *
+ * Högst femtio, samma tak som för valsedlar i en omröstning. En väljare har
+ * aldrig fler kuvert än så att fråga om.
+ *
+ * VARJE VALSEDEL HÖGST EN GÅNG. Rutten svarar ja eller nej på om en hash är
+ * väljarens liggande kuvert. En enhet har en hash per valsedel att fråga om,
+ * och fick den skicka samma valsedel femtio gånger kunde den pröva femtio
+ * kandidater per anrop, förbi hastighetsbegränsningen.
+ */
+export const compareDeviceVotesSchema = z
+  .object({
+    ballots: z
+      .array(
+        z.object({
+          ballotId: z.string().uuid('Ogiltig valsedel.'),
+          ciphertextHash: z.string().regex(/^[0-9a-f]{64}$/, 'Ogiltig hash.'),
+        }),
+      )
+      .min(1)
+      .max(50),
+  })
+  .refine(
+    (value) => new Set(value.ballots.map((entry) => entry.ballotId)).size === value.ballots.length,
+    { message: 'Varje valsedel får bara förekomma en gång.' },
+  )
+
 /** Avslutad prenumeration. Bara endpointen behövs för att hitta raden. */
 export const pushUnsubscribeSchema = z.object({
   endpoint: z.string().url('Ogiltig endpoint.').max(2000),

@@ -79,7 +79,7 @@ export function FollowAVote({
           Inget kuvert i en öppen omröstning finns att följa just nu.{' '}
           {snapshot.votersDb.pendingVote.length === 0 &&
             stripped.length === 0 &&
-            CURRENTLY.votePageUsesOldFlow.text}
+            CURRENTLY.votePageLaysEnvelopes.text}
         </p>
       )}
 

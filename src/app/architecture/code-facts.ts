@@ -2,9 +2,9 @@
  * VAD ARKITEKTURSIDAN PÅSTÅR OM KODEN I DAG, MED MARKÖRER.
  *
  * Sidan beskriver en modell som är halvvägs byggd. En del av det den säger
- * handlar därför om kodens nuvarande läge: att röstsidan fortfarande kör det
- * gamla flödet, att dekrypteringen inte är byggd, vilka faser som faktiskt
- * skrivs, hur tidsstämplar lagras. Sådana påståenden blir fel av sig själva i
+ * handlar därför om kodens nuvarande läge: att det gamla flödets rutter finns
+ * kvar, att dekrypteringen inte är byggd, vilka faser som faktiskt skrivs, hur
+ * tidsstämplar lagras. Sådana påståenden blir fel av sig själva i
  * samma stund som en senare uppgift ändrar något, och den som ändrar det har
  * ingen anledning att öppna arkitektursidan.
  *
@@ -65,18 +65,60 @@ const DECRYPTION_NOT_BUILT: Marker = {
 }
 
 /**
- * Röstsidan anropar det gamla flödets rutt och inte kuvertmodellens, och det
- * gamla flödet har de två egenskaper sidan säger att det har: en röst per
- * väljare och valsedel, och ett kvitto som visar valet.
+ * Ingen sida anropar det gamla flödets rutter.
+ *
+ * Fram till uppgift 14 stod här det motsatta: röstsidan lade röster med
+ * röstintyg och fick en kvittokod tillbaka. Mönstret letar efter rutternas
+ * adresser som strängar, i kod och kommentarer, i röstsidans och
+ * verifieringssidans kataloger, och efter klientmodulen för blindningen.
  */
-const VOTE_PAGE_OLD_FLOW: Marker[] = [
-  { file: 'src/app/vote/page.tsx', contains: "fetch('/api/vote/cast'" },
-  { nowhereIn: 'src/app/vote', matches: /\/api\/vote\/encrypted/ },
-  // Dubbelröstningsspärren: ett röstintyg per väljare och valsedel.
-  { file: 'src/modules/eligibility/credential.service.ts', contains: 'tx.voterBallotStatus.create' },
-  // Verifieringen svarar med valet, och det är vad som gör kvittot till ett bevis.
-  { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
+const NO_PAGE_USES_OLD_FLOW: Marker[] = [
+  {
+    nowhereIn: 'src/app/vote',
+    matches: /['"`]\/api\/(vote\/cast|vote\/credential|verify)['"`]|@\/lib\/blind-client/,
+  },
+  { nowhereIn: 'src/app/verify', matches: /['"`]\/api\/(vote\/cast|vote\/credential|verify)['"`]/ },
 ]
+
+/**
+ * Röstsidan lägger kuvert: krypterar i webbläsaren, låter servern starta en
+ * BankID-underskrift över hashen och lämnar in valsedeln när den är klar.
+ */
+const VOTE_PAGE_LAYS_ENVELOPES: Marker[] = [
+  { file: 'src/app/vote/page.tsx', contains: 'await encryptBallotInSteps(' },
+  { file: 'src/app/vote/BankIdSigning.tsx', contains: "post('/api/vote/sign-start'" },
+  { file: 'src/app/vote/BankIdSigning.tsx', contains: "post('/api/vote/encrypted'" },
+  ...NO_PAGE_USES_OLD_FLOW,
+]
+
+/**
+ * Visningen på enheten, som spec 3.1 punkt 1 och 4 beskriver den.
+ *
+ * Enheten sparar valet och chifferhashen i en modul, frågar servern om hashen
+ * är den som ligger, och raderar allt när fasen lämnat OPEN. Servern svarar
+ * lika, olika eller ingen röst, och ingen av röstsidans rutter lämnar ut den
+ * liggande hashen. Faller något av det faller påståendet.
+ */
+const DEVICE_VIEW: Marker[] = [
+  { file: 'src/app/vote/device-vote.ts', contains: "const KEY_PREFIX = 'valsystem.enhetens-rost.'" },
+  { file: 'src/app/vote/page.tsx', contains: "fetch('/api/vote/compare'" },
+  { file: 'src/app/vote/page.tsx', contains: 'forgetIfVotingEnded(storage, current.id, current)' },
+  {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains: "result: safeEqual(current, entry.ciphertextHash) ? 'same' : 'different',",
+  },
+  {
+    file: 'src/app/api/vote/compare/route.ts',
+    contains: 'ballots: results.map((entry) => ({ ballotId: entry.ballotId, result: entry.result })),',
+  },
+  { nowhereIn: 'src/app/api/vote/session/route.ts', matches: /ciphertextHash|pendingVoteFor/ },
+]
+
+/** Verifieringssidan säger att visningen efter stängningen inte är byggd. */
+const AFTER_CLOSE_VIEW_NOT_BUILT: Marker = {
+  file: 'src/app/verify/page.tsx',
+  contains: 'Den delen är inte byggd än.',
+}
 
 /** Raden i pending_vote raderas vid stängningen, med signatur och räknare. */
 const STRIPPING_DELETES_ENVELOPES: Marker = {
@@ -252,19 +294,37 @@ export const NO_WRITES_BESIDE_THE_CODE: Marker[] = [
 // ---------------------------------------------------------------------------
 
 export const CURRENTLY = {
-  votePageUsesOldFlow: {
+  /**
+   * Uppgift 14 ersatte påståendet att röstsidan körde det gamla flödet. Det
+   * här är dess efterföljare, och det gamla flödets kvarvarande del står i
+   * `oldFlowRoutesRemain` nedan.
+   */
+  votePageLaysEnvelopes: {
     text:
-      'Röstsidan lägger fortfarande röster med det gamla flödet, röstintyg och blinda ' +
-      'signaturer, och skriver dem till tabellen vote. I det flödet går en röst inte att ' +
-      'ändra, och kvittot visar vad du röstat på.',
-    holdsWhile: VOTE_PAGE_OLD_FLOW,
+      'Röstsidan lägger kuvert: rösten låses i webbläsaren, skrivs under med BankID och läggs i ' +
+      'pending_vote, där den byts ut om väljaren röstar om.',
+    holdsWhile: VOTE_PAGE_LAYS_ENVELOPES,
   },
 
-  deviceViewNotBuilt: {
+  oldFlowRoutesRemain: {
     text:
-      'Visningen på enheten är inte byggd: röstsidan kör fortfarande det gamla flödet, där en ' +
-      'röst inte går att ändra och kvittot visar vad du röstat på.',
-    holdsWhile: VOTE_PAGE_OLD_FLOW,
+      'Ingen sida använder längre det gamla flödet, men dess rutter finns kvar och tar emot ' +
+      'röster till tabellen vote tills flödet tas bort.',
+    holdsWhile: [
+      ...NO_PAGE_USES_OLD_FLOW,
+      { file: 'src/app/api/vote/credential/route.ts', contains: 'export async function POST' },
+      { file: 'src/app/api/vote/cast/route.ts', contains: 'export async function POST' },
+      { file: 'src/modules/ballot-box/vote.service.ts', contains: 'votesDb.vote.create' },
+    ],
+  },
+
+  deviceViewBuilt: {
+    text:
+      'Före stängningen är det byggt: röstsidan visar din nuvarande röst på enheten du röstade ' +
+      'från. Enheten skickar den chifferhash den sparade, och servern svarar bara om den stämmer ' +
+      'med rösten som ligger, aldrig med sin egen hash. När sidan ser att fasen lämnat OPEN ' +
+      'raderar enheten det den sparat. Efter stängningen visar verifieringssidan ännu ingenting.',
+    holdsWhile: [...DEVICE_VIEW, AFTER_CLOSE_VIEW_NOT_BUILT],
   },
 
   decryptionNotBuilt: {
@@ -704,12 +764,6 @@ export const PHASES: PhaseRow[] = [
 export const REMAINING: CodeFact[] = [
   {
     text:
-      'Röstsidan lägger kuvert i stället för röster i det gamla flödet, och visar din nuvarande ' +
-      'röst på den enhet du röstade från.',
-    holdsWhile: VOTE_PAGE_OLD_FLOW,
-  },
-  {
-    text:
       'Faserna CLOSED och VALIDATED blir egna tillstånd i stängningen, med övergångar som bara går ' +
       'framåt.',
     holdsWhile: [neverWritten('CLOSED'), neverWritten('VALIDATED')],
@@ -717,6 +771,10 @@ export const REMAINING: CodeFact[] = [
   {
     text: 'Markeringen "har röstat" skrivs i röstlängden vid skalningen, utan tidsstämpel.',
     holdsWhile: CURRENTLY.votedMarkerNotKept.holdsWhile,
+  },
+  {
+    text: 'Verifieringssidan visar efter stängningen att du har röstat, men inte vad.',
+    holdsWhile: [AFTER_CLOSE_VIEW_NOT_BUILT],
   },
   {
     text: 'Tröskeldekrypteringen av summorna, med spärren som kräver att fasen är STRIPPED.',

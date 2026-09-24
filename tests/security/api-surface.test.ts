@@ -81,6 +81,17 @@ describe('API-ytan', () => {
       'src/app/api/verify/route.ts',
       'src/app/api/vote/ballot/route.ts',
       'src/app/api/vote/cast/route.ts',
+      /**
+       * Jämförelsen av enhetens sparade chifferhash med väljarens liggande
+       * kuvert (uppgift 14).
+       *
+       * Ett orakel, och därför en egen rutt i stället för en del av
+       * sessionsrutten: den tar emot en hemlighet från enheten och svarar
+       * bara lika, olika eller ingen röst. Den lämnar aldrig ut serverns
+       * hash, se "jämförelsen" nedan och
+       * tests/integration/device-comparison.test.ts.
+       */
+      'src/app/api/vote/compare/route.ts',
       'src/app/api/vote/credential/route.ts',
       'src/app/api/vote/encrypted/route.ts',
       'src/app/api/vote/session/route.ts',
@@ -233,6 +244,54 @@ describe('skydd på tillståndsändrande rutter', () => {
     expect(cast.content).not.toMatch(/SESSION_COOKIE/)
     expect(cast.content).not.toMatch(/getValidVotingSession/)
     expect(cast.content).not.toMatch(/@\/modules\/eligibility/)
+  })
+})
+
+describe('jämförelsen av enhetens röst', () => {
+  /**
+   * SERVERN JÄMFÖR, DEN LÄMNAR INTE UT.
+   *
+   * Röstsidan skickar den chifferhash enheten sparade och får bara lika, olika
+   * eller ingen röst tillbaka. Lämnade någon rutt ut hashen för det liggande
+   * kuvertet fick en enhet veta hashen för en röst som lagts från en annan
+   * enhet, den som räknas, och med läsrätt i votes_db pekar den ut rätt rad
+   * efter stängningen (spec 10).
+   *
+   * Här granskas koden. Att svaren faktiskt saknar hashar prövas mot riktiga
+   * databaser i tests/integration/device-comparison.test.ts. Kommentarerna tas
+   * bort först, eftersom rutterna förklarar just det här i löpande text.
+   */
+  function code(source: string): string {
+    return source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n')
+  }
+
+  const compare = code(routes.find((route) => route.path === 'src/app/api/vote/compare/route.ts')!.content)
+  const session = code(routes.find((route) => route.path === 'src/app/api/vote/session/route.ts')!.content)
+
+  it('kräver egen origin, en egen hastighetsgräns, en session och CSRF-token', () => {
+    expect(compare).toMatch(/if \(!hasValidOrigin\(request\)\)/)
+    expect(compare).toMatch(/checkRateLimit\('vote-compare', getClientIp\(request\), RATE_LIMITS\.compareDeviceVotes\)/)
+    expect(compare).toMatch(/await getValidVotingSession\(sessionId\)/)
+    expect(compare).toMatch(/if \(!isValidCsrfToken\(request, session\.csrfSecret\)\)/)
+  })
+
+  it('läser aldrig själv ut ett kuvert, och jämför bara för sessionens väljare', () => {
+    expect(compare).not.toMatch(/pendingVoteFor|votersDb|pendingVote\./)
+    expect(compare).toMatch(/compareWithPendingVotes\(session\.voterStatusId, body\.data\.ballots\)/)
+    expect(compare).not.toMatch(/body\.data\.(voterStatusId|electionId)/)
+  })
+
+  it('svarar med valsedel och utfall och ingenting annat', () => {
+    expect(compare).toContain('ballots: results.map((entry) => ({ ballotId: entry.ballotId, result: entry.result })),')
+    expect(compare.match(/jsonResponse\(/g)).toHaveLength(1)
+  })
+
+  it('sessionsrutten lämnar inte ut någon chifferhash', () => {
+    expect(session).not.toMatch(/ciphertextHash|pendingVoteFor/)
   })
 })
 

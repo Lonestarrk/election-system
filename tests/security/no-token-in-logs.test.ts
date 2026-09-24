@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { castVote } from '@/modules/ballot-box'
@@ -116,44 +116,73 @@ describe.skipIf(!databaseAvailable)('token visas bara en gång', () => {
   })
 })
 
-describe('klienten sparar inte token', () => {
-  const receiptPageSource = readFileSync(join(process.cwd(), 'src/app/vote/page.tsx'), 'utf8')
-
+describe('röstsidan sparar valet och hashen på ett enda ställe, och ingen kod', () => {
   /**
-   * Granskar koden, inte kommentarerna.
+   * BLOCKET GÄLLDE KVITTOSIDAN, OCH KVITTOT FINNS INTE LÄNGRE.
    *
-   * Sidan förklarar i en kommentar varför den INTE använder sessionStorage.
-   * Utan den här rensningen skulle förklaringen utlösa samma testfel som ett
-   * verkligt anrop, och den enda vägen förbi vore att ta bort förklaringen.
+   * Röstsidan delade tidigare ut en token per valsedel. Testerna här låste fast
+   * att den aldrig hamnade i webbläsarens lagring, att den kopierades till
+   * urklipp bara på väljarens eget klick och att sidan varnade för att den
+   * bara visades en gång. Sedan uppgift 14 lägger sidan kuvert och delar inte
+   * ut någon token, så det finns ingenting att kopiera eller varna för.
+   *
+   * Lagringen är nu avsiktlig. Enheten sparar valet och chifferhashen för att
+   * kunna visa den nuvarande rösten (spec 3.1 punkt 1), men aldrig slumptalet.
+   * Det som låses fast här är att det sker på ett ställe och i en form, och
+   * att ingenting från sidan går till urklipp eller adressfältet. Vad som
+   * faktiskt hamnar i lagringen prövas i tests/unit/device-vote.test.ts och i
+   * tests/e2e/voting-flow.spec.ts.
+   *
+   * Koden granskas utan kommentarerna, som förklarar just det här i löpande
+   * text.
    */
-  const receiptPage = receiptPageSource
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('//'))
-    .join('\n')
+  const directory = join(process.cwd(), 'src/app/vote')
+  const files = readdirSync(directory)
+    .filter((name) => /\.tsx?$/.test(name))
+    .map((name) => ({
+      name,
+      code: readFileSync(join(directory, name), 'utf8')
+        .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .join('\n'),
+    }))
 
-  it('skriver inte token till localStorage eller sessionStorage', () => {
-    expect(receiptPage).not.toMatch(/localStorage/)
-    expect(receiptPage).not.toMatch(/sessionStorage/)
+  it('hittar röstsidans filer', () => {
+    expect(files.map((file) => file.name).sort()).toEqual([
+      'BankIdSigning.tsx',
+      'device-vote.ts',
+      'page.tsx',
+    ])
   })
 
-  it('lägger inte token i en URL', () => {
-    expect(receiptPage).not.toMatch(/router\.push\([^)]*token/)
-    expect(receiptPage).not.toMatch(/searchParams[^)]*token/)
+  it('bara lagringsmodulen rör webbläsarens lagring', () => {
+    const touching = files
+      .filter((file) => /localStorage|sessionStorage|indexedDB|document\.cookie\s*=/.test(file.code))
+      .map((file) => file.name)
+    expect(touching).toEqual(['device-vote.ts'])
   })
 
-  it('kopiering till urklipp sker bara på väljarens eget klick', () => {
-    // clipboard.writeText får bara förekomma inuti copyToken, som i sin tur
-    // bara anropas från en onClick-hanterare.
-    const clipboardCalls = receiptPage.match(/clipboard\.writeText/g) ?? []
-    expect(clipboardCalls).toHaveLength(1)
-    expect(receiptPage).toMatch(/async function copyToken\(\)[\s\S]*clipboard\.writeText/)
-    expect(receiptPage).toMatch(/onClick=\{copyToken\}/)
-  })
-
-  it('varnar väljaren att token bara visas en gång', () => {
-    expect(receiptPage).toContain(
-      'Detta är enda gången din token visas. Spara den om du vill kunna kontrollera din',
+  it('lagringsmodulen skriver bara poster som den själv rensat', () => {
+    const storage = files.find((file) => file.name === 'device-vote.ts')!.code
+    // En enda skrivning, och den skriver posterna som `asDeviceVote` plockat
+    // ut fält för fält. Ett objekt som sprids in hade tagit med allt det bär.
+    expect(storage.match(/\.setItem\(/g)).toHaveLength(1)
+    expect(storage).toContain('storage.setItem(keyFor(electionId), JSON.stringify(votes))')
+    expect(storage).toContain('const clean = asDeviceVote(vote)')
+    expect(storage).toContain(
+      'return { ciphertextHash: candidate.ciphertextHash, choice, label: candidate.label }',
     )
+  })
+
+  it('ingenting går till urklipp, och ingen hash läggs i en adress', () => {
+    for (const file of files) {
+      expect(file.code, file.name).not.toMatch(/clipboard/)
+      expect(file.code, file.name).not.toMatch(/useRouter|useSearchParams|history\.(push|replace)State/)
+      expect(file.code, file.name).not.toMatch(
+        /(location\.(href|assign|replace)|searchParams)[^\n]*ciphertextHash/,
+      )
+    }
   })
 })

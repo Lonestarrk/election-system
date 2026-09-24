@@ -270,7 +270,7 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
           emptyNote={
             anyStripped
               ? 'Kopplingen är raderad i varje stängd omröstning.'
-              : 'Ingen har lagt ett kuvert. ' + CURRENTLY.votePageUsesOldFlow.text
+              : 'Ingen har lagt ett kuvert. ' + CURRENTLY.votePageLaysEnvelopes.text
           }
         />
       </section>
@@ -361,7 +361,7 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
           model="gammal"
           description={
             <>
-              Det gamla flödets röster, en rad per lagd röst. {CURRENTLY.votePageUsesOldFlow.text}{' '}
+              Det gamla flödets röster, en rad per lagd röst. {CURRENTLY.oldFlowRoutesRemain.text}{' '}
               Tabellen försvinner när det gamla flödet tas bort. Partiet visas inte här: livevyn
               behöver inte avslöja vad någon röstat på för att visa hur tabellen ser ut.
             </>

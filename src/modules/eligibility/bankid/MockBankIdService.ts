@@ -62,7 +62,24 @@ type MockOrder = {
   userNonVisibleData: string | null
 }
 
-const orders = new Map<string, MockOrder>()
+/**
+ * ORDRARNA LIGGER PÅ globalThis, SOM PRISMA-KLIENTERNA I db.ts.
+ *
+ * Dev-servern bygger en rutt på nytt när den efterfrågas efter att ha stått
+ * oanvänd i en minut, och laddar då om modulerna för de rutter som är aktiva
+ * just då. En tabell i den här modulen fanns sedan i flera upplagor: en order
+ * som /api/auth/bankid/start lagt i den ena fanns inte i den som
+ * /api/auth/bankid/collect läste, och legitimeringen misslyckades direkt, utan
+ * fel i koden. Det syntes som "Legitimeringen misslyckades" första gången en
+ * rutt användes efter en paus, i e2e-sviten och i en körning i webbläsaren.
+ *
+ * En tabell på globalThis är densamma för varje upplaga av modulen i processen.
+ * Med flera processer gäller fortfarande begränsningen ovan.
+ */
+const globalForMock = globalThis as unknown as { mockBankIdOrders?: Map<string, MockOrder> }
+
+const orders: Map<string, MockOrder> = globalForMock.mockBankIdOrders ?? new Map<string, MockOrder>()
+globalForMock.mockBankIdOrders = orders
 
 /**
  * Namn för demoändamål. Ett riktigt BankID-svar innehåller personens namn;

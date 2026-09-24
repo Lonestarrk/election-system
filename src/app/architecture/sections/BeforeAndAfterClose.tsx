@@ -22,9 +22,11 @@ export function BeforeAndAfterClose() {
         <li style={listItemStyle}>
           <strong>Före stängningen ser du din nuvarande röst på den enhet du röstade från.</strong>{' '}
           Enheten sparar valet och chifferhashen, men aldrig slumptalet som krypteringen byggde
-          på. Sidan hämtar chifferhashen för den röst servern håller och jämför. Stämmer de visas
-          valet. Har rösten ändrats från en annan enhet visas inte innehållet, bara att det finns
-          en röst.
+          på. Sidan skickar den sparade chifferhashen till servern, som svarar bara om den stämmer
+          med rösten den håller. Stämmer den visas valet. Har rösten ändrats från en annan enhet
+          visas inte innehållet, bara att det finns en röst. Servern lämnar aldrig ut sin egen
+          hash: då hade en enhet fått veta hashen för en röst som lagts någon annanstans, den som
+          räknas.
         </li>
         <li style={listItemStyle}>
           <strong>Det enheten visar är inget kvitto.</strong> Utan slumptalet går det inte att

@@ -50,11 +50,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   /**
    * KUVERTMODELLENS BEGRÄNSNINGAR.
    *
-   * De fyra första posterna gäller modellen med dubbla kuvert och är sanna i
+   * De fem första posterna gäller modellen med dubbla kuvert och är sanna i
    * koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
-   * med röstintyg och blinda signaturer, som röstsidan fortfarande kör, eller
-   * gäller oavsett modell. Det gamla flödets poster står kvar tills flödet tas
-   * bort, och testet tvingar bort var och en när dess markör försvinner.
+   * med röstintyg och blinda signaturer, vars rutter finns kvar fast ingen sida
+   * använder dem sedan uppgift 14, eller gäller oavsett modell. Det gamla
+   * flödets poster står kvar tills flödet tas bort, och testet tvingar bort var
+   * och en när dess markör försvinner.
    */
   {
     id: 'link-exists-during-voting',
@@ -134,12 +135,23 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     id: 'client-code-from-server',
     title: 'Klientkoden levereras av servern',
     why:
-      'Blindningen sker i din webbläsare, men koden kommer från den som ska granskas. En riktad, ' +
-      'manipulerad version kan läcka blindningsfaktorn och lägga tillbaka kopplingen mellan ' +
-      'väljare och röst — tyst, och utan att synas i databasen. Det här är det enda som faktiskt ' +
-      'kan bryta obundenheten, och det går inte att lösa fullt ut i en webbapp.',
-    // Så länge blindningen sker i klientkod som servern levererar står problemet kvar.
-    stillTrueIf: { file: 'src/lib/blind-client.ts', contains: 'createBlindedCredential' },
+      'Rösten krypteras i din webbläsare, men koden kommer från den som ska granskas. En riktad, ' +
+      'manipulerad version kan kryptera något annat än du valde, eller behålla slumptalet och ' +
+      'göra det enheten visar till ett bevis som en köpare kan kräva — tyst, och utan att synas ' +
+      'i databasen. Motmedlet, att väljaren kan låta granska en krypterad valsedel innan hon ' +
+      'lägger den (cast-or-audit), ligger utanför specen, och problemet går inte att lösa fullt ' +
+      'ut i en webbapp.',
+    /**
+     * Så länge valsedeln krypteras i klientkod som servern levererar står
+     * problemet kvar. Fram till uppgift 14 gällde posten blindningen i det
+     * gamla flödet och pekade på src/lib/blind-client.ts. Röstsidan blindar
+     * inte längre något, så posten beskriver nu kuvertmodellens klient, som
+     * spec 10 anger, och markören följer med dit.
+     */
+    stillTrueIf: {
+      file: 'src/app/vote/page.tsx',
+      contains: "import { encryptBallotInSteps } from '@/lib/encrypt-client'",
+    },
   },
   {
     id: 'signing-keys-in-database',
@@ -158,11 +170,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'Det gamla flödets verifiering visar vilket alternativ token gäller. Det gör att en väljare ' +
       'kan bevisa sin röst för någon annan, vilket öppnar för röstköp. Det gäller varje val på ' +
       'valsedeln, inte bara personröster — kvittot är problemet, inte hur finfördelat valet är. ' +
-      'Kuvertmodellen är därför utformad utan kvitto (spec 3.1). Före stängningen ska väljaren se ' +
-      'sin nuvarande röst på enheten hon röstade från, men enheten ska aldrig spara slumptalet, så ' +
-      'det den visar bevisar ingenting för någon annan. Ingen kod ska visas, och efter ' +
-      'stängningen ska bara summorna publiceras, så att det inte finns något per röst att visa ' +
-      'upp eller matcha mot. Posten gäller det gamla flödet och försvinner med det.',
+      'Ingen sida delar längre ut en token, men rutten som svarar på dem finns kvar, och en token ' +
+      'från förr visar fortfarande sitt parti. Kuvertmodellen är utformad utan kvitto (spec 3.1). ' +
+      'Före stängningen ser väljaren sin nuvarande röst på enheten hon röstade från, men enheten ' +
+      'sparar aldrig slumptalet, så det den visar bevisar ingenting för någon annan. Ingen kod ' +
+      'visas, och efter stängningen ska bara summorna publiceras, så att det inte finns något per ' +
+      'röst att visa upp eller matcha mot. Posten gäller det gamla flödet och försvinner med det.',
     // `choice` i verifieringssvaret är precis det som bevisar valet.
     stillTrueIf: { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
   },

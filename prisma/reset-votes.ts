@@ -21,6 +21,15 @@ import { PrismaClient as VotesClient } from '.prisma/votes'
  * Revisionsloggen raderas också, eftersom hashkedjan annars fortsätter från
  * gamla händelser och kedjekontrollen i slutkontrollen blir svårare att läsa.
  *
+ * KUVERTMODELLENS TABELLER TÖMS OCKSÅ. Sedan röstsidan lägger kuvert gör
+ * e2e-testerna det, och utan tömningen samlas de mellan körningarna: en väljare
+ * som redan har ett liggande kuvert visar "Du har en röst registrerad" i
+ * stället för en orörd valsedel, och ett test som räknar med det senare går
+ * rött av förra körningens skull. Det gäller de yttre kuverten i röstlängden
+ * och de inre i röstdatabasen, liksom förtroendemännens bidrag och summorna,
+ * som bara finns efter en stängning. Förtroendemännens andelar av nyckeln
+ * behålls, eftersom omröstningen behålls.
+ *
  * SKRIPTET ÄR AVSIKTLIGT SKILT FRÅN APPLIKATIONEN.
  *
  * Det finns ingen motsvarande funktion i src/ — inget API, ingen adminknapp,
@@ -36,8 +45,15 @@ async function main() {
   // valsedlarna som behålls.
   const votes = await votesDb.vote.deleteMany()
   const commitments = await votesDb.electionCommitment.deleteMany()
+  const innerEnvelopes = await votesDb.encryptedVote.deleteMany()
+  await votesDb.partialDecryption.deleteMany()
+  await votesDb.ballotTally.deleteMany()
 
   const ballotStatuses = await votersDb.voterBallotStatus.deleteMany()
+  // Före omröstningarna nedan: kuvertet har ingen främmande nyckel mot
+  // valsedeln, så ett kuvert i en borttagen testomröstning skulle annars bli
+  // kvar utan något att höra till.
+  const outerEnvelopes = await votersDb.pendingVote.deleteMany()
   await votersDb.adminSession.deleteMany()
   await votersDb.votingSession.deleteMany()
   await votersDb.auditEvent.deleteMany()
@@ -53,7 +69,8 @@ async function main() {
 
   process.stdout.write(
     `Nollställt: ${votes.count} röster, ${commitments.count} åtaganden, ` +
-      `${ballotStatuses.count} markeringar.\n`,
+      `${ballotStatuses.count} markeringar, ${outerEnvelopes.count} yttre och ` +
+      `${innerEnvelopes.count} inre kuvert.\n`,
   )
 }
 

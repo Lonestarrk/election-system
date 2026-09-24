@@ -3,6 +3,7 @@ import { clearVotingCookies, SESSION_COOKIE } from '@/lib/cookies'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { ballotsForVoter, getMirroredElection } from '@/modules/eligibility/election.service'
+import { envelopeOverview } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
 
 export const runtime = 'nodejs'
@@ -38,6 +39,19 @@ export const dynamic = 'force-dynamic'
  * är folkbokförd genom vilka valsedlar som listas. Därför krävs en giltig
  * session, och rutten kan bara svara om den som äger sessionen — det finns
  * ingen parameter för att fråga om någon annan.
+ *
+ * FASEN OCH KUVERTEN, MEN INGEN CHIFFERHASH
+ *
+ * Röstsidan behöver två saker till i kuvertmodellen. Valets fas, för att
+ * radera det enheten sparat när fasen lämnat OPEN (spec 3.1 punkt 4). Och per
+ * valsedel om väljaren har ett liggande kuvert, för beskedet "Du har en röst
+ * registrerad" på en enhet som inte själv lade rösten. Det senare kommer ur
+ * pending_vote, inte ur det gamla flödets markering, som bara säger att en
+ * röst lades i det gamla flödet och därför heter `votedInOldFlow` här.
+ *
+ * Hashen för det liggande kuvertet lämnas inte ut, varken här eller någon
+ * annanstans. Enheten som vill veta om dess röst är den som ligger frågar
+ * /api/vote/compare, som bara svarar lika, olika eller ingen röst.
  */
 export async function POST(request: Request) {
   if (!hasValidOrigin(request)) {
@@ -69,26 +83,36 @@ export async function POST(request: Request) {
     return response
   }
 
-  const [election, ballots] = await Promise.all([
+  const [election, ballots, envelopes] = await Promise.all([
     getMirroredElection(session.electionId),
     ballotsForVoter(session.voterStatusId, session.electionId),
+    envelopeOverview(session.voterStatusId, session.electionId),
   ])
+
+  const withEnvelope = new Set(envelopes?.ballotIdsWithEnvelope ?? [])
 
   return jsonResponse({
     electionId: session.electionId,
     electionName: election?.name ?? null,
+    // Saknas omröstningen i röstlängden tas ingen röst emot, och sidan ska
+    // behandla den som stängd.
+    phase: envelopes?.phase ?? null,
+    closesAt: envelopes?.closesAt.toISOString() ?? null,
+    acceptsVotes: envelopes?.acceptsVotes ?? false,
     /**
      * Bara valsedlar som gäller väljaren, med status per valsedel.
      *
      * Innehåller ingenting om VAD som står på dem — det hämtas separat från
      * /api/vote/ballot, som är öppen eftersom valsedelns innehåll är
-     * offentligt.
+     * offentligt. Och ingenting om vilket kuvert som ligger, bara att ett
+     * gör det.
      */
     ballots: ballots.map((ballot) => ({
       id: ballot.id,
       kind: ballot.kind,
       label: ballot.label,
-      hasVoted: ballot.hasVoted,
+      hasPendingVote: withEnvelope.has(ballot.id),
+      votedInOldFlow: ballot.hasVoted,
     })),
   })
 }

@@ -36,7 +36,17 @@ export type PartyChoice = {
   name: string
   abbreviation: string
   color: string
-  candidates: Array<{ id: string; name: string }>
+  /**
+   * Ordningen på valsedeln, för partiet och för varje kandidat.
+   *
+   * Röstsidan bygger den kanoniska alternativlistan ur den här ordningen med
+   * `canonicalOptions`, precis som servern gör i `getEncryptedBallotShape`.
+   * Ordningen står därför utskriven i stället för att bara följa av listans
+   * ordning i svaret: skilde sig listorna åt på en enda plats räknades rösten
+   * på fel alternativ, och ingenting i bevisen fångar det.
+   */
+  displayOrder: number
+  candidates: Array<{ id: string; name: string; displayOrder: number }>
 }
 
 export type BallotChoices =
@@ -157,7 +167,7 @@ export async function getBallotChoices(ballotId: string): Promise<BallotChoices 
           displayOrder: true,
           party: { select: { name: true, abbreviation: true, color: true } },
           candidates: {
-            select: { id: true, name: true },
+            select: { id: true, name: true, displayOrder: true },
             orderBy: { displayOrder: 'asc' },
           },
         },
@@ -184,6 +194,7 @@ export async function getBallotChoices(ballotId: string): Promise<BallotChoices 
       name: entry.party.name,
       abbreviation: entry.party.abbreviation,
       color: entry.party.color,
+      displayOrder: entry.displayOrder,
       candidates: entry.candidates,
     })),
   }

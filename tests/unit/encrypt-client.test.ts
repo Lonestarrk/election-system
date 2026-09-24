@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { generateKeyPair } from '@/lib/crypto/elgamal'
 import { canonicalOptions } from '@/lib/crypto/ballot-encoding'
-import { encryptBallot, hashCiphertext } from '@/lib/encrypt-client'
+import { encryptBallot, encryptBallotInSteps, hashCiphertext } from '@/lib/encrypt-client'
 import { verifyEncryptedBallot } from '@/lib/crypto/verify-ballot'
 
 const SHAPE = {
@@ -101,5 +101,54 @@ describe('krypterad valsedel', () => {
     expect(a).not.toBe(b)
     expect(a).not.toBe(c)
     expect(a).toHaveLength(64)
+  })
+})
+
+describe('krypteringen i steg, som röstsidan kör den', () => {
+  /**
+   * Röstsidan krypterar en komponent i taget och släpper fram webbläsaren
+   * däremellan, så att den kan visa hur långt den kommit. Resultatet måste
+   * vara en lika giltig valsedel som den som krypteras i ett svep, och det
+   * enda som lämnar ett steg får vara hur långt krypteringen kommit.
+   */
+  it('ger en valsedel som servern accepterar', async () => {
+    const keys = generateKeyPair()
+    const options = canonicalOptions(SHAPE)
+    const ballot = await encryptBallotInSteps(keys.publicKey.toString(), 'val-1', 'vs-1', options, {
+      kind: 'PARTY',
+      ballotPartyId: 'bp-s',
+    })
+
+    expect(
+      verifyEncryptedBallot(keys.publicKey.toString(), 'val-1', 'vs-1', options.length, ballot),
+    ).toBe(true)
+    expect(Object.keys(ballot).sort()).toEqual(['ciphertext', 'ciphertextHash', 'proofs'])
+  })
+
+  it('rapporterar bara antal, från noll till alla, och pausar mellan stegen', async () => {
+    const keys = generateKeyPair()
+    const options = canonicalOptions(SHAPE)
+    const reported: unknown[][] = []
+    let pauses = 0
+
+    await encryptBallotInSteps(
+      keys.publicKey.toString(),
+      'val-1',
+      'vs-1',
+      options,
+      { kind: 'BLANK' },
+      (...args) => reported.push(args),
+      async () => {
+        pauses += 1
+      },
+    )
+
+    // En komponent per alternativ och summabeviset sist.
+    const total = options.length + 1
+    expect(reported).toEqual(
+      Array.from({ length: total + 1 }, (_, done) => [done, total]),
+    )
+    expect(pauses).toBe(options.length + 1)
+    expect(JSON.stringify(reported)).toMatch(/^[[\],\d]+$/)
   })
 })
