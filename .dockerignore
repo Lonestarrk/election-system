@@ -48,6 +48,14 @@ coverage
 # publikt API. Det behöver inte ligga i servern det granskar.
 tools
 
+# scripts/ är mätverktyg för utveckling (measure-crypto importerar från tests/,
+# som redan är utesluten ovan). next build typkontrollerar varje .ts-fil i
+# kontexten, så med scripts/ kvar men tests/ borta fallerar bygget.
+scripts
+
+# infra/ beskriver hur imagen distribueras till Azure, inte vad den kör.
+infra
+
 # --- Versionshantering och redigerarfiler ----------------------------------
 .git
 .gitignore
