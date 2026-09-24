@@ -263,6 +263,12 @@ skrivs in på vår egen sida, så en komprometterad app kan fånga den i det ög
 kräver intrång vid ceremonin och inte mot data i vila — och ceremonin sker efter
 skalningen, när det farliga fönstret redan är stängt.
 
+**I demon skyddar fraserna ingenting.** Demovalets tre fraser står i repot och i imagen och
+skrivs ut vid varje start, i Azure alltså i Log Analytics. Den som har databasen där kan
+därför låsa upp två andelar, sätta ihop nyckeln och dekryptera varje kuvert. Under
+röstningen ligger kuverten bredvid namnen. Demons väljare är påhittade, men egenskapen
+ovan gäller alltså inte där. Skarpt läge ska vägra kända fraser (uppgift 17).
+
 I demoläge seedas tre kända fraser som skrivs ut av `npm run seed`, så att en person kan
 spela alla tre. I skarpt läge vägrar appen starta om fraserna är de seedade.
 
@@ -305,11 +311,13 @@ mot en klient men inte mot den som driver systemet. Nu gäller:
 
 1. **Kedjan prövas mot en fast rot**, både när rösten läggs och i valideringen före
    stängningen, och därmed i skalningen, som kör valideringen som spärr. Kedjan är lövet
-   och den mellannivå som utfärdat det. Roten är konfigurerad, med en sökväg i
+   och en till tre mellannivåer. Roten är konfigurerad, med en sökväg i
    `BANKID_ROOT_CERTIFICATES`, och följer aldrig med svaret: en rot som kom med kedjan vore
-   vald av den som skrev kedjan. Mellannivån ska vara utfärdad och signerad av roten och ha
-   CA-rätt. Lövet ska vara utfärdat och signerat av mellannivån, sakna CA-rätt och ha
-   keyUsage digitalSignature, och båda ska ha gällt vid underskriften. Vid läggningen är det
+   vald av den som skrev kedjan. Varje mellannivå ska vara utfärdad och signerad av nivån
+   ovanför, den översta av roten. Varje mellannivå ska ha CA-rätt och en `pathLen` som
+   kedjan håller sig inom. Lövet ska vara utfärdat och signerat av den understa
+   mellannivån, sakna CA-rätt och ha keyUsage digitalSignature, och alla certifikat ska ha
+   gällt vid underskriften. Vid läggningen är det
    ögonblicket då BankID svarade, och i valideringen dagen då kuvertet lades, eftersom
    tidpunkten bara lagras på dygnet när. Ett certifikat som gått ut efter att rösten lades
    fäller inte rösten, av samma skäl som i 7.4.
@@ -392,7 +400,7 @@ PendingVote
   ciphertextHash    text            SHA-256 över kanonisk serialisering
   castSequence      int             ökar vid varje läggning, ligger i det signerade
   bankIdSignature   text            XML-signatur från BankID /sign
-  bankIdCertificateChain text       certifikatkedjan ur signaturen, löv och mellannivå,
+  bankIdCertificateChain text       certifikatkedjan ur signaturen, löv och mellannivåer,
                                     krypterad med AES-256-GCM, se 4.6
   updatedAt         timestamptz     dygnsupplöst, som övrig tidsdata
   @@unique([voterStatusId, ballotId])
@@ -700,8 +708,8 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   annat än väljaren valde. Motmedlet är cast-or-audit (Benaloh) och ligger utanför denna
   spec.
 - **Tvång vid själva slutet är fortfarande möjligt.** En tvingare som ser väljaren lägga
-  rösten strax före stängningen vet att den gäller. Skärmen hjälper honom inte (3.1
-  punkt 2); han måste se läggningen. Estland lägger till att en pappersröst upphäver den
+  rösten strax före stängningen vet att den gäller. Skärmen hjälper inte tvingaren (3.1
+  punkt 2), som måste se läggningen. Estland lägger till att en pappersröst upphäver den
   digitala; det ligger utanför denna spec.
 - **En insider med läsrätt i `votes_db` och en enhets sparade chifferhash** kan se om
   den enhetens röst var den som räknades, men inte vad den innehöll. Det kräver både
@@ -731,6 +739,22 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   BankID:s testmiljö.
 - **Den som har pepparn kan läsa namn och personnummer för varje liggande kuvert.** Kedjan
   krypteras med en nyckel ur `IDENTITY_PEPPER`, eftersom valideringen måste kunna öppna
-  den. En databasdump utan pepparn avslöjar ingenting nytt, men den som har både dumpen och
-  pepparn får namnen direkt, medan identitetshashen bara låter honom pröva ett personnummer
-  i taget och aldrig ger namnet. Kedjan raderas med raden vid skalningen.
+  den.
+  - Den som har både en databasdump och pepparn får namnen direkt ur kedjorna.
+  - Med pepparn går också identitetshasharna att vända. Personnumren är få nog för att
+    pröva alla: cirka 4·10⁷ gånger 37 ms, ungefär 17 processordygn, och arbetet går att
+    dela upp.
+  - Utan pepparn avslöjar kedjan ingenting nytt. Signaturkolumnen gör det med riktig
+    BankID. Dess längd följer lövets nyckeltyp och kan peka ut utfärdaren, och BankID:s
+    XML-signatur bär dessutom kedjan i klartext. Den ska därför förseglas som kedjan
+    (uppgift 17b).
+  - Kedjan raderas med raden vid skalningen, men en säkerhetskopia från före stängningen
+    har den kvar. I Azure sparas databasernas automatiska säkerhetskopior i sju dagar.
+- **Pepparn ligger i Key Vault i Azure, och appen har den i minnet.**
+  - Den som kan läsa valvet får pepparn, och därmed allt som föregående punkt beskriver.
+  - Appens identitet har läsrätt i hela valvet. Den omfattar också Postgres-administratörens
+    lösenord, som öppnar båda databaserna, så en komprometterad app når båda.
+  - Valvet är mjukvaruskyddat (Standard). Granskningslogg och rensningsskydd är inte
+    påslagna.
+  - Förtroendepersonernas andelar ligger med avsikt inte i valvet, utan låsta med
+    fraserna i röstdatabasen (4.5).
