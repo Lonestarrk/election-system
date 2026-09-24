@@ -3727,11 +3727,12 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
      skrivningen**, med ett villkor som databasen håller, inte med en läsning före
    - stängningen skriver `CLOSED` med jämför-och-sätt innan kuverten läses, så att
      ingen ny skrivning kan lyckas efteråt
-   - raderingen tar bort **de kuvert som lästes**, efter id, och kontrollerar att inga
-     fler finns kvar. Finns det fler har något gått fel, och skalningen ska avbrytas
-     innan något raderas.
-   - antalet raderade kuvert jämförs med antalet flyttade. I dag jämförs `cleared`
-     aldrig med `moved` (`close-election.usecase.ts:660`), enligt granskaren av 14b.
+   - **Radering efter id och jämförelsen mellan raderade och flyttade gjordes i 14f:s
+     fixrunda**, tillsammans med att stängningen validerar exakt de rader den flyttar.
+     Granskaren av 14f visade att punkten, som den först var skriven, inte stängde
+     felet: en radering efter id märker inte en rad som försvunnit mellan läsningarna.
+     Kvar här är att en röst som skrivs efter läsningen varken försvinner eller räknas
+     tyst: den ska ligga kvar, och skalningen ska avbrytas innan något raderas.
    Skriv ett test som låter en röst skrivas mellan läsningen och raderingen, och som
    kräver att den antingen flyttas eller att väljaren får ett fel, aldrig "lagd".
 6. **Markeringen "har röstat", utan tidsstämpel.** Spec 3.1 punkt 6 säger att
