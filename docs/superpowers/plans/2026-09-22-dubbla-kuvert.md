@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Inga nya npm-beroenden**, med ett dokumenterat undantag i uppgift 17 (OpenAPI).
+- **Inga nya npm-beroenden**, med ett dokumenterat undantag i uppgift 18 (OpenAPI).
   Regeln skrevs för kryptot: varje kryptoberoende är en angreppsyta i just den kod
   som bär valhemligheten, och mätningen visade att inget behövs. Undantaget rör
   varken krypto, röstdata eller identiteter. Den ursprungliga mätningen, 2,0 ms per
@@ -25,7 +25,10 @@
 - **`votes_db` får aldrig innehålla identitet.** Vaktas av `tests/security/schema-separation.test.ts`.
 - **Tidsstämplar grovkornas** — dygn i `voters_db`, timme i `votes_db` — enligt `src/lib/time.ts`.
 - **Varje uppgift slutar med grön svit och en commit.** `npx tsc --noEmit` ska ge noll fel.
-- **Kör aldrig `npm run build` medan dev-servern kör.** Se varningen i README.
+- **Bygget och dev-servern kan köra samtidigt**, eftersom de har var sin katalog:
+  `.next-dev` för dev-servern och `.next` för bygget. Bygget skriver om `next-env.d.ts`,
+  som återställs med `git checkout -- next-env.d.ts`. Byggskriptet kör inte
+  `prisma generate`. Regeln att aldrig bygga medan dev-servern kör är föråldrad.
 
 ## Review Focus
 
@@ -3726,6 +3729,66 @@ och vad som är byggt.
 
 ---
 
+## Task 11h: Utvecklingsstatus säger direkt vad som är klart, vad som kommer och vad som inte ingår
+
+**Varför:** användaren bad om det 2026-09-24. Azure-sessionen skickade vidare begäran för
+användarens räkning. Sidan Utvecklingsstatus går i dag igenom delarna en i taget, så den
+som vill veta vad som fungerar måste läsa hela sidan. Önskemålen:
+
+- Överst tre grupper:
+  - **Klart**
+  - **Kommer att implementeras**, med uppgiftens nummer och i den ordning uppgifterna körs
+  - **Saknas och ingår inte i demon**
+- Samma status på varje punkt längre ned.
+- Kort text.
+- Markörerna finns kvar.
+
+**Files:**
+- Modify: `src/app/architecture/status/page.tsx`, `src/app/architecture/code-facts.ts` och
+  de avsnitt under `src/app/architecture/sections/` som sidan använder: `StatusOverview`,
+  `ReviewToday`, `PhasesToday`, `OldFlow`, `Remaining` och `AzureStatus`
+- Test: `tests/security/architecture-page.test.ts` och Playwright-testerna för
+  arkitektursidorna
+
+**Krav**
+
+1. **En enda källa för status.** Varje punkt får ett statusfält i `code-facts.ts`, med
+   värdet `done`, `planned` med uppgiftens nummer eller `out_of_scope`. Både
+   sammanfattningen överst och märkningen längre ned läser fältet, så att de inte kan
+   säga olika saker.
+2. **Klart** listar det som finns i koden i dag. Varje punkt bär en markör som visar att
+   det finns.
+3. **Kommer att implementeras** listar det som återstår, med uppgiftens nummer.
+   - Varje punkt bär en markör som visar att det INTE finns än, som `REMAINING` gör i dag.
+     En punkt kan då inte stå kvar här när den har byggts.
+   - Ett test kräver att varje nummer finns som rubriken `## Task <nummer>:` i planen.
+   - Ett test kräver att punkterna står i samma ordning som i planens rad
+     **Exekveringsordning efter uppgift 11**.
+   - Numren är planens, och sidan anger inga datum.
+4. **Saknas och ingår inte i demon** listar vad ett riktigt val kräver som det här
+   bevisprojektet inte bygger. Punkterna tas ur spec 10 och ur `known-limitations.ts`,
+   och inga hittas på. En punkt om koden bär en markör. En punkt om något utanför koden,
+   som ett avtal med BankID eller en säkerhetsgranskning, formuleras så snävt att den
+   stämmer utan markör.
+5. **Märkningen längre ned.** Varje punkt på resten av sidan får en liten etikett: Klart,
+   Kommer (uppgift N) eller Ingår inte. Etiketten har text och inte bara färg.
+6. **Kort text.** En till två meningar per punkt. De långa förklaringarna finns kvar på
+   Tekniska detaljer, och sidan länkar dit.
+7. **Markörerna finns kvar.** Varje påstående om koden läses fortfarande ur
+   `code-facts.ts`. `tests/security/architecture-page.test.ts` går rött när koden ändras
+   så att ett påstående inte längre stämmer.
+8. **Formuleringar.** Varje "ingen", "aldrig", "bara" och "inte" avgränsas och prövas mot
+   spec 10 och hela flödet. Det gäller även den som driver systemet, den som läser valvet
+   och den som kan skriva i en av databaserna. En kortare text får inte lova mer än den
+   långa.
+9. **Layout.** Sidan fungerar vid 390 px utan sidledsskroll. Ta skärmdumpar vid 1280 och
+   390 px, i ljust och i mörkt läge.
+
+- [ ] Tester först, implementation, hela sviten, skärmdumpar, committa med uttryckliga
+      sökvägar.
+
+---
+
 ## Task 14e: Pollningen bär bara orderRef, och bevakningen läser den offentliga listan
 
 **Varför:** två belastningsfel som granskningen av uppgift 14 hittade. De lyftes ur 14b,
@@ -3793,6 +3856,11 @@ godkänns på servern.
 Lägg ett test som klipper ut ett giltigt OR-bevis ur en valsedel och sätter in det i en
 annan, och som ska underkännas. Före ändringen ska testet bli rött eller visa att
 attacken inte fungerar av annat skäl. Skriv i så fall ut skälet.
+
+**Kuvert i det gamla formatet.** Efter ändringen godkänns inte längre kuvert vars bevis har
+det gamla formatet, och då stoppar valideringen stängningen. Skriv i rapporten vad det
+betyder för kuvert som redan ligger i demons databaser, lokalt och i Azure. Controllern
+meddelar Azure-sessionen.
 
 - [ ] Tester först, implementation i klient och server, hela sviten, committa.
 
@@ -3951,7 +4019,16 @@ och controllern stoppar och startar om den.
 ---
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
-**14** → **14b** → **14f** → **11g** → **14e** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
+**14** → **14b** → **14f** → **11g** → **11h** → 11d → **14d** → 12 → 12b → **12c** → 13 → 17 →
+**14e** → 11e → **17b** → **17c** → **14c** → 15 → 16 → 18.
+Ordningen ändrades 2026-09-24 på användarens begäran: *"Gör klart ... allt som behövs för
+att slutföra hela processen så röster kan valideras och räknas"*. Det som behövs för att
+stänga, räkna och fastställa ett val går därför först, till och med adminsidan (12c) och
+publiceringen (13). Sedan kommer läget (17), och därefter det som en riktig BankID-klient
+kräver. 14e går före 11e, som återanvänder dess lager för orderns tillstånd, och båda går
+före 17b och 17c, eftersom en riktig BankID-order annars bär kopplingen ut ur systemet.
+14d ligger före 12, eftersom den ändrar bevisens format och slutkontrollen ska pröva det
+slutliga formatet. Uppgift 11h, 12c, 17b och 17c lades in samma dag.
 Uppgift 11g lades in 2026-09-24 på användarens begäran, direkt efter 14f.
 Uppgift 14f lades in 2026-09-24 på användarens begäran och körs direkt efter 14b.
 Uppgift 14b, 14c och 14d kom till efter uppgift 14 och ligger där de gör mest nytta:
@@ -4178,6 +4255,14 @@ Behåll `PRECONDITION` kontra `CRITICAL` enligt den princip ruling 42 slog fast:
 en kontroll som fallerar för att valet inte kommit så långt är en förutsättning,
 inte en avvikelse, och får aldrig låsa ett oskyldigt val i `UNDER_REVIEW`.
 
+**Från granskningen av 11g (E5).** Kommentaren över kontroll 2 i `final-check.usecase.ts`
+säger "DETTA ÄR KONTROLLEN SOM INTE KAN FÖRFALSKAS INIFRÅN". Det stämmer inte, eftersom
+valsedlarnas signeringsnycklar ligger i röstlängden (posten `signing-keys-in-database`).
+Frågan som administratören ser, "Har varje registrerad röst skapats genom den auktoriserade
+processen?", lovar också mer än kontrollen prövar. Kontrollen skrivs ändå om här. Se till
+att den nya kontrollens kommentar och fråga säger exakt vad den prövar, och vem den inte
+skyddar mot.
+
 - [ ] **Steg 1: Skriv tester som fallerar för varje kontroll, en manipulation per test**
 
 Varje test ska manipulera databasen på ett sätt som bara den kontrollen fångar,
@@ -4187,6 +4272,99 @@ ett ärligt val bevisar ingenting om spärren.
 - [ ] **Steg 2: Bygg om kontrollerna**
 - [ ] **Steg 3: Kör hela sviten**
 - [ ] **Steg 4: Committa**
+
+---
+
+## Task 12c: Adminsidan leder genom hela avslutningen
+
+**Varför:** användaren hittade inte hur ett val avslutas och bad 2026-09-24: *"Gör klart
+... allt som behövs för att slutföra hela processen så röster kan valideras och räknas"*.
+Adminsidan (`src/app/admin/page.tsx`) är byggd för den gamla modellen:
+
+- "Publicera åtagande" binder den gamla tabellen `vote`.
+- Slutkontrollen är den gamla modellens fram till 12b.
+- Det finns ingen knapp som stänger röstningen.
+- Det finns ingen valideringsrapport.
+- Det finns ingen plats där förtroendepersonerna lämnar sina fraser.
+- Det finns inget resultat.
+
+Rutterna finns redan eller byggs i 11d, 12 och 12b, men ingen uppgift ägde sidan.
+
+**Beroenden:**
+- 11d: faserna
+- 12: räkningen och rutten för partiell dekryptering
+- 12b: slutkontrollen och fastställandet
+
+Uppgift 13 lägger sedan publiceringen sist i samma flöde.
+
+**Files:**
+- Modify: `src/app/admin/page.tsx`, som delas upp i komponenter under `src/app/admin/`
+- Modify eller Create: rutter under `src/app/api/admin/elections/`, men bara om något saknas
+- Test: ett Playwright-test för hela flödet, och integrationstester för nya rutter
+
+**Krav**
+
+1. **Serverns fas styr sidan.** Sidan visar den valda omröstningens fas som en rad steg:
+   `OPEN → CLOSED → VALIDATED → STRIPPED → TALLIED → CERTIFIED`. Bara nästa tillåtna steg
+   har en aktiv knapp. Sidan läser om fasen från servern efter varje åtgärd och drar
+   aldrig slutsatser av sina egna klick. Servern är auktoriteten, och varje rutt prövar
+   fasen med jämför-och-sätt, enligt 11d.
+2. **Stänga röstningen** (från `OPEN`). Knappen ber om en bekräftelse som säger att steget
+   inte går att ångra. Före stängningen visar sidan hur många kuvert som ligger, och bara
+   antalet (spec 3.1).
+3. **Valideringen** (`CLOSED → VALIDATED`). Sidan visar valideringens rapport:
+   - hur många kuvert som godkändes
+   - hur många som underkändes, med skälet som en kod och en förklaring
+   - aldrig vem som har lagt ett kuvert
+
+   Om valideringen faller visar sidan vad administratören kan göra, med stängningens
+   egna meddelanden från 11d. Den kan köras om från `CLOSED` och `VALIDATED`.
+4. **Kopplingen raderas** (`VALIDATED → STRIPPED`). Sidan visar hur många kuvert som
+   flyttades, kuvertroten och urnroten från 12b. Är raderingen ett eget anrop i 11d får
+   den en egen knapp. Görs den i samma anrop som valideringen, visar sidan båda stegen
+   efter det anropet.
+5. **Räkningen** (`STRIPPED → TALLIED`). Sidan säger att två av tre förtroendepersoner
+   behövs.
+   - Det finns tre platser, en per förtroendeperson, var och en med ett fält för frasen.
+   - Varje inlämning visar serverns besked: godkänd, avvisad, redan lämnad eller fel fras.
+   - När två är godkända blir knappen "Räkna" aktiv.
+   - Resultatet visas per valsedel, med antalet per alternativ och summan.
+
+   **Bara i demoläge** har varje plats en knapp som fyller i demofrasen. Den ligger
+   bakom `isDemoMode()`, som `DEMO_IDENTITIES` vid inloggningen. Fraserna står redan i
+   repot.
+
+   **Sidan säger hur det går till.** I demon skickas frasen till servern. Servern låser
+   upp andelen och räknar fram den partiella dekrypteringen, så den ser andelen en kort
+   stund. I ett riktigt val räknar varje förtroendeperson på sin egen enhet, och servern
+   ser aldrig en andel. Saknar `known-limitations.ts` en post om det, läggs en till med en
+   markör.
+6. **Slutkontrollen och fastställandet** (`TALLIED → CERTIFIED`). Slutkontrollens tabell
+   står kvar. "Fastställ" är aktiv bara när slutkontrollen har passerat, och den ber om en
+   bekräftelse.
+7. **Den gamla modellens knapp "Publicera åtagande" tas bort från sidan.** Rutten tas bort
+   i uppgift 15.
+8. **Ingenting per väljare.** Sidan visar bara antal, och aldrig vem som röstat, när eller
+   på vad (spec 3.1 och 3.2).
+9. **Serverns besked visas som de är.**
+   - Varje utfall från stängningen visas med serverns eget meddelande: closed, untouched,
+     aborted och de övriga i 11d.
+   - Detsamma gäller räkningen.
+   - Sidan säger aldrig att ett steg är klart om inte serverns fas säger det.
+10. **Tillgänglighet och layout.**
+    - Knapparna har synlig text.
+    - Besked kommer i en aria-live-region.
+    - Sidan fungerar vid 390 px utan sidledsskroll.
+11. **Playwright, hela flödet i demoläge.** Testet skapar sin egen omröstning, så att det
+    inte ändrar demons.
+    - Två väljare röstar.
+    - Administratören loggar in, stänger och ser att valideringen har passerat.
+    - Två demofraser lämnas, och räkningen ger rätt summor.
+    - Slutkontrollen passerar, omröstningen fastställs, och fasen är `CERTIFIED`.
+    - En fel fras visar "fel fras" och räknas inte.
+
+- [ ] Tester först, implementation, hela sviten med Playwright, skärmdumpar vid 1280 och
+      390 px, committa med uttryckliga sökvägar.
 
 ---
 
@@ -4592,6 +4770,11 @@ Förväntat: allt grönt, inga kvarvarande referenser.
 git commit -m "Blindsigneringen bort — obundenheten kommer nu från att inga röster öppnas"
 ```
 
+**Från granskningen av 11g (E5).** Kommentaren i `known-limitations.ts` om att
+signeringsnycklarna "flyttar till Key Vault" hör hit. När blindsigneringen och dess nycklar
+tas bort, tas kommentaren bort eller skrivs om, eftersom det då inte finns några nycklar
+kvar att flytta.
+
 ---
 
 ## Task 16: Dokumentation och begränsningar
@@ -4746,6 +4929,58 @@ git add -A && git commit -m "Dokumentationen beskriver dubbla kuvert; fyra begr�
 ---
 
 ## Task 17: Demoläge och skarpt läge
+
+**Ändrat 2026-09-24 efter användarens beslut (ruling 121).** Användaren frågade efter en
+knapp på adminsidan som växlar mellan demoläge och skarpt läge. Beslutet blev att
+**läget sätts vid driftsättning, och adminsidan visar det.** Ingen knapp växlar läget
+inifrån appen, eftersom den som kommer åt en adminsession annars kunde slå på
+attrapp-BankID för alla. Texten längre ned skrevs före beslutet och före Azure-demon. Där
+den skiljer sig från punkterna här gäller punkterna.
+
+1. **Demoläge tillåts i ett produktionsbygge.** Den publika demon i Azure är ett
+   produktionsbygge (`NODE_ENV=production` i `infra/azure/app.bicep`) som kör i demoläge.
+   Med koden längre ned hade `runtimeMode()` gett `SHARP` där, och `assertBootable()` hade
+   kraschat.
+   - Läget följer därför bara `DEMO_MODE=true`. Skarpt är förvalt oavsett `NODE_ENV`.
+   - Testet "production + DEMO_MODE kraschar" ersätts med ett test som visar att
+     production + DEMO_MODE startar i demoläge och skriver det i loggen vid varje start.
+
+   Ett riktigt val skyddas i stället av:
+   - att skarpt är förvalt
+   - en banderoll på varje sida i demoläge
+   - omröstningens eget läge (steg 4). En demoomröstning kan då aldrig fastställas i
+     skarpt läge, och demoröster hamnar aldrig i en skarp omröstning.
+   - uppstartsvakten i skarpt läge
+2. **Samordning med Azure.** Innan uppgiften distribueras måste `DEMO_MODE=true` sättas i
+   `infra/azure/app.bicep`. Annars startar Azure-demon i skarpt läge och kraschar på de
+   ouppfyllda kraven. Filen är Azure-sessionens, så implementeraren rör inte `infra/`.
+   Controllern meddelar Azure-sessionen när uppgiften är committad.
+3. **Adminsidan visar läget.** Överst efter inloggningen står ett kort med:
+   - läget ("Demoläge" eller "Skarpt läge") och en mening om vad det innebär
+   - vilken BankID som används: attrappen, testmiljön eller produktion
+   - checklistan ur `sharpModeRequirements()`, med uppfyllt eller inte per krav
+   - sist meningen "Läget sätts vid driftsättning och kan inte ändras här."
+
+   I demoläge visar listan vad som saknas för skarpt läge.
+4. **Checklistan är inte offentlig.** `/api/mode` ger bara läget, som banderollen behöver.
+   Checklistan beskriver konfigurationen och går därför via en adminrutt bakom
+   adminsessionen.
+5. **Kraven får en allvarlighetsgrad:** `Requirement = { id; met; detail; blocking }`.
+   - BankID:s testmiljö är en varning och inget stopp. I skarpt läge med
+     `BANKID_ENV=test` säger adminsidan att inloggningarna är riktiga BankID-flöden med
+     test-BankID, inte med riktiga personer.
+   - Fastställandets granskningshändelse skriver ned BankID-miljön.
+   - Den riktiga klienten kommer i 17b och 17c. Till dess är `bankid-real` ouppfyllt och
+     stoppar, så skarpt läge kan inte starta. Det är sanningen om koden.
+6. **Kända fraser vägras när en omröstning skapas.** `trustee-passphrases-changed` får inte
+   bero på en miljövariabel som driften måste komma ihåg att sätta
+   (`SEEDED_TRUSTEE_PASSPHRASES`).
+   - I skarpt läge vägrar skapandet av en omröstning demofraserna.
+   - I skarpt läge vägrar seed-skriptet att köra.
+   - Posten om demofraserna i `known-limitations.ts`, som kom till i 11g:s fixrunda,
+     skrivs om eller tas bort här.
+7. **Banderollen.** Kontrollera först vad som finns. Finns ingen banderoll, visar varje
+   sida i demoläge en smal banderoll: "Demo, inte ett riktigt val. BankID är en attrapp."
 
 **Vakten för demoläget, som växeln bygger på, ska skärpas först.** Uppgift 11c
 samlade demoläget i `isDemoMode()` i `src/lib/demo-mode.ts`, med ett strukturtest i
@@ -5017,6 +5252,142 @@ Förväntat: PASS, 8 tester
 git add src/lib/runtime-mode.ts src/app/api/mode/route.ts prisma/ tests/unit/runtime-mode.test.ts tests/security/demo-mode-cannot-reach-production.test.ts
 git commit -m "Demoläge och skarpt läge, med produktion som felläge"
 ```
+
+---
+
+## Task 17b: BankID:s underskrift prövas i BankID:s eget format
+
+**Varför:** användaren valde 2026-09-24 en riktig BankID mot BankID:s testmiljö (ruling
+122). En riktig BankID lämnar underskriften i `completionData.signature`, ett
+XMLDSig-dokument där både det signerade innehållet och certifikatkedjan är inbäddade.
+Kuvertets underskrift följer i dag attrappens eget format, och posten
+`bankid-xmldsig-adapter-missing` säger att läsaren saknas. Uppgiften bygger läsaren och
+låter attrappen ge underskrifter i samma format, så att samma väg prövas i varje test.
+Den riktiga klienten i 17c behöver då bara lämna över XML:en.
+
+**Inga nya beroenden** (Global Constraints). XMLDSig-bibliotek har haft upprepade fel där
+en underskrift kunde flyttas eller lindas in (signature wrapping), så att det som prövas
+inte är det som läses. Bygg i stället en strikt läsare för just BankID:s format. Den
+godtar exakt den struktur som BankID ger och avvisar allt annat:
+
+- DOCTYPE och entiteter
+- kommentarer och bearbetningsinstruktioner
+- okända element och attribut
+- dubbla `Id`
+- fler referenser än väntat
+- andra algoritmer
+
+Ta formatet ur BankID:s dokumentation (developers.bankid.com) och den exklusiva
+kanoniseringen ur W3C:s specifikation, och ange källorna i koden.
+
+**Files:**
+- Create: `src/modules/eligibility/bankid/xmldsig.ts`
+- Modify: `src/modules/eligibility/bankid/MockBankIdService.ts`,
+  `src/modules/eligibility/bankid/envelope-signature.ts`,
+  `src/modules/eligibility/bankid/trusted-roots.ts`,
+  `src/modules/eligibility/sealed-chain.ts`, `src/lib/known-limitations.ts`
+- Test: `tests/unit/bankid-xmldsig.test.ts` och de befintliga testerna för underskrift
+  och försegling
+
+**Krav**
+
+1. **Läsaren** är strikt och har gränser för storlek och djup.
+2. **Kanoniseringen** är exklusiv XML-kanonisering 1.0 för det BankID signerar, och bara
+   för den delmängd läsaren godtar.
+3. **Prövningen** omfattar:
+   - varje referens digest (SHA-256) över det kanoniserade element som referensen pekar på
+   - `SignatureValue` över kanoniserad `SignedInfo`, med lövets publika nyckel och de
+     algoritmer BankID använder
+   - den inbäddade kedjan, med `certificate-chain.ts` mot betrodda rötter: BankID:s
+     testrot för `BANKID_ENV=test`, produktionsroten för produktion och attrappens rot i
+     demoläge
+   - att referensernas `URI` pekar på exakt de element vars innehåll används. Det
+     `usrNonVisibleData` som läses ska ligga i det element som har prövats, och ingen
+     annan kopia får godtas.
+4. **Bindningen.** Kuvertets signerade innehåll, alltså det saltade värdet från 11e,
+   jämförs med `usrNonVisibleData` i det prövade elementet.
+5. **Attrappen ger underskrifter i BankID:s format**, med attrappens CA, så att varje
+   befintligt test går genom läsaren.
+6. **Förseglingen.** Hela underskriftens XML förseglas som kedjan förseglas i dag, med
+   samma nyckel, samma AAD och fast längd.
+   - BankID:s svar på spärrfrågan (`ocspResponse`) förseglas med, så att en senare
+     uppgift kan pröva det.
+   - Mät den största realistiska underskriften och skriv marginalen i koden.
+   - Formatet får en ny version. Skriv vad som händer med kuvert i det gamla formatet i
+     demons databaser. En stängning får aldrig tyst tappa dem.
+7. **Tester.** Ett test per sorts avvisning, och varje test ska bli rött mot en läsare som
+   saknar just den kontrollen:
+   - ett flyttat `Id`
+   - ett dubbelt `Id`
+   - ett andra `bankIdSignedData` utanför referensen
+   - ändrat `usrNonVisibleData`
+   - ändrad `SignedInfo`
+   - fel algoritm
+   - en inskjuten kommentar
+   - namnrymdsknep
+   - ändrade blanktecken i det signerade
+8. **Ett riktigt exempel.** När det finns en underskrift från BankID:s testmiljö (17c)
+   läggs den till som testfall. Till dess används ett exempel ur BankID:s dokumentation,
+   om den publicerar ett fullständigt.
+9. **Posterna.** `bankid-xmldsig-adapter-missing` skrivs om eller tas bort. `revocation`
+   står kvar, med tillägget att svaret på spärrfrågan nu sparas förseglat men inte prövas.
+
+- [ ] Tester först, implementation, hela sviten, committa med uttryckliga sökvägar.
+
+---
+
+## Task 17c: En riktig BankID-klient mot BankID:s testmiljö
+
+**Varför:** användarens beslut 2026-09-24 (ruling 122). Med klienten loggar man in och
+röstar med den riktiga BankID-appen och ett test-BankID från demo.bankid.com. Samma klient
+kan senare pekas mot produktion, med ett eget certifikat och ett avtal med en bank.
+
+**Beroenden:**
+- 17: läget
+- 14e och 11e: BankID-ordern bär inte kopplingen ut ur systemet
+- 17b: läsaren
+
+**Files:**
+- Create: `src/modules/eligibility/bankid/BankIdRpClient.ts`, `scripts/fetch-bankid-test-cert.*`
+- Modify: `src/modules/eligibility/bankid/index.ts`, inloggningskomponenten, röstsidans
+  BankID-steg, `src/lib/runtime-mode.ts` och README
+- Test: enhetstester mot en falsk RP-server, och ett frivilligt test mot testmiljön
+
+**Krav**
+
+1. **Klienten** implementerar `IBankIdService` mot RP API v6.0, med `auth`, `sign`,
+   `collect` och `cancel`, över ömsesidig TLS.
+   - RP-certifikatet kommer från `BANKID_CERT_PATH` och `BANKID_CERT_PASSPHRASE`: BankID:s
+     publika testcertifikat för testmiljön och ett eget för produktion.
+   - BankID:s server-CA är förankrad, och systemets CA-lager används aldrig.
+2. **`BANKID_ENV=test|production`** väljer adress och rötter. Skarpt läge använder
+   klienten och demoläget attrappen (17).
+3. **Testcertifikatet committas inte.** `scripts/fetch-bankid-test-cert` hämtar det från
+   BankID:s webbplats och kontrollerar det mot en förankrad SHA-256. README beskriver hur
+   man skaffar ett test-BankID på demo.bankid.com och ställer in BankID-appen för
+   testmiljön.
+4. **Ordern:**
+   - `endUserIp` kommer från de betrodda proxyleden, som i dag.
+   - `userVisibleData` säger på svenska vad som signeras.
+   - `userNonVisibleData` bär det saltade värdet från 11e.
+   - Ordern bär ingenting som kopplar person till röst utanför systemet (11e).
+5. **Pollningen:**
+   - `collect` går bara på `orderRef` (14e).
+   - `hintCode` översätts till BankID:s rekommenderade meddelanden (RFA) på svenska.
+   - QR-koden animeras ur `qrStartToken` och `qrStartSecret` (`qr.ts`).
+   - "BankID på den här enheten" använder `autoStartToken`.
+6. **Felkoderna** hanteras som BankID rekommenderar: `alreadyInProgress`,
+   `invalidParameters`, `unauthorized`, `notFound`, `requestTimeout`, `maintenance` och
+   `internalError`. Tidsgränser och omförsök är begränsade.
+7. **Ett frivilligt test mot testmiljön** (`BANKID_LIVE_TEST=1`) kör `auth`, `collect` på
+   en väntande order och `cancel`. Det ingår inte i den vanliga sviten.
+8. **Efter uppgiften** kan skarpt läge starta med `BANKID_ENV=test`, och adminsidan visar
+   "Skarpt läge, BankID testmiljö". En signering kräver appen, så rapporten säger vad en
+   människa med test-BankID behöver pröva för hand.
+9. **Azure.** Certifikatet och frasen läggs i Key Vault. Det gör Azure-sessionen, och
+   controllern meddelar den.
+
+- [ ] Tester först, implementation, hela sviten, committa med uttryckliga sökvägar.
 
 ---
 
