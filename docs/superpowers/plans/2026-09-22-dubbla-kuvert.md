@@ -3702,6 +3702,20 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
 5. **`already_closed` betyder fas `STRIPPED` eller senare.** Från `CLOSED` eller
    `VALIDATED` fortsätter en omkörning, eftersom administratören utreder en
    avvikelse och kör om.
+5b. **En röst i sista stund får inte gå förlorad.** Implementeraren av uppgift 14b
+   hittade en kapplöpning som fanns redan före den uppgiften. En röst vars fas prövas
+   före stängningen men som skrivs efter att `closeElection` läst kuverten raderas av
+   `clearPendingVotes` utan att flyttas, och väljaren har fått beskedet att rösten är
+   lagd. Verifieringskön från 14b kan göra fönstret längre. Stäng det på tre sätt:
+   - `castEncryptedBallot` prövar att fasen är `OPEN` **i samma transaktion som
+     skrivningen**, med ett villkor som databasen håller, inte med en läsning före
+   - stängningen skriver `CLOSED` med jämför-och-sätt innan kuverten läses, så att
+     ingen ny skrivning kan lyckas efteråt
+   - raderingen tar bort **de kuvert som lästes**, efter id, och kontrollerar att inga
+     fler finns kvar. Finns det fler har något gått fel, och skalningen ska avbrytas
+     innan något raderas.
+   Skriv ett test som låter en röst skrivas mellan läsningen och raderingen, och som
+   kräver att den antingen flyttas eller att väljaren får ett fel, aldrig "lagd".
 6. **Markeringen "har röstat", utan tidsstämpel.** Spec 3.1 punkt 6 säger att
    väljaren efter stängningen ser att hon röstat, men i kuvertmodellen skriver
    ingenting en sådan markering. `castEncryptedBallot` skriver bara `pending_vote`,
