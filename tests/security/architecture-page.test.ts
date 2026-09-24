@@ -231,6 +231,16 @@ const MAIN_PAGE_VAULT_CLAIMS: ReadonlyArray<{
     facts: ['vaultPgAdmin', 'vaultAccess'],
   },
   {
+    // Kopplingen ligger under röstningen i pending_vote, i röstlängden, som bär
+    // både väljaren och chiffret. Flyttas en del av den till röstdatabasen före
+    // stängningen slutar meningen att stämma, och markörerna i de två
+    // påståendena går rött.
+    file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
+    quote:
+      'Uppdelningen skyddar inte heller kopplingen mellan namn och röst, eftersom den under röstningen ligger i urnan med namn ensam',
+    facts: ['votePageLaysEnvelopes', 'copiesKeepLink'],
+  },
+  {
     file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
     quote: 'Nyckelns tre delar finns inte i valvet',
     facts: ['sharesNotInVault', 'electionKeyNotStored'],
