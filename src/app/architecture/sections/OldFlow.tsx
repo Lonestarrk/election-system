@@ -1,7 +1,8 @@
 import Link from 'next/link'
 import type { KnownLimitation } from '@/lib/known-limitations'
-import { CURRENTLY } from '../code-facts'
+import { CURRENTLY, LIMITATION_STATUS } from '../code-facts'
 import { limitationHref, listItemStyle } from './shared'
+import { StatusBadge } from './StatusBadge'
 
 /**
  * Vad det gamla flödet fortfarande gör.
@@ -18,14 +19,15 @@ export function OldFlow({ entries }: { entries: KnownLimitation[] }) {
     <section className="card" aria-labelledby="gamla-flodet">
       <h2 id="gamla-flodet">Vad det gamla flödet fortfarande gör</h2>
       <p className="muted small">
-        {CURRENTLY.oldFlowRoutesRemain.text} Så länge det finns kvar gäller dess egna problem, som
-        kuvertmodellen är byggd för att inte ha. {CURRENTLY.oldFlowLiveResults.text}
+        {CURRENTLY.oldFlowRoutesRemain.text} <StatusBadge status={CURRENTLY.oldFlowRoutesRemain.status!} /> Så
+        länge det finns kvar gäller dess egna problem, som kuvertmodellen är byggd för att inte ha.{' '}
+        {CURRENTLY.oldFlowLiveResults.text} <StatusBadge status={CURRENTLY.oldFlowLiveResults.status!} />
       </p>
       <p className="muted small">Flödets egna poster i listan över kända begränsningar:</p>
       <ul className="small" style={{ paddingLeft: '1.25rem', marginBottom: 0 }}>
         {entries.map((entry) => (
           <li key={entry.id} style={listItemStyle}>
-            <Link href={limitationHref(entry)}>{entry.title}</Link>
+            <Link href={limitationHref(entry)}>{entry.title}</Link> <StatusBadge status={LIMITATION_STATUS[entry.id]!} />
           </li>
         ))}
       </ul>

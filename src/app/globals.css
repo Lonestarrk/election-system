@@ -376,6 +376,66 @@ button.secondary:hover:not(:disabled) {
   color: var(--text);
 }
 
+/* Statusetiketter (Utvecklingsstatus, uppgift 11h) ----------------------- */
+
+.status-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.25rem;
+}
+
+.status-groups h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+}
+
+.status-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.status-list li {
+  line-height: 1.5;
+}
+
+.status-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 620;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.status-badge.status-done {
+  background: var(--success-soft);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.status-badge.status-planned {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.status-badge.status-out-of-scope {
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
 /* Partival -------------------------------------------------------------- */
 
 .party-list {

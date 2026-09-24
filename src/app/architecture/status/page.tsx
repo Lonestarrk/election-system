@@ -31,10 +31,10 @@ export default function StatusPage() {
           <ArchitectureNav current="/architecture/status" />
           <h1>Utvecklingsstatus</h1>
           <p className="muted" style={{ marginBottom: 0 }}>
-            Kuvertmodellen byggs i etapper. Här står vad som finns i koden i dag, vad det gamla
-            röstflödet fortfarande gör och vad som återstår. Varje påstående om koden på sidan är
-            kopplat till koden med en markör, och testerna går rött när koden ändras så att
-            påståendet inte längre stämmer.
+            Kuvertmodellen byggs i etapper. Grupperna nedan säger direkt vad som är klart, vad som
+            kommer att implementeras och vad som saknas och inte ingår i den här demon. Varje
+            påstående om koden på sidan är kopplat till koden med en markör, och testerna går rött
+            när koden ändras så att påståendet inte längre stämmer.
           </p>
         </div>
 

@@ -53,12 +53,59 @@ export type Marker =
   | { nowhereIn: string; matches: RegExp }
   | { onlyIn: string[]; under: string; matches: RegExp }
 
+/**
+ * STATUS PÅ EN PUNKT PÅ UTVECKLINGSSTATUS (uppgift 11h).
+ *
+ * `done` är byggt i koden i dag. `planned` återstår och pekar ut uppgiftens
+ * nummer i planen, docs/superpowers/plans/2026-09-22-dubbla-kuvert.md, där
+ * numret ska finnas som rubriken "## Task <nummer>:". `out_of_scope` är
+ * något ett riktigt val kräver som det här bevisprojektet inte bygger.
+ *
+ * Statusen är den enda källan: både sammanfattningen överst på sidan och
+ * etiketten vid varje punkt längre ned läser samma fält, så att de inte kan
+ * säga olika saker. tests/security/architecture-page.test.ts prövar att
+ * varje planerat nummer faktiskt finns i planen, och att punkterna i "Kommer
+ * att implementeras" står i samma ordning som planens rad "Exekveringsordning
+ * efter uppgift 11".
+ */
+export type Status = { kind: 'done' } | { kind: 'planned'; task: string } | { kind: 'out_of_scope' }
+
+export const STATUS_DONE: Status = { kind: 'done' }
+export const STATUS_OUT_OF_SCOPE: Status = { kind: 'out_of_scope' }
+
+export function statusPlanned(task: string): Status {
+  return { kind: 'planned', task }
+}
+
+/** Etikettens text. Etiketten har alltid text, aldrig bara en färg. */
+export function describeStatus(status: Status): string {
+  if (status.kind === 'done') return 'Klart'
+  if (status.kind === 'out_of_scope') return 'Ingår inte'
+  return `Kommer (uppgift ${status.task})`
+}
+
+/** Samma status radas inte upp två gånger när en punkt bygger på flera fakta. */
+export function dedupeStatuses(statuses: Status[]): Status[] {
+  const seen = new Set<string>()
+  const result: Status[] = []
+  for (const status of statuses) {
+    const key = describeStatus(status)
+    if (!seen.has(key)) {
+      seen.add(key)
+      result.push(status)
+    }
+  }
+  return result
+}
+
 export type CodeFact = {
   /** Påståendet, som det står på sidan. */
   text: string
   /** En kortare form, där sidan bara har plats för några ord. */
   short?: string
   holdsWhile: Marker[]
+  /** Status på Utvecklingsstatus. Sätts på de påståenden sidan märker. */
+  status?: Status
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +178,7 @@ const VOTE_PAGE_LAYS_ENVELOPES: Marker[] = [
  * Påståendet gäller röstsidan. Livevyn i demoläget visar databasen som en
  * insider ser den, med början av varje kuverts hash, och säger det själv.
  */
-const DEVICE_VIEW: Marker[] = [
+export const DEVICE_VIEW: Marker[] = [
   { file: 'src/app/vote/device-vote.ts', contains: "const KEY_PREFIX = 'valsystem.enhetens-rost.'" },
   { file: 'src/app/vote/page.tsx', contains: "fetch('/api/vote/compare'" },
   { file: 'src/app/vote/page.tsx', contains: 'forgetIfVotingEnded(storage, current.id, current)' },
@@ -484,6 +531,7 @@ export const CURRENTLY = {
       { file: 'src/app/api/vote/cast/route.ts', contains: 'export async function POST' },
       { file: 'src/modules/ballot-box/vote.service.ts', contains: 'votesDb.vote.create' },
     ],
+    status: statusPlanned('15'),
   },
 
   deviceViewBuilt: {
@@ -494,6 +542,7 @@ export const CURRENTLY = {
       'fram. När sidan ser att fasen lämnat OPEN raderar enheten det den sparat, också i en flik ' +
       'som står öppen över stängningen. Efter stängningen visar verifieringssidan ännu ingenting.',
     holdsWhile: [...DEVICE_VIEW, AFTER_CLOSE_VIEW_NOT_BUILT],
+    status: STATUS_DONE,
   },
 
   decryptionNotBuilt: {
@@ -502,11 +551,13 @@ export const CURRENTLY = {
       'tomma.',
     short: 'steget är inte byggt än',
     holdsWhile: [DECRYPTION_NOT_BUILT],
+    status: statusPlanned('12'),
   },
 
   decryptionGateNotBuilt: {
     text: 'Dekrypteringen är inte byggd, så spärren finns inte än.',
     holdsWhile: [DECRYPTION_NOT_BUILT],
+    status: statusPlanned('12'),
   },
 
   sumsNotPublished: {
@@ -519,6 +570,7 @@ export const CURRENTLY = {
       // Rör observatörsgränssnittet kuvertmodellens tabeller publiceras något ur den.
       { nowhereIn: 'src/app/api/observer', matches: /encryptedVote|partialDecryption|ballotTally/ },
     ],
+    status: statusPlanned('13'),
   },
 
   envelopeRootNotPublished: {
@@ -532,6 +584,7 @@ export const CURRENTLY = {
         contains: 'envelopeRoot: outcome.envelopeRoot',
       },
     ],
+    status: statusPlanned('13'),
   },
 
   finalCheckOldModel: {
@@ -543,6 +596,7 @@ export const CURRENTLY = {
       { file: 'src/orchestration/final-check.usecase.ts', contains: "id: 'link_cleared'" },
       { nowhereIn: 'src/orchestration/final-check.usecase.ts', matches: /encryptedVote/ },
     ],
+    status: statusPlanned('12b'),
   },
 
   oldFlowLiveResults: {
@@ -565,6 +619,7 @@ export const CURRENTLY = {
         matches: /\b(phase|closesAt|linkClearedAt|tallyCompletedAt|status)\b/,
       },
     ],
+    status: statusPlanned('13'),
   },
 
   votedMarkerNotKept: {
@@ -590,6 +645,7 @@ export const CURRENTLY = {
       ...NO_WRITES_BESIDE_THE_CODE,
       STRIPPING_DELETES_ENVELOPES,
     ],
+    status: statusPlanned('11d'),
   },
 
   castOnlyWhileOpen: {
@@ -601,6 +657,7 @@ export const CURRENTLY = {
         contains: 'election.closesAt <= new Date()',
       },
     ],
+    status: STATUS_DONE,
   },
 
   // -------------------------------------------------------------------------
@@ -668,6 +725,7 @@ export const CURRENTLY = {
         contains: 'if (isDemoMode()) return [mockBankIdRoot()]',
       },
     ],
+    status: STATUS_DONE,
   },
 
   envelopeRootCommitment: {
@@ -695,6 +753,7 @@ export const CURRENTLY = {
       { nowhereIn: 'src/lib/merkle.ts', matches: /export function \w*(Proof|Path|Inclusion)/ },
       STRIPPING_DELETES_ENVELOPES,
     ],
+    status: STATUS_DONE,
   },
 
   auditChain: {
@@ -724,6 +783,7 @@ export const CURRENTLY = {
         matches: /model AuditEvent \{[^}]*\n\s+(actor\w*|admin\w*|voterStatusId|count\w*|electionId)\s/,
       },
     ],
+    status: STATUS_DONE,
   },
 
   certifyBlockedWhileLinked: {
@@ -735,6 +795,7 @@ export const CURRENTLY = {
         contains: "canCertify: checks.every((check) => check.severity === 'WARNING' || check.passed)",
       },
     ],
+    status: STATUS_DONE,
   },
 
   // -------------------------------------------------------------------------
@@ -1192,6 +1253,7 @@ export const CURRENTLY = {
       ...DEMO_PASSPHRASES_SEEDED,
       { file: 'src/lib/crypto/share-storage.ts', contains: 'function keyFor(passphrase: string, electionId: string, trusteeIndex: number): Buffer {' },
     ],
+    status: STATUS_DONE,
   },
 
   secretsInFilesLocally: {
@@ -1271,6 +1333,7 @@ export const CURRENTLY = {
       { file: 'infra/azure/deploy.sh', contains: 'archive "$COMMIT" | tar -x -C "$WORK/src"' },
       { file: 'infra/azure/deploy.sh', contains: 'deploy_retry app app.bicep' },
     ],
+    status: STATUS_DONE,
   },
 
   azureNotBuilt: {
@@ -1294,6 +1357,7 @@ export const CURRENTLY = {
       },
       { file: 'src/lib/admission-queue.ts', contains: 'const waiting: Waiter[] = []' },
     ],
+    status: STATUS_OUT_OF_SCOPE,
   },
 } satisfies Record<string, CodeFact>
 
@@ -1336,6 +1400,7 @@ export const PHASES: PhaseRow[] = [
     today: {
       text: 'Förvald när omröstningen skapas.',
       holdsWhile: [{ file: 'prisma/voters/schema.prisma', contains: 'phase String @default("OPEN")' }],
+      status: STATUS_DONE,
     },
   },
   {
@@ -1354,6 +1419,7 @@ export const PHASES: PhaseRow[] = [
           contains: 'election.closesAt <= new Date()',
         },
       ],
+      status: statusPlanned('11d'),
     },
   },
   {
@@ -1372,6 +1438,7 @@ export const PHASES: PhaseRow[] = [
           contains: 'await validateEnvelopes(snapshot)',
         },
       ],
+      status: statusPlanned('11d'),
     },
   },
   {
@@ -1389,6 +1456,7 @@ export const PHASES: PhaseRow[] = [
           contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date() }",
         },
       ],
+      status: STATUS_DONE,
     },
   },
   {
@@ -1399,6 +1467,7 @@ export const PHASES: PhaseRow[] = [
     today: {
       text: 'Skrivs aldrig, eftersom dekrypteringen inte är byggd.',
       holdsWhile: [neverWritten('TALLIED'), DECRYPTION_NOT_BUILT],
+      status: statusPlanned('12'),
     },
   },
   {
@@ -1414,6 +1483,7 @@ export const PHASES: PhaseRow[] = [
         neverWritten('CERTIFIED'),
         { file: 'src/orchestration/final-check.usecase.ts', contains: "data: { status: 'CERTIFIED'" },
       ],
+      status: statusPlanned('12b'),
     },
   },
 ]
@@ -1429,6 +1499,13 @@ export const PHASES: PhaseRow[] = [
  * som påståendena ovan om samma sak. Byggs något försvinner markören, testet
  * går rött, och punkten ska strykas härifrån. Listan kan därför bli kortare av
  * sig själv, men aldrig påstå att något återstår som redan är byggt.
+ *
+ * ORDNINGEN FÖLJER PLANENS "EXEKVERINGSORDNING EFTER UPPGIFT 11" (uppgift 11h).
+ * "Kommer att implementeras" på Utvecklingsstatus visar listan i den här
+ * ordningen. tests/security/architecture-page.test.ts läser planens rad och
+ * kräver att varje punkts uppgiftsnummer står i samma inbördes ordning där.
+ * Två punkter får dela nummer (11d), men ingen punkt får stå före en annan
+ * vars uppgift körs tidigare.
  */
 export const REMAINING: CodeFact[] = [
   {
@@ -1436,18 +1513,27 @@ export const REMAINING: CodeFact[] = [
       'Faserna CLOSED och VALIDATED blir egna tillstånd i stängningen, med övergångar som bara går ' +
       'framåt.',
     holdsWhile: [neverWritten('CLOSED'), neverWritten('VALIDATED')],
+    status: statusPlanned('11d'),
   },
   {
     text: 'Markeringen "har röstat" skrivs i röstlängden vid skalningen, utan tidsstämpel.',
     holdsWhile: CURRENTLY.votedMarkerNotKept.holdsWhile,
-  },
-  {
-    text: 'Verifieringssidan visar efter stängningen att du har röstat, men inte vad.',
-    holdsWhile: [AFTER_CLOSE_VIEW_NOT_BUILT],
+    status: CURRENTLY.votedMarkerNotKept.status,
   },
   {
     text: 'Tröskeldekrypteringen av summorna, med spärren som kräver att fasen är STRIPPED.',
     holdsWhile: [DECRYPTION_NOT_BUILT, neverWritten('TALLIED')],
+    status: CURRENTLY.decryptionNotBuilt.status,
+  },
+  {
+    text: 'Slutkontrollen och fastställandet för kuvertmodellen, med fasen CERTIFIED.',
+    holdsWhile: [...CURRENTLY.finalCheckOldModel.holdsWhile, neverWritten('CERTIFIED')],
+    status: CURRENTLY.finalCheckOldModel.status,
+  },
+  {
+    text: 'Verifieringssidan visar efter stängningen att du har röstat, men inte vad.',
+    holdsWhile: [AFTER_CLOSE_VIEW_NOT_BUILT],
+    status: statusPlanned('13'),
   },
   {
     text:
@@ -1457,10 +1543,7 @@ export const REMAINING: CodeFact[] = [
       ...CURRENTLY.sumsNotPublished.holdsWhile,
       ...CURRENTLY.envelopeRootNotPublished.holdsWhile,
     ],
-  },
-  {
-    text: 'Slutkontrollen och fastställandet för kuvertmodellen, med fasen CERTIFIED.',
-    holdsWhile: [...CURRENTLY.finalCheckOldModel.holdsWhile, neverWritten('CERTIFIED')],
+    status: CURRENTLY.sumsNotPublished.status,
   },
   {
     text: 'Att det gamla flödet tas bort, med sina röstintyg, blinda signaturer och kvitton.',
@@ -1468,5 +1551,143 @@ export const REMAINING: CodeFact[] = [
       { file: 'src/lib/blind-client.ts', contains: 'createBlindedCredential' },
       { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
     ],
+    status: CURRENTLY.oldFlowRoutesRemain.status,
   },
 ]
+
+// ---------------------------------------------------------------------------
+// Läget i korthet: Klart, Kommer att implementeras, Saknas och ingår inte i
+// demon (uppgift 11h)
+// ---------------------------------------------------------------------------
+
+/**
+ * DET SOM ÄR BYGGT, KORT, ÖVERST PÅ UTVECKLINGSSTATUS.
+ *
+ * Varje punkt är en kortare form av ett påstående som redan står längre ned
+ * på sidan (i ReviewToday, PhasesToday eller AzureStatus), med samma eller en
+ * delmängd av dess markörer. En kortare text får inte lova mer än den långa;
+ * se den fullständiga texten för vad punkten faktiskt bygger på och vad den
+ * inte täcker.
+ */
+export const BUILT: CodeFact[] = [
+  {
+    text:
+      'Röstsidan lägger kuvert i webbläsaren: rösten låses, skrivs under med BankID och sparas i ' +
+      'pending_vote.',
+    holdsWhile: CURRENTLY.votePageLaysEnvelopes.holdsWhile,
+    status: STATUS_DONE,
+  },
+  {
+    text: 'Före stängningen ser du din nuvarande röst på enheten du röstade från, och kan ändra den.',
+    holdsWhile: DEVICE_VIEW,
+    status: STATUS_DONE,
+  },
+  {
+    text: 'Stängningen prövar varje underskrift mot BankID:s rotcertifikat innan ett kuvert flyttas till urnan.',
+    holdsWhile: CURRENTLY.validationGatesClose.holdsWhile,
+    status: STATUS_DONE,
+  },
+  {
+    text:
+      'Kuvertroten binder vilka kuvert som fanns i röstlängden, och stängningen avbryter om antalet ' +
+      'inte stämmer.',
+    holdsWhile: CURRENTLY.envelopeRootCommitment.holdsWhile,
+    status: STATUS_DONE,
+  },
+  {
+    text:
+      'Revisionsloggen är en hashkedja som avslöjar en ändrad rad, men inte den som kan skriva om ' +
+      'hela kedjan i databasen.',
+    holdsWhile: CURRENTLY.auditChain.holdsWhile,
+    status: STATUS_DONE,
+  },
+  {
+    text: 'Azure-uppsättningen finns som Bicep och distribueras med ett skript.',
+    holdsWhile: CURRENTLY.azureSetupBuilt.holdsWhile,
+    status: STATUS_DONE,
+  },
+]
+
+/**
+ * EN PUNKT I "SAKNAS OCH INGÅR INTE I DEMON".
+ *
+ * Till skillnad från CodeFact är markören valfri: en punkt om något utanför
+ * koden, som ett avtal med en bank, kan inte bära en markör och formuleras i
+ * stället så snävt att den stämmer utan en.
+ */
+export type OutOfScopeItem = {
+  text: string
+  status: Status
+  holdsWhile?: Marker[]
+}
+
+/**
+ * VAD ETT RIKTIGT VAL KRÄVER SOM DET HÄR BEVISPROJEKTET INTE BYGGER.
+ *
+ * Punkterna kommer ur docs/spec/2026-09-22-dubbla-kuvert.md avsnitt 10, som
+ * själv säger att cast-or-audit, en pappersröst som upphäver den digitala och
+ * distribuerad nyckelgenerering ligger utanför specen, och ur det som bara
+ * ett riktigt val har: ett avtal med en bank för BankID i produktion, och
+ * förtroendepersoner som räknar på egna enheter. En begränsning som en
+ * uppgift i planen åtgärdar (som BankID-ordern eller XML-adaptern) hör till
+ * "Kommer att implementeras" i stället, inte hit.
+ */
+export const OUT_OF_SCOPE: OutOfScopeItem[] = [
+  {
+    text:
+      'En manipulerad klient kan kryptera fel val utan att det syns. Cast-or-audit (Benaloh), som ' +
+      'skulle låta väljaren kontrollera en kopia innan hon röstar, ligger utanför specen.',
+    status: STATUS_OUT_OF_SCOPE,
+    holdsWhile: [
+      { file: 'src/app/vote/page.tsx', contains: "import { encryptBallotInSteps } from '@/lib/encrypt-client'" },
+    ],
+  },
+  {
+    text:
+      'Nyckeln delas av en betrodd utdelare när valet skapas, i stället för att förtroendemännen ' +
+      'bygger den tillsammans utan att den någonsin sätts ihop (distribuerad nyckelgenerering).',
+    status: STATUS_OUT_OF_SCOPE,
+    holdsWhile: [{ file: 'src/orchestration/create-election.usecase.ts', contains: 'splitSecret(keys.privateKey' }],
+  },
+  {
+    text:
+      'Specen bygger inte in en pappersröst som upphäver den digitala, ett skydd Estlands system har ' +
+      'mot tvång vid själva stängningen.',
+    status: STATUS_OUT_OF_SCOPE,
+  },
+  {
+    text:
+      'Ett riktigt val kräver ett avtal med en bank om BankID i skarpt läge; det här bevisprojektet ' +
+      'har inget sådant avtal.',
+    status: STATUS_OUT_OF_SCOPE,
+  },
+  {
+    text:
+      'Ett riktigt val låter förtroendepersonerna räkna på egna, fristående enheter, skilda från ' +
+      'vallokalens. Det här bevisprojektet bygger inte det.',
+    status: STATUS_OUT_OF_SCOPE,
+  },
+]
+
+/**
+ * STATUS FÖR DE KÄNDA BEGRÄNSNINGAR UTVECKLINGSSTATUS MÄRKER MED EN ETIKETT.
+ *
+ * Begränsningarna själva står i src/lib/known-limitations.ts. Den här kartan
+ * är den enda källan för vilken status de har på Utvecklingsstatus: fyra hör
+ * till det gamla flödet och försvinner när det tas bort (uppgift 15) utom
+ * `live-results-in-old-flow`, som uppgift 13 stänger genom att skriva om
+ * observatörsrutterna. Fyra är kuvertmodellens egna, i Remaining.tsx. Ingen
+ * uppgift i planen prövar spärrfrågan (OCSP) fullt ut — uppgift 17b förseglar
+ * bara svaret för en senare uppgift — så `no-revocation-check` är "ingår
+ * inte", inte "kommer".
+ */
+export const LIMITATION_STATUS: Record<string, Status> = {
+  'receipt-proves-choice': statusPlanned('15'),
+  'live-results-in-old-flow': statusPlanned('13'),
+  'signing-keys-in-database': statusPlanned('15'),
+  'no-guaranteed-anonymity-set': statusPlanned('15'),
+  'bankid-order-carries-link': statusPlanned('11e'),
+  'no-revocation-check': STATUS_OUT_OF_SCOPE,
+  'bankid-xmldsig-adapter-missing': statusPlanned('17b'),
+  'votes-db-writer-can-swap-ciphertext': statusPlanned('11d'),
+}

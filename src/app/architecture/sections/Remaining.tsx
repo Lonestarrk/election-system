@@ -1,7 +1,8 @@
 import Link from 'next/link'
 import type { KnownLimitation } from '@/lib/known-limitations'
-import { REMAINING } from '../code-facts'
+import { LIMITATION_STATUS, REMAINING } from '../code-facts'
 import { limitationHref, listItemStyle } from './shared'
+import { StatusBadge } from './StatusBadge'
 
 /**
  * Vad som återstår, läst ur REMAINING i code-facts.ts.
@@ -22,7 +23,7 @@ export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
       <ul className="small" style={{ paddingLeft: '1.25rem', marginTop: '0.75rem' }}>
         {REMAINING.map((item) => (
           <li key={item.text} style={listItemStyle}>
-            {item.text}
+            {item.text} <StatusBadge status={item.status!} />
           </li>
         ))}
       </ul>
@@ -33,7 +34,7 @@ export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
       <ul className="small" style={{ paddingLeft: '1.25rem', marginBottom: 0 }}>
         {fixable.map((entry) => (
           <li key={entry.id} style={listItemStyle}>
-            <Link href={limitationHref(entry)}>{entry.title}</Link>
+            <Link href={limitationHref(entry)}>{entry.title}</Link> <StatusBadge status={LIMITATION_STATUS[entry.id]!} />
           </li>
         ))}
       </ul>

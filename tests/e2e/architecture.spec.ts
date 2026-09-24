@@ -777,11 +777,40 @@ test.describe('huvudsidan och undersidorna', () => {
     await page.goto('/architecture/status')
 
     await expect(page.getByRole('heading', { level: 1, name: 'Utvecklingsstatus' })).toBeVisible()
-    for (const heading of ['Granskningen, fråga för fråga', 'Faserna i koden i dag', 'Vad som återstår']) {
-      await expect(page.getByRole('heading', { name: heading })).toBeVisible()
+    for (const heading of [
+      'Läget i korthet',
+      'Klart',
+      'Kommer att implementeras',
+      'Saknas och ingår inte i demon',
+      'Granskningen, fråga för fråga',
+      'Faserna i koden i dag',
+      'Vad som återstår',
+    ]) {
+      await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
     }
     expect(requests).toEqual([])
     expect(problems).toEqual([])
+  })
+
+  test('Utvecklingsstatus märker punkter längre ned på sidan, inte bara i sammanfattningen', async ({
+    page,
+  }) => {
+    /**
+     * Uppgift 11h, krav 1 och 5: samma status läses både överst och vid varje
+     * punkt längre ned, så etiketterna inte kan säga olika saker. Minst en av
+     * varje sorts etikett ska synas UTANFÖR "Läget i korthet", som bevis på
+     * att märkningen faktiskt når resten av sidan och inte bara sammanfattas
+     * en gång överst.
+     */
+    await page.goto('/architecture/status')
+
+    const overview = page.getByRole('region', { name: 'Läget i korthet' })
+    await expect(overview.getByRole('heading', { name: 'Klart', exact: true })).toBeVisible()
+
+    const restOfPage = page.locator('main').locator('section:not(#laget-i-korthet)')
+    await expect(restOfPage.getByText('Klart', { exact: true }).first()).toBeVisible()
+    await expect(restOfPage.getByText(/^Kommer \(uppgift/).first()).toBeVisible()
+    await expect(restOfPage.getByText('Ingår inte', { exact: true }).first()).toBeVisible()
   })
 
   test('ingen av de tre sidorna skrollar i sidled på en telefon', async ({ page }) => {

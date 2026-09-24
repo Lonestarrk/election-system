@@ -1,6 +1,8 @@
 import Link from 'next/link'
+import { dedupeStatuses } from '../code-facts'
 import { reviewQuestions } from './review-rows'
 import { TECHNICAL_PATH, type PageLimitations } from './shared'
+import { StatusBadge } from './StatusBadge'
 
 /**
  * Granskningsfrågorna, med vad koden gör i dag. Samma frågor som Tekniska
@@ -28,7 +30,14 @@ export function ReviewToday({ limitations }: { limitations: PageLimitations }) {
             {reviewQuestions(limitations).map((row) => (
               <tr key={row.question}>
                 <td>{row.question}</td>
-                <td data-label="I koden i dag">{row.today}</td>
+                <td data-label="I koden i dag">
+                  {row.today}
+                  <div className="status-badges">
+                    {dedupeStatuses(row.statuses).map((status) => (
+                      <StatusBadge key={`${row.question}-${JSON.stringify(status)}`} status={status} />
+                    ))}
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>

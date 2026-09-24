@@ -2,10 +2,18 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  BUILT,
   CURRENTLY,
+  describeStatus,
+  dedupeStatuses,
+  LIMITATION_STATUS,
   neverWritten,
+  OUT_OF_SCOPE,
   PHASES,
   REMAINING,
+  STATUS_DONE,
+  STATUS_OUT_OF_SCOPE,
+  statusPlanned,
   STRIPPING_HELPERS,
   STRIPPING_TRANSACTION,
   VOTERS_MODELS_TODAY,
@@ -16,6 +24,7 @@ import {
   OLD_FLOW_VOTES_AND_RECEIPTS,
   type CodeFact,
   type Marker,
+  type Status,
 } from '@/app/architecture/code-facts'
 import { MOMENTS } from '@/app/architecture/timeline/moments'
 import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
@@ -718,7 +727,13 @@ describe('arkitektursidan skriver inte själv det den läser', () => {
      * står på två ställen blir rättat på det ena. Texterna ska läsas ur
      * code-facts.ts, inte kopieras in i sidan.
      */
-    const facts = [...Object.values(CURRENTLY), ...PHASES.map((row) => row.today), ...REMAINING]
+    const facts: Array<{ text: string }> = [
+      ...Object.values(CURRENTLY),
+      ...PHASES.map((row) => row.today),
+      ...REMAINING,
+      ...BUILT,
+      ...OUT_OF_SCOPE,
+    ]
     for (const file of pageFiles) {
       const content = read(file)
       for (const fact of facts) {
@@ -982,5 +997,277 @@ describe('huvudsidan talar vardagsspråk', () => {
     expect(withoutComments('<p>Chiffret är ett tal</p>')).toMatch(JARGON)
     expect(withoutComments('// krypterad\nconst y = 1')).not.toMatch(JARGON)
     expect(withoutComments('{/* hashen */}<p>Hej</p>')).not.toMatch(JARGON)
+  })
+})
+
+describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11h)', () => {
+  /**
+   * KRAV 1: EN ENDA KÄLLA FÖR STATUS.
+   *
+   * Varje punkt på sidan får ett statusfält i code-facts.ts: `done`, `planned`
+   * med uppgiftens nummer, eller `out_of_scope`. Både sammanfattningen överst
+   * (BUILT/REMAINING/OUT_OF_SCOPE) och etiketterna längre ned
+   * (CURRENTLY[x].status, PHASES[i].today.status, LIMITATION_STATUS) läser
+   * samma fält, så de inte kan säga olika saker.
+   *
+   * Planens execution-rad prövas mot den riktiga filen, inte mot ett hopkopierat
+   * citat, så att testet går rött om raden ändras utan att sidan hänger med.
+   */
+  const plan = read('docs/superpowers/plans/2026-09-22-dubbla-kuvert.md')
+
+  const taskHeadings = new Set([...plan.matchAll(/^## Task (\w+):/gm)].map((match) => match[1]!))
+
+  const executionOrderMatch = plan.match(/\*\*Exekveringsordning efter uppgift 11:\*\*([\s\S]*?18\.)/)
+  if (!executionOrderMatch) {
+    throw new Error('Hittar inte stycket "Exekveringsordning efter uppgift 11" i planen.')
+  }
+  const executionOrder = [...executionOrderMatch[1]!.matchAll(/\b\d+[a-z]?\b/g)].map((match) => match[0])
+
+  /** Att statusen finns, och att ett planerat uppgiftsnummer faktiskt står i planen. */
+  function expectValidStatus(label: string, status: Status | undefined): void {
+    expect(status, `${label} saknar status`).toBeDefined()
+    if (status?.kind === 'planned') {
+      expect(taskHeadings, `${label}: "## Task ${status.task}:" finns inte i planen`).toContain(status.task)
+    }
+  }
+
+  it('exekveringsordningen hittas i planen, med alla uppgifter efter uppgift 11', () => {
+    // Kontrasten mot ett tomt eller trasigt regexträff: en riktig lista.
+    expect(executionOrder).toEqual([
+      '11a', '11b', '11c', '11f', '14', '14b', '14f', '11g', '11h', '11d', '14d', '12', '12b',
+      '12c', '13', '17', '14e', '11e', '17b', '17c', '14c', '15', '16', '18',
+    ])
+  })
+
+  describe('describeStatus och dedupeStatuses', () => {
+    it('etiketten har alltid text', () => {
+      expect(describeStatus(STATUS_DONE)).toBe('Klart')
+      expect(describeStatus(STATUS_OUT_OF_SCOPE)).toBe('Ingår inte')
+      expect(describeStatus(statusPlanned('11d'))).toBe('Kommer (uppgift 11d)')
+    })
+
+    it('slår ihop samma status men behåller olika status kvar', () => {
+      expect(dedupeStatuses([STATUS_DONE, STATUS_DONE])).toEqual([STATUS_DONE])
+      expect(dedupeStatuses([statusPlanned('12'), statusPlanned('13'), statusPlanned('12')])).toEqual([
+        statusPlanned('12'),
+        statusPlanned('13'),
+      ])
+    })
+  })
+
+  describe('Klart', () => {
+    it('finns, och varje punkt bär en markör som håller', () => {
+      expect(BUILT.length).toBeGreaterThan(0)
+      for (const item of BUILT) expectFactHolds(item.text, item)
+    })
+
+    it('varje punkt har status "done"', () => {
+      for (const item of BUILT) expect(item.status, item.text).toEqual(STATUS_DONE)
+    })
+  })
+
+  describe('Kommer att implementeras', () => {
+    it('varje punkt har ett planerat uppgiftsnummer som finns i planen', () => {
+      expect(REMAINING.length).toBeGreaterThan(0)
+      for (const item of REMAINING) expectValidStatus(item.text, item.status)
+    })
+
+    it('varje punkt bär en markör som visar att den INTE finns än', () => {
+      // expectFactHolds (i den befintliga sviten ovan) prövar redan att
+      // markörerna håller. Kontrasten hör hemma här: en byggd sak kan inte stå
+      // kvar. neverWritten('STRIPPED') beskriver något som redan skrivs, och
+      // ska alltså INTE hålla.
+      expect(check(neverWritten('STRIPPED')).holds).toBe(false)
+    })
+
+    it('punkterna står i samma ordning som planens "Exekveringsordning efter uppgift 11"', () => {
+      const positions = REMAINING.map((item) => {
+        if (item.status?.kind !== 'planned') throw new Error(`"${item.text}" saknar en planerad uppgift`)
+        const index = executionOrder.indexOf(item.status.task)
+        expect(index, `uppgift ${item.status.task} finns inte i exekveringsordningen`).toBeGreaterThanOrEqual(0)
+        return index
+      })
+      expect(positions).toEqual([...positions].sort((a, b) => a - b))
+    })
+
+    it('sidan anger inga datum', () => {
+      for (const item of REMAINING) expect(item.text, item.text).not.toMatch(/\b20\d{2}-\d{2}-\d{2}\b/)
+    })
+  })
+
+  describe('Saknas och ingår inte i demon', () => {
+    it('fem punkter, alla med status "out_of_scope"', () => {
+      expect(OUT_OF_SCOPE.length).toBe(5)
+      for (const item of OUT_OF_SCOPE) expect(item.status, item.text).toEqual(STATUS_OUT_OF_SCOPE)
+    })
+
+    it('punkter om koden bär en markör som håller', () => {
+      const withMarkers = OUT_OF_SCOPE.filter((item) => (item.holdsWhile?.length ?? 0) > 0)
+      expect(withMarkers.length).toBeGreaterThan(0)
+      for (const item of withMarkers) {
+        for (const marker of item.holdsWhile!) {
+          expect(check(marker).holds, `${item.text}\n${JSON.stringify(marker)}`).toBe(true)
+        }
+      }
+    })
+
+    it('punkter utan markör finns, formulerade om något utanför koden', () => {
+      const withoutMarkers = OUT_OF_SCOPE.filter((item) => (item.holdsWhile?.length ?? 0) === 0)
+      expect(withoutMarkers.length).toBeGreaterThan(0)
+    })
+
+    it('cast-or-audit och distribuerad nyckelgenerering delar markör med known-limitations, inte påhittade', () => {
+      const castOrAudit = OUT_OF_SCOPE.find((item) => /cast-or-audit|Benaloh/i.test(item.text))
+      const dealer = OUT_OF_SCOPE.find((item) => /betrodd utdelare|distribuerad nyckelgenerering/i.test(item.text))
+      const clientLimitation = KNOWN_LIMITATIONS.find((entry) => entry.id === 'client-code-from-server')
+      const dealerLimitation = KNOWN_LIMITATIONS.find((entry) => entry.id === 'trusted-dealer')
+
+      expect(castOrAudit, 'ingen punkt om cast-or-audit (Benaloh)').toBeDefined()
+      expect(dealer, 'ingen punkt om distribuerad nyckelgenerering').toBeDefined()
+      expect(clientLimitation?.stillTrueIf).toBeDefined()
+      expect(dealerLimitation?.stillTrueIf).toBeDefined()
+      expect(castOrAudit!.holdsWhile).toEqual([clientLimitation!.stillTrueIf])
+      expect(dealer!.holdsWhile).toEqual([dealerLimitation!.stillTrueIf])
+    })
+
+    it('täcker specens tre uttalat utanför-specen-punkter och de två som bara ett riktigt val har', () => {
+      // docs/spec/2026-09-22-dubbla-kuvert.md avsnitt 10 säger själv att
+      // cast-or-audit, en pappersröst som upphäver den digitala och distribuerad
+      // nyckelgenerering ligger utanför specen. Dispatchen lade till två som bara
+      // ett riktigt val har: BankID i produktion och förtroendemän på egna enheter.
+      const spec = read('docs/spec/2026-09-22-dubbla-kuvert.md')
+      expect(spec).toMatch(/cast-or-audit/)
+      expect(spec).toMatch(/pappersröst/)
+      expect(spec).toMatch(/distribuerad nyckelgenerering/)
+
+      const texts = OUT_OF_SCOPE.map((item) => item.text).join('\n')
+      expect(texts).toMatch(/cast-or-audit|Benaloh/i)
+      expect(texts).toMatch(/pappersröst/i)
+      expect(texts).toMatch(/betrodd utdelare|distribuerad nyckelgenerering/i)
+      expect(texts).toMatch(/bank/i)
+      expect(texts).toMatch(/egna|fristående enheter/i)
+    })
+  })
+
+  describe('LIMITATION_STATUS: status för de kända begränsningar sidan märker längre ned', () => {
+    /** Id:n som Utvecklingsstatus faktiskt visar, i OldFlow och Remaining. */
+    const usedOnStatusPage = [
+      'receipt-proves-choice',
+      'live-results-in-old-flow',
+      'signing-keys-in-database',
+      'no-guaranteed-anonymity-set',
+      'bankid-order-carries-link',
+      'no-revocation-check',
+      'bankid-xmldsig-adapter-missing',
+      'votes-db-writer-can-swap-ciphertext',
+    ]
+
+    it('varje id som visas på Utvecklingsstatus har en status', () => {
+      for (const id of usedOnStatusPage) expect(LIMITATION_STATUS[id], id).toBeDefined()
+    })
+
+    it('varje nyckel finns i listan över kända begränsningar', () => {
+      const ids = KNOWN_LIMITATIONS.map((limitation) => limitation.id)
+      for (const id of Object.keys(LIMITATION_STATUS)) expect(ids, id).toContain(id)
+    })
+
+    it('varje planerat uppgiftsnummer finns i planen', () => {
+      for (const [id, status] of Object.entries(LIMITATION_STATUS)) expectValidStatus(id, status)
+    })
+  })
+
+  describe('status längre ned på sidan (kravet "samma status på varje punkt")', () => {
+    it.each(PHASES)('fasen $phase har en status', (row) => {
+      expectValidStatus(`fasen ${row.phase}`, row.today.status)
+    })
+
+    it('OPEN och STRIPPED är klara; CLOSED, VALIDATED, TALLIED och CERTIFIED är planerade', () => {
+      const byPhase = Object.fromEntries(PHASES.map((row) => [row.phase, row.today.status]))
+      expect(byPhase['OPEN']).toEqual(STATUS_DONE)
+      expect(byPhase['STRIPPED']).toEqual(STATUS_DONE)
+      expect(byPhase['CLOSED']).toEqual(statusPlanned('11d'))
+      expect(byPhase['VALIDATED']).toEqual(statusPlanned('11d'))
+      expect(byPhase['TALLIED']).toEqual(statusPlanned('12'))
+      expect(byPhase['CERTIFIED']).toEqual(statusPlanned('12b'))
+    })
+
+    const labelled = [
+      'validationGatesClose',
+      'envelopeRootCommitment',
+      'envelopeRootNotPublished',
+      'deviceViewBuilt',
+      'votedMarkerNotKept',
+      'decryptionNotBuilt',
+      'decryptionGateNotBuilt',
+      'sumsNotPublished',
+      'auditChain',
+      'certifyBlockedWhileLinked',
+      'finalCheckOldModel',
+      'oldFlowRoutesRemain',
+      'oldFlowLiveResults',
+      'azureSetupBuilt',
+      'azureRunsDemo',
+      'azureNotBuilt',
+      'castOnlyWhileOpen',
+    ] as const
+
+    it.each(labelled)('CURRENTLY.%s har en status', (id) => {
+      expectValidStatus(id, CURRENTLY[id].status)
+    })
+
+    it('azureNotBuilt är "ingår inte", inte "kommer": ingen uppgift i planen bygger det', () => {
+      expect(CURRENTLY.azureNotBuilt.status).toEqual(STATUS_OUT_OF_SCOPE)
+    })
+  })
+
+  describe('sidans sektioner läser status i stället för att gissa den', () => {
+    const sectionFiles = [
+      'src/app/architecture/sections/StatusOverview.tsx',
+      'src/app/architecture/sections/ReviewToday.tsx',
+      'src/app/architecture/sections/PhasesToday.tsx',
+      'src/app/architecture/sections/OldFlow.tsx',
+      'src/app/architecture/sections/Remaining.tsx',
+      'src/app/architecture/sections/AzureStatus.tsx',
+    ]
+
+    it.each(sectionFiles)('%s visar en StatusBadge', (file) => {
+      expect(read(file)).toMatch(/<StatusBadge\b/)
+    })
+
+    it('StatusBadge renderar text, inte bara en färgklass, och läser sin egen fil', () => {
+      const content = read('src/app/architecture/sections/StatusBadge.tsx')
+      expect(content).toMatch(/export function StatusBadge/)
+      expect(content).toMatch(/describeStatus\(/)
+    })
+
+    it('shared.tsx importerar inte code-facts.ts: huvudsidan importerar shared.tsx och tillåter inga fackord', () => {
+      // Regressionen som hittades under 11h: StatusBadge låg först i
+      // shared.tsx, som huvudsidan också importerar (för limitation()). Det
+      // drog in code-facts.ts, fullt av fackord, i huvudsidans egen graf, och
+      // fällde "huvudsidan talar vardagsspråk" fast ingen text på huvudsidan
+      // ändrats.
+      expect(read('src/app/architecture/sections/shared.tsx')).not.toMatch(/from '\.\.\/code-facts'/)
+    })
+
+    it('StatusOverview läser BUILT, REMAINING och OUT_OF_SCOPE, upprepar dem inte som egna listor', () => {
+      const content = read('src/app/architecture/sections/StatusOverview.tsx')
+      expect(content).toMatch(/\bBUILT\.map\(/)
+      expect(content).toMatch(/\bREMAINING\.map\(/)
+      expect(content).toMatch(/\bOUT_OF_SCOPE\.map\(/)
+    })
+
+    it('StatusOverview säger direkt Klart, Kommer att implementeras och Saknas och ingår inte i demon', () => {
+      const text = visibleText(read('src/app/architecture/sections/StatusOverview.tsx'))
+      expect(text).toContain('Klart')
+      expect(text).toContain('Kommer att implementeras')
+      expect(text).toContain('Saknas och ingår inte i demon')
+    })
+
+    it('review-rows.tsx läser statusen ur CURRENTLY, radens etikett gissas inte fram', () => {
+      const content = read('src/app/architecture/sections/review-rows.tsx')
+      const statusFields = [...content.matchAll(/statuses:\s*\[([^\]]*)\]/g)]
+      expect(statusFields.length).toBeGreaterThan(0)
+      for (const [, group] of statusFields) expect(group).toMatch(/CURRENTLY\.\w+\.status/)
+    })
   })
 })

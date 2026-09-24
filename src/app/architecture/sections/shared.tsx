@@ -4,6 +4,12 @@ import { KNOWN_LIMITATIONS, type KnownLimitation } from '@/lib/known-limitations
 /**
  * Det sektionerna på de tre sidorna har gemensamt: begränsningarna de hänvisar
  * till i löpande text, hur en hänvisning ser ut och länkarna mellan sidorna.
+ *
+ * DEN HÄR FILEN FÅR INTE IMPORTERA code-facts.ts. Huvudsidan importerar den
+ * här filen (för limitation/pageLimitations), och code-facts.ts:s påståenden
+ * är skrivna med fackord som huvudsidans eget test förbjuder. StatusBadge,
+ * som läser status ur code-facts.ts, står därför i sin egen fil,
+ * ./StatusBadge, som bara Utvecklingsstatus sektioner importerar.
  */
 
 /** Tekniska detaljer, där hela listan över kända begränsningar står. */

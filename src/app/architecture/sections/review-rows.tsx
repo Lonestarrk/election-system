@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CURRENTLY } from '../code-facts'
+import { CURRENTLY, type Status } from '../code-facts'
 import { LimitationReference, type PageLimitations } from './shared'
 
 /**
@@ -13,11 +13,17 @@ import { LimitationReference, type PageLimitations } from './shared'
  * Kolumnen `today` läses ur code-facts.ts och bär markörer. Den visas bara på
  * Utvecklingsstatus, och hänvisningarna i den länkar därför till listan på
  * Tekniska detaljer.
+ *
+ * `statuses` (uppgift 11h) är statusen för de fakta `today` bygger på, hämtad
+ * direkt ur samma code-facts.ts-poster i stället för en egen gissning. En rad
+ * kan blanda en byggd och en planerad del, som "Kan väljaren kontrollera sin
+ * röst?", och bär då båda statusarna.
  */
 export type ReviewQuestion = {
   question: string
   design: ReactNode
   today: ReactNode
+  statuses: Status[]
 }
 
 export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] {
@@ -38,6 +44,7 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
           {CURRENTLY.validationGatesClose.text} <LimitationReference entry={removal} from="status" />
         </>
       ),
+      statuses: [CURRENTLY.validationGatesClose.status!],
     },
     {
       question: 'Har något kuvert tillkommit eller försvunnit vid stängningen?',
@@ -53,6 +60,7 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
           {CURRENTLY.envelopeRootCommitment.text} {CURRENTLY.envelopeRootNotPublished.text}
         </>
       ),
+      statuses: [CURRENTLY.envelopeRootCommitment.status!, CURRENTLY.envelopeRootNotPublished.status!],
     },
     {
       question: 'Kan väljaren kontrollera sin röst?',
@@ -68,6 +76,7 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
           {CURRENTLY.deviceViewBuilt.text} {CURRENTLY.votedMarkerNotKept.text}
         </>
       ),
+      statuses: [CURRENTLY.deviceViewBuilt.status!, CURRENTLY.votedMarkerNotKept.status!],
     },
     {
       question: 'Räknades rösterna korrekt?',
@@ -83,6 +92,7 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
           {CURRENTLY.decryptionNotBuilt.text} {CURRENTLY.sumsNotPublished.text}
         </>
       ),
+      statuses: [CURRENTLY.decryptionNotBuilt.status!, CURRENTLY.sumsNotPublished.status!],
     },
     {
       question: 'Har revisionsloggen ändrats?',
@@ -94,6 +104,7 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
         </>
       ),
       today: <>{CURRENTLY.auditChain.text}</>,
+      statuses: [CURRENTLY.auditChain.status!],
     },
     {
       question: 'Kan ett resultat fastställas medan kopplingen finns?',
@@ -103,6 +114,7 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
           {CURRENTLY.certifyBlockedWhileLinked.text} {CURRENTLY.finalCheckOldModel.text}
         </>
       ),
+      statuses: [CURRENTLY.certifyBlockedWhileLinked.status!, CURRENTLY.finalCheckOldModel.status!],
     },
   ]
 }

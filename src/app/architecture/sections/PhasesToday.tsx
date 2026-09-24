@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { CURRENTLY, PHASES } from '../code-facts'
 import { TECHNICAL_PATH } from './shared'
+import { StatusBadge } from './StatusBadge'
 
 /**
  * Vad koden gör med varje fas i dag. Specens tabell, med vad faserna betyder,
@@ -12,7 +13,7 @@ export function PhasesToday() {
       <h2 id="faserna-i-dag">Faserna i koden i dag</h2>
       <p className="muted small">
         Vad varje fas betyder står under <Link href={`${TECHNICAL_PATH}#faserna`}>Faserna</Link> på
-        Tekniska detaljer. {CURRENTLY.castOnlyWhileOpen.text}
+        Tekniska detaljer. {CURRENTLY.castOnlyWhileOpen.text} <StatusBadge status={CURRENTLY.castOnlyWhileOpen.status!} />
       </p>
 
       <div className="table-wrap" style={{ marginTop: '1rem' }}>
@@ -29,7 +30,12 @@ export function PhasesToday() {
                 <td className="mono" style={{ width: 'auto', minWidth: 0 }}>
                   {row.phase}
                 </td>
-                <td data-label="I koden i dag">{row.today.text}</td>
+                <td data-label="I koden i dag">
+                  {row.today.text}
+                  <div className="status-badges">
+                    <StatusBadge status={row.today.status!} />
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -38,7 +44,7 @@ export function PhasesToday() {
 
       <p className="muted small" style={{ marginTop: '1rem', marginBottom: 0 }}>
         I designen är övergången till STRIPPED villkoret för att något ska få dekrypteras.{' '}
-        {CURRENTLY.decryptionGateNotBuilt.text}
+        {CURRENTLY.decryptionGateNotBuilt.text} <StatusBadge status={CURRENTLY.decryptionGateNotBuilt.status!} />
       </p>
     </section>
   )

@@ -1,21 +1,52 @@
-import { CURRENTLY } from '../code-facts'
+import { BUILT, OUT_OF_SCOPE, REMAINING } from '../code-facts'
+import { StatusBadge } from './StatusBadge'
 
 /**
- * Läget i stort, överst på Utvecklingsstatus.
+ * LÄGET I KORTHET, ÖVERST PÅ UTVECKLINGSSTATUS (uppgift 11h).
  *
- * Påståendena om röstsidan och det gamla flödet läses ur code-facts.ts och
- * ändras i samma stund som koden gör. Resten av sidan går igenom delarna en i
- * taget.
+ * Tre grupper säger direkt vad som är klart, vad som kommer och vad som inte
+ * ingår, i stället för att läsaren måste gå igenom hela sidan för att veta.
+ * Grupperna läser BUILT, REMAINING och OUT_OF_SCOPE ur code-facts.ts, samma
+ * listor som märkningen längre ned på sidan bygger på, så de aldrig kan säga
+ * olika saker. REMAINING står i den ordning uppgifterna körs, se
+ * tests/security/architecture-page.test.ts.
  */
 export function StatusOverview() {
   return (
-    <div className="notice warning">
-      <strong>Ombyggnaden pågår.</strong>
-      <div style={{ marginTop: '0.35rem' }}>
-        Kuvertmodellen är byggd för röstläggningen, med BankID-signatur, och för valideringen och
-        stängningen. {CURRENTLY.votePageLaysEnvelopes.text} {CURRENTLY.oldFlowRoutesRemain.text}{' '}
-        Resten av sidan går igenom delarna en i taget, och vad som återstår står längst ned.
+    <section className="card" aria-labelledby="laget-i-korthet">
+      <h2 id="laget-i-korthet">Läget i korthet</h2>
+      <div className="status-groups">
+        <div>
+          <h3>Klart</h3>
+          <ul className="small status-list">
+            {BUILT.map((item) => (
+              <li key={item.text}>
+                {item.text} <StatusBadge status={item.status!} />
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h3>Kommer att implementeras</h3>
+          <ul className="small status-list">
+            {REMAINING.map((item) => (
+              <li key={item.text}>
+                {item.text} <StatusBadge status={item.status!} />
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h3>Saknas och ingår inte i demon</h3>
+          <ul className="small status-list">
+            {OUT_OF_SCOPE.map((item) => (
+              <li key={item.text}>
+                {item.text} <StatusBadge status={item.status} />
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
-    </div>
+    </section>
   )
 }
