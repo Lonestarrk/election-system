@@ -1583,7 +1583,9 @@ export const BUILT: CodeFact[] = [
     status: STATUS_DONE,
   },
   {
-    text: 'Stängningen prövar varje underskrift mot BankID:s rotcertifikat innan ett kuvert flyttas till urnan.',
+    text:
+      'Stängningen prövar varje underskrift mot BankID:s rotcertifikat innan ett kuvert flyttas till ' +
+      'urnan. I demoläget är roten attrappens egen, och attrappen utfärdar certifikaten själv.',
     holdsWhile: CURRENTLY.validationGatesClose.holdsWhile,
     status: STATUS_DONE,
   },
@@ -1624,13 +1626,17 @@ export type OutOfScopeItem = {
 /**
  * VAD ETT RIKTIGT VAL KRÄVER SOM DET HÄR BEVISPROJEKTET INTE BYGGER.
  *
- * Punkterna kommer ur docs/spec/2026-09-22-dubbla-kuvert.md avsnitt 10, som
- * själv säger att cast-or-audit, en pappersröst som upphäver den digitala och
- * distribuerad nyckelgenerering ligger utanför specen, och ur det som bara
- * ett riktigt val har: ett avtal med en bank för BankID i produktion, och
- * förtroendepersoner som räknar på egna enheter. En begränsning som en
- * uppgift i planen åtgärdar (som BankID-ordern eller XML-adaptern) hör till
- * "Kommer att implementeras" i stället, inte hit.
+ * Punkterna kommer ur docs/spec/2026-09-22-dubbla-kuvert.md avsnitt 10 och ur
+ * src/lib/known-limitations.ts. Specen säger uttryckligen att cast-or-audit
+ * och en pappersröst som upphäver den digitala ligger utanför den. Betrodd
+ * utdelare (distribuerad nyckelgenerering) står i avsnitt 10 som en känd
+ * begränsning utan den kvalificeringen, men ingen uppgift i planen bygger
+ * distribuerad nyckelgenerering, så den hör hemma här ändå (granskningen av
+ * fixrunda 1). Azures härdning (sjätte punkten) står i samma avsnitt av
+ * specen. Till det kommer sådant som bara ett riktigt val har: ett avtal med
+ * en bank för BankID i produktion, och förtroendepersoner som räknar på egna
+ * enheter. En begränsning som en uppgift i planen åtgärdar (som BankID-ordern
+ * eller XML-adaptern) hör till "Kommer att implementeras" i stället, inte hit.
  */
 export const OUT_OF_SCOPE: OutOfScopeItem[] = [
   {
@@ -1666,6 +1672,13 @@ export const OUT_OF_SCOPE: OutOfScopeItem[] = [
       'Ett riktigt val låter förtroendepersonerna räkna på egna, fristående enheter, skilda från ' +
       'vallokalens. Det här bevisprojektet bygger inte det.',
     status: STATUS_OUT_OF_SCOPE,
+  },
+  {
+    text:
+      'Azure-uppsättningen saknar granskningslogg och rensningsskydd för valvet. Pepparn stannar ' +
+      'inte i en HSM, och appen kör bara en replika.',
+    status: STATUS_OUT_OF_SCOPE,
+    holdsWhile: CURRENTLY.azureNotBuilt.holdsWhile,
   },
 ]
 

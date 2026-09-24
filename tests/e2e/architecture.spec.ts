@@ -807,10 +807,39 @@ test.describe('huvudsidan och undersidorna', () => {
     const overview = page.getByRole('region', { name: 'Läget i korthet' })
     await expect(overview.getByRole('heading', { name: 'Klart', exact: true })).toBeVisible()
 
-    const restOfPage = page.locator('main').locator('section:not(#laget-i-korthet)')
+    /**
+     * FIXRUNDA 1: `:not(#laget-i-korthet)` uteslöt ingenting. Sektionens id
+     * sitter på dess <h2> (id="laget-i-korthet"), och sektionen själv har bara
+     * aria-labelledby="laget-i-korthet" — inget element på sidan har alltså
+     * id="laget-i-korthet", och :not() med ett id-uttryck som aldrig träffar
+     * utesluter inte heller något. Rätt attribut att välja bort på är
+     * aria-labelledby, som sitter direkt på <section>.
+     *
+     * Antalet sektioner prövas uttryckligen: sex på sidan totalt (Läget i
+     * korthet, Granskningen, Faserna, Gamla flödet, Vad som återstår, Azure),
+     * fem kvar sedan sammanfattningen valts bort. Utan den kontrollen kunde
+     * ett uttryck som återigen inte utesluter något passera obemärkt.
+     */
+    const restOfPage = page.locator('main section:not([aria-labelledby="laget-i-korthet"])')
+    await expect(page.locator('main section')).toHaveCount(6)
+    await expect(restOfPage).toHaveCount(5)
     await expect(restOfPage.getByText('Klart', { exact: true }).first()).toBeVisible()
     await expect(restOfPage.getByText(/^Kommer \(uppgift/).first()).toBeVisible()
     await expect(restOfPage.getByText('Ingår inte', { exact: true }).first()).toBeVisible()
+
+    /**
+     * De tre kontrollerna ovan räcker inte ensamma för att fånga en regression
+     * i ETT avsnitt: varje etikettsort visas i flera avsnitt (t.ex. "Klart" i
+     * både ReviewToday, PhasesToday och AzureStatus), så att ta bort en enda
+     * <StatusBadge> ur ett avsnitt lämnar fortfarande minst en träff kvar i
+     * ett annat. Därför prövas varje avsnitt för sig: vart och ett ska visa
+     * minst en badge. Tas alla badges bort ur ett enda avsnitt går just den
+     * raden röd, medan sammanfattningen och de andra avsnitten är orörda.
+     */
+    for (const id of ['granskning-i-dag', 'faserna-i-dag', 'gamla-flodet', 'aterstar', 'azure']) {
+      const section = page.locator(`main section[aria-labelledby="${id}"]`)
+      await expect(section.locator('.status-badge').first(), id).toBeVisible()
+    }
   })
 
   test('ingen av de tre sidorna skrollar i sidled på en telefon', async ({ page }) => {

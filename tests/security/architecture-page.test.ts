@@ -1096,8 +1096,8 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
   })
 
   describe('Saknas och ingår inte i demon', () => {
-    it('fem punkter, alla med status "out_of_scope"', () => {
-      expect(OUT_OF_SCOPE.length).toBe(5)
+    it('sex punkter, alla med status "out_of_scope"', () => {
+      expect(OUT_OF_SCOPE.length).toBe(6)
       for (const item of OUT_OF_SCOPE) expect(item.status, item.text).toEqual(STATUS_OUT_OF_SCOPE)
     })
 
@@ -1130,22 +1130,38 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       expect(dealer!.holdsWhile).toEqual([dealerLimitation!.stillTrueIf])
     })
 
-    it('täcker specens tre uttalat utanför-specen-punkter och de två som bara ett riktigt val har', () => {
-      // docs/spec/2026-09-22-dubbla-kuvert.md avsnitt 10 säger själv att
-      // cast-or-audit, en pappersröst som upphäver den digitala och distribuerad
-      // nyckelgenerering ligger utanför specen. Dispatchen lade till två som bara
-      // ett riktigt val har: BankID i produktion och förtroendemän på egna enheter.
+    it('täcker specens utanför-specen-punkter, känd begränsning, Azures härdning och de två som bara ett riktigt val har', () => {
+      /**
+       * docs/spec/2026-09-22-dubbla-kuvert.md avsnitt 10 säger uttryckligen att
+       * cast-or-audit och en pappersröst som upphäver den digitala ligger
+       * utanför specen. Betrodd utdelare (distribuerad nyckelgenerering) och
+       * Azures härdning (granskningslogg, rensningsskydd) står i samma avsnitt
+       * som kända begränsningar, utan den kvalificeringen — granskningen av
+       * fixrunda 1 fångade att rapporten till uppgift 11h påstod motsatsen om
+       * den förra. Dispatchen lade till två som bara ett riktigt val har:
+       * BankID i produktion och förtroendemän på egna enheter.
+       */
       const spec = read('docs/spec/2026-09-22-dubbla-kuvert.md')
       expect(spec).toMatch(/cast-or-audit/)
       expect(spec).toMatch(/pappersröst/)
       expect(spec).toMatch(/distribuerad nyckelgenerering/)
+      expect(spec).toMatch(/[Gg]ranskningslogg/)
+      expect(spec).toMatch(/rensningsskydd/)
 
       const texts = OUT_OF_SCOPE.map((item) => item.text).join('\n')
       expect(texts).toMatch(/cast-or-audit|Benaloh/i)
       expect(texts).toMatch(/pappersröst/i)
       expect(texts).toMatch(/betrodd utdelare|distribuerad nyckelgenerering/i)
+      expect(texts).toMatch(/granskningslogg/i)
+      expect(texts).toMatch(/rensningsskydd/i)
       expect(texts).toMatch(/bank/i)
       expect(texts).toMatch(/egna|fristående enheter/i)
+    })
+
+    it('Azures härdning delar markör med CURRENTLY.azureNotBuilt, samma bevis som AzureStatus redan visar', () => {
+      const azureItem = OUT_OF_SCOPE.find((item) => /granskningslogg/i.test(item.text))
+      expect(azureItem, 'ingen punkt om Azures härdning').toBeDefined()
+      expect(azureItem!.holdsWhile).toEqual(CURRENTLY.azureNotBuilt.holdsWhile)
     })
   })
 
@@ -1268,6 +1284,29 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       const statusFields = [...content.matchAll(/statuses:\s*\[([^\]]*)\]/g)]
       expect(statusFields.length).toBeGreaterThan(0)
       for (const [, group] of statusFields) expect(group).toMatch(/CURRENTLY\.\w+\.status/)
+    })
+
+    it('Remaining.tsx lovar inte att specen anger åtgärden för alla fyra "fixable"-begränsningar (fixrunda 1)', () => {
+      /**
+       * Granskningen av fixrunda 1: status/page.tsx skickar fyra kända
+       * begränsningar som `fixable` till Remaining. En av dem
+       * (no-revocation-check) är märkt "ingår inte", inte "kommer" — ingen
+       * uppgift i planen prövar OCSP-svaret. Meningen ovanför länklistan i
+       * Remaining.tsx får då inte påstå att specen redan anger åtgärden för
+       * alla fyra.
+       */
+      const fixableIds = [
+        'bankid-order-carries-link',
+        'no-revocation-check',
+        'bankid-xmldsig-adapter-missing',
+        'votes-db-writer-can-swap-ciphertext',
+      ]
+      const kinds = fixableIds.map((id) => LIMITATION_STATUS[id]?.kind)
+      expect(kinds, 'minst en fixable-begränsning ska vara "ingår inte"').toContain('out_of_scope')
+      expect(kinds, 'minst en fixable-begränsning ska vara "kommer"').toContain('planned')
+
+      const content = read('src/app/architecture/sections/Remaining.tsx')
+      expect(content).not.toMatch(/kuvertmodellen som specen redan anger åtgärden för\./)
     })
   })
 })

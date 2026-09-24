@@ -8,13 +8,17 @@ import { StatusBadge } from './StatusBadge'
  * Vad som återstår, läst ur REMAINING i code-facts.ts.
  *
  * Varje punkt bär markörer och stryks när det den beskriver byggs, så listan
- * kan inte påstå att något återstår som redan finns. Därtill de kända
- * begränsningar i kuvertmodellen som specen redan anger åtgärden för: BankID-
- * ordern, spärrkontrollen och adaptern för XML-signaturen (spec 4.6 och 10),
- * och sedan granskningen av 11g den som kan skriva i röstdatabasen och byta ut
- * ett chiffer (spec 4.6, förbehåll 4, uppgift 11d och 12b), med länk till
- * listan. Certifikatkedjan stod här fram till uppgift 14f, som byggde
- * prövningen.
+ * kan inte påstå att något återstår som redan finns. Därtill fyra kända
+ * begränsningar i kuvertmodellen, med länk till listan: BankID-ordern och
+ * adaptern för XML-signaturen har specen redan en åtgärd för (spec 4.6 och
+ * 10), liksom den som kan skriva i röstdatabasen och byta ut ett chiffer
+ * (spec 4.6, förbehåll 4, uppgift 11d och 12b, granskningen av 11g).
+ * Spärrkontrollen (OCSP) har specen också en åtgärd för, men ingen uppgift i
+ * planen prövar svaret — bara uppgift 17b sparar det förseglat — så den
+ * punkten är märkt "ingår inte", inte "kommer" (fixrunda 1 av uppgift 11h).
+ * Meningen ovanför länklistan får därför inte påstå att specen redan anger
+ * åtgärden för alla fyra. Certifikatkedjan stod här fram till uppgift 14f,
+ * som byggde prövningen.
  */
 export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
   return (
@@ -28,8 +32,8 @@ export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
         ))}
       </ul>
       <p className="muted small">
-        Dessutom kända begränsningar i kuvertmodellen som specen redan anger åtgärden för. De står
-        i listan på Tekniska detaljer:
+        Dessutom kända begränsningar i kuvertmodellen, de flesta med en åtgärd som specen redan
+        anger. De står i listan på Tekniska detaljer:
       </p>
       <ul className="small" style={{ paddingLeft: '1.25rem', marginBottom: 0 }}>
         {fixable.map((entry) => (
