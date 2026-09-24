@@ -36,7 +36,7 @@ Det här bet oss första gången; kolla dem innan du drar slutsatser om att någ
   ```
   Kontot är `revtorparen@gmail.com` och kräver MFA. Webbläsarinloggning (`az login` utan flagga) öppnade inget fönster, så börja med device code. En isolerad `AZURE_CONFIG_DIR` håller sessionens inloggning skild från användarens egen.
 - **Flera Claude-sessioner delar arbetskatalogen.** Applikationskoden skrivs av sessionen "Blind signing röstningssystem". Behöver en rättning i `src/` göras, delegera den dit med SendMessage (utan `notify_when_idle`, den går över Remote Control) i stället för att ändra filen själv, och distribuera när rättningen finns på `main`. Den sessionens tester pekar på rader i `app.bicep`, `keyvault.bicep`, `infra.bicep` och `db-init.sql`; ändras de filerna kan ett test där bli rött, och det är avsiktligt.
-- Andra sessioner committar och har ocommittade ändringar samtidigt. Committa bara dina egna filer (`git add <sökvägar>`, kontrollera `git diff --cached --stat`), och distribuera alltid från en commit — aldrig från arbetskatalogen.
+- Andra sessioner committar och har ocommittade ändringar samtidigt, och git-indexet är också delat: det som stagas av en session kan följa med i en annan sessions commit. Committa därför alltid med uttryckliga sökvägar, `git commit -- <sökvägar>`, i stället för `git add` följt av `git commit`. Den andra sessionen stagar aldrig något under `infra/` eller `.claude/`; stagea på samma sätt aldrig något utanför dem. Distribuera alltid från en commit — aldrig från arbetskatalogen.
 
 ## Distribuera om
 
