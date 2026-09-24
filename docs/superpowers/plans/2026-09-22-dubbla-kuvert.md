@@ -3504,27 +3504,22 @@ snabba vägar utan beroenden:
    slumpade indata och på gränsfall: bas 0, 1 och p−1, och exponent 0, 1 och q. OpenSSL
    kan vägra vissa värden som publik nyckel. Hantera det, och låt valideringen med
    `isInSubgroup` fortfarande gå först.
-3. **Verifieringen flyttas från händelseslingan** till `worker_threads`, med ett litet
-   tak på samtidiga arbeten i samma anda som inträdeskön. Rutten väntar på svaret.
-   Ett test ska visa att en annan begäran besvaras medan en verifiering pågår.
+3. **Verifieringen får inte låsa händelseslingan.** Antingen i `worker_threads`, med
+   ett litet tak på samtidiga arbeten i samma anda som inträdeskön, eller uppdelad och
+   asynkron, så att händelseslingan släpps fram mellan alternativen. Med nativ modexp
+   tar en riksdagsvalsedel omkring en halv sekund, och uppdelningen kan räcka. Välj det
+   som fungerar både i `next dev` och i produktionsbygget, eftersom trådar och Next:s
+   buntning inte alltid går ihop, och motivera valet. Ett test ska visa att en annan
+   begäran besvaras medan en verifiering pågår.
+   **Den nativa vägen får bara finnas på servern.** `tests/security/browser-bundle.test.ts`
+   stoppar varje Node-modul i röstsidans importgraf. Klient och server delar
+   verifieringskoden, så den snabbare exponentieringen ska kopplas in på serversidan,
+   till exempel som en parameter eller en registrerad implementation. Den får inte
+   importeras av någon modul i den grafen.
 4. **Klienten får fasta baser.** `g` och `h` är desamma för varje röst i ett val, så
    förberäknade fönstertabeller ger en snabbare exponentiering utan beroenden.
    Mät före och efter.
-5. **Valsedeln skickas en gång, inte vid varje pollning.** Röstsidan skickar i dag hela
-   valsedeln, cirka 160 kB, med varje pollning av signeringen
-   (`BankIdSigning.tsx:43` och `:163`). Hastighetsgränsen 30 per minut ligger exakt på
-   pollningstakten, så två väljare bakom samma NAT stryps. Låt servern hålla valsedeln
-   med ordern från `sign-start`, och låt pollningen bara bära `orderRef`.
-6. **Bevakningen av fasen läser den offentliga listan.** Röstsidan kontrollerar sedan
-   uppgift 14 fasen när fliken blir synlig och med jämna mellanrum, så att enheten
-   raderar sina uppgifter vid stängningen (spec 3.1 punkt 4). Bevakningen delar dock
-   sessionsruttens gräns på 60 per minut och IP-adress, så ungefär 30 synliga flikar
-   bakom samma adress fyller den, och då får en annan väljare där 429. Fasen är inte
-   hemlig. Lägg den i den offentliga listan över omröstningar och låt bevakningen läsa
-   den där i stället för i väljarens session. Listan väljer i dag omröstningar på tid
-   och inte på fas. Se till att bevakningen ändå ser en omröstning som stängts före
-   sin tid.
-7. **Mål:** en riksdagsvalsedel med 26 alternativ verifieras på under en sekund på
+5. **Mål:** en riksdagsvalsedel med 26 alternativ verifieras på under en sekund på
    servern och krypteras på under en sekund i Chromium. Mät också hur lång tid
    valideringen före stängningen tar för 100 röster, och skriv in siffran. I dag är det
    cirka 39 s per väljare med tre valsedlar, alltså ungefär en timme för 100 väljare.
@@ -3533,6 +3528,38 @@ Den oberoende verifieraren i uppgift 13 får inte importera `src`. Den kör i No
 kan använda samma knep på egen hand.
 
 - [ ] Mätningar först, sedan tester, implementation, hela sviten, committa.
+
+---
+
+## Task 14e: Pollningen bär bara orderRef, och bevakningen läser den offentliga listan
+
+**Varför:** två belastningsfel som granskningen av uppgift 14 hittade. De lyftes ur 14b,
+som handlar om kryptots hastighet och ska granskas för kryptokorrekthet.
+
+1. **Valsedeln skickas en gång, inte vid varje pollning.** Röstsidan skickar i dag hela
+   valsedeln, cirka 160 kB, med varje pollning av signeringen
+   (`BankIdSigning.tsx:43` och `:163`). Hastighetsgränsen 30 per minut ligger exakt på
+   pollningstakten, så två väljare bakom samma NAT stryps. Låt servern hålla valsedeln
+   med ordern från `sign-start`, och låt pollningen bara bära `orderRef`.
+2. **Bevakningen av fasen läser den offentliga listan.** Röstsidan kontrollerar sedan
+   uppgift 14 fasen när fliken blir synlig och med jämna mellanrum, så att enheten
+   raderar sina uppgifter vid stängningen (spec 3.1 punkt 4). Bevakningen delar dock
+   sessionsruttens gräns på 60 per minut och IP-adress, så ungefär 30 synliga flikar
+   bakom samma adress fyller den, och då får en annan väljare där 429. Fasen är inte
+   hemlig. Lägg den i den offentliga listan över omröstningar och låt bevakningen läsa
+   den där i stället för i väljarens session. Listan väljer i dag omröstningar på tid
+   och inte på fas. Se till att bevakningen ändå ser en omröstning som stängts före
+   sin tid.
+**Ett lager per order på servern.** Punkt 1 kräver att servern håller valsedeln
+mellan `sign-start` och att signeringen är klar. Uppgift 11e kräver samma sak för
+saltet: *"skapas i sign-start, hålls på serversidan med ordern"*. Bygg ett lager för
+orderns tillstånd en gång, så att 11e kan lägga saltet där. Minnet per process räcker
+för ett proof of concept, på samma villkor som inträdeskön
+(`admission-queue-per-process` i begränsningslistan). Lägg det på `globalThis`, som
+attrappens ordrar sedan uppgift 14, eftersom Next bygger om en rutt efter en stunds
+inaktivitet. En order som aldrig blir klar ska förfalla efter orderns livslängd.
+
+- [ ] Tester först, implementation, hela sviten, committa.
 
 ---
 
@@ -3659,9 +3686,10 @@ och controllern stoppar och startar om den.
 ---
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
-**14** → **14b** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
+**14** → **14b** → **14e** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
 Uppgift 14b, 14c och 14d kom till efter uppgift 14 och ligger där de gör mest nytta:
-14b innan något mer verifieras i stor skala, 14d före den oberoende verifieraren i
+14b innan något mer verifieras i stor skala, 14e före 11e, som återanvänder dess lager
+för orderns tillstånd, 14d före den oberoende verifieraren i
 uppgift 13, eftersom den ändrar bevisens format, och 14c före uppgift 15, som annars
 hade gjort folkomröstningar omöjliga. Uppgift 11f ligger först
 eftersom användaren prioriterade arkitektursidan. Uppgift 14 flyttades fram
