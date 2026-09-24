@@ -6,6 +6,11 @@ kopplas ihop.
 > **Detta är inte ett valsystem redo för användning.** Det är en demonstration av en
 > arkitekturprincip. Se [SECURITY.md](SECURITY.md) för vad som fattas och varför.
 
+**Prova demon:** <https://election-app.politesmoke-5b452a89.swedencentral.azurecontainerapps.io>
+
+Demon körs i Azure med BankID-attrappen, så vem som helst kan legitimera sig som
+demopersonerna. Hur den distribueras står i [infra/azure/README.md](infra/azure/README.md).
+
 ---
 
 ## Idén

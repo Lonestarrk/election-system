@@ -4,6 +4,9 @@ Systemet körs som en container i **Azure Container Apps** mot **Azure Database 
 PostgreSQL Flexible Server**, i ett eget VNet. Allt beskrivs i Bicep här och körs med
 `deploy.sh`.
 
+I drift: <https://election-app.politesmoke-5b452a89.swedencentral.azurecontainerapps.io>
+(prenumerationen "Election System", resursgruppen `rg-election-system`, Sweden Central).
+
 ```
 Internet ──HTTPS──▶ Container Apps ingress ──▶ election-app (1 replika)
                                                    │  identitet: election-app-id
