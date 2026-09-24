@@ -197,13 +197,20 @@ export async function POST(request: Request) {
      * Ingenting har flyttats och ingenting har raderats. Bara sammanfattningen
      * går ut: antal, kategorier och utfall. Vilka väljare avvikelserna gällde
      * stannar i användningsfallet — se `ValidationReport`.
+     *
+     * LÄGGNINGEN ÄR ÄNDÅ STÄNGD (uppgift 11d). Stängningen skriver CLOSED innan
+     * den läser kuverten, och fasen går inte tillbaka. Före 11d stod fasen kvar
+     * i OPEN efter en avvikelse, och beskedet "stängningen avbröts" kunde läsas
+     * som att röstningen pågick. Nu säger det vad som gäller. Beskedet gäller
+     * kuverten: det gamla flödets rutter prövar ingen fas, se `oldFlowRoutesRemain`
+     * i src/app/architecture/code-facts.ts.
      */
     return jsonResponse(
       {
         status: 'validation_failed',
         message:
-          'Stängningen avbröts. Valideringen hittade avvikelser, och kopplingen mellan ' +
-          'väljare och röst är kvar så att de går att utreda.',
+          'Läggningen tar inte längre emot kuvert, men skalningen avbröts. Valideringen hittade ' +
+          'avvikelser, och kopplingen mellan väljare och röst är kvar så att de går att utreda.',
         summary: outcome.summary,
       },
       409,
@@ -215,8 +222,8 @@ export async function POST(request: Request) {
       {
         status: 'invalid_ballot',
         message:
-          'Stängningen avbröts. En valsedel verifierar inte längre, och kopplingen mellan ' +
-          'väljare och röst är kvar så att den går att utreda.',
+          'Läggningen tar inte längre emot kuvert, men skalningen avbröts. En valsedel verifierar ' +
+          'inte längre, och kopplingen mellan väljare och röst är kvar så att den går att utreda.',
         ciphertextHash: outcome.ciphertextHash,
       },
       409,
