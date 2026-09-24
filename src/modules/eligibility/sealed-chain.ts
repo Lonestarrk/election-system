@@ -91,10 +91,19 @@ const SEALED_PLAINTEXT_BYTES = 16 * 1024
 const LENGTH_BYTES = 4
 const MAX_CHAIN_BYTES = SEALED_PLAINTEXT_BYTES - LENGTH_BYTES
 
-/** Version, nonce, tagg och chiffer, i gemen hex. Varje del har sin exakta längd. */
+/**
+ * Version, nonce, tagg och chiffer, i gemen hex. Varje del har sin exakta längd.
+ *
+ * EN TEMPLATE-STRÄNG, INTE TVÅ SOM FÖRENAS MED `+`. Uttrycket var först delat på
+ * två rader. SWC:s minifiering i `next build` slog då ihop de två
+ * template-strängarna och tappade `}):` i skarven, så att produktionsbygget fick
+ * `…{32([0-9a-f]{32768})$` och föll med "Unterminated group" på
+ * /api/vote/compare. Vitest och `next dev` minifierar inte, så felet syntes bara
+ * i bygget. `tests/security/regexp-construction.test.ts` vaktar mönstret i hela
+ * `src`.
+ */
 const STORED = new RegExp(
-  `^${VERSION}:([0-9a-f]{${NONCE_BYTES * 2}}):([0-9a-f]{${TAG_BYTES * 2}}):` +
-    `([0-9a-f]{${SEALED_PLAINTEXT_BYTES * 2}})$`,
+  `^${VERSION}:([0-9a-f]{${NONCE_BYTES * 2}}):([0-9a-f]{${TAG_BYTES * 2}}):([0-9a-f]{${SEALED_PLAINTEXT_BYTES * 2}})$`,
 )
 
 /** Varje förseglad kedja är exakt så här lång. */
