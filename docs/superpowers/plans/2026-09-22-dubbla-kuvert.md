@@ -3946,7 +3946,7 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
    Skriv ett test som låter en röst skrivas mellan läsningen och raderingen, och som
    kräver att den antingen flyttas eller att väljaren får ett fel, aldrig "lagd".
 6. **Markeringen "har röstat", utan tidsstämpel.** Spec 3.1 punkt 6 säger att
-   väljaren efter stängningen ser att hon röstat, men i kuvertmodellen skriver
+   väljaren efter stängningen ser att den röstat, men i kuvertmodellen skriver
    ingenting en sådan markering. `castEncryptedBallot` skriver bara `pending_vote`,
    stängningen raderar raden, och `voter_ballot_status` skrivs bara av det gamla
    flödet. Upptäckt av implementeraren av 11c.
@@ -3956,8 +3956,9 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
    något annat än att väljarens kuvert räknades. Antalet markeringar per valsedel
    ska vara lika med antalet kuvert som flyttades; kontrollera det i transaktionen.
    Återanvänd `VoterBallotStatus` om dess betydelse passar, annars en ny modell. Är
-   det en schemaändring, samla den med 11e:s, så att dev-servern bara behöver
-   stoppas en gång. Rätta samtidigt schemakommentaren i
+   det en schemaändring, kräver `prisma generate` att dev-servern först stoppas, eftersom
+   den håller Prismas DLL. Sedan körordningen ändrades 2026-09-24 kommer 11e långt senare,
+   så ändringarna samlas inte längre. Rätta samtidigt schemakommentaren i
    `prisma/voters/schema.prisma` som fortfarande kallar identitetshashen en HMAC.
    Uppgift 12b:s kontroll att antalet stämmer ska jämföra mot markeringarna.
    **Obs:** sedan uppgift 14 tolkar röstsidan en markering i `voter_ballot_status` som
