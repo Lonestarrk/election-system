@@ -140,9 +140,13 @@ läsrätt i `votes_db` som dessutom fått tag i en enhets sparade chifferhash.
 
 RFC 3526 MODP Group 14 (2048 bitar), `p` som där angiven, `q = (p-1)/2`.
 
-Generatorn är `g = 4`. Skälet: RFC:ns `g = 2` genererar hela gruppen av ordning `2q`,
-vilket öppnar för angrepp i undergruppen av ordning 2. `4 = 2²` har ordning `q`, som är
-primtal. **Alla exponenter räknas mod `q`, och varje mottaget gruppelement kontrolleras
+Generatorn är `g = 4`, som har ordning `q`, och `q` är ett primtal. **Den första
+versionen motiverade valet fel.** Den sa att RFC:ns `g = 2` genererar hela gruppen av
+ordning `2q` och därför öppnar för angrepp i undergruppen av ordning 2. Men `p ≡ 7
+(mod 8)`, så 2 är en kvadratisk rest och har redan ordning `q`. Granskaren av uppgift 14b
+kontrollerade det: `2^q ≡ 1 (mod p)`. Båda generatorerna hade alltså fungerat. `g = 4`
+behålls, eftersom det är ett kvadrattal och därmed ligger i undergruppen oberoende av
+vilken säker prim som används. **Alla exponenter räknas mod `q`, och varje mottaget gruppelement kontrolleras
 med `y^q ≡ 1 (mod p)` innan det används.**
 
 **Mätt kostnad, rättad 2026-09-24.** Den första versionen sa 2,0 ms per modexp och
@@ -168,13 +172,19 @@ Efter uppgift 14b, för samma valsedel:
 | Vad | Före | Efter |
 |---|---|---|
 | Verifiering på servern | 11,2 s, 290 modexp | 0,38 s, 264 modexp |
-| Längsta stopp i händelseslingan under en verifiering | 11 249 ms | 15 ms, 31 ms med tio samtidiga |
+| Längsta stopp i händelseslingan under en verifiering, för tal inom intervallen | 11 249 ms | 15 ms, 31 ms med tio samtidiga |
 | Kryptering i Chromium | 1,1 s | 0,37 s för första valsedeln, 0,34 s för följande |
 | Valideringen före stängningen, 100 väljare med tre valsedlar | cirka 33 min | 64 s |
 | Stängningen, samma val | cirka 1 h | 131 s |
 
 Verifieringen räknar varje exponentiering i OpenSSL och körs i steg, ett alternativ i
 taget, med händelseslingan fri mellan stegen och högst två verifieringar samtidigt.
+**Stoppen gäller bara tal inom sina intervall.** Granskaren av 14b visade att en giltig
+valsedel, med fyra tal förlängda med k·q, låste slingan i 5,45 s i ett enda steg, eftersom
+talens längd saknade gräns. Därför prövas nu varje tal strikt innan något räknas med det:
+bara siffror, kanoniskt, högst 617 siffror, svar och utmaningar under `q` och gruppelement
+under `p`. Samma prövning stoppar att en negativ exponent, som tidigare räknades som 1,
+gör en förfalskad valsedel giltig.
 Krypteringen i webbläsaren har tabeller med fyra bitar per fönster för `g` och `h`,
 omkring 2 MB per bas och 11 ms att bygga. Baserna `c1` och `c2` beror på chiffret och
 räknas som förut. Att verifieringen kräver 264 modexp och inte 290 beror på att

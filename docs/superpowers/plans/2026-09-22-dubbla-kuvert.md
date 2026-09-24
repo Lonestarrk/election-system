@@ -3640,6 +3640,22 @@ som handlar om kryptots hastighet och ska granskas för kryptokorrekthet.
    den där i stället för i väljarens session. Listan väljer i dag omröstningar på tid
    och inte på fas. Se till att bevakningen ändå ser en omröstning som stängts före
    sin tid.
+3. **Kön reserverar sin plats vid förkontrollen.** Omgranskningen av fixrundan i 14b
+   visade att förkontrollen i `src/lib/crypto/server.ts:174–185` och
+   `src/app/api/vote/encrypted/route.ts:114` inte reserverar någon plats. När en plats
+   var kvar klarade fem samtidiga röster förkontrollen, men fyra av dem fick
+   `VerificationQueueFull` först sedan deras BankID-order förbrukats, och väljarna fick
+   skriva under igen. Reservera platsen vid förkontrollen och släpp den i `finally`.
+   Rätta också kommentaren om att fönstret bara är några millisekunder.
+4. **Kroppens gräns gäller hela vägen.** Next klonar varje POST-kropp upp till 10 MB i
+   middleware (`middlewareClientMaxBodySize`) innan rutten körs, så minnet per begäran
+   begränsas till 10 MB och inte till appens 2 MiB. Sätt
+   `experimental.middlewareClientMaxBodySize` till samma gräns, eller rätta kommentaren
+   i `validation.ts:374`. Gränsen på 2 MiB gäller dessutom varje rutt, fast
+   `createElectionSchema` i teorin tillåter omkring 70 MB. Ge administratörens rutt en
+   egen, högre gräns, eller sänk schemats tak, och lägg ett test som håller dem i
+   samklang.
+
 **Ett lager per order på servern.** Punkt 1 kräver att servern håller valsedeln
 mellan `sign-start` och att signeringen är klar. Uppgift 11e kräver samma sak för
 saltet: *"skapas i sign-start, hålls på serversidan med ordern"*. Bygg ett lager för
@@ -3714,6 +3730,8 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
    - raderingen tar bort **de kuvert som lästes**, efter id, och kontrollerar att inga
      fler finns kvar. Finns det fler har något gått fel, och skalningen ska avbrytas
      innan något raderas.
+   - antalet raderade kuvert jämförs med antalet flyttade. I dag jämförs `cleared`
+     aldrig med `moved` (`close-election.usecase.ts:660`), enligt granskaren av 14b.
    Skriv ett test som låter en röst skrivas mellan läsningen och raderingen, och som
    kräver att den antingen flyttas eller att väljaren får ett fel, aldrig "lagd".
 6. **Markeringen "har röstat", utan tidsstämpel.** Spec 3.1 punkt 6 säger att
@@ -3895,6 +3913,13 @@ Förväntat: FAIL, modulen saknas
 
 - [ ] **Steg 3: Implementera `tally.usecase.ts`**
 
+**Varje tal ur databasen tolkas strikt.** Sedan fixrundan i 14b går valsedlarna genom
+`parseScalar` och `parseElement` i `group.ts`. Den här uppgiften läser nya tal ur
+databasen: partiella värden, DLEQ-bevis och `publicShare`. De ska gå genom samma
+funktioner, med undergruppskontroll för gruppelementen, innan något räknas med dem.
+Granskningen av 14b fann att en negativ exponent tidigare räknades som 1, och att en
+förfalskad valsedel därför godkändes förbi schemat.
+
 **Spärr mellan det gamla flödets bok och kuverten.** Granskaren av uppgift 14 fann att
 en väljare med direkta anrop kan ha både en röst i det gamla flödet (`vote`, med
 markering i `voter_ballot_status`) och ett kuvert på samma valsedel. Röstsidan spärrar
@@ -4065,6 +4090,13 @@ från `src` och kontrollerar det som går att kontrollera utan de enskilda röst
    kombinerade dekrypteringen
 3. att summan av antalen per valsedel är lika med antalet röster
 4. att kuvertroten finns och att antalet kuvert stämmer med antalet röster
+
+**Verktyget tolkar varje tal lika strikt som appen**, på egen hand, eftersom det inte
+får importera `src`. Uppgift 14b:s granskning fann att en negativ exponent räknades som
+1 och att inga intervall prövades, så att en förfalskad valsedel med +1000 och −999
+godkändes. Verktyget ska vägra allt annat än kanoniska decimaltal med högst 617 siffror,
+svar och utmaningar i [0, q), gruppelement i [1, p) med undergruppskontroll, och
+negativa exponenter. Ett test ska visa att verktyget underkänner samma förfalskning.
 
 Säg i verktygets utskrift och på sidan vad det **inte** kan kontrollera: att
 summan består av exakt de giltiga rösterna. Det vilar på valideringen medan
@@ -4541,6 +4573,10 @@ Rätta också det som är konkret fel i dag:
   röst på enheten hon röstade från fram till stängningen; efter stängningen
   publiceras bara summorna med bevis. Det gäller README, ARCHITECTURE.md (särskilt
   avsnitt 6 om verifierbarhet) och VERIFIABILITY.md i sin helhet.
+- **SECURITY.md ska förklara `TRUSTED_PROXY_HOPS`.** Sedan fixrundan i 14b litar
+  hastighetsgränsen bara på `X-Forwarded-For` när variabeln är satt. Den står i
+  `.env.example` men inte i SECURITY.md 4.3. Bakom en proxy utan variabeln delar alla
+  besökare proxyns adress, och med den för högt satt kan en klient välja sin egen.
 - **Behåll avsnittet om testdatabaserna** som lades in i uppgift 11a (att
   integrationstesterna kör mot `voters_test`/`votes_test`, att vakten frågar
   servern vilken databas den är ansluten till, och när testerna hoppas över
