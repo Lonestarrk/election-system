@@ -4345,11 +4345,20 @@ Uppgift 13 lägger sedan publiceringen sist i samma flöde.
    bekräftelse.
 7. **Den gamla modellens knapp "Publicera åtagande" tas bort från sidan.** Rutten tas bort
    i uppgift 15.
+7b. **Bara i demoläge: demovalet kan återställas.** Sedan 11d lämnar en stängning som
+   stoppas av valideringen omröstningen i `CLOSED`, och ingenting i appen går tillbaka till
+   `OPEN`. Ett misslyckat försök stoppar alltså demon för gott, också i Azure.
+   - En knapp återställer demovalet: fasen blir `OPEN`, urnan töms och markeringarna tas
+     bort.
+   - Knappen och dess rutt ligger bakom `isDemoMode()`, under `/api/demo`, och finns
+     aldrig i skarpt läge.
+   - `prisma/reset-votes.ts` återställer också fasen.
 8. **Ingenting per väljare.** Sidan visar bara antal, och aldrig vem som röstat, när eller
    på vad (spec 3.1 och 3.2).
 9. **Serverns besked visas som de är.**
    - Varje utfall från stängningen visas med serverns eget meddelande: closed, untouched,
-     aborted och de övriga i 11d.
+     aborted och de övriga i 11d. Sedan 11d finns också `in_progress` (409): en annan
+     stängning pågår. Sidan säger det och läser om fasen.
    - Detsamma gäller räkningen.
    - Sidan säger aldrig att ett steg är klart om inte serverns fas säger det.
 10. **Tillgänglighet och layout.**

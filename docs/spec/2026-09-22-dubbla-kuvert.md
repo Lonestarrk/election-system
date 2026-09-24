@@ -724,8 +724,12 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   att äkta tas bort eller spelas upp igen, eftersom räknaren för den senaste underskriften
   lagras i samma databas: den som lägger tillbaka ett gammalt kuvert lägger tillbaka dess
   räknare. Väljaren kan upptäcka båda på sin enhet före stängningen, där jämförelsen
-  svarar "ändrad" eller "ingen röst", och efter stängningen genom markeringen "har
-  röstat" (uppgift 11d).
+  svarar "ändrad" eller "ingen röst". Efter stängningen säger markeringen "har röstat"
+  (uppgift 11d) mindre:
+  - Ett borttaget kuvert syns, eftersom markeringen då saknas.
+  - Ett återlagt äldre kuvert syns inte. Det ger en markering som vilket annat.
+  - Den som kan skriva i röstlängden kan skriva eller radera en markering.
+  - Ingen sida visar markeringen än (uppgift 13).
 - **Ingen spärrkontroll (OCSP).** Ett spärrat BankID-certifikat godkänns så länge det
   gäller i tid. Åtgärdas genom att OCSP-svaret som BankID skickar med prövas, både när
   rösten läggs och i valideringen.
