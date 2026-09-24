@@ -1,6 +1,7 @@
 import { safeEqual } from '@/lib/crypto'
 import { truncateToDay } from '@/lib/time'
-import { verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
+import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
+import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
 import {
   parseEnvelopePayload,
@@ -61,7 +62,7 @@ export type CastOutcome =
   | { status: 'not_eligible' }
 
 /**
- * Valsedelns kryptonyckel och antal alternativ — det `verifyEncryptedBallot`
+ * Valsedelns kryptonyckel och antal alternativ — det `verifyEncryptedBallotOnServer`
  * behöver för att kunna pröva bevisen.
  *
  * MÅSTE KOMMA FRÅN ANROPAREN, INTE HÄMTAS HÄR.
@@ -126,8 +127,21 @@ export async function castEncryptedBallot(
 
   if (!shape) return { status: 'not_eligible' }
 
+  /**
+   * BEVISEN PRÖVAS I OPENSSL, I STEG OCH I TUR OCH ORDNING.
+   *
+   * En riksdagsvalsedel med 26 alternativ kräver omkring 290 exponentieringar.
+   * I ren BigInt var det elva sekunder, synkront, med servern stillastående för
+   * alla andra. Se src/lib/crypto/server.ts.
+   */
   if (
-    !verifyEncryptedBallot(shape.publicKey, electionId, ballotId, shape.optionCount, ballot)
+    !(await verifyEncryptedBallotOnServer(
+      shape.publicKey,
+      electionId,
+      ballotId,
+      shape.optionCount,
+      ballot,
+    ))
   ) {
     return { status: 'invalid_proof' }
   }

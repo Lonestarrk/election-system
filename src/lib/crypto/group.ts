@@ -1,3 +1,5 @@
+import { buildFixedBaseTable, type FixedBaseTable } from './fixed-base'
+
 /**
  * RFC 3526 MODP Group 14, 2048 bitar.
  *
@@ -32,7 +34,25 @@ export const Q = (P - 1n) / 2n
 /** Generator av ordning q. */
 export const G = 4n
 
-export function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
+/**
+ * g^(−1) mod p, alltså det tal som flyttar ett chiffer av 1 till ett chiffer av 0.
+ *
+ * Skrivs i sluten form i stället för som g^(q−1): 4 · (p + 1)/4 = p + 1 ≡ 1, och
+ * (p + 1)/4 är ett heltal eftersom p ≡ 3 (mod 4). Det är samma tal, men det
+ * kostar ingen exponentiering. Bevisen behövde det en gång per alternativ, både
+ * när de byggs och när de prövas.
+ */
+export const G_INVERSE = (P + 1n) / 4n
+
+/**
+ * Kvadrera och multiplicera, en bit i taget, i ren BigInt.
+ *
+ * Referensen som varje snabbare väg jämförs mot, och den väg allt faller
+ * tillbaka på. Den ska inte ändras: tabellerna i fixed-base.ts och OpenSSL i
+ * native-exponentiation.ts är prövade mot exakt den här funktionen, också på
+ * gränsfallen, så att "samma svar" betyder samma svar för varje indata.
+ */
+export function bigintModPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
   let result = 1n
   let b = base % modulus
   let e = exponent
@@ -44,6 +64,95 @@ export function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint 
   }
 
   return result
+}
+
+/**
+ * En snabbare exponentiering i gruppen: bas^exponent mod p.
+ *
+ * Den måste ge exakt samma svar som `bigintModPow(bas, exponent, P)`, för varje
+ * indata. Den får alltså inte validera, avrunda eller vägra något. Validering
+ * är anroparens sak och sker före, med isInSubgroup.
+ */
+export type GroupExponentiation = (base: bigint, exponent: bigint) => bigint
+
+/**
+ * DEN REGISTRERADE EXPONENTIERINGEN, OCH VARFÖR DEN REGISTRERAS.
+ *
+ * Klienten och servern delar all kryptokod: webbläsaren bygger bevisen, servern
+ * prövar dem, och det är samma funktioner som gör det. Servern räknar
+ * däremot i OpenSSL genom node:crypto, och det får inte hamna i röstsidans
+ * bunt (tests/security/browser-bundle.test.ts). Därför importerar ingen delad
+ * modul OpenSSL-vägen. Servern kopplar in den här, genom att importera
+ * src/lib/crypto/server.ts.
+ *
+ * Utan registrering räknar allt som förut, i ren BigInt, med tabeller för de
+ * fasta baserna nedan. Registreringen gäller för modulens livstid och bara
+ * modulen p. Exponenter mod q, som Lagrange-koefficienterna i threshold.ts,
+ * räknas alltid i BigInt.
+ */
+let registered: GroupExponentiation | null = null
+
+/** Kopplar in en snabbare exponentiering, eller kopplar ur den med null (för tester). */
+export function registerGroupExponentiation(implementation: GroupExponentiation | null): void {
+  registered = implementation
+}
+
+/**
+ * FASTA BASER I WEBBLÄSAREN.
+ *
+ * g och valets publika nyckel h är desamma i varje exponentiering under ett
+ * val, och tre av fyra exponentieringar i krypteringen har någon av dem som
+ * bas. För dem byggs en tabell första gången de används, och därefter blir en
+ * exponentiering en multiplikation per fönster, se fixed-base.ts. Tabellerna
+ * används bara när ingen snabbare exponentiering är registrerad, alltså i
+ * webbläsaren och i tester som räknar i BigInt.
+ *
+ * Fyra bitar per fönster. Tabellen blir 512 · 15 = 7 680 tal, omkring 2 MB per
+ * bas, och byggs på omkring 11 ms i Chromium 153. En exponentiering med den tar
+ * 0,7 ms i stället för 4,4. Bredare fönster kostar mer än de ger: fem bitar är
+ * 3,3 MB och 19 ms att bygga, sex bitar 5,5 MB och 31 ms, och krypteringen av en
+ * riksdagsvalsedel blir ändå bara 5–10 procent snabbare. Den domineras av de 52
+ * exponentieringar som har c1 eller c2 som bas, och dem hjälper ingen tabell.
+ * Mätningarna står i spec 4.1 och körs med scripts/measure-crypto.ts --chromium.
+ *
+ * Tabellerna ligger bara i minnet, för sidans livstid. g:s tabell finns kvar,
+ * och bara en publik nyckel i taget har tabell: en ny nyckel ersätter den
+ * förra.
+ */
+export const FIXED_BASE_WINDOW_BITS = 4
+
+const EXPONENT_BITS = P.toString(2).length
+
+const fixedBaseTables = new Map<bigint, FixedBaseTable | null>([[G, null]])
+let publicKeyBase: bigint | null = null
+
+/**
+ * Markerar valets publika nyckel som fast bas. Tabellen byggs först när den
+ * används, så en server med OpenSSL registrerat bygger den aldrig.
+ */
+export function useFixedBase(base: bigint): void {
+  if (base === G || base === publicKeyBase || base <= 1n || base >= P) return
+  if (publicKeyBase !== null) fixedBaseTables.delete(publicKeyBase)
+  publicKeyBase = base
+  fixedBaseTables.set(base, null)
+}
+
+function fixedBaseTableFor(base: bigint): FixedBaseTable | null {
+  if (!fixedBaseTables.has(base)) return null
+
+  let table = fixedBaseTables.get(base) ?? null
+  if (table === null) {
+    table = buildFixedBaseTable(base, P, EXPONENT_BITS, FIXED_BASE_WINDOW_BITS)
+    fixedBaseTables.set(base, table)
+  }
+  return table
+}
+
+export function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
+  if (modulus !== P) return bigintModPow(base, exponent, modulus)
+  if (registered) return registered(base, exponent)
+
+  return fixedBaseTableFor(base)?.pow(exponent) ?? bigintModPow(base, exponent, P)
 }
 
 /**
@@ -89,8 +198,18 @@ export function randomScalar(): bigint {
  *
  * REVIEW FOCUS 1. Ett chiffer utanför undergruppen är inte ett räknefel utan ett
  * angrepp: det låter en klient läcka en bit av tröskelnyckeln per röst.
+ *
+ * KONTROLLEN ÄR FORTFARANDE y^q ≡ 1, RÄKNAD SOM y^(q−1) · y.
+ *
+ * Det är samma tal, räknat i två steg. Omvägen finns för servern, som räknar i
+ * OpenSSL. Där lämnas resultatet 1 aldrig ut, eftersom Diffie–Hellman vägrar en
+ * hemlighet som är 1 eller p − 1, och y^q är 1 för just varje giltigt element.
+ * Räknat rakt på hade varje kontroll krävt ett anrop till OpenSSL (se
+ * native-exponentiation.ts). y^(q−1) är y^(−1) i undergruppen och −y^(−1)
+ * utanför den, aldrig 1 eller p − 1 när 1 < y < p − 1. Den sista
+ * multiplikationen är billig.
  */
 export function isInSubgroup(value: bigint): boolean {
   if (value <= 1n || value >= P) return false
-  return modPow(value, Q, P) === 1n
+  return (modPow(value, Q - 1n, P) * value) % P === 1n
 }

@@ -1,8 +1,8 @@
 import { scryptHex } from '../src/lib/crypto'
 import { describeElectionSeed } from './election-seed-report'
 import { generateElectionKeyPair } from '../src/lib/blind-signature'
-import { generateKeyPair } from '../src/lib/crypto/elgamal'
-import { publicShare, splitSecret } from '../src/lib/crypto/threshold'
+// Serverns ingång, som i createElection: nyckeln exponentieras i OpenSSL.
+import { generateKeyPair, publicShare, splitSecret } from '../src/lib/crypto/server'
 import { encryptShare } from '../src/lib/crypto/share-storage'
 import { PrismaClient as VotersClient } from '.prisma/voters'
 import { PrismaClient as VotesClient } from '.prisma/votes'

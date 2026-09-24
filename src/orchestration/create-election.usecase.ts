@@ -8,8 +8,9 @@ import {
 import { votesDb } from '@/modules/ballot-box/db'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { mirrorElection, removeMirroredElection } from '@/modules/eligibility/election.service'
-import { generateKeyPair } from '@/lib/crypto/elgamal'
-import { publicShare, splitSecret } from '@/lib/crypto/threshold'
+// Ur serverns ingång och inte ur de delade modulerna: den privata nyckeln och
+// andelarna exponentieras då i OpenSSL, i konstant tid. Se src/lib/crypto/server.ts.
+import { generateKeyPair, publicShare, splitSecret } from '@/lib/crypto/server'
 import { encryptShare } from '@/lib/crypto/share-storage'
 
 /**

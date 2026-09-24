@@ -98,18 +98,27 @@ export function proofContext(electionId: string, ballotId: string, index: number
 }
 
 /**
- * Verifierar en inkommen valsedel fullständigt.
+ * Verifierar en inkommen valsedel fullständigt, ett steg i taget.
  *
  * Ordningen är vald: billiga kontroller först, så att skräp avvisas innan vi
  * betalar för hundra modexp.
+ *
+ * EN IMPLEMENTATION, TVÅ SÄTT ATT KÖRA DEN, som krypteringen i
+ * src/lib/encrypt-client.ts. Generatorn lämnar ifrån sig efter varje
+ * alternativs undergruppskontroll och efter varje alternativs bevis. Mellan
+ * stegen kan den som kör den släppa fram annat arbete, och det är hela
+ * skillnaden: kontrollerna, deras ordning och svaret är desamma.
+ * `verifyEncryptedBallot` kör alla steg i ett svep. Servern kör dem genom
+ * `verifyEncryptedBallotInSteps`, via src/lib/crypto/server.ts, så att
+ * händelseslingan inte står still medan en valsedel prövas.
  */
-export function verifyEncryptedBallot(
+function* ballotVerification(
   publicKey: string,
   electionId: string,
   ballotId: string,
   expectedLength: number,
   ballot: EncryptedBallot,
-): boolean {
+): Generator<void, boolean, void> {
   if (ballot.ciphertext.length !== expectedLength) return false
   if (ballot.proofs.components.length !== expectedLength) return false
 
@@ -136,10 +145,12 @@ export function verifyEncryptedBallot(
     const c2 = BigInt(pair.c2)
 
     // REVIEW FOCUS 1. Ett element utanför undergruppen läcker en bit av
-    // tröskelnyckeln vid varje partiell dekryptering.
+    // tröskelnyckeln vid varje partiell dekryptering. Varje element prövas
+    // innan något bevis räknas med det, också när stegen körs ett i taget.
     if (!isInSubgroup(c1) || !isInSubgroup(c2)) return false
 
     ciphertexts.push({ c1, c2 })
+    yield
   }
 
   for (const [index, ciphertext] of ciphertexts.entries()) {
@@ -147,10 +158,52 @@ export function verifyEncryptedBallot(
     if (!verifyZeroOrOne(key, ciphertext, proof, proofContext(electionId, ballotId, index))) {
       return false
     }
+    yield
   }
 
   const product = ciphertexts.reduce((a, b) => multiply(a, b))
   const sumProof = parseEqualityProof(ballot.proofs.sum)
 
   return verifySumIsOne(key, product, sumProof, proofContext(electionId, ballotId, -1))
+}
+
+/** Alla steg i ett svep, för testerna och för den som inte har någon händelseslinga att hålla fri. */
+export function verifyEncryptedBallot(
+  publicKey: string,
+  electionId: string,
+  ballotId: string,
+  expectedLength: number,
+  ballot: EncryptedBallot,
+): boolean {
+  const steps = ballotVerification(publicKey, electionId, ballotId, expectedLength, ballot)
+  for (;;) {
+    const step = steps.next()
+    if (step.done) return step.value
+  }
+}
+
+/**
+ * Samma verifiering, med `pause` mellan stegen.
+ *
+ * Ett steg är ett alternativs undergruppskontroll, två exponentieringar, eller
+ * ett alternativs bevis, åtta. Pausen avgör vad som får köra däremellan. På
+ * servern är det `setImmediate`, som släpper fram väntande I/O, alltså andra
+ * besökares begäranden. Kastar ett steg, till exempel på ett tal som inte går
+ * att tolka, blir det ett avvisat löfte, precis som den synkrona varianten
+ * kastar.
+ */
+export async function verifyEncryptedBallotInSteps(
+  publicKey: string,
+  electionId: string,
+  ballotId: string,
+  expectedLength: number,
+  ballot: EncryptedBallot,
+  pause: () => Promise<void>,
+): Promise<boolean> {
+  const steps = ballotVerification(publicKey, electionId, ballotId, expectedLength, ballot)
+  for (;;) {
+    const step = steps.next()
+    if (step.done) return step.value
+    await pause()
+  }
 }

@@ -147,22 +147,47 @@ med `y^q ≡ 1 (mod p)` innan det används.**
 
 **Mätt kostnad, rättad 2026-09-24.** Den första versionen sa 2,0 ms per modexp och
 cirka 134 modexp per riksdagsvalsedel. Båda var fel, och felet upptäcktes först när
-röstsidan byggdes. Två oberoende mätningar är överens om:
+röstsidan byggdes. Två oberoende mätningar är överens om kolumnen "före", och
+uppgift 14b har mätt kolumnen "efter" (Node 22.19 med OpenSSL 3.0.17, Chromium 153,
+i7-12700KF):
 
-| Var | En modexp med full exponent (2048 bitar) |
-|---|---|
-| Ren BigInt i Node 22 | 39,7 ms |
-| Ren BigInt i Chromium 153 | 4,4 ms |
-| OpenSSL | 1,6 ms |
+| Var | En modexp med full exponent (2048 bitar), före | Efter uppgift 14b |
+|---|---|---|
+| Ren BigInt i Node 22 | 39,7 ms | 39 ms, används inte längre på servern |
+| OpenSSL, som servern nu räknar med | 1,6 ms | 1,4 ms, via Diffie–Hellman i `node:crypto` |
+| Ren BigInt i Chromium 153, godtycklig bas | 4,4 ms | 4,4 ms |
+| Chromium 153 med bas g eller h | 4,4 ms | 0,7 ms, med tabell för fast bas |
 
 De 2 ms motsvarade alltså OpenSSL, inte BigInt i Node. En riksdagsvalsedel med
 personval har 26 alternativ och kräver cirka 236 modexp för att krypteras och cirka
-290 för att verifieras. Det ger 1,1 s i Chromium för krypteringen och 11,2 s i Node för
+290 för att verifieras. Det gav 1,1 s i Chromium för krypteringen och 11,2 s i Node för
 verifieringen, synkront, med händelseslingan stillastående.
 
+Efter uppgift 14b, för samma valsedel:
+
+| Vad | Före | Efter |
+|---|---|---|
+| Verifiering på servern | 11,2 s, 290 modexp | 0,38 s, 264 modexp |
+| Längsta stopp i händelseslingan under en verifiering | 11 249 ms | 15 ms, 31 ms med tio samtidiga |
+| Kryptering i Chromium | 1,1 s | 0,37 s för första valsedeln, 0,34 s för följande |
+| Valideringen före stängningen, 100 väljare med tre valsedlar | cirka 33 min | 64 s |
+| Stängningen, samma val | cirka 1 h | 131 s |
+
+Verifieringen räknar varje exponentiering i OpenSSL och körs i steg, ett alternativ i
+taget, med händelseslingan fri mellan stegen och högst två verifieringar samtidigt.
+Krypteringen i webbläsaren har tabeller med fyra bitar per fönster för `g` och `h`,
+omkring 2 MB per bas och 11 ms att bygga. Baserna `c1` och `c2` beror på chiffret och
+räknas som förut. Att verifieringen kräver 264 modexp och inte 290 beror på att
+`g^(−1)` nu är en konstant. Undergruppskontrollen `y^q` räknas som `y^(q−1) · y`,
+vilket är samma tal men låter OpenSSL svara på första anropet, eftersom OpenSSL aldrig
+lämnar ut resultatet 1. Bevisen är oförändrade, tal för tal. Siffrorna tas fram med
+`scripts/measure-crypto.ts`; "före" för valideringen och stängningen är räknat ur
+antalet modexp, 499 per väljare, gånger 39,7 ms.
+
 **Inget kryptobibliotek läggs till.** Nollberoendelinjen står kvar, eftersom det finns
-snabba vägar utan beroenden: OpenSSL:s modexp nås via `node:crypto`, verifieringen kan
-flyttas till en egen tråd, och fasta baser går att förberäkna. Se planens uppgift 14b.
+snabba vägar utan beroenden, och uppgift 14b har tagit dem: OpenSSL:s modexp nås via
+`node:crypto`, verifieringen släpper fram händelseslingan mellan alternativen, och de
+fasta baserna är förberäknade i webbläsaren.
 
 ### 4.2 Exponentiell ElGamal
 

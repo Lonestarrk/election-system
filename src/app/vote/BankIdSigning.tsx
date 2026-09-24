@@ -35,8 +35,10 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
  *
  * Den tredje väger tyngre här än vid legitimeringen. Frågan som hämtar den
  * färdiga underskriften är också den som låter servern kontrollera varje bevis
- * i valsedeln, och det tar flera sekunder. Under den tiden får ingen ny fråga
- * gå iväg, och QR-kodens "utgången" betyder bara att ordern är förbrukad.
+ * i valsedeln. Det tar omkring en halv sekund, och längre när andras
+ * valsedlar står före i serverns kö (src/lib/crypto/server.ts). Under den tiden
+ * får ingen ny fråga gå iväg, och QR-kodens "utgången" betyder bara att ordern
+ * är förbrukad.
  */
 
 const QR_REFRESH_MS = 1000

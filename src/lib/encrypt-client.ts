@@ -1,4 +1,4 @@
-import { randomScalar } from './crypto/group'
+import { randomScalar, useFixedBase } from './crypto/group'
 import { encrypt, multiply, type Ciphertext } from './crypto/elgamal'
 import { proveSumIsOne, proveZeroOrOne } from './crypto/proofs'
 import { indexOfChoice, unitVector, type BallotOption } from './crypto/ballot-encoding'
@@ -27,8 +27,9 @@ import {
  * ifrån sig ett steg i taget. `encryptBallot` kör alla steg i ett svep, för
  * servern och testerna. `encryptBallotInSteps` släpper fram webbläsaren mellan
  * stegen, så att röstsidan kan visa hur långt den kommit: en valsedel med
- * personröst tar flera sekunder, och en sida som står still så länge ser
- * trasig ut. Båda kör samma kod och ger samma sorts resultat.
+ * personröst tar en tredjedels sekund på en snabb dator och mer på en långsam
+ * telefon, och en sida som står still så länge ser trasig ut. Båda kör samma
+ * kod och ger samma sorts resultat.
  *
  * Det enda som lämnar ett steg är hur många komponenter som är klara. Slumptalen
  * ligger kvar i generatorns egna variabler och försvinner med den.
@@ -42,6 +43,18 @@ function* ballotEncryption(
 ): Generator<number, EncryptedBallot, void> {
   const key = BigInt(publicKey)
   const vector = unitVector(options.length, indexOfChoice(options, choice))
+
+  /**
+   * VALETS NYCKEL ÄR EN FAST BAS, SOM g.
+   *
+   * Varje kryptering och varje bevis under valet exponentierar h, så en tabell
+   * för h gör de exponentieringarna till multiplikationer utan kvadreringar
+   * (src/lib/crypto/fixed-base.ts). Tabellen byggs första gången den behövs och
+   * finns kvar för sidans livstid, så att väljarens nästa valsedel i samma val
+   * inte bygger om den. Bevisen blir desamma, tal för tal: det är bara vägen
+   * till varje potens som ändras.
+   */
+  useFixedBase(key)
 
   const nonces: bigint[] = []
   const ciphertexts: Ciphertext[] = []

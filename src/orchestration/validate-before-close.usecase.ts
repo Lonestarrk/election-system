@@ -4,7 +4,8 @@ import {
   envelopePayload,
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
-import { verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
+import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
+import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 
 /**
@@ -207,7 +208,7 @@ function mismatchesVoterArea(
 /**
  * `ciphertext`/`proofs` lagras som Prisma `Json` och har därför ingen statisk
  * form i klienten. Bara ett typläge — ingen runtime-kontroll sker här. Formen
- * kontrolleras av `verifyEncryptedBallot`, som anropas via `proofHoldsSafely`
+ * kontrolleras av `verifyEncryptedBallotOnServer`, som anropas via `proofHoldsSafely`
  * nedan, INTE direkt: se den funktionens dokumentation för varför.
  */
 function toEncryptedBallot(vote: {
@@ -226,7 +227,7 @@ function toEncryptedBallot(vote: {
  * BAD_PROOF-kontrollen, skyddad mot kast (fixrunda 2, uppgift 10:s
  * granskning).
  *
- * `verifyEncryptedBallot` (src/lib/crypto/verify-ballot.ts) gör `BigInt(...)`
+ * `verifyEncryptedBallotOnServer` (src/lib/crypto/server.ts) gör `BigInt(...)`
  * på chiffer- och bevisfälten utan eget felfång. Det är rätt för dess EGNA
  * normala anropskedja: `castEncryptedBallot` når den bara med en valsedel som
  * redan passerat `castEncryptedBallotSchema` (`decimalStringSchema`, se
@@ -251,18 +252,23 @@ function toEncryptedBallot(vote: {
  * effektivare för en angripare än den avvikelse raden annars hade orsakat.
  *
  * Att linda in HELA anropet (i stället för att härda `BigInt(...)` punktvis
- * inne i `verifyEncryptedBallot`) är avsiktligt: den funktionens kryptologik
+ * inne i `verifyEncryptedBallotOnServer`) är avsiktligt: den funktionens kryptologik
  * rörs inte alls här, och skyddet täcker varje sätt den kan kasta på skräp —
  * chiffer, bevis eller längder — utan att räkna upp dem en och en.
+ *
+ * `await` STÅR INNANFÖR `try`, OCH DET ÄR INTE EN DETALJ. Verifieringen körs i
+ * steg sedan uppgift 14b, så ett kast på ett missformat tal kommer som ett
+ * avvisat löfte. Returnerades löftet utan `await` skulle det passera förbi
+ * `catch`, och en enda trasig rad fälla hela valideringen igen.
  */
-function proofHoldsSafely(
+async function proofHoldsSafely(
   shape: { publicKey: string; optionCount: number },
   electionId: string,
   ballotId: string,
   vote: { ciphertext: unknown; proofs: unknown; ciphertextHash: string },
-): boolean {
+): Promise<boolean> {
   try {
-    return verifyEncryptedBallot(
+    return await verifyEncryptedBallotOnServer(
       shape.publicKey,
       electionId,
       ballotId,
@@ -364,7 +370,8 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
       shapeCache.set(vote.ballotId, shape)
     }
 
-    const proofHolds = shape !== null && proofHoldsSafely(shape, electionId, vote.ballotId, vote)
+    const proofHolds =
+      shape !== null && (await proofHoldsSafely(shape, electionId, vote.ballotId, vote))
 
     if (!proofHolds) {
       anomalies.push(anomaly('BAD_PROOF'))

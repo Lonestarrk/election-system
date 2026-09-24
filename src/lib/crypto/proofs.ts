@@ -1,4 +1,4 @@
-import { G, P, Q, modPow, randomScalar } from './group'
+import { G, G_INVERSE, P, Q, modPow, randomScalar } from './group'
 import type { Ciphertext } from './elgamal'
 import { sha256Hex } from './sha256'
 
@@ -73,7 +73,7 @@ export function proveZeroOrOne(
    * avvisas.
    */
   const target0 = ciphertext.c2
-  const target1 = (ciphertext.c2 * modPow(G, Q - 1n, P)) % P
+  const target1 = (ciphertext.c2 * G_INVERSE) % P
   const simulatedTarget = message === 0 ? target1 : target0
 
   const simulated = {
@@ -143,7 +143,7 @@ export function verifyZeroOrOne(
     modPow(publicKey, proof.response0, P) ===
       (proof.b0 * modPow(ciphertext.c2, proof.challenge0, P)) % P
 
-  const shifted = (ciphertext.c2 * modPow(G, Q - 1n, P)) % P
+  const shifted = (ciphertext.c2 * G_INVERSE) % P
 
   const oneBranch =
     modPow(G, proof.response1, P) === (proof.a1 * modPow(ciphertext.c1, proof.challenge1, P)) % P &&
@@ -176,7 +176,7 @@ export function verifySumIsOne(
     return false
 
   // Produkten ska kryptera exakt g^1, alltså c2 delat med g.
-  const shifted = (product.c2 * modPow(G, Q - 1n, P)) % P
+  const shifted = (product.c2 * G_INVERSE) % P
 
   return (
     modPow(G, proof.response, P) === (proof.a * modPow(product.c1, proof.challenge, P)) % P &&

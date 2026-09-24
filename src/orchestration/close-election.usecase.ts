@@ -1,6 +1,7 @@
 import { Prisma } from '.prisma/votes'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
-import { verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
+import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
+import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
@@ -245,21 +246,28 @@ export function idForEnvelope(ciphertextHash: string): string {
  * `validate-before-close.usecase.ts`.
  *
  * Raden kommer direkt ur databasen, förbi varje Zod-schema, och
- * `verifyEncryptedBallot` gör `BigInt(...)` på chiffer- och bevisfälten utan
+ * `verifyEncryptedBallotOnServer` gör `BigInt(...)` på chiffer- och bevisfälten utan
  * eget felfång. Ett missformat chiffer ska peka ut raden, inte krascha
- * stängningen.
+ * stängningen. `await` står innanför `try` av samma skäl som där: kastet kommer
+ * som ett avvisat löfte.
  */
-function ballotVerifies(
+async function ballotVerifies(
   shape: { publicKey: string; optionCount: number },
   electionId: string,
   envelope: Envelope,
-): boolean {
+): Promise<boolean> {
   try {
-    return verifyEncryptedBallot(shape.publicKey, electionId, envelope.ballotId, shape.optionCount, {
-      ciphertext: envelope.ciphertext as EncryptedBallot['ciphertext'],
-      proofs: envelope.proofs as EncryptedBallot['proofs'],
-      ciphertextHash: envelope.ciphertextHash,
-    })
+    return await verifyEncryptedBallotOnServer(
+      shape.publicKey,
+      electionId,
+      envelope.ballotId,
+      shape.optionCount,
+      {
+        ciphertext: envelope.ciphertext as EncryptedBallot['ciphertext'],
+        proofs: envelope.proofs as EncryptedBallot['proofs'],
+        ciphertextHash: envelope.ciphertextHash,
+      },
+    )
   } catch {
     return false
   }
@@ -284,7 +292,7 @@ async function firstUnverifiableEnvelope(
       shapes.set(envelope.ballotId, shape)
     }
 
-    if (!shape || !ballotVerifies(shape, electionId, envelope)) {
+    if (!shape || !(await ballotVerifies(shape, electionId, envelope))) {
       return envelope.ciphertextHash
     }
   }

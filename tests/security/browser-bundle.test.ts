@@ -38,6 +38,11 @@ const SERVER_ONLY = [
   'src/lib/rate-limit.ts',
   'src/lib/admission-queue.ts',
   'src/lib/crypto/share-storage.ts',
+  // OpenSSL-vägen (uppgift 14b). Båda drar in node:crypto, vilket testet nedan
+  // redan fäller, men de står här också, så att en omskrivning som tar bort
+  // importen inte gör dem tillåtna i webbläsaren.
+  'src/lib/crypto/native-exponentiation.ts',
+  'src/lib/crypto/server.ts',
 ]
 
 const toRelative = (path: string) => relative(ROOT, path).split(sep).join('/')
@@ -149,6 +154,7 @@ describe('röstsidans kod i webbläsaren', () => {
         'src/app/vote/device-vote.ts',
         'src/lib/encrypt-client.ts',
         'src/lib/crypto/group.ts',
+        'src/lib/crypto/fixed-base.ts',
         'src/lib/crypto/proofs.ts',
         'src/lib/crypto/sha256.ts',
         'src/lib/crypto/verify-ballot.ts',
