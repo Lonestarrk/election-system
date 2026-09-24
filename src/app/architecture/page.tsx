@@ -51,8 +51,10 @@ export default function ArchitecturePage() {
           copies={link}
           bankIdOrder={limitation('bankid-order-carries-link')}
           removal={limitation('operator-can-remove-or-restore-envelope')}
+          swapCiphertext={limitation('votes-db-writer-can-swap-ciphertext')}
           pepperHolder={limitation('pepper-holder-reads-voter-names')}
           demoIssuer={limitation('mock-issues-certificates-in-demo')}
+          demoPassphrases={limitation('demo-trustee-passphrases-known')}
           dealer={limitation('trusted-dealer')}
         />
 

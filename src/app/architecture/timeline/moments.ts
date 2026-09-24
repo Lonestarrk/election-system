@@ -101,7 +101,8 @@ export const MOMENTS: readonly Moment[] = [
       text:
         'Systemets egna hemligheter förvaras i ett valv. En av dem gör personnummer till ' +
         'fingeravtryck, och röstlängden sparas med fingeravtrycken i stället för numren. Låsets ' +
-        'nyckel finns inte i valvet, varken hel eller i delar: delarna har förtroendepersonerna.',
+        'nyckel finns inte i valvet, varken hel eller i delar: varje del är inlåst med sin ' +
+        'förtroendepersons eget lösenord.',
     },
   },
   {

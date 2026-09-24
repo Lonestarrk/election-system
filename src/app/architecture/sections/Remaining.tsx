@@ -10,8 +10,10 @@ import { limitationHref, listItemStyle } from './shared'
  * kan inte påstå att något återstår som redan finns. Därtill de kända
  * begränsningar i kuvertmodellen som specen redan anger åtgärden för: BankID-
  * ordern, spärrkontrollen och adaptern för XML-signaturen (spec 4.6 och 10),
- * med länk till listan. Certifikatkedjan stod här fram till uppgift 14f, som
- * byggde prövningen.
+ * och sedan granskningen av 11g den som kan skriva i röstdatabasen och byta ut
+ * ett chiffer (spec 4.6, förbehåll 4, uppgift 11d och 12b), med länk till
+ * listan. Certifikatkedjan stod här fram till uppgift 14f, som byggde
+ * prövningen.
  */
 export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
   return (

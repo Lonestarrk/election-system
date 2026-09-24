@@ -129,15 +129,30 @@ const PHONE_INNER = { x: 22.5, y: 47.5 }
  * längst till höger, och kuverten går nedåt mot urnorna.
  */
 const VAULT = { x: 114, y: 16, w: 40, h: 34 }
-/** Ratten mitt på valvets dörr, där hemligheten tas fram. */
+/** Ratten mitt på valvets dörr, där hemligheten syns när den används. */
 const DIAL = { x: 134, y: 33 }
 
 /**
- * När ratten vrids och hemligheten tas fram, i de moment där valvet används.
- * Tiderna följer det som händer bredvid: i moment 4 först när underskriften är
- * ritad, eftersom det är intyget bakom den som låses in.
+ * När hemligheten används, i sekunder från klicket, i de moment där valvet
+ * lyser. Tiderna följer det som händer bredvid: i moment 4 först när
+ * underskriften är ritad, eftersom det är intyget bakom den som låses in.
+ *
+ * INGET FÖRVAL (granskningen av 11g, M12). Ett moment som tänder valvet men
+ * saknas här är ett fel i tabellen och inget moment utan rörelse, så
+ * `vaultUseAt` kastar i stället för att gissa en tid. Moment 1 står inte här,
+ * eftersom valvet görs i ordning där och inget används.
+ * tests/security/architecture-page.test.ts kräver att tabellen har exakt de
+ * moment som tänder valvet, utom moment 1.
  */
-const VAULT_USE_AT: Record<number, number> = { 2: 0.15, 4: 0.95, 6: 0.15, 8: 0.05, 13: 0.05 }
+const VAULT_USE_AT: Readonly<Partial<Record<number, number>>> = { 2: 0.15, 4: 0.95, 6: 0.15, 8: 0.05, 13: 0.05 }
+
+function vaultUseAt(n: number): number {
+  const at = VAULT_USE_AT[n]
+  if (at === undefined) {
+    throw new Error(`Moment ${n} tänder valvet men har ingen tid i VAULT_USE_AT.`)
+  }
+  return at
+}
 
 /** När märket för det inlåsta intyget kommer på det yttre kuvertet i moment 4. */
 const SEAL_AT = 1.35
@@ -176,7 +191,9 @@ const ACTIVE: Record<number, readonly Zone[]> = {
 }
 
 function isActive(zone: Zone, n: number): boolean {
-  if (zone === 'vault') return MOMENTS[n - 1]?.vault?.inScene === true
+  // Momentet slås upp på sitt nummer, inte på sin plats i listan, så att en
+  // omordnad eller glesare lista inte tänder valvet i fel moment.
+  if (zone === 'vault') return MOMENTS.find((entry) => entry.number === n)?.vault?.inScene === true
   return (ACTIVE[n] ?? []).includes(zone)
 }
 
@@ -203,8 +220,7 @@ type Kind =
   | 'scatter' /* kommer ut från (dx, dy) och glider till viloläget */
   | 'sweep' /* sveper från (dx, dy) till viloläget och försvinner */
   | 'grow' /* växer ut från vänster */
-  | 'turn' /* vrids till viloläget, som valvets ratt */
-  | 'emerge' /* växer fram ur sin plats och tonas ut, som hemligheten som tas ur valvet */
+  | 'emerge' /* växer fram ur sin plats och tonas ut, som hemligheten när den används */
 
 type AnimProps = {
   kind: Kind
@@ -776,13 +792,15 @@ function Keyhole({ x, lit = false }: { x: number; lit?: boolean }) {
  * VALVET MED SYSTEMETS HEMLIGHETER.
  *
  * I moment 1 läggs hemligheterna i valvet, medan nyckelns delar går från låset
- * till förtroendepersonerna på andra sidan scenen. Där valvet sedan används
- * vrids ratten, och en hemlighet kommer ut ur den och tonas bort: den lämnar
- * valvet och används av systemet. Bilden förenklar tiden. I Azure hämtar appen
- * hemligheterna en gång, när containern startar, och har dem sedan i minnet;
- * scenen visar hemligheten i de moment där den används. Den går inte till
- * någon annan plats i scenen, och allra minst till din enhet, som aldrig får
- * den.
+ * till förtroendepersonerna på andra sidan scenen. Där en hemlighet sedan
+ * används lyser valvet, och hemligheten växer fram ur ratten och tonas bort.
+ *
+ * RATTEN VRIDS INTE (granskningen av 11g, M1). En ratt som vreds i varje
+ * moment sa att valvet öppnas varje gång något används. Så är det inte: i
+ * Azure får appen hemligheterna när containern startar och har dem sedan i
+ * minnet. Scenen visar när en hemlighet används, inte när valvet öppnas, och
+ * inledningen till tidslinjen säger det. Hemligheten går inte till någon annan
+ * plats i scenen, och allra minst till din enhet, som aldrig får den.
  *
  * Där momentet inte använder valvet står det nedtonat och ingenting i det rör
  * sig. Det gäller också moment 9 och 11, där texten säger vad valvet inte gör.
@@ -790,12 +808,12 @@ function Keyhole({ x, lit = false }: { x: number; lit?: boolean }) {
 function VaultZone({ moment }: { moment: Moment }) {
   const n = moment.number
   const inUse = moment.vault?.inScene === true
-  const useAt = inUse && n !== 1 ? (VAULT_USE_AT[n] ?? 0.1) : undefined
+  const useAt = inUse && n !== 1 ? vaultUseAt(n) : undefined
 
   return (
     <g className={zoneClass('vault', n)} data-vault="">
       <AnimateIf when={n === 1} kind="pop" dur={0.35}>
-        <Vault turnAt={useAt} />
+        <Vault />
       </AnimateIf>
       <text className="tl-label" x={DIAL.x} y={67}>
         Valvet
@@ -815,10 +833,10 @@ function VaultZone({ moment }: { moment: Moment }) {
           </At>
         ))}
 
-      {/* Där valvet används kommer hemligheten ut ur ratten och används. */}
+      {/* Där en hemlighet används växer den fram ur ratten och tonas bort. */}
       {useAt !== undefined && (
         <At x={DIAL.x} y={DIAL.y}>
-          <A kind="emerge" at={useAt + 0.15} dur={0.6}>
+          <A kind="emerge" at={useAt} dur={0.6}>
             <SecretBadge />
           </A>
         </At>
@@ -829,9 +847,9 @@ function VaultZone({ moment }: { moment: Moment }) {
 
 /**
  * Valvet: ett kassaskåp med dörr, gångjärn och en ratt, och på ratten
- * hemlighetens tecken. `turnAt` vrider ratten när valvet används.
+ * hemlighetens tecken. Ingenting i figuren rör sig, se `VaultZone`.
  */
-function Vault({ turnAt }: { turnAt?: number }) {
+function Vault() {
   return (
     <g>
       <rect className="tl-vault-foot" x={VAULT.x + 4} y={VAULT.y + VAULT.h - 1} width={7} height={4} rx={1} />
@@ -857,9 +875,7 @@ function Vault({ turnAt }: { turnAt?: number }) {
       <path className="tl-vault-handle" d={`M${VAULT.x + 32} ${DIAL.y - 5} V${DIAL.y + 5}`} />
       <circle className="tl-vault-dial" cx={DIAL.x} cy={DIAL.y} r={8} />
       <At x={DIAL.x} y={DIAL.y}>
-        <AnimateIf when={turnAt !== undefined} kind="turn" at={turnAt} dur={0.5}>
-          <SecretMark />
-        </AnimateIf>
+        <SecretMark />
       </At>
     </g>
   )

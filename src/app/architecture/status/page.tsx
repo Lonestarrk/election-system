@@ -50,7 +50,12 @@ export default function StatusPage() {
           ]}
         />
         <Remaining
-          fixable={[limitations.bankIdOrder, limitations.revocation, limitations.xmlAdapter]}
+          fixable={[
+            limitations.bankIdOrder,
+            limitations.revocation,
+            limitations.xmlAdapter,
+            limitations.swapCiphertext,
+          ]}
         />
         <AzureStatus />
       </div>

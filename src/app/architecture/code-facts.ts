@@ -26,8 +26,12 @@
  *                          filerna, och i ingen annan fil under sökvägen. För
  *                          påståenden om att något bara görs på ett ställe.
  *
- * Kataloger genomsöks efter .ts, .tsx, .sql, .prisma och .bicep, så att också
- * migreringar, scheman och mallarna för Azure kan granskas.
+ * Kataloger genomsöks efter .ts, .tsx, .sql, .prisma, .bicep och .sh, så att
+ * också migreringar, scheman, mallarna för Azure och distributionsskriptet kan
+ * granskas. Skripten kom med i granskningen av 11g: deploy.sh gör saker med
+ * valvet som mallarna inte gör, och ett mönster som bara sökte i Bicep missade
+ * att granskningsloggen, rensningsskyddet, en roll eller en hemlighet kunde
+ * läggas till med az.
  *
  * AZURE-UPPSÄTTNINGEN ÄGS AV EN ANNAN SESSION (uppgift 11g). Mallarna under
  * infra/azure skrivs av sessionen som distribuerar till Azure, och
@@ -385,29 +389,45 @@ const DATABASE_URLS_FROM_VAULT: Marker[] = [
   { file: 'infra/azure/app.bicep', contains: "{ name: 'VOTES_DATABASE_URL', secretRef: 'votes-database-url' }" },
 ]
 
-/** Pepparn skapas bara när distributionen inte hittar den, och skälet står bredvid. */
+/**
+ * Pepparn skrivs bara när distributionen ser att den saknas.
+ *
+ * MEKANISMEN, INTE TEXTEN OM DEN (granskningen av 11g, V2). Markören vaktade
+ * först en kommentar som sa "byts aldrig" och texten som skrivs ut, medan det
+ * som faktiskt fallerade i b0a94dc var kontrollen: `secret_exists` tolkade
+ * varje fel som att hemligheten saknades, och Git Bash skrev om resurs-id:t
+ * så att varje kontroll felade. En omkörning skrev då över pepparn. Nu vaktar
+ * markören de två delar som stänger det: grenen som stoppar när kontrollen inte
+ * kan avgöra om hemligheten finns, och avstängningen av omskrivningen. Och
+ * pepparn skrivs bara i else-grenen efter den kontrollen.
+ */
 const PEPPER_CREATED_ONCE: Marker[] = [
   {
     file: 'infra/azure/deploy.sh',
-    contains:
-      'if secret_exists identity-pepper; then echo "   identity-pepper finns redan"; else put_secret identity-pepper "$(random_hex 32)"; fi',
+    contains: '*) die "Kunde inte avgöra om hemligheten $1 finns: $out" ;;',
   },
-  {
-    file: 'infra/azure/deploy.sh',
-    contains: '# IDENTITY_PEPPER skapas EN gång och byts aldrig: byts den matchar ingen hash i röstlängden.',
-  },
+  { file: 'infra/azure/deploy.sh', contains: 'export MSYS_NO_PATHCONV=1' },
+  { file: 'infra/azure/deploy.sh', contains: 'if secret_exists identity-pepper; then' },
+  { file: 'infra/azure/deploy.sh', contains: 'put_secret identity-pepper "$(random_hex 32)"' },
 ]
 
 /**
- * Ingen mall slår på valvets granskningslogg. Loggen kräver en
- * diagnostikinställning, och ingen fil under infra/azure nämner en.
+ * Ingen mall och inget skript slår på valvets granskningslogg. Loggen kräver en
+ * diagnostikinställning, i Bicep som diagnosticSettings och med az som
+ * `az monitor diagnostic-settings`, och ingen fil under infra/azure nämner en.
  */
-const NO_VAULT_AUDIT_LOG: Marker = { nowhereIn: 'infra/azure', matches: /diagnosticSettings/i }
+const NO_VAULT_AUDIT_LOG: Marker = { nowhereIn: 'infra/azure', matches: /diagnosticSettings|diagnostic-settings/i }
 
-/** Rensningsskyddet är inte påslaget i någon mall. */
-const NO_PURGE_PROTECTION: Marker = { nowhereIn: 'infra/azure', matches: /enablePurgeProtection/ }
+/** Rensningsskyddet är inte påslaget, varken i en mall eller med az. */
+const NO_PURGE_PROTECTION: Marker = {
+  nowhereIn: 'infra/azure',
+  matches: /enablePurgeProtection|enable-purge-protection/i,
+}
 
-/** Valvet är av typen Standard, utan HSM. */
+/**
+ * Valvet är av typen Standard. Påståendet om SKU:n står i vaultSettings, men
+ * inte som skäl till att pepparn lämnar valvet: det gör en hemlighet oavsett SKU.
+ */
 const VAULT_SKU_STANDARD: Marker = {
   file: 'infra/azure/keyvault.bicep',
   contains: "sku: { family: 'A', name: 'standard' }",
@@ -912,6 +932,13 @@ export const CURRENTLY = {
         nowhereIn: 'infra/azure/db-init.sql',
         matches: /GRANT[^;]*ON DATABASE votes_db[^;]*voters_app|GRANT[^;]*ON DATABASE voters_db[^;]*votes_app/,
       },
+      // Inte heller på omvägar (granskningen av 11g, M8): ingen roll blir medlem
+      // i en annan, vilket ärver dess anslutningsrätt, och ingen databas öppnas
+      // för PUBLIC igen, som är alla roller. Ett GRANT utan ON är ett
+      // rollmedlemskap.
+      { nowhereIn: 'infra/azure/db-init.sql', matches: /\bGRANT\b(?![^;]*\bON\b)[^;]*\bTO\b/i },
+      { nowhereIn: 'infra/azure/db-init.sql', matches: /\bIN\s+(?:ROLE|GROUP)\b|\bALTER\s+GROUP\b/i },
+      { nowhereIn: 'infra/azure/db-init.sql', matches: /\bGRANT\b[^;]*\bTO\s+PUBLIC\b/i },
       {
         file: '.env.example',
         contains: 'VOTERS_DATABASE_URL="postgresql://election:election@localhost:5432/voters_db?schema=public"',
@@ -994,7 +1021,9 @@ export const CURRENTLY = {
   },
 
   vaultHoldsOnlyThese: {
-    text: 'Distributionen skriver just de här åtta hemligheterna i valvet, och mallarna läser inga andra.',
+    text:
+      'Distributionen skriver just de här åtta hemligheterna i valvet, och varken mallarna eller ' +
+      'skriptet skriver eller läser några andra.',
     holdsWhile: [
       ...PEPPER_CREATED_ONCE,
       { file: 'infra/azure/deploy.sh', contains: 'ensure_pair vapid-public-key vapid-private-key gen_vapid' },
@@ -1006,6 +1035,19 @@ export const CURRENTLY = {
         matches:
           /(?:put_secret|ensure_pair) (?!(?:pg-admin-password|identity-pepper|pg-voters-password|pg-votes-password|vapid-public-key|"\$a"|"\$b") )[\w"$-]/,
       },
+      // ... inte heller med az, förbi put_secret (granskningen av 11g, M7) ...
+      { nowhereIn: 'infra/azure', matches: /az keyvault secret (?:set|import|restore|recover)/ },
+      // ... eller som en egen resurs i en mall. Bara secret.bicep skriver en
+      // hemlighet, och den skriver den som put_secret ger den, en i taget.
+      {
+        onlyIn: ['infra/azure/secret.bicep'],
+        under: 'infra/azure',
+        matches: /Microsoft\.KeyVault\/vaults\/secrets@/,
+      },
+      {
+        nowhereIn: 'infra/azure/secret.bicep',
+        matches: /(?:Microsoft\.KeyVault\/vaults\/secrets@[\s\S]*?){2}/,
+      },
       // ... och ingen annan läses, varken som referens i en container eller med getSecret.
       {
         nowhereIn: 'infra/azure',
@@ -1013,23 +1055,30 @@ export const CURRENTLY = {
           /keyVaultUrl: '\$\{keyVaultUri\}secrets\/(?!(?:identity-pepper|voters-database-url|votes-database-url|vapid-public-key|vapid-private-key|pg-admin-password|pg-voters-password|pg-votes-password)')/,
       },
       { nowhereIn: 'infra/azure', matches: /getSecret\('(?!pg-admin-password')/ },
+      { nowhereIn: 'infra/azure', matches: /az keyvault secret show/ },
     ],
   },
 
+  /**
+   * Granskningen av 11g, M3: "pepparn skapas en gång" motsades av b0a94dc, där
+   * en omkörning skrev över den. Texten säger nu vad mekanismen gör, och
+   * markörerna vaktar mekanismen, se PEPPER_CREATED_ONCE.
+   */
   vaultSecretsCreatedOnce: {
     text:
-      'En hemlighet skrivs bara när distributionen inte hittar den i valvet, och pepparn skapas en ' +
-      'gång: byts den stämmer ingen identitetshash i röstlängden längre, så den kan inte roteras ' +
-      'utan att röstlängden läses in på nytt.',
+      'Distributionen skriver en hemlighet bara när den ser att den saknas i valvet, och den stoppar ' +
+      'när den inte kan avgöra om hemligheten finns. Byts pepparn stämmer ingen identitetshash i ' +
+      'röstlängden längre, så den kan inte roteras utan att röstlängden läses in på nytt.',
     holdsWhile: PEPPER_CREATED_ONCE,
   },
 
   vaultAccess: {
     text:
       'Appens identitet får läsa hemligheterna i just det här valvet, genom rollen Key Vault ' +
-      'Secrets User, och hämta imagen ur registret, genom AcrPull. Mallarna ger den inga andra ' +
-      'roller. Rollen gäller hela valvet och inte enskilda hemligheter, så identiteten får läsa också ' +
-      'administratörens lösenord, och db-init-jobbet kör med samma identitet.',
+      'Secrets User, och hämta imagen ur registret, genom AcrPull. Varken mallarna eller ' +
+      'distributionsskriptet ger den några andra roller. Rollen gäller hela valvet och inte enskilda ' +
+      'hemligheter, så identiteten får läsa också administratörens lösenord, och db-init-jobbet kör ' +
+      'med samma identitet.',
     holdsWhile: [
       {
         file: 'infra/azure/infra.bicep',
@@ -1045,12 +1094,14 @@ export const CURRENTLY = {
           '',
         ].join('\n'),
       },
-      // Rolltilldelningar finns bara i infra.bicep, och där bara de två.
+      // Rolltilldelningar finns bara i infra.bicep, och där bara de två. Och
+      // skriptet ger ingen roll med az (granskningen av 11g, M7).
       {
         onlyIn: ['infra/azure/infra.bicep'],
         under: 'infra/azure',
         matches: /Microsoft\.Authorization\/roleAssignments/,
       },
+      { nowhereIn: 'infra/azure', matches: /az role assignment create/ },
       {
         nowhereIn: 'infra/azure/infra.bicep',
         matches: /(?:Microsoft\.Authorization\/roleAssignments@[\s\S]*?){3}/,
@@ -1061,10 +1112,11 @@ export const CURRENTLY = {
 
   vaultSettings: {
     text:
-      'Valvet har RBAC i stället för åtkomstpolicyer, mjuk radering i 90 dagar och SKU Standard, ' +
-      'alltså ingen HSM. Rensningsskyddet är inte påslaget, så en raderad hemlighet kan rensas bort ' +
-      'för gott innan de 90 dagarna gått. Valvet nås över internet och skyddas av inloggning och ' +
-      'roller, inte av nätverket.',
+      'Valvet har RBAC i stället för åtkomstpolicyer, mjuk radering i 90 dagar och SKU Standard. ' +
+      'Oavsett SKU lämnas en hemlighet ut i klartext till den som får läsa den; det är nycklar och ' +
+      'inte hemligheter som kan stanna i en HSM, och pepparn är en hemlighet. Rensningsskyddet är ' +
+      'inte påslaget, så en raderad hemlighet kan rensas bort för gott innan de 90 dagarna gått. ' +
+      'Valvet nås över internet och skyddas av inloggning och roller, inte av nätverket.',
     holdsWhile: [
       { file: 'infra/azure/keyvault.bicep', contains: 'enableRbacAuthorization: true' },
       { file: 'infra/azure/keyvault.bicep', contains: 'enableSoftDelete: true' },
@@ -1230,8 +1282,11 @@ export const CURRENTLY = {
     holdsWhile: [
       NO_VAULT_AUDIT_LOG,
       NO_PURGE_PROTECTION,
+      // Att pepparn inte stannar i en HSM vaktas av att den lämnar valvet som
+      // miljövariabel. SKU:n vaktas inte här (granskningen av 11g, M9): Premium
+      // lägger inte en hemlighet i en HSM, bara nycklar, så en ändrad SKU säger
+      // ingenting om pepparn.
       ...PEPPER_FROM_VAULT,
-      VAULT_SKU_STANDARD,
       { file: 'infra/azure/app.bicep', contains: 'scale: { minReplicas: 1, maxReplicas: 1 }' },
       {
         file: 'infra/azure/app.bicep',

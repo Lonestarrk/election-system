@@ -1447,12 +1447,10 @@ th {
 .tl-move,
 .tl-pop,
 .tl-grow,
-.tl-turn,
 .tl-emerge {
   transform-box: fill-box;
 }
 
-.tl-turn,
 .tl-emerge {
   transform-origin: center;
 }
@@ -1522,10 +1520,6 @@ th {
   .tl-scene:not(.tl-still) .tl-draw {
     animation-name: tl-draw;
     animation-timing-function: ease-out;
-  }
-
-  .tl-scene:not(.tl-still) .tl-turn {
-    animation-name: tl-turn;
   }
 
   .tl-scene:not(.tl-still) .tl-emerge {
@@ -1655,12 +1649,6 @@ th {
 @keyframes tl-draw {
   from {
     stroke-dashoffset: 1;
-  }
-}
-
-@keyframes tl-turn {
-  from {
-    transform: rotate(-150deg);
   }
 }
 

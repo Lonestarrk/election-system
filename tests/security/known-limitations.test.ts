@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CHECKABLE_LIMITATIONS, KNOWN_LIMITATIONS } from '@/lib/known-limitations'
+import { visibleText } from '../page-text'
 
 /**
  * ETT TEST SOM FAILAR NÄR SYSTEMET BLIR BÄTTRE.
@@ -189,23 +190,13 @@ describe('arkitektursidan läser listan i stället för att upprepa den', () => 
     return [...seen]
   }
 
-  /**
-   * Texten som en läsare skulle se, ungefär: utan taggar, med `{' '}` och
-   * hopfogade strängar som ett enda mellanslag respektive en sträng, och med
-   * radbrytningar och indrag som ett mellanslag.
-   *
-   * Tidigare jämfördes bara formen `<td>Rubrik</td>`. Listans egen form är
-   * `<td><strong>…</strong></td>`, och en rubrik som radbryts i JSX hade inte
-   * heller hittats. Båda hade alltså kunnat stå hårdkodade utan att testet sa
-   * något.
+  /*
+   * Rubrikerna söks i texten som en läsare ungefär ser, `visibleText` i
+   * tests/page-text.ts. Tidigare jämfördes bara formen `<td>Rubrik</td>`.
+   * Listans egen form är `<td><strong>…</strong></td>`, och en rubrik som
+   * radbryts i JSX hade inte heller hittats. Båda hade alltså kunnat stå
+   * hårdkodade utan att testet sa något.
    */
-  function visibleText(source: string): string {
-    return source
-      .replace(/(['"])\s*\+\s*\1/g, '')
-      .replace(/\{\s*(['"])\s*\1\s*\}/g, ' ')
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/\s+/g, ' ')
-  }
 
   it('tabellen renderas av en enda fil, och den läser listan', () => {
     const renderers = files.filter((file) => read(file).includes('KNOWN_LIMITATIONS.map('))

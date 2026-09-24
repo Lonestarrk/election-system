@@ -50,7 +50,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   /**
    * KUVERTMODELLENS BEGRÄNSNINGAR.
    *
-   * De nio första posterna gäller modellen med dubbla kuvert och är sanna i
+   * De elva första posterna gäller modellen med dubbla kuvert och är sanna i
    * koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
    * med röstintyg och blinda signaturer, som ingen sida lägger röster i sedan
    * uppgift 14 men vars rutter och tabeller finns kvar, eller gäller oavsett
@@ -114,8 +114,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * kuvert som validerats. Med riktig BankID kan den som bara kan skriva i
    * röstlängden därför inte längre lägga in en röst för någon som inte skrivit
    * under. Den som kan skriva i röstdatabasen kan än så länge byta ut ett
-   * chiffer (spec 4.6, förbehåll 4). De fyra första posterna nedan är det som
-   * kedjan inte ger, och den femte är priset för att den lagras.
+   * chiffer (spec 4.6, förbehåll 4), och det står sedan granskningen av 11g
+   * som en egen post. De fem första posterna nedan är det som kedjan inte ger,
+   * den sjätte är priset för att den lagras, och den sjunde gäller demons
+   * lösenfraser.
    */
   {
     id: 'operator-can-remove-or-restore-envelope',
@@ -123,10 +125,8 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     why:
       'Med riktig BankID prövas varje underskrift mot BankID:s rot och mot väljarens identitet, och ' +
       'stängningen flyttar bara de kuvert som prövats, så den som kan skriva i röstlängden kan inte ' +
-      'längre förfalska en ny. Det gäller röstlängden. Den som kan skriva i röstdatabasen kan än så ' +
-      'länge byta ut ett chiffer: före infogningen, med en rad som bär ett äkta kuverts hash men ett ' +
-      'annat chiffer och som infogningen hoppar över, eller efter stängningen, när ingenting ' +
-      'kontrollerar urnan. I demon kan den som driver systemet fortfarande förfalska, eftersom ' +
+      'längre förfalska en ny. Det gäller röstlängden och inte röstdatabasen, som har en egen post ' +
+      'nedan. I demon kan den som driver systemet fortfarande förfalska, eftersom ' +
       'attrappen utfärdar certifikaten själv. Men en äkta underskrift går att ta bort, och ' +
       'en väljares tidigare äkta kuvert går att lägga tillbaka i stället för hennes senaste. ' +
       'Räknaren som visar vilket kuvert som är det senaste lagras i samma databas, och den som ' +
@@ -144,6 +144,38 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         contains: 'castSequence: vote.castSequence,',
       },
       { file: 'prisma/voters/schema.prisma', contains: 'castSequence Int @map("cast_sequence")' },
+    ],
+  },
+  /**
+   * FLYTTAD UR POSTEN OVAN I GRANSKNINGEN AV 11g (M11).
+   *
+   * Förbehållet stod som en bisats i posten om den som driver systemet, fast
+   * det gäller något annat: inte röstlängden, där underskriften skyddar, utan
+   * röstdatabasen, där den inte gör det. Som bisats hade det ingen egen markör
+   * och syntes inte på egen hand i listan.
+   */
+  {
+    id: 'votes-db-writer-can-swap-ciphertext',
+    title: 'Den som kan skriva i röstdatabasen kan byta ut ett chiffer',
+    why:
+      'Underskriften och kedjan skyddar det yttre kuvertet i röstlängden, inte chiffret i ' +
+      'röstdatabasen. Före infogningen kan den som skriver i votes_db lägga en rad med ett äkta ' +
+      'kuverts chifferhash men ett annat chiffer, och infogningen hoppar då över det äkta, eftersom ' +
+      'den hoppar över rader som redan finns. Stängningen räknar bara rader och svarar ändå closed. ' +
+      'Efter stängningen kontrollerar ingenting urnan, och kuvertroten går inte att räkna om när ' +
+      'signaturerna är raderade. Uppgift 11d ska läsa tillbaka varje flyttat chiffer och jämföra det ' +
+      'byte för byte med det validerade, och uppgift 12b ska räkna om en urnrot som publiceras vid ' +
+      'stängningen.',
+    stillTrueIf: [
+      // Infogningen hoppar över rader som redan finns ...
+      { file: 'src/orchestration/close-election.usecase.ts', contains: 'skipDuplicates: true,' },
+      // ... och det enda stängningen gör med resultatet är att räkna raderna.
+      // Läser den tillbaka varje flyttat chiffer ändras just den här raden, också
+      // om `skipDuplicates` står kvar, och posten ska ses över.
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: 'const moved = await votesDb.encryptedVote.count({ where: { ballotId: { in: ballotIds } } })',
+      },
     ],
   },
   {
@@ -230,14 +262,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'mellan bankerna och alltså peka ut vem som utfärdat certifikatet. Den som har både databasen ' +
       'och pepparn öppnar varje kedja och får namn och personnummer för alla som har röstat och ' +
       'ännu inte fått sitt kuvert skalat, utan en enda hashning. Det är mer än röstlängden ger i ' +
-      'dag: identitetshashen låter den som har pepparn pröva ett personnummer i taget, och namnen ' +
-      'finns ingen annanstans i databasen. Det gäller också den som ska granska underskrifterna: ' +
-      'för att pröva kedjorna mot BankID:s rot behöver granskaren pepparn, och får då också veta vem ' +
-      'som röstat. I Azure ligger pepparn i Key Vault, och den som får läsa valvet får den. Appen ' +
-      'hämtar den när containern startar och har den i minnet så länge den kör, så den som tagit ' +
-      'sig in i appen har den också. Kedjan raderas med raden vid skalningen, men en säkerhetskopia ' +
-      'från före stängningen har den kvar, och pepparn, som distributionen inte byter, öppnar den ' +
-      'också där.',
+      'dag. Där går identitetshasharna visserligen också att vända med pepparn, genom att alla ' +
+      'tänkbara personnummer prövas, omkring 4·10⁷ à 37 ms eller ungefär 17 processordygn, som går ' +
+      'att dela upp, men namnen finns ingen annanstans i databasen. Också den som ska granska ' +
+      'underskrifterna får namnen: för att pröva kedjorna mot BankID:s rot behöver granskaren ' +
+      'pepparn, och får då också veta vem som röstat. I Azure ligger pepparn i Key Vault, och den ' +
+      'som får läsa valvet får den. Appen får den som miljövariabel när containern startar och har ' +
+      'den i minnet så länge den kör, så den som tagit sig in i appen har den också. Kedjan raderas ' +
+      'med raden vid skalningen, men en säkerhetskopia från före stängningen har den kvar, och ' +
+      'pepparn, som distributionen bara skriver när den saknas i valvet, öppnar den också där.',
     stillTrueIf: [
       // Kedjans nyckel härleds ur pepparn. Kom den i stället från något som
       // servern inte bär, till exempel förtroendemännens andelar, ändrades raden.
@@ -247,6 +280,44 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       // I Azure kommer pepparn ur valvet och blir en miljövariabel i appen.
       // Stannade den i en HSM, som räknade åt appen, ändrades raden.
       { file: 'infra/azure/app.bicep', contains: "{ name: 'IDENTITY_PEPPER', secretRef: 'identity-pepper' }" },
+      // Distributionen skriver pepparn bara när den saknas i valvet, och den
+      // stoppar när den inte kan avgöra om den finns. Före b0a94dc gjorde Git
+      // Bash om sökvägen till hemligheten, kontrollen svarade alltid nej, och en
+      // omkörning skrev över pepparn (granskningen av 11g, M3 och V2).
+      { file: 'infra/azure/deploy.sh', contains: 'if secret_exists identity-pepper; then' },
+      { file: 'infra/azure/deploy.sh', contains: '*) die "Kunde inte avgöra om hemligheten $1 finns: $out" ;;' },
+      { file: 'infra/azure/deploy.sh', contains: 'export MSYS_NO_PATHCONV=1' },
+    ],
+  },
+  /**
+   * NY I GRANSKNINGEN AV 11g (E3).
+   *
+   * Azure-uppsättningen kör i demoläget, och demovalets andelar är krypterade
+   * med tre fasta fraser. Posten säger vad det betyder där: lösenfraserna, som
+   * spec 4.5 bygger skyddet av andelarna på, skyddar ingenting i demon.
+   */
+  {
+    id: 'demo-trustee-passphrases-known',
+    title: 'I demoläget är förtroendemännens lösenfraser kända',
+    why:
+      'Demovalets tre andelar är krypterade med tre fasta fraser, så att en och samma person kan ' +
+      'spela alla tre förtroendemännen. Fraserna står i repot, i prisma/seed.ts, och därmed i ' +
+      'imagen, där prisma kopieras in, och seedningen skriver ut dem varje gång appen startar, i ' +
+      'Azure alltså i Log Analytics. Den som når röstdatabasen, med adressen ur valvet eller som ' +
+      'administratör, kan då öppna andelarna och dekryptera varje chiffer hen kommer åt, inte bara ' +
+      'summan. Lösenfraserna skyddar alltså ingenting för demovalet. Uppgift 17 ska få appen att vägra ' +
+      'starta i skarpt läge med de kända fraserna.',
+    stillTrueIf: [
+      // Fraserna står i seedningen ...
+      { file: 'prisma/seed.ts', contains: "'demo-fortroendeman-ett'," },
+      // ... som skriver ut dem vid varje körning ...
+      {
+        file: 'prisma/seed.ts',
+        contains: 'TRUSTEE_PASSPHRASES.map((phrase, index) => `  ${index + 1}. ${phrase}`)',
+      },
+      // ... och körs vid varje start, med seedningen kopierad in i imagen.
+      { file: 'docker/entrypoint.sh', contains: 'npx tsx prisma/seed.ts' },
+      { file: 'Dockerfile', contains: 'COPY --from=builder /app/prisma ./prisma' },
     ],
   },
   {

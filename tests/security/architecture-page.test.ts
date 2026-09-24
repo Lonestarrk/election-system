@@ -19,6 +19,7 @@ import {
 } from '@/app/architecture/code-facts'
 import { MOMENTS } from '@/app/architecture/timeline/moments'
 import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
+import { visibleText } from '../page-text'
 import { vaultClaimProblems } from '../vault-claims'
 
 /**
@@ -72,8 +73,10 @@ function sourceFilesUnder(path: string, { skipPage }: { skipPage: boolean }): st
     // Migreringar och scheman granskas också: en trigger står i en .sql-fil.
     // Bicep-filerna under infra/azure granskas sedan uppgift 11g, eftersom
     // sidan påstår saker om Azure-uppsättningen, bland annat att ingen av
-    // mallarna slår på valvets granskningslogg.
-    return /\.(tsx?|sql|prisma|bicep)$/.test(child) ? [child] : []
+    // mallarna slår på valvets granskningslogg. Skripten, som deploy.sh,
+    // granskas sedan granskningen av 11g (M7): samma sak kan göras med az i
+    // ett skript som med en resurs i Bicep.
+    return /\.(tsx?|sql|prisma|bicep|sh)$/.test(child) ? [child] : []
   })
 }
 
@@ -113,19 +116,211 @@ function check(marker: Marker): { holds: boolean; detail: string } {
     : { holds: false, detail: `${marker.matches} finns nu i ${offenders.join(', ')}` }
 }
 
-function expectFactHolds(label: string, fact: CodeFact): void {
+/**
+ * HUVUDSIDANS MENINGAR OM VALVET I DAG, KNUTNA TILL SAMMA MARKÖRER
+ * (granskningen av 11g, V3).
+ *
+ * Huvudsidan får inte importera code-facts.ts: påståendena där är skrivna med
+ * fackord, och fackordstestet nedan hade gått rött. Huvudsidan säger därför
+ * samma sak med egna ord, och den här listan knyter varje sådan mening till
+ * påståendena på Tekniska detaljer som bär markörerna. Går en markör röd visar
+ * felmeddelandet både den tekniska texten och huvudsidans meningar, så att
+ * ingen av dem blir kvar och lovar för mycket.
+ *
+ * Citaten ska stå ordagrant i sina filer, som en läsare ser dem. Ett citat som
+ * inte längre finns betyder att meningen skrivits om, och då ska listan följa
+ * med; testet nedan kräver det.
+ */
+const MAIN_PAGE_VAULT_CLAIMS: ReadonlyArray<{
+  file: string
+  quote: string
+  facts: ReadonlyArray<keyof typeof CURRENTLY>
+}> = [
+  // Svagheterna.
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Uppsättningen i Azure slår i dag inte på någon logg över vem som läser valvet',
+    facts: ['vaultNoAuditLog'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote:
+      'Systemet får de hemligheter det använder ur valvet när det startar och har dem sedan i minnet, också nycklarna till båda urnorna',
+    facts: ['vaultToEnvironment', 'appHoldsEverything'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Resten, bland dem huvudnyckeln till båda urnorna, kan det hämta ur valvet när som helst',
+    facts: ['vaultAccess', 'vaultPgAdmin'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'och det gör också den som driver systemet i Azure',
+    facts: ['azureOwner'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Att urnorna har var sin nyckel skyddar bara mot att en av nycklarna läcker',
+    facts: ['vaultDatabaseUrls', 'appHoldsEverything'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Starkare vore ett valv som gjorde fingeravtrycken själv, utan att lämna ut hemligheten. Det är inte byggt',
+    facts: ['azureNotBuilt'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'står hemligheterna i en textfil bredvid programmet',
+    facts: ['secretsInFilesLocally'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Valvet finns bara när systemet körs i Azure',
+    facts: ['secretsInFilesLocally', 'vaultToEnvironment'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Demon körs också i Azure, med hemligheterna i valvet',
+    facts: ['azureRunsDemo', 'vaultToEnvironment'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote:
+      'Men lösenorden som låser nyckelns delar i demovalet står i koden och skrivs ut varje gång systemet startar',
+    facts: ['azureRunsDemo'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Hemligheten i valvet gör fingeravtryck av personnummer',
+    facts: ['vaultPepper'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'Hemligheten låser också upp intygen i de yttre kuverten',
+    facts: ['vaultPepper'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'både i urnan medan röstningen pågår och i en kopia av urnan från före stängningen',
+    facts: ['azureBackups'],
+  },
+  {
+    file: 'src/app/architecture/sections/Weaknesses.tsx',
+    quote: 'behöver då hemligheten ur valvet, som också visar namnen på dem som röstat',
+    facts: ['vaultPepper'],
+  },
+  // Förklaringen ovanför tidslinjen.
+  {
+    file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
+    quote: 'Valvet förvarar systemets egna hemligheter i Microsofts moln, Azure, där systemet körs',
+    facts: ['vaultToEnvironment'],
+  },
+  {
+    file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
+    quote: 'I valvet finns hemligheten som gör ditt personnummer till ett fingeravtryck',
+    facts: ['vaultPepper'],
+  },
+  {
+    file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
+    quote: 'var sin nyckel till de två urnorna, så att den som får tag i den ena inte ens kommer in i den andra',
+    facts: ['vaultDatabaseUrls'],
+  },
+  {
+    file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
+    quote: 'Samma valv har också en huvudnyckel till båda urnorna, och systemet kan läsa den',
+    facts: ['vaultPgAdmin', 'vaultAccess'],
+  },
+  {
+    file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
+    quote: 'Nyckelns tre delar finns inte i valvet',
+    facts: ['sharesNotInVault', 'electionKeyNotStored'],
+  },
+  {
+    file: 'src/app/architecture/sections/TwoEnvelopes.tsx',
+    quote: 'märket i hörnet är ditt intyg från BankID, inlåst med en hemlighet ur valvet',
+    facts: ['vaultPepper'],
+  },
+  // Tidslinjen och momentens anteckningar.
+  {
+    file: 'src/app/architecture/timeline/Timeline.tsx',
+    quote: 'Systemet får de hemligheter det använder ur valvet när det startar och har dem sedan i minnet',
+    facts: ['vaultToEnvironment'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'Systemets egna hemligheter förvaras i ett valv',
+    facts: ['vaultToEnvironment'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'Låsets nyckel finns inte i valvet, varken hel eller i delar',
+    facts: ['sharesNotInVault', 'electionKeyNotStored'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'Systemet gör om ditt personnummer till ett fingeravtryck med en hemlighet ur valvet',
+    facts: ['vaultPepper'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'låser sedan in intyget i det yttre kuvertet med en nyckel som görs av samma hemlighet ur valvet',
+    facts: ['vaultPepper'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'Hemligheten ur valvet låser upp intygen',
+    facts: ['vaultPepper'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'för till dem har valvet ingen nyckel',
+    facts: ['sharesNotInVault', 'electionKeyNotStored'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'I en kopia av urnan från före stängningen låser den däremot fortfarande upp namnen',
+    facts: ['azureBackups'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'Valvet har ingen del av nyckeln till summan',
+    facts: ['sharesNotInVault'],
+  },
+  {
+    file: 'src/app/architecture/timeline/moments.ts',
+    quote: 'och de finns inte heller i valvet',
+    facts: ['sharesNotInVault'],
+  },
+]
+
+/** Huvudsidans meningar som bygger på ett påstående, som de ska stå i ett felmeddelande. */
+function mainPageQuotesFor(id: string): string[] {
+  return MAIN_PAGE_VAULT_CLAIMS.filter((claim) =>
+    (claim.facts as readonly string[]).includes(id),
+  ).map((claim) => `${claim.file}: "${claim.quote}"`)
+}
+
+/** Felmeddelandet när en markör inte längre håller, med huvudsidans meningar när det finns några. */
+function factFailureMessage(label: string, fact: CodeFact, detail: string, mainPage: string[]): string {
+  return (
+    `\n\n  ARKITEKTURSIDANS PÅSTÅENDE "${label}" STÄMMER INTE LÄNGRE.\n\n` +
+    `  Sidan säger: "${fact.text}"\n` +
+    (mainPage.length > 0
+      ? `  Huvudsidan säger samma sak med egna ord:\n${mainPage.map((quote) => `    ${quote}\n`).join('')}`
+      : '') +
+    `  Men ${detail}.\n\n` +
+    '  Har koden blivit bättre: skriv om påståendet i src/app/architecture/code-facts.ts,\n' +
+    (mainPage.length > 0 ? '  och meningarna på huvudsidan ovan,\n' : '') +
+    '  och titta på sidan i en webbläsare. Har du bara flyttat kod: peka om markören.\n'
+  )
+}
+
+function expectFactHolds(label: string, fact: CodeFact, mainPage: string[] = []): void {
   expect(fact.holdsWhile.length, `${label} saknar markör`).toBeGreaterThan(0)
 
   for (const marker of fact.holdsWhile) {
     const { holds, detail } = check(marker)
-    expect(
-      holds,
-      `\n\n  ARKITEKTURSIDANS PÅSTÅENDE "${label}" STÄMMER INTE LÄNGRE.\n\n` +
-        `  Sidan säger: "${fact.text}"\n` +
-        `  Men ${detail}.\n\n` +
-        '  Har koden blivit bättre: skriv om påståendet i src/app/architecture/code-facts.ts,\n' +
-        '  och titta på sidan i en webbläsare. Har du bara flyttat kod: peka om markören.\n',
-    ).toBe(true)
+    expect(holds, factFailureMessage(label, fact, detail, mainPage)).toBe(true)
   }
 }
 
@@ -170,23 +365,37 @@ function withoutComments(source: string): string {
     .replace(/(^|[^:'"`])\/\/.*$/gm, '$1')
 }
 
-/**
- * Texten som en läsare ungefär ser, som i tests/security/known-limitations.test.ts:
- * utan taggar, med hopfogade strängar som en sträng och med `{' '}` och
- * radbrytningar som ett mellanslag. Meningar som står uppdelade på flera rader
- * i källan blir då hela igen.
- */
-function visibleText(source: string): string {
-  return source
-    .replace(/(['"])\s*\+\s*\1/g, '')
-    .replace(/\{\s*(['"])\s*\1\s*\}/g, ' ')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-}
-
 describe('arkitektursidans påståenden om koden', () => {
   it.each(Object.entries(CURRENTLY))('"%s" stämmer fortfarande', (id, fact) => {
-    expectFactHolds(id, fact)
+    expectFactHolds(id, fact, mainPageQuotesFor(id))
+  })
+
+  it('huvudsidans meningar om valvet står ordagrant i sina filer och bygger på påståenden som finns', () => {
+    /**
+     * Listan ovan är värd något bara om citaten fortfarande är sidans text:
+     * ett citat som inte finns kvar vaktar ingenting. Och varje citat ska peka
+     * på ett påstående med markörer.
+     */
+    expect(MAIN_PAGE_VAULT_CLAIMS.length).toBeGreaterThan(20)
+    for (const claim of MAIN_PAGE_VAULT_CLAIMS) {
+      const text = visibleText(withoutComments(read(claim.file)))
+      expect(text.includes(claim.quote), `${claim.file} säger inte längre "${claim.quote}"`).toBe(true)
+      expect(claim.facts.length, claim.quote).toBeGreaterThan(0)
+      for (const id of claim.facts) expect(Object.keys(CURRENTLY), claim.quote).toContain(id)
+    }
+  })
+
+  it('en röd markör visar huvudsidans mening bredvid den tekniska texten', () => {
+    // Kontrasten: meddelandet som testet ovan skriver när en markör fallerar.
+    const message = factFailureMessage(
+      'vaultNoAuditLog',
+      CURRENTLY.vaultNoAuditLog,
+      'mönstret finns nu i infra/azure/deploy.sh',
+      mainPageQuotesFor('vaultNoAuditLog'),
+    )
+    expect(message).toContain(CURRENTLY.vaultNoAuditLog.text)
+    expect(message).toContain('Uppsättningen i Azure slår i dag inte på någon logg över vem som läser valvet')
+    expect(message).toContain('src/app/architecture/sections/Weaknesses.tsx')
   })
 
   it.each(PHASES)('fasen $phase: kolumnen "I koden i dag" stämmer fortfarande', (row) => {
@@ -217,9 +426,18 @@ describe('arkitektursidans påståenden om koden', () => {
     // det hade påståendet att ingen mall slår på valvets granskningslogg
     // hållit också den dag en mall gör det, eftersom ingen fil lästes.
     expect(sourceFilesUnder('infra/azure', { skipPage: true })).toEqual(
-      expect.arrayContaining(['infra/azure/keyvault.bicep', 'infra/azure/app.bicep', 'infra/azure/db-init.sql']),
+      expect.arrayContaining([
+        'infra/azure/keyvault.bicep',
+        'infra/azure/app.bicep',
+        'infra/azure/db-init.sql',
+        'infra/azure/deploy.sh',
+      ]),
     )
     expect(check({ nowhereIn: 'infra/azure', matches: /keyVaultUrl/ }).holds).toBe(false)
+    // Och skriptet läses: ett mönster som bara står i deploy.sh fäller en
+    // katalogmarkör. Utan det hade en granskningslogg som slogs på med az gått
+    // förbi påståendet att ingen logg slås på.
+    expect(check({ nowhereIn: 'infra/azure', matches: /secret_exists\(\) \{/ }).holds).toBe(false)
 
     // Schemamönstren håller sig inom sin modell: PendingVote har ett
     // voterStatusId, och det får inte räknas som ett fält i AuditEvent.
@@ -695,7 +913,11 @@ describe('huvudsidan talar vardagsspråk', () => {
      * tests/vault-claims.ts, och de prövas här mot texten i varje fil som
      * huvudsidan renderar, inte bara mot momenten.
      */
-    expect(vaultClaimProblems(visibleText(withoutComments(read(file)))), file).toEqual([])
+    // Citattecknen blir mellanslag. I en .ts-fil slutar en text med punkt och
+    // citattecken, och utan mellanslaget hade den slagits ihop med nästa sträng
+    // till en enda mening, med valvet ur ett moment och kopplingen ur nästa.
+    const text = visibleText(withoutComments(read(file))).replace(/['"`]/g, ' ')
+    expect(vaultClaimProblems(text), file).toEqual([])
   })
 
   it('valvet lyser i scenen bara när momentet säger det, och scenen ritar aldrig en nyckel i det', () => {
@@ -720,6 +942,27 @@ describe('huvudsidan talar vardagsspråk', () => {
       const end = scene.indexOf('\nfunction ', start + name.length)
       expect(scene.slice(start, end === -1 ? undefined : end), name).not.toMatch(/<Key\b|tl-key/)
     }
+  })
+
+  it('valvets tider i scenen finns för exakt de moment som tänder valvet, utom moment 1', () => {
+    /**
+     * Granskningen av 11g, M12: tabellen hade ett tyst förval, så att ett nytt
+     * moment som tände valvet fick en gissad tid. Nu kastar scenen hellre, och
+     * det här testet säger vilket moment som saknas innan scenen gör det.
+     * Moment 1 har ingen tid, eftersom valvet görs i ordning där och ingen
+     * hemlighet används. Valvets ratt vrids inte heller längre (M1).
+     */
+    const scene = read('src/app/architecture/timeline/TimelineScene.tsx')
+    const table = scene.match(/const VAULT_USE_AT[^=]*=\s*\{([^}]*)\}/)
+    expect(table, 'VAULT_USE_AT saknas').not.toBeNull()
+
+    const timed = [...table![1]!.matchAll(/(\d+)\s*:/g)].map((match) => Number(match[1]))
+    const lit = MOMENTS.filter((entry) => entry.vault?.inScene === true && entry.number !== 1).map(
+      (entry) => entry.number,
+    )
+    expect(timed.sort((a, b) => a - b)).toEqual(lit)
+    expect(scene).not.toMatch(/VAULT_USE_AT\[[^\]]*\]\s*\?\?/)
+    expect(scene).not.toMatch(/kind="turn"|tl-turn/)
   })
 
   it('kontrollen hittar ett fackord, också i en sträng eller i JSX', () => {

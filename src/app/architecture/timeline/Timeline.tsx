@@ -75,7 +75,8 @@ export function Timeline() {
       <p className="muted small">
         Välj ett moment för att se vad som händer med din röst. Ditt kuvert är markerat fram till
         att namnen tas bort. Valvet, där systemet förvarar sina hemligheter, lyser upp i de moment
-        där det används.
+        där en av dem används. Systemet får de hemligheter det använder ur valvet när det startar
+        och har dem sedan i minnet, så bilden visar när de används, inte att valvet öppnas.
       </p>
       <p className="muted small" style={{ marginBottom: 0 }}>
         Tidslinjen visar hur valet är tänkt att fungera, och allt är inte byggt än. Vad som finns i

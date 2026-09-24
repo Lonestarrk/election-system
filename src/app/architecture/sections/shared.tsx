@@ -41,6 +41,10 @@ export type PageLimitations = {
   demoIssuer: KnownLimitation
   /** Det gamla flödets signeringsnycklar, som ligger i röstlängden och inte i valvet. */
   signingKeys: KnownLimitation
+  /** Förbehållet om röstdatabasen, med en egen post sedan granskningen av 11g (M11). */
+  swapCiphertext: KnownLimitation
+  /** Demons lösenfraser är kända (granskningen av 11g, E3). */
+  demoPassphrases: KnownLimitation
 }
 
 export function pageLimitations(): PageLimitations {
@@ -55,6 +59,8 @@ export function pageLimitations(): PageLimitations {
     pepperHolder: limitation('pepper-holder-reads-voter-names'),
     demoIssuer: limitation('mock-issues-certificates-in-demo'),
     signingKeys: limitation('signing-keys-in-database'),
+    swapCiphertext: limitation('votes-db-writer-can-swap-ciphertext'),
+    demoPassphrases: limitation('demo-trustee-passphrases-known'),
   }
 }
 

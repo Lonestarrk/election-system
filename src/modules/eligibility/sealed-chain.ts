@@ -61,11 +61,13 @@ import { splitDerSequences } from './bankid/der-reader'
  * VAD KRYPTERINGEN INTE SKYDDAR MOT. Den som har pepparn kan öppna varje kedja,
  * och får då personnummer och namn för varje väljare med ett liggande kuvert
  * utan att behöva räkna fram en enda hash. Det är mer än röstlängden ger den
- * som har pepparn, som bara kan pröva ett personnummer i taget och aldrig får
- * namnet. Kedjan raderas med raden vid skalningen, så efter stängningen finns
- * ingenting kvar att öppna i den levande databasen. En säkerhetskopia från före
- * stängningen har kedjorna kvar, och pepparn, som distributionen inte byter,
- * öppnar dem också där. Det står som begränsningen
+ * som har pepparn. Där går identitetshasharna att vända genom att alla
+ * tänkbara personnummer prövas, ungefär 17 processordygn som går att dela
+ * upp, men namnet står inte där. Kedjan raderas med raden vid skalningen, så
+ * efter stängningen finns ingenting kvar att öppna i den levande databasen.
+ * En säkerhetskopia från före stängningen har kedjorna kvar, och pepparn, som
+ * distributionen bara skriver när den saknas i valvet, öppnar dem också där.
+ * Det står som begränsningen
  * `pepper-holder-reads-voter-names` i src/lib/known-limitations.ts, och dess
  * markör är raden i `chainKey` som härleder nyckeln ur pepparn.
  */

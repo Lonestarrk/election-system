@@ -6,7 +6,7 @@ import { LimitationReference, listItemStyle, type PageLimitations } from './shar
  * med listans egen rubrik.
  */
 export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitations }) {
-  const { link, bankIdOrder, removal, dealer } = limitations
+  const { link, bankIdOrder, removal, swapCiphertext, dealer } = limitations
 
   return (
     <section className="card" aria-labelledby="inte-ger">
@@ -31,11 +31,11 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
           Med riktig BankID prövas varje signatur mot BankID:s rotcertifikat och varje certifikat
           mot väljarens identitetshash, och stängningen flyttar exakt de kuvert som prövats, så den
           som kan skriva i röstlängden, voters_db, kan inte lägga in en röst för någon som inte
-          skrivit under. Det gäller inte röstdatabasen: den som kan skriva i votes_db kan än så länge
-          byta ut ett chiffer, före infogningen med en rad som bär ett äkta kuverts hash men ett annat
-          chiffer, eller efter stängningen, när ingenting kontrollerar urnan (spec 4.6, förbehåll 4).
-          En granskare med åtkomst under valideringen
-          kan pröva varje underskrift mot roten, men bara med pepparn, som i Azure ligger i valvet:
+          skrivit under. Det gäller inte röstdatabasen, votes_db, där den som kan skriva än så länge
+          kan byta ut ett chiffer, före infogningen eller efter stängningen (spec 4.6, förbehåll 4);
+          det ska uppgift 11d och 12b stänga. <LimitationReference entry={swapCiphertext} /> En
+          granskare med åtkomst under valideringen kan pröva varje underskrift mot roten, men bara
+          med pepparn, som i Azure ligger i valvet:
           kedjorna är krypterade med en nyckel ur den, och samma hemlighet öppnar namnen och
           personnumren i dem. Däremot kan ett kuvert raderas, och ett äldre äkta kuvert kan läggas
           tillbaka med sin räknare, eftersom räknaren lagras i samma databas. Väljaren ser det på sin

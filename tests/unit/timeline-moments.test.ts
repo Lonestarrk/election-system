@@ -263,7 +263,10 @@ describe('valvet i tidslinjen', () => {
     expect(text).toMatch(/hemligheter förvaras i ett valv/)
     expect(text).toMatch(/fingeravtryck/)
     expect(text).toMatch(/Låsets nyckel finns inte i valvet, varken hel eller i delar/)
-    expect(text).toMatch(/delarna har förtroendepersonerna/)
+    // Inte att förtroendepersonerna HAR delarna (granskningen av 11g, M6): de
+    // ligger i röstdatabasen, var och en låst med sin förtroendepersons lösenord.
+    expect(text).toMatch(/varje del är inlåst med sin förtroendepersons eget lösenord/)
+    expect(text).not.toMatch(/delarna har förtroendepersonerna/)
   })
 
   it('inloggningen: ett fingeravtryck med hemligheten, och röstlängden har inte numret', () => {
@@ -361,6 +364,57 @@ describe('valvet håller aldrig förtroendepersonernas nycklar och tar aldrig bo
       'Förtroendepersonerna lämnar var sin del av nyckeln.',
     ]
     for (const sentence of allowed) {
+      expect(vaultClaimProblems(sentence), sentence).toEqual([])
+    }
+  })
+
+  it('reglerna hittar granskningens naturliga felformuleringar', () => {
+    /**
+     * Granskningen av 11g skrev fjorton meningar som en författare kunde tänkas
+     * skriva, och tre som ser negerade ut men påstår motsatsen. Med de första
+     * reglerna passerade tolv av de fjorton och alla tre. Ingen av dem får
+     * passera igen. Reglerna fångar fortfarande bara formuleringar som liknar
+     * dessa; se huvudet i tests/vault-claims.ts för vad de inte kan fånga.
+     */
+    const naturalMistakes = [
+      // Valvet håller nycklarna eller delarna.
+      'Valvet håller andelarna till summan.',
+      'I valvet ligger förtroendepersonernas lösenord.',
+      'Valvet förvarar delarna till låset.',
+      'Valvet vaktar låsets tre delar.',
+      'Nyckeln till låset förvaras i valvet.',
+      'Valvet har nyckeln till de inre kuverten.',
+      'Delarna finns i valvet men inte i databasen.',
+      'Förtroendepersonernas delar finns inte i databasen utan i valvet.',
+      // Valvet tar bort kopplingen.
+      'Valvet ser till att ingen kan se vem som röstade på vad.',
+      'Tack vare valvet går det inte att se vilket kuvert som är ditt.',
+      'Valvet skyddar din valhemlighet.',
+      'Efter stängningen raderar valvet namnen.',
+      'Valvet raderar sambandet mellan dig och din röst.',
+      'Valvet skyddar mot att någon kopplar ihop dig med din röst, inte valvet ensamt men nästan.',
+    ]
+    const seeminglyNegated = [
+      'Valvet har inte bara systemets hemligheter utan också förtroendepersonernas delar av nyckeln.',
+      'Det är inte valvet utan raderingen som gör kopplingen omöjlig, men valvet gör den omöjlig i kopiorna.',
+      'Valvet gör kopplingen omöjlig, inte valvet ensamt.',
+    ]
+    for (const sentence of [...naturalMistakes, ...seeminglyNegated]) {
+      expect(vaultClaimProblems(sentence).length, sentence).toBeGreaterThan(0)
+    }
+
+    // Och sidans egna sätt att säga det rätt passerar, också när de nämner
+    // samma saker: delar, lösenord, namnen och kopplingen.
+    const pageSentences = [
+      'Nyckelns tre delar finns inte i valvet.',
+      'Delarna låses upp med förtroendepersonernas egna lösenord, och de finns inte heller i valvet.',
+      'Det är inte valvet utan raderingen som tar bort kopplingen.',
+      'Delarna finns inte i valvet utan i databasen.',
+      'Den som får läsa valvet behöver då bara komma åt urnan med namn, eller en kopia av den, för att få namnen.',
+      'Hemligheten i valvet gör fingeravtryck av personnummer, och med dem och röstlängden går det att se om en viss person står i röstlängden.',
+      'Samma valv har också en huvudnyckel till båda urnorna, och systemet kan läsa den.',
+    ]
+    for (const sentence of pageSentences) {
       expect(vaultClaimProblems(sentence), sentence).toEqual([])
     }
   })

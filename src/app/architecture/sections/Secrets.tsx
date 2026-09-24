@@ -43,7 +43,7 @@ export function Secrets({
    */
   municipality: KnownLimitation
 }) {
-  const { pepperHolder, dealer, demoIssuer, signingKeys } = limitations
+  const { pepperHolder, dealer, demoIssuer, demoPassphrases, signingKeys } = limitations
 
   return (
     <section className="card" aria-labelledby="hemligheterna">
@@ -110,9 +110,11 @@ export function Secrets({
       <ul className="small" style={{ paddingLeft: '1.25rem' }}>
         <li style={listItemStyle}>
           <strong>Den som får läsa valvet får pepparn.</strong> Med den gör hen identitetshashar av
-          personnummer och prövar en person i taget mot röstlängden, där folkbokföringskommunen står
-          bredvid hashen. <LimitationReference entry={municipality} /> Med pepparn och pending_vote
-          får hen dessutom namn och personnummer för alla som har röstat, medan röstningen pågår.{' '}
+          personnummer. En utpekad person prövas med en enda hashning, och hela röstlängden går att
+          vända: omkring 4·10⁷ tänkbara personnummer à 37 ms blir ungefär 17 processordygn, som går
+          att dela upp på många processorer. Bredvid hashen står folkbokföringskommunen.{' '}
+          <LimitationReference entry={municipality} /> Med pepparn och pending_vote får hen dessutom
+          namn och personnummer för alla som har röstat, medan röstningen pågår.{' '}
           {CURRENTLY.azureBackups.text} <LimitationReference entry={pepperHolder} />
         </li>
         <li style={listItemStyle}>
@@ -129,7 +131,7 @@ export function Secrets({
         </li>
         <li style={listItemStyle}>
           <strong>Demon i Azure.</strong> {CURRENTLY.azureRunsDemo.text}{' '}
-          <LimitationReference entry={demoIssuer} />
+          <LimitationReference entry={demoIssuer} /> <LimitationReference entry={demoPassphrases} />
         </li>
         <li style={listItemStyle}>
           <strong>Utanför Azure finns inget valv.</strong> {CURRENTLY.secretsInFilesLocally.text}

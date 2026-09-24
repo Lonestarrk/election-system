@@ -14,9 +14,16 @@ import { LegendIcon } from '../timeline/TimelineScene'
  *
  * Valvet kom till i uppgift 11g, när systemet fick en uppsättning i Azure. Raden
  * om det säger vad det förvarar och, lika tydligt, att nyckelns delar inte finns
- * där: tre delar i samma valv vore inte tre innehavare (spec 4.5). Att urnorna
- * har var sin nyckel gäller den som får tag i en av dem. Systemet har båda, och
- * det står bland svagheterna.
+ * där: tre delar i samma valv vore inte tre innehavare (spec 4.5).
+ *
+ * VAR SIN NYCKEL, OCH VAD DET INTE GER (granskningen av 11g, V1 och M6). Att
+ * urnorna har var sin nyckel gäller den som får tag i en av dem. Samma valv har
+ * administratörens lösenord, som öppnar båda databaserna, och appens identitet
+ * får läsa det. Och uppdelningen skyddar inte kopplingen, som under röstningen
+ * ligger i urnan med namn, alltså i röstlängdens databas, ensam. Delarna av
+ * nyckeln ligger i röstdatabasen, låsta med var sin lösenfras, och inte hos
+ * förtroendepersonerna. Påståendena om valvet här är knutna till markörerna i
+ * code-facts.ts genom listan i tests/security/architecture-page.test.ts.
  */
 export function TwoEnvelopes() {
   return (
@@ -65,8 +72,11 @@ export function TwoEnvelopes() {
             <strong>Valvet</strong> förvarar systemets egna hemligheter i Microsofts moln, Azure, där
             systemet körs. I valvet finns hemligheten som gör ditt personnummer till ett
             fingeravtryck, och var sin nyckel till de två urnorna, så att den som får tag i den ena
-            inte ens kommer in i den andra. Nyckelns tre delar finns inte i valvet. Dem har
-            förtroendepersonerna.
+            inte ens kommer in i den andra. Samma valv har också en huvudnyckel till båda urnorna,
+            och systemet kan läsa den. Uppdelningen skyddar inte heller kopplingen mellan namn och
+            röst, eftersom den under röstningen ligger i urnan med namn ensam. Nyckelns tre delar
+            finns inte i valvet, utan ligger inlåsta i systemet, var och en med sin
+            förtroendepersons eget lösenord.
           </span>
         </li>
       </ul>

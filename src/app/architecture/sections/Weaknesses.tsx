@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import type { KnownLimitation } from '@/lib/known-limitations'
-import { limitationHref, listItemStyle } from './shared'
+import { limitationHref, listItemStyle, TECHNICAL_PATH } from './shared'
 
 /**
  * Vad kuverten inte skyddar mot, på vardagsspråk, med länk till hela listan.
@@ -14,25 +14,30 @@ import { limitationHref, listItemStyle } from './shared'
  * Spec 4.6 kräver att det sägs rakt ut vad underskriften inte skyddar mot.
  * Sedan uppgift 14f prövas den mot BankID:s rot, och sedan dess fixrunda 1
  * flyttar stängningen bara de kuvert som prövats. Med riktigt BankID kan den
- * som bara kan skriva i röstlängden därför inte längre förfalska en röst. Det
- * gäller röstlängden och inte urnan utan namn: den som kan skriva i
- * röstdatabasen kan än så länge byta ut ett kuvert, och ingenting räknas eller
- * kontrolleras i urnan efter stängningen (spec 4.6, förbehåll 4). Kvar är
- * också att den som driver systemet kan ta bort ett äkta kuvert eller lägga
- * tillbaka ett tidigare, att den som granskar underskrifterna behöver pepparn,
- * som också öppnar namnen, och att attrappen i demon utfärdar certifikaten
- * själv. Spec 10 räknar dessutom upp insidern som både kan läsa databasen och
- * kommer åt en enhet. Allt det står här, inte bara på Tekniska detaljer.
+ * som bara kan skriva i urnan med namn, röstlängdens databas, därför inte
+ * längre förfalska en röst. Det gäller inte urnan utan namn: den som kan skriva
+ * i röstdatabasen kan än så länge byta ut ett kuvert, och ingenting räknas
+ * eller kontrolleras i urnan efter stängningen (spec 4.6, förbehåll 4). Det står
+ * som en egen punkt, med en egen post i listan, sedan granskningen av 11g (M11).
+ * Kvar är också att den som driver systemet kan ta bort ett äkta kuvert eller
+ * lägga tillbaka ett tidigare, att den som granskar underskrifterna behöver
+ * pepparn, som också öppnar namnen, och att attrappen i demon utfärdar
+ * certifikaten själv. Spec 10 räknar dessutom upp insidern som både kan läsa
+ * databasen och kommer åt en enhet. Allt det står här, inte bara på Tekniska
+ * detaljer.
  *
  * VALVET (uppgift 11g). Tre punkter säger vad valvet i Azure inte skyddar mot,
  * och varje mening är avgränsad till var den gäller. Den som får läsa valvet
  * får pepparn, och med den namnen i de liggande kuverten, och i en kopia från
- * före stängningen. Systemet har alla hemligheter i minnet medan det kör, och
- * båda urnornas nycklar: att urnorna har var sin nyckel skyddar mot att en av
- * dem läcker, inte mot den som tagit sig in i systemet eller driver det. Och
- * utanför Azure finns inget valv alls. Vad valvet innehåller och inte står på
- * Tekniska detaljer, under Hemligheterna i Azure, med markörer mot
- * Bicep-filerna.
+ * före stängningen. Systemet har valvets alla hemligheter, de flesta i minnet
+ * och resten åtkomliga när som helst, också huvudnyckeln till båda urnorna: att
+ * urnorna har var sin nyckel skyddar mot att en av dem läcker, inte mot den som
+ * tagit sig in i systemet eller driver det. Och utanför Azure finns inget valv
+ * alls. En fjärde punkt säger att förtroendepersonernas lösenord i demon är
+ * kända. Vad valvet innehåller och inte står på Tekniska detaljer, under
+ * Hemligheterna i Azure, med markörer mot mallarna. Meningarna här om hur det
+ * är i dag är knutna till samma markörer genom listan i
+ * tests/security/architecture-page.test.ts.
  *
  * Där en punkt motsvarar en post i listan över kända begränsningar tar sidan
  * emot posten och länkar dit. Tas posten bort kastar uppslaget i page.tsx, och
@@ -43,8 +48,10 @@ export function Weaknesses({
   copies,
   bankIdOrder,
   removal,
+  swapCiphertext,
   pepperHolder,
   demoIssuer,
+  demoPassphrases,
   dealer,
 }: {
   /** link-exists-during-voting */
@@ -53,10 +60,14 @@ export function Weaknesses({
   bankIdOrder: KnownLimitation
   /** operator-can-remove-or-restore-envelope */
   removal: KnownLimitation
+  /** votes-db-writer-can-swap-ciphertext */
+  swapCiphertext: KnownLimitation
   /** pepper-holder-reads-voter-names */
   pepperHolder: KnownLimitation
   /** mock-issues-certificates-in-demo */
   demoIssuer: KnownLimitation
+  /** demo-trustee-passphrases-known */
+  demoPassphrases: KnownLimitation
   /** trusted-dealer */
   dealer: KnownLimitation
 }) {
@@ -78,20 +89,27 @@ export function Weaknesses({
         <li style={listItemStyle}>
           <strong>Den som driver systemet kan ta bort din röst eller lägga tillbaka en tidigare.</strong>{' '}
           Med riktigt BankID prövas varje underskrift mot BankID:s rotcertifikat, och vid
-          stängningen flyttas bara de röster som prövats. Den som bara kan skriva direkt i
-          röstlängden kan därför inte längre lägga in röster för någon som inte skrivit under. Den
-          som kan skriva i urnan utan namn kan däremot än så länge byta ut ett kuvert, och ingenting
-          kontrollerar urnan efter stängningen. Den som granskar kontrollen före stängningen kan pröva
-          varje underskrift själv, men behöver då hemligheten ur valvet, som också visar namnen på dem
-          som röstat. Däremot kan en äkta röst tas bort, och en tidigare röst som du verkligen skrev
-          under kan läggas tillbaka i stället för din senaste. Enheten du röstade från märker det före
-          stängningen: den säger då att rösten har ändrats, eller att ingen röst finns.{' '}
+          stängningen flyttas bara de röster som prövats. Den som bara kan skriva direkt i urnan med
+          namn kan därför inte längre lägga in röster för någon som inte skrivit under. Den som
+          granskar kontrollen före stängningen kan pröva varje underskrift själv, men behöver då
+          hemligheten ur valvet, som också visar namnen på dem som röstat. Däremot kan en äkta röst
+          tas bort, och en tidigare röst som du verkligen skrev under kan läggas tillbaka i stället
+          för din senaste. Enheten du röstade från märker det före stängningen: den säger då att
+          rösten har ändrats, eller att ingen röst finns.{' '}
           <Link href={limitationHref(removal)}>Mer om underskriften</Link>
+        </li>
+        <li style={listItemStyle}>
+          <strong>Den som kan skriva i urnan utan namn kan byta ut ett kuvert.</strong> Underskriften
+          skyddar det yttre kuvertet, inte kuverten i urnan utan namn. Den som kan skriva där kan i
+          dag få ett annat inre kuvert att ligga i ett äkta kuverts ställe, och efter stängningen
+          kontrollerar ingenting urnan.{' '}
+          <Link href={limitationHref(swapCiphertext)}>Mer om urnan utan namn</Link>
         </li>
         <li style={listItemStyle}>
           <strong>Den som kan läsa valvet.</strong> Hemligheten i valvet gör fingeravtryck av
           personnummer, och med dem och röstlängden går det att se om en viss person står i
-          röstlängden och i vilken kommun hen är folkbokförd. Den låser också upp intygen i de yttre
+          röstlängden och i vilken kommun hen är folkbokförd. Med tillräckligt med datorkraft går det
+          att göra för alla i röstlängden på en gång. Hemligheten låser också upp intygen i de yttre
           kuverten, alltså namn och personnummer för alla som har röstat, både i urnan medan
           röstningen pågår och i en kopia av urnan från före stängningen. Den som får läsa valvet
           behöver då bara komma åt urnan med namn, eller en kopia av den, för att få namnen.
@@ -99,13 +117,14 @@ export function Weaknesses({
           <Link href={limitationHref(pepperHolder)}>Mer om hemligheten</Link>
         </li>
         <li style={listItemStyle}>
-          <strong>Systemet har valvets alla hemligheter medan det körs.</strong> Systemet hämtar dem ur
-          valvet när det startar och har dem sedan i minnet, också nycklarna till båda urnorna. Den
-          som har tagit sig in i systemet kommer alltså åt det som valvet förvarar, och det gör också
-          den som driver systemet i Azure. Att urnorna har var sin nyckel skyddar bara mot att en av
-          nycklarna läcker. Starkare vore ett valv som gjorde fingeravtrycken själv, utan att lämna ut
-          hemligheten. Det är inte byggt.{' '}
-          <Link href="/architecture/technical#hemligheterna">Mer om valvet</Link>
+          <strong>Systemet har valvets alla hemligheter medan det körs.</strong> Systemet får de
+          hemligheter det använder ur valvet när det startar och har dem sedan i minnet, också
+          nycklarna till båda urnorna. Resten, bland dem huvudnyckeln till båda urnorna, kan det
+          hämta ur valvet när som helst. Den som har tagit sig in i systemet kommer alltså åt allt som
+          valvet förvarar, och det gör också den som driver systemet i Azure. Att urnorna har var sin
+          nyckel skyddar bara mot att en av nycklarna läcker. Starkare vore ett valv som gjorde
+          fingeravtrycken själv, utan att lämna ut hemligheten. Det är inte byggt.{' '}
+          <Link href={`${TECHNICAL_PATH}#hemligheterna`}>Mer om valvet</Link>
         </li>
         <li style={listItemStyle}>
           <strong>Utanför molnet finns inget valv.</strong> När systemet körs på en vanlig dator, som
@@ -116,9 +135,14 @@ export function Weaknesses({
           <strong>I demon skriver systemet själv ut BankID-intygen.</strong> Här finns inget riktigt
           BankID, så demon utfärdar själv de intyg som underskrifterna prövas mot, och den som driver
           demon kan därför fortfarande förfalska en underskrift. Skyddet ovan gäller med riktigt
-          BankID. Demon körs också i Azure, med hemligheterna i valvet. Men förtroendepersonernas
-          lösenord för demovalet är kända, så där kan den som kommer åt databaserna öppna vilket
-          kuvert som helst. <Link href={limitationHref(demoIssuer)}>Mer om demon</Link>
+          BankID. <Link href={limitationHref(demoIssuer)}>Mer om demon</Link>
+        </li>
+        <li style={listItemStyle}>
+          <strong>I demon är förtroendepersonernas lösenord kända.</strong> Demon körs också i
+          Azure, med hemligheterna i valvet. Men lösenorden som låser nyckelns delar i demovalet står
+          i koden och skrivs ut varje gång systemet startar, så där kan den som kommer åt databaserna
+          öppna vilket kuvert som helst, inte bara summan.{' '}
+          <Link href={limitationHref(demoPassphrases)}>Mer om lösenorden</Link>
         </li>
         <li style={listItemStyle}>
           <strong>Låset görs i ordning av den som driver systemet.</strong> Under ett ögonblick finns
