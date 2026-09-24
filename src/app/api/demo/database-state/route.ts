@@ -1,3 +1,4 @@
+import { Prisma as VotersPrisma } from '.prisma/voters'
 import { isDemoMode } from '@/lib/demo-mode'
 import { errorResponse, jsonResponse } from '@/lib/http'
 import { votesDb } from '@/modules/ballot-box/db'
@@ -318,69 +319,85 @@ export async function GET() {
     return errorResponse('NOT_FOUND', 'Rutten finns inte.', 404)
   }
 
-  const {
-    elections,
-    voterBallots,
-    voters,
-    pendingVotes,
-    pendingVoteColumns,
-    voterKeys,
-    voterTables,
-    linkRows,
-    voteElections,
-    voteBallots,
-    encryptedVotes,
-    encryptedVoteColumns,
-    trusteeShares,
-    partialDecryptions,
-    ballotTallies,
-    legacyVotes,
-    voteKeys,
-    voteTables,
-  } = await awaitAll({
-    // --- voters_db ---------------------------------------------------------
-    elections: votersDb.election.findMany({
-      orderBy: { closesAt: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        phase: true,
-        closesAt: true,
-        linkClearedAt: true,
-        envelopeRoot: true,
-      },
-    }),
-    // Bara id, omröstning och etikett. Spegeln bär också valsedelns privata
-    // signeringsnyckel, och den väljs aldrig ut.
-    voterBallots: votersDb.electionBallot.findMany({
-      select: { id: true, electionId: true, label: true },
-    }),
-    voters: votersDb.voterStatus.findMany({
-      orderBy: { id: 'asc' },
-      select: { id: true, externalIdentityHash: true, isEligible: true, isAdmin: true },
-    }),
-    pendingVotes: votersDb.pendingVote.findMany({
-      orderBy: { id: 'asc' },
-      // Varken signaturen, nyckeln ur certifikatet eller bevisen. Se punkt 4 ovan.
-      select: {
-        id: true,
-        voterStatusId: true,
-        ballotId: true,
-        ciphertext: true,
-        ciphertextHash: true,
-        castSequence: true,
-        updatedAt: true,
-      },
-    }),
-    pendingVoteColumns: votersDb.$queryRawUnsafe<Array<{ column_name: string }>>(
-      columnsQuery('pending_vote'),
-    ),
-    voterKeys: votersDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
-    voterTables: votersDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
-    linkRows: votersDb.$queryRawUnsafe<Array<{ rows: number }>>(
-      `SELECT count(*)::int AS rows FROM (${LINK_QUERY}) AS link`,
-    ),
+  /**
+   * RÖSTLÄNGDEN LÄSES I EN ENDA ÖGONBLICKSBILD.
+   *
+   * Med standardnivån ser varje sats sin egen bild av databasen, och frågorna
+   * här körs dessutom samtidigt, på olika anslutningar. Mitt i en stängning
+   * kunde frågan efter omröstningarna då se fasen STRIPPED och kopplingen som
+   * raderad, medan frågan efter pending_vote läste raderna strax innan de
+   * raderades. "Följ en röst" hade då varnat för kuvert som ligger kvar, fast
+   * inget gör det.
+   *
+   * Frågorna mot röstlängden körs därför i en transaktion med REPEATABLE READ.
+   * PostgreSQL tar bilden vid den första satsen, och alla följande ser samma
+   * ögonblick. Röstdatabasen är en annan databas och kan inte ingå i samma
+   * bild; det som jämförs mellan de två, chifferhasharna som finns i båda, är
+   * beskrivet som ett ögonblick under stängningen och inte som ett fel.
+   */
+  const votersSide = votersDb.$transaction(
+    (tx) =>
+      awaitAll({
+        elections: tx.election.findMany({
+          orderBy: { closesAt: 'asc' },
+          select: {
+            id: true,
+            name: true,
+            phase: true,
+            closesAt: true,
+            linkClearedAt: true,
+            envelopeRoot: true,
+          },
+        }),
+        // Bara id, omröstning och etikett. Spegeln bär också valsedelns privata
+        // signeringsnyckel, och den väljs aldrig ut.
+        voterBallots: tx.electionBallot.findMany({
+          select: { id: true, electionId: true, label: true },
+        }),
+        voters: tx.voterStatus.findMany({
+          orderBy: { id: 'asc' },
+          select: { id: true, externalIdentityHash: true, isEligible: true, isAdmin: true },
+        }),
+        pendingVotes: tx.pendingVote.findMany({
+          orderBy: { id: 'asc' },
+          // Varken signaturen, nyckeln ur certifikatet eller bevisen. Se punkt 4 ovan.
+          select: {
+            id: true,
+            voterStatusId: true,
+            ballotId: true,
+            ciphertext: true,
+            ciphertextHash: true,
+            castSequence: true,
+            updatedAt: true,
+          },
+        }),
+        pendingVoteColumns: tx.$queryRawUnsafe<Array<{ column_name: string }>>(
+          columnsQuery('pending_vote'),
+        ),
+        voterKeys: tx.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
+        voterTables: tx.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
+        linkRows: tx.$queryRawUnsafe<Array<{ rows: number }>>(
+          `SELECT count(*)::int AS rows FROM (${LINK_QUERY}) AS link`,
+        ),
+      }),
+    { isolationLevel: VotersPrisma.TransactionIsolationLevel.RepeatableRead },
+  )
 
+  const [
+    { elections, voterBallots, voters, pendingVotes, pendingVoteColumns, voterKeys, voterTables, linkRows },
+    {
+      voteElections,
+      voteBallots,
+      encryptedVotes,
+      encryptedVoteColumns,
+      trusteeShares,
+      partialDecryptions,
+      ballotTallies,
+      legacyVotes,
+      voteKeys,
+      voteTables,
+    },
+  ] = await Promise.all([votersSide, awaitAll({
     // --- votes_db ----------------------------------------------------------
     voteElections: votesDb.election.findMany({
       select: { id: true, encryptionPublicKey: true, tallyCompletedAt: true },
@@ -416,7 +433,7 @@ export async function GET() {
     }),
     voteKeys: votesDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
     voteTables: votesDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
-  })
+  })])
 
   const voterBallotById = new Map(voterBallots.map((ballot) => [ballot.id, ballot]))
   const voteBallotById = new Map(voteBallots.map((ballot) => [ballot.id, ballot]))

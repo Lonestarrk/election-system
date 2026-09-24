@@ -542,6 +542,32 @@ test.describe('tidslinjen', () => {
     expect(await yourFill()).toBe(await othersFill())
   })
 
+  test('i moment 11 lämnas delarna en i taget, och summan syns först när två finns', async ({ page }) => {
+    /**
+     * Förtroendepersonerna lämnar sina delar av nyckeln var för sig (spec 6.2).
+     * Efter den första delen är låset fortfarande stängt och ingenting går att
+     * läsa. Först när den andra är lämnad går summakuvertet upp. Det tredje
+     * nyckelhålet tänds aldrig.
+     */
+    await page.goto('/architecture')
+    await timelineOf(page).getByRole('button', { name: /^11 / }).click()
+    expect(await page.locator('.tl-scene .tl-keyhole-lit').count()).toBe(2)
+
+    const state = async (time: number) => {
+      await freezeAnimationsAt(page, time)
+      const lit = (await opacities(page, '.tl-keyhole-lit')).filter((value) => value > 0.5).length
+      const readable = (await opacities(page, '.tl-option')).filter((value) => value > 0).length
+      return { lit, readable }
+    }
+
+    expect(await state(450), 'efter den första delen').toEqual({ lit: 1, readable: 0 })
+    expect(await state(950), 'efter den andra delen, innan låset gått upp').toEqual({
+      lit: 2,
+      readable: 0,
+    })
+    expect(await state(1600), 'när låset gått upp').toEqual({ lit: 2, readable: 3 })
+  })
+
   test('tidslinjen hämtar ingenting', async ({ page }) => {
     const requests: string[] = []
     page.on('request', (request) => {

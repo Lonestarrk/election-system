@@ -39,8 +39,9 @@ import type { Moment } from './moments'
  * som namnen försvinner, och kuverten i urnan utan namn är nya element som
  * aldrig har burit markeringen. De samlas i en punkt och sprids därifrån, så
  * att inte ens den som följer rörelsen med blicken kan säga vilket som var
- * ditt. Allt som pekar ut ditt kuvert bär `data-yours`, så att testerna kan
- * kontrollera att inget sådant syns efteråt.
+ * ditt, och de står i ett annat mönster än i urnan med namn, så att inte heller
+ * en stillbild antyder det. Allt som pekar ut ditt kuvert bär `data-yours`, så
+ * att testerna kan kontrollera att inget sådant syns efteråt.
  *
  * Scenen är dekorativ och dold för skärmläsare. Texten i moments.ts bär hela
  * berättelsen.
@@ -84,13 +85,21 @@ const NAMED_SLOTS = [
 const YOUR_SLOT = NAMED_SLOTS[1]
 const OTHER_SLOTS = NAMED_SLOTS.filter((slot) => slot !== YOUR_SLOT)
 
-/** Platserna i urnan utan namn. Inget av dem är ditt, och inget pekas ut. */
+/**
+ * Platserna i urnan utan namn. Inget av dem är ditt, och inget pekas ut.
+ *
+ * MÖNSTRET ÄR ETT ANNAT ÄN I URNAN MED NAMN, två över och tre under i stället
+ * för tre över och två under. Med samma mönster hade stillbilderna, till
+ * exempel vid prefers-reduced-motion där sorteringen inte syns, antytt att
+ * kuvertet mitt i översta raden fortfarande var ditt. Det är samma princip som
+ * markeringen, fast med plats i stället för färg.
+ */
 const ANON_SLOTS = [
-  { x: 204, y: 150 },
-  { x: 234, y: 150 },
-  { x: 264, y: 150 },
-  { x: 219, y: 170 },
-  { x: 249, y: 170 },
+  { x: 220, y: 150 },
+  { x: 250, y: 150 },
+  { x: 205, y: 170 },
+  { x: 235, y: 170 },
+  { x: 265, y: 170 },
 ] as const
 
 /** Kuverten på telefonens skärm är samma kuvert, en och en halv gång större. */
@@ -506,11 +515,12 @@ function TrusteeZone({ n }: { n: number }) {
           )
         }
 
-        // 11: två av dem förs in i låset. Den tredje stannar hos sin ägare.
+        // 11: två av dem lämnas i låset, en i taget. Den tredje stannar hos
+        // sin ägare.
         if (n === 11 && usedToOpen) {
           return (
             <At key={index} x={rest.x} y={rest.y}>
-              <A kind="away" dur={0.5} {...toKeyhole}>
+              <A kind="away" at={OPENING.keyAt[index]} dur={OPENING.keyDur} {...toKeyhole}>
                 <Key />
               </A>
             </At>
@@ -541,7 +551,11 @@ function LockZone({ n }: { n: number }) {
         </AnimateIf>
       )}
       {(n === 10 || n === 11) && (
-        <A kind={n === 10 ? 'appear' : 'vanish'} at={n === 10 ? 0.55 : 0.8} dur={0.3}>
+        <A
+          kind={n === 10 ? 'appear' : 'vanish'}
+          at={n === 10 ? 0.55 : OPENING.shackleAt + 0.05}
+          dur={0.25}
+        >
           <path
             className="tl-card-flap"
             d={`M${CARD.x + 1} ${CARD.y + 1} L${CARD.x + CARD.w / 2} ${CARD.y + 25} L${CARD.x + CARD.w - 1} ${CARD.y + 1}`}
@@ -549,21 +563,29 @@ function LockZone({ n }: { n: number }) {
         </A>
       )}
 
-      {/* 11: bara summan blir läsbar. */}
+      {/* 11: bara summan blir läsbar, först när låset gått upp. */}
       {n >= 11 &&
         RESULT.map((row, index) => {
-          const y = 82 + index * 10
-          const width = row.count * 10
+          const y = 85 + index * 12
+          const width = row.count * 9
           return (
             <g key={row.option}>
-              <text className="tl-option tl-option-small" x={255} y={y + 3}>
-                {row.option}
-              </text>
-              <AnimateIf when={n === 11} kind="grow" at={0.9 + index * 0.08} dur={0.35}>
-                <rect className="tl-bar" x={262} y={y - 3} width={width} height={6} rx={2} />
+              {/* Ingenting av innehållet syns förrän låset gått upp. */}
+              <AnimateIf when={n === 11} kind="appear" at={OPENING.shackleAt + 0.1} dur={0.15}>
+                <text className="tl-option" x={256} y={y + 4.2}>
+                  {row.option}
+                </text>
               </AnimateIf>
-              <AnimateIf when={n === 11} kind="appear" at={1.15} dur={0.2}>
-                <text className="tl-count" x={262 + width + 4} y={y + 3}>
+              <AnimateIf
+                when={n === 11}
+                kind="grow"
+                at={OPENING.shackleAt + 0.1 + index * 0.05}
+                dur={0.25}
+              >
+                <rect className="tl-bar" x={263} y={y - 3.5} width={width} height={7} rx={2} />
+              </AnimateIf>
+              <AnimateIf when={n === 11} kind="appear" at={OPENING.shackleAt + 0.3} dur={0.15}>
+                <text className="tl-count" x={263 + width + 4} y={y + 4.2}>
                   {row.count}
                 </text>
               </AnimateIf>
@@ -571,39 +593,64 @@ function LockZone({ n }: { n: number }) {
           )
         })}
 
-      <BigLock n={n} />
-
-      {/* 12: resultatet granskas och får sitt bevis. */}
+      {/* 12: låset har gjort sitt och försvinner. */}
+      {n <= 11 && <BigLock n={n} />}
       {n === 12 && (
-        <At x={290} y={93}>
-          <A kind="sweep" dur={0.75} dx={-36}>
+        <A kind="vanish" dur={0.3}>
+          <BigLock n={n} />
+        </A>
+      )}
+
+      {/* 12: resultatet granskas och får sitt bevis, där låset satt. */}
+      {n === 12 && (
+        <At x={290} y={97}>
+          <A kind="sweep" dur={0.75} dx={-32}>
             <Magnifier />
           </A>
         </At>
       )}
       {n >= 12 && (
-        <AnimateIf when={n === 12} kind="pop" at={0.65} dur={0.3}>
-          <ProofTag />
+        <AnimateIf when={n === 12} kind="pop" at={0.45} dur={0.35}>
+          <ProofSeal />
         </AnimateIf>
       )}
 
-      <text className="tl-label" x={n >= 10 ? 249 : 224} y={133}>
+      <text className="tl-label" x={n >= 10 ? 249 : 224} y={134}>
         {n >= 12 ? 'Resultatet' : n >= 10 ? 'Summakuvertet' : 'Låset'}
       </text>
     </g>
   )
 }
 
-function ProofTag() {
+/** Beviset, i den del av summakuvertet där låset satt. */
+function ProofSeal() {
   return (
     <g className="tl-proof">
-      <rect x={256} y={107} width={40} height={13} rx={6.5} />
-      <path d="M262 113.5 l2 2.2 l3.6 -4.2" />
-      <text x={282} y={116.6}>
+      <At x={223} y={89}>
+        <Check r={9} />
+      </At>
+      <text x={223} y={113}>
         Bevis
       </text>
     </g>
   )
+}
+
+/**
+ * MOMENT 11: DELARNA AV NYCKELN LÄMNAS EN I TAGET.
+ *
+ * Förtroendepersonerna lämnar sina delar var för sig (spec 6.2). När den
+ * första delen är på plats tänds dess nyckelhål, men ingenting händer. Först
+ * när den andra är på plats går bygeln upp, och därefter blir summan läsbar.
+ */
+const OPENING = {
+  /** När var och en av de två nycklarna börjar gå mot låset. */
+  keyAt: [0, 0.5] as const,
+  keyDur: 0.4,
+  /** När dess nyckelhål tänds, alltså när delen är lämnad. */
+  litAt: [0.4, 0.9] as const,
+  /** När bygeln lyfts: först när båda delarna finns. */
+  shackleAt: 1.0,
 }
 
 /**
@@ -616,10 +663,10 @@ function BigLock({ n }: { n: number }) {
 
   const parts = (
     <>
-      {/* 11: bygeln lyfts när båda nycklarna vridits om. */}
+      {/* 11: bygeln lyfts först när båda delarna lämnats. */}
       {opened ? (
-        <At x={0} y={-6}>
-          <AnimateIf when={n === 11} kind="move" at={0.7} dur={0.25} dy={6}>
+        <At x={0} y={-5}>
+          <AnimateIf when={n === 11} kind="move" at={OPENING.shackleAt} dur={0.2} dy={5}>
             {shackle}
           </AnimateIf>
         </At>
@@ -631,7 +678,7 @@ function BigLock({ n }: { n: number }) {
         <g key={x}>
           <Keyhole x={x} />
           {opened && index < 2 && (
-            <AnimateIf when={n === 11} kind="appear" at={0.5} dur={0.15}>
+            <AnimateIf when={n === 11} kind="appear" at={OPENING.litAt[index]} dur={0.1}>
               <Keyhole x={x} lit />
             </AnimateIf>
           )}
@@ -671,19 +718,15 @@ function NamedUrnZone({ moment }: { moment: Moment }) {
         Urnan med namn
       </text>
 
-      {/* 7: urnan stängs och tar inte emot fler kuvert. */}
+      {/*
+        7: urnan stängs och tar inte emot fler kuvert. Locket bär beskedet
+        ensamt: en lapp med texten "Stängd" fick inte plats i läsbar storlek
+        på en telefon, och texten bredvid scenen säger det.
+      */}
       {n >= 7 && (
-        <>
-          <AnimateIf when={n === 7} kind="move" dur={0.4} dx={-26}>
-            <rect className="tl-lid" x={135} y={137.5} width={36} height={7} rx={3.5} />
-          </AnimateIf>
-          <AnimateIf when={n === 7} kind="pop" at={0.35} dur={0.25}>
-            <rect className="tl-tag" x={157} y={121} width={40} height={15} rx={7.5} />
-            <text className="tl-tag-text" x={177} y={131.8}>
-              Stängd
-            </text>
-          </AnimateIf>
-        </>
+        <AnimateIf when={n === 7} kind="move" dur={0.4} dx={-26}>
+          <rect className="tl-lid" x={135} y={137.5} width={36} height={7} rx={3.5} />
+        </AnimateIf>
       )}
 
       {/* 5: de andras kuvert. Ditt eget flyger in i Flight nedan. */}
@@ -749,9 +792,9 @@ function NamedUrnZone({ moment }: { moment: Moment }) {
 function YourVoteTag() {
   return (
     <g>
-      <rect className="tl-you-tag" x={98} y={121} width={56} height={15} rx={7.5} />
-      <path className="tl-you-tag" d="M121 135.5 L126 141.5 L131 135.5 Z" />
-      <text className="tl-you-tag-text" x={126} y={131.8}>
+      <rect className="tl-you-tag" x={94} y={119} width={64} height={18} rx={9} />
+      <path className="tl-you-tag" d="M121 136.5 L126 142 L131 136.5 Z" />
+      <text className="tl-you-tag-text" x={126} y={132.3}>
         Din röst
       </text>
     </g>
@@ -769,9 +812,10 @@ function YourVoteTag() {
  *              det också.
  *   0,60–1,00  de inre kuverten, nu lika varandra, samlas i en punkt mellan
  *              urnorna och försvinner där.
- *   0,95–1,45  lika många nya kuvert kommer ut ur punkten och sorteras in i
- *              urnan utan namn. De är andra element än de som gick in, och
- *              inget av dem har någonsin burit markeringen.
+ *   0,90–1,47  lika många nya kuvert kommer ut ur punkten och sorteras in i
+ *              urnan utan namn, i ett annat mönster än i urnan med namn. De är
+ *              andra element än de som gick in, och inget av dem har någonsin
+ *              burit markeringen.
  */
 function StripNames({ releasing }: { releasing: boolean }) {
   const RELEASE = { at: 0.15, dur: 0.45 }
@@ -839,7 +883,7 @@ function AnonUrnZone({ n }: { n: number }) {
             <AnimateIf
               when={n === 9}
               kind="scatter"
-              at={0.95 + index * 0.04}
+              at={0.9 + index * 0.03}
               dur={0.45}
               dx={SORTER.x - (slot.x + INNER.w / 2)}
               dy={SORTER.y - (slot.y + INNER.h / 2)}
@@ -849,10 +893,10 @@ function AnonUrnZone({ n }: { n: number }) {
                 <Envelope kind="inner" />
               </g>
             </AnimateIf>
-            {/* 11: när summan öppnas sitter låsen kvar på de enskilda kuverten. */}
+            {/* 11: när låset går upp sitter låsen kvar på de enskilda kuverten. */}
             {n === 11 && (
               <At x={INNER.w / 2} y={INNER.h * 0.74}>
-                <A kind="pop" at={1.05 + index * 0.04} dur={0.3}>
+                <A kind="pop" at={OPENING.shackleAt + index * 0.03} dur={0.3}>
                   <g className="tl-lock-stays">
                     <LockGlyph />
                   </g>

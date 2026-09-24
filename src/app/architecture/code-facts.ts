@@ -15,12 +15,19 @@
  * själv, så det finns en enda plats att rätta. Det som står på sidan utan att
  * komma härifrån är design, och står som design.
  *
- * Två sorters markörer:
+ * Tre sorters markörer:
  *
  *   { file, contains }     sann så länge filen innehåller strängen.
  *   { nowhereIn, matches } sann så länge ingen fil under sökvägen (en katalog
  *                          eller en enskild fil) matchar mönstret. För
  *                          påståenden om att något INTE finns.
+ *   { onlyIn, under, matches }
+ *                          sann så länge mönstret bara finns i de uppräknade
+ *                          filerna, och i ingen annan fil under sökvägen. För
+ *                          påståenden om att något bara görs på ett ställe.
+ *
+ * Kataloger genomsöks efter .ts, .tsx, .sql och .prisma, så att också
+ * migreringar och scheman kan granskas.
  *
  * Radslut normaliseras till \n innan markörerna prövas, eftersom arbetskopian
  * på Windows har CRLF.
@@ -29,7 +36,10 @@
  * inte importera något själv.
  */
 
-export type Marker = { file: string; contains: string } | { nowhereIn: string; matches: RegExp }
+export type Marker =
+  | { file: string; contains: string }
+  | { nowhereIn: string; matches: RegExp }
+  | { onlyIn: string[]; under: string; matches: RegExp }
 
 export type CodeFact = {
   /** Påståendet, som det står på sidan. */
@@ -169,6 +179,74 @@ export const VOTERS_MODELS_TODAY: Marker = {
     /^model (?!(?:VoterStatus|Election|ElectionBallot|VoterBallotStatus|VotingSession|AdminSession|PushSubscription|AuditEvent|PendingVote) \{)/m,
 }
 
+/**
+ * Fälten i de två modeller där en markering per väljare kunde hamna, som de
+ * är i dag.
+ *
+ * En markering kan också bli en ny kolumn i en befintlig modell i stället för
+ * en ny tabell. Mönstret matchar ett fält, alltså en rad som börjar med ett
+ * namn, som INTE står i listan. Kommentarer och @@-rader börjar inte med ett
+ * namn och räknas inte, så en rättad kommentar fäller inte påståendet.
+ */
+export const VOTER_MODEL_FIELDS_TODAY: Marker[] = [
+  {
+    nowhereIn: 'prisma/voters/schema.prisma',
+    matches:
+      /model VoterStatus \{[^}]*\n\s+(?!(?:id|externalIdentityHash|isEligible|isAdmin|municipalityCode|regionCode|sessions|adminSessions|ballotStatuses|pendingVotes)\s)[A-Za-z]\w*\s/,
+  },
+  {
+    nowhereIn: 'prisma/voters/schema.prisma',
+    matches:
+      /model VoterBallotStatus \{[^}]*\n\s+(?!(?:id|voterStatusId|voterStatus|ballotId|ballot|votedAt)\s)[A-Za-z]\w*\s/,
+  },
+]
+
+/**
+ * Det gamla flödets markering nämns bara i det gamla flödets tre filer.
+ *
+ * Markeringen i voter_ballot_status skrivs i dag av röstintygen och av
+ * `markBallotAsVoted`, och läses när valsedlarna listas. Nämns tabellen i någon
+ * annan fil under src, en ny tjänst, en rutt eller något i src/orchestration,
+ * fäller det påståendet, oavsett om det är en läsning eller en skrivning.
+ */
+export const MARKING_ONLY_IN_OLD_FLOW: Marker = {
+  under: 'src',
+  onlyIn: [
+    'src/modules/eligibility/credential.service.ts',
+    'src/modules/eligibility/election.service.ts',
+    'src/modules/eligibility/voter-status.service.ts',
+  ],
+  matches: /voterBallotStatus|VoterBallotStatus|voter_ballot_status|markBallotAsVoted/,
+}
+
+/**
+ * ... och där skrivs den en gång per fil. En ny funktion i en av filerna som
+ * skriver markeringen, och som anropas från ett nytt ställe under ett annat
+ * namn, hade annars gått förbi mönstret ovan. Mönstret matchar en andra
+ * skrivning i samma fil.
+ */
+const MARKING_WRITE = /voterBallotStatus\.(?:create|createMany|upsert|update|updateMany)\(/.source
+
+export const ONE_MARKING_WRITE_EACH: Marker[] = [
+  'src/modules/eligibility/credential.service.ts',
+  'src/modules/eligibility/voter-status.service.ts',
+].map((file) => ({
+  nowhereIn: file,
+  matches: new RegExp(`${MARKING_WRITE}[\\s\\S]*${MARKING_WRITE}`),
+}))
+
+/**
+ * Och ingenting skrivs förbi koden: ingen trigger i någon migrering eller
+ * källfil, och ingen rå SQL som skriver. En trigger på pending_vote kunde
+ * annars skriva en markering vid raderingen utan att en enda rad TypeScript
+ * ändrats.
+ */
+export const NO_WRITES_BESIDE_THE_CODE: Marker[] = [
+  { nowhereIn: 'prisma', matches: /CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER/i },
+  { nowhereIn: 'src', matches: /CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER/i },
+  { nowhereIn: 'src', matches: /\$executeRaw|\b(?:INSERT\s+INTO|DELETE\s+FROM)\b|\bUPDATE\s+"?\w+"?\s+SET\b/i },
+]
+
 // ---------------------------------------------------------------------------
 // Läget i stort
 // ---------------------------------------------------------------------------
@@ -271,17 +349,16 @@ export const CURRENTLY = {
       // i dem fäller påståendet.
       STRIPPING_TRANSACTION,
       ...STRIPPING_HELPERS,
-      // Ingen ny tabell i röstlängden, var den än skrivs.
+      // Ingen ny tabell i röstlängden, och ingen ny kolumn i de modeller där
+      // en markering per väljare kunde stå, var den än skrivs.
       VOTERS_MODELS_TODAY,
-      // Och varken stängningen, läggningen eller revisionsloggen rör det
-      // gamla flödets markering.
-      ...[
-        'src/modules/eligibility/pending-vote.service.ts',
-        'src/modules/eligibility/audit.service.ts',
-        'src/orchestration/close-election.usecase.ts',
-        'src/app/api/admin/elections/close/route.ts',
-        'src/app/api/vote/encrypted/route.ts',
-      ].map((file): Marker => ({ nowhereIn: file, matches: /voterBallotStatus|markBallotAsVoted/ })),
+      ...VOTER_MODEL_FIELDS_TODAY,
+      // Det gamla flödets markering nämns bara i det gamla flödet, också i
+      // src/orchestration, och skrivs där en gång per fil.
+      MARKING_ONLY_IN_OLD_FLOW,
+      ...ONE_MARKING_WRITE_EACH,
+      // Och ingen trigger eller rå SQL skriver förbi allt det här.
+      ...NO_WRITES_BESIDE_THE_CODE,
       STRIPPING_DELETES_ENVELOPES,
     ],
   },

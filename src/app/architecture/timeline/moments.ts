@@ -29,7 +29,9 @@ export type Stage =
  * Om animationen pekar ut ditt kuvert.
  *
  *   'ingen'    ingenting pekas ut: det finns inget kuvert än, eller så är
- *              namnen borttagna och ingen kan längre säga vilket som är ditt
+ *              namnen borttagna och det går inte längre att se i urnan vilket
+ *              som är ditt. Den som kopierade urnan innan dess kan fortfarande
+ *              veta det, och huvudsidan säger det bland svagheterna.
  *   'utpekad'  ditt kuvert är markerat i momentets slutläge
  *   'släcks'   markeringen släcks under momentet, i samma ögonblick som
  *              namnet försvinner, och slutläget pekar inte ut något
@@ -62,8 +64,9 @@ export const MOMENTS: readonly Moment[] = [
     stage: 'Före röstningen',
     text:
       'Innan röstningen öppnar skapas ett lås som vem som helst kan stänga, men som bara går upp ' +
-      'när två av tre förtroendepersoner vrider om sina nycklar samtidigt. Var och en av dem får ' +
-      'en nyckel. Ingen kan öppna låset ensam, inte heller den som driver systemet.',
+      'när två av tre förtroendepersoner har lämnat var sin del av nyckeln. Ingen av dem kan öppna ' +
+      'låset ensam. Men låset görs i ordning av den som driver systemet, och då finns hela nyckeln ' +
+      'ett ögonblick på ett ställe innan den delas och förstörs.',
     yourEnvelope: 'ingen',
   },
   {
@@ -81,7 +84,8 @@ export const MOMENTS: readonly Moment[] = [
     stage: 'Medan röstningen pågår',
     text:
       'Du gör ditt val på din egen telefon eller dator. Där läggs valet i ett inre kuvert som ' +
-      'låses med valets lås, innan något skickas. Ingen kan öppna kuvertet ensam.',
+      'låses med valets lås, innan något skickas. Ingen av förtroendepersonerna kan öppna ' +
+      'kuvertet ensam.',
     yourEnvelope: 'utpekad',
   },
   {
@@ -121,8 +125,9 @@ export const MOMENTS: readonly Moment[] = [
     title: 'Röstningen stänger',
     stage: 'Vid stängningen',
     text:
-      'Röstningen stänger, och urnan tar inte emot fler kuvert. Din enhet slutar visa din röst och ' +
-      'raderar det den har sparat om den.',
+      'Röstningen stänger, och urnan tar inte emot fler kuvert. Så snart sidan ser att röstningen ' +
+      'har stängt slutar din enhet visa din röst och raderar det den har sparat om den. Öppnar du ' +
+      'aldrig sidan igen ligger uppgifterna kvar, men de bevisar ingenting för någon annan.',
     yourEnvelope: 'utpekad',
   },
   {
@@ -133,7 +138,8 @@ export const MOMENTS: readonly Moment[] = [
     text:
       'Medan namnen finns kvar kontrolleras varje yttre kuvert: att personen fick rösta, att ' +
       'underskriften är personens egen och att ingen har mer än ett kuvert. Hittas ett allvarligt ' +
-      'fel stoppas stängningen, och ingenting tas bort. Inget kuvert öppnas.',
+      'fel tas ingenting bort, och röstningen förblir stängd medan felet utreds. Inget kuvert ' +
+      'öppnas.',
     yourEnvelope: 'utpekad',
   },
   {
@@ -143,8 +149,9 @@ export const MOMENTS: readonly Moment[] = [
     stage: 'Vid stängningen',
     text:
       'De yttre kuverten med namnen slängs, och de inre sorteras och flyttas till en urna utan ' +
-      'namn, så att ordningen inte avslöjar vem som röstade när. Från och med nu kan ingen peka ut ' +
-      'vilket kuvert som är ditt, inte heller den här animationen.',
+      'namn, så att ordningen inte avslöjar vem som röstade när. Nu går det inte längre att se i ' +
+      'urnan vilket kuvert som är ditt, inte heller i den här animationen. Men den som kopierade ' +
+      'urnan medan namnen fanns kvar kan fortfarande veta det, och det står bland svagheterna nedan.',
     yourEnvelope: 'släcks',
   },
   {
@@ -163,8 +170,9 @@ export const MOMENTS: readonly Moment[] = [
     title: 'Summan öppnas',
     stage: 'Räkningen',
     text:
-      'Två av de tre förtroendepersonerna vrider om sina nycklar samtidigt, och bara summakuvertet ' +
-      'går upp. Nu syns hur många röster varje alternativ fick. De enskilda kuverten förblir stängda.',
+      'Två av de tre förtroendepersonerna lämnar var sin del av nyckeln, en i taget. Först när två ' +
+      'delar finns går bara summakuvertet upp, och det visar hur många röster varje alternativ ' +
+      'fick. De enskilda kuverten förblir stängda.',
     yourEnvelope: 'ingen',
   },
   {

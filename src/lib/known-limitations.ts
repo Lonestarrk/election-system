@@ -183,9 +183,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       // röstningen stängt. När den under röstningen bara visar valdeltagandet,
       // och resultat först när en valsedel räknats, försvinner anropet.
       { file: 'src/app/api/observer/election/route.ts', contains: 'getElectionResults(election.id)' },
-      // Varje röst lämnas ut med sitt val. Tas valet bort ur svaret, eller
-      // rutten helt, försvinner raden.
+      // Varje röst lämnas ut med sitt val: parti, kandidat och svarsalternativ,
+      // en markör för vart och ett, eftersom texten nämner alla tre. Tas något
+      // av dem bort ur svaret, eller rutten helt, faller posten.
       { file: 'src/app/api/observer/votes/route.ts', contains: 'ballotPartyId: true,' },
+      { file: 'src/app/api/observer/votes/route.ts', contains: 'candidateId: true,' },
+      { file: 'src/app/api/observer/votes/route.ts', contains: 'optionId: true,' },
     ],
   },
   {

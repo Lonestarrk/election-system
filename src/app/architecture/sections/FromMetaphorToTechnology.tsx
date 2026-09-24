@@ -20,11 +20,11 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
       'tillsammans är 1 (spec 4.2–4.4).',
   },
   {
-    metaphor: 'Låset och de tre nycklarna',
+    metaphor: 'Låset och nyckelns tre delar',
     technology:
-      'Tröskelnyckeln. Den privata nyckeln delas med Shamirs metod i tre andelar, varav två krävs, ' +
-      'och originalet raderas. Varje andel är krypterad med en lösenfras som bara förtroendemannen ' +
-      'känner (spec 4.5).',
+      'Tröskelnyckeln. En betrodd utdelare skapar den privata nyckeln när valet skapas, delar den ' +
+      'med Shamirs metod i tre andelar, varav två krävs, och raderar originalet. Varje andel är ' +
+      'krypterad med en lösenfras som bara förtroendemannen känner (spec 4.5 och 10).',
   },
   {
     metaphor: 'Det yttre kuvertet med ditt namn',
@@ -71,10 +71,10 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
       'så att ingen enskild röst behöver öppnas (spec 4.2).',
   },
   {
-    metaphor: 'Två nycklar vrids om',
+    metaphor: 'Två delar av nyckeln lämnas',
     technology:
-      'Två förtroendemän lämnar var sin partiella dekryptering med ett Chaum–Pedersen-bevis, och ' +
-      'bidragen kombineras med Lagrange-koefficienter (spec 4.5).',
+      'Två förtroendemän lämnar var för sig en partiell dekryptering med ett Chaum–Pedersen-bevis, ' +
+      'och när två finns kombineras de med Lagrange-koefficienter (spec 4.5 och 6.2).',
   },
   {
     metaphor: 'Resultatet med bevis',

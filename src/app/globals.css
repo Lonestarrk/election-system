@@ -944,6 +944,18 @@ th {
   }
 }
 
+/*
+ * De smalaste telefonerna. Scenen ritas i skärmens bredd, och texten i den
+ * följer med. Mindre sidomarginal i kortet ger scenen de pixlar som håller
+ * texten över 11 px också i 360 px.
+ */
+@media (max-width: 380px) {
+  .card.tl-section {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}
+
 /* Scenen. Färgerna är sidans egna, så att den följer mörkt läge. */
 .tl-scene {
   font-family: var(--font);
@@ -957,9 +969,15 @@ th {
   text-anchor: start;
 }
 
+/*
+ * All text i scenen är 12 enheter. På en telefon i 390 px ritar scenen ungefär
+ * en enhet per pixel, så texten blir nästan 12 px, och den blir inte mindre än
+ * 11 px förrän skärmen är smalare än 375 px. Resultatet i moment 11 är själva
+ * poängen och ska gå att läsa; hellre färre etiketter än mindre text.
+ */
 .tl-label {
   fill: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -981,7 +999,7 @@ th {
 
 .tl-screen-text {
   fill: var(--text);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1008,17 +1026,13 @@ th {
 
 .tl-option {
   fill: var(--text);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-}
-
-.tl-option-small,
-.tl-count {
-  font-size: 9px;
 }
 
 .tl-count {
   fill: var(--text);
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -1127,19 +1141,7 @@ th {
 
 .tl-you-tag-text {
   fill: var(--surface);
-  font-size: 9.5px;
-  font-weight: 700;
-}
-
-.tl-tag {
-  fill: var(--surface);
-  stroke: var(--text-muted);
-  stroke-width: 1.2;
-}
-
-.tl-tag-text {
-  fill: var(--text);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1167,7 +1169,7 @@ th {
 
 .tl-empty {
   fill: var(--text-faint);
-  font-size: 11px;
+  font-size: 12px;
   font-style: italic;
 }
 
@@ -1232,23 +1234,9 @@ th {
   fill: var(--text-muted);
 }
 
-.tl-proof rect {
-  fill: var(--success-soft);
-  stroke: var(--success);
-  stroke-width: 1.2;
-}
-
-.tl-proof path {
-  fill: none;
-  stroke: var(--success);
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 .tl-proof text {
   fill: var(--text);
-  font-size: 8.5px;
+  font-size: 12px;
   font-weight: 700;
 }
 

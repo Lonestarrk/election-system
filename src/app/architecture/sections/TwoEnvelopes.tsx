@@ -26,8 +26,8 @@ export function TwoEnvelopes() {
         <li>
           <LegendIcon kind="inner" />
           <span>
-            <strong>Det inre kuvertet</strong> är ditt val. Det är låst, och ingen kan öppna det
-            ensam.
+            <strong>Det inre kuvertet</strong> är ditt val. Det är låst, och ingen av
+            förtroendepersonerna kan öppna det ensam.
           </span>
         </li>
         <li>
@@ -40,8 +40,9 @@ export function TwoEnvelopes() {
         <li>
           <LegendIcon kind="lock" />
           <span>
-            <strong>Låset</strong> går bara upp när två av tre förtroendepersoner vrider om sina
-            nycklar samtidigt.
+            <strong>Låset</strong> går bara upp när två av tre förtroendepersoner har lämnat var sin
+            del av nyckeln. Den som driver systemet gör låset i ordning, och då finns hela nyckeln
+            ett ögonblick på ett ställe.
           </span>
         </li>
         <li>

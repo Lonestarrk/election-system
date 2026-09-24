@@ -9,6 +9,10 @@ import {
   STRIPPING_HELPERS,
   STRIPPING_TRANSACTION,
   VOTERS_MODELS_TODAY,
+  VOTER_MODEL_FIELDS_TODAY,
+  MARKING_ONLY_IN_OLD_FLOW,
+  ONE_MARKING_WRITE_EACH,
+  NO_WRITES_BESIDE_THE_CODE,
   type CodeFact,
   type Marker,
 } from '@/app/architecture/code-facts'
@@ -63,7 +67,8 @@ function sourceFilesUnder(path: string, { skipPage }: { skipPage: boolean }): st
     const child = toRelative(join(full, entry))
     if (skipPage && (child === PAGE_DIRECTORY || child.startsWith(`${PAGE_DIRECTORY}/`))) return []
     if (statSync(join(ROOT, child)).isDirectory()) return sourceFilesUnder(child, { skipPage })
-    return /\.tsx?$/.test(child) ? [child] : []
+    // Migreringar och scheman granskas också: en trigger står i en .sql-fil.
+    return /\.(tsx?|sql|prisma)$/.test(child) ? [child] : []
   })
 }
 
@@ -76,6 +81,20 @@ function check(marker: Marker): { holds: boolean; detail: string } {
     return read(marker.file).includes(marker.contains)
       ? { holds: true, detail: '' }
       : { holds: false, detail: `"${marker.contains}" finns inte längre i ${marker.file}` }
+  }
+
+  if ('onlyIn' in marker) {
+    const files = sourceFilesUnder(marker.under, { skipPage: true })
+    if (files.length === 0) {
+      return { holds: false, detail: `${marker.under} innehåller inga filer att granska` }
+    }
+
+    const offenders = files.filter(
+      (file) => !marker.onlyIn.includes(file) && marker.matches.test(read(file)),
+    )
+    return offenders.length === 0
+      ? { holds: true, detail: '' }
+      : { holds: false, detail: `${marker.matches} finns nu också i ${offenders.join(', ')}` }
   }
 
   const files = sourceFilesUnder(marker.nowhereIn, { skipPage: true })
@@ -215,7 +234,15 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
     const markers = CURRENTLY.votedMarkerNotKept.holdsWhile
     expect(markers).toContain(STRIPPING_TRANSACTION)
     expect(markers).toContain(VOTERS_MODELS_TODAY)
-    for (const helper of STRIPPING_HELPERS) expect(markers).toContain(helper)
+    expect(markers).toContain(MARKING_ONLY_IN_OLD_FLOW)
+    for (const marker of [
+      ...STRIPPING_HELPERS,
+      ...VOTER_MODEL_FIELDS_TODAY,
+      ...ONE_MARKING_WRITE_EACH,
+      ...NO_WRITES_BESIDE_THE_CODE,
+    ]) {
+      expect(markers).toContain(marker)
+    }
 
     expect(transaction.includes(contains(STRIPPING_TRANSACTION))).toBe(true)
     expect(check(VOTERS_MODELS_TODAY).holds).toBe(true)
@@ -274,6 +301,89 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
     )
     // Ett namn som börjar som ett befintligt räknas inte som det befintliga.
     expect(VOTERS_MODELS_TODAY.matches.test('model PendingVoteMark {\n  id String\n}')).toBe(true)
+  })
+
+  it('en ny kolumn i VoterStatus eller VoterBallotStatus fäller påståendet, en ändrad kommentar inte', () => {
+    const schema = read('prisma/voters/schema.prisma')
+    const [voterStatus, voterBallotStatus] = VOTER_MODEL_FIELDS_TODAY.map((marker) => {
+      if (!('matches' in marker)) throw new Error('Väntade ett mönster.')
+      return marker.matches
+    })
+
+    expect(voterStatus!.test(schema)).toBe(false)
+    expect(voterBallotStatus!.test(schema)).toBe(false)
+
+    const withColumn = schema.replace(
+      '  isEligible Boolean',
+      '  votedInElection Boolean @default(false)\n\n  isEligible Boolean',
+    )
+    expect(withColumn).not.toBe(schema)
+    expect(voterStatus!.test(withColumn)).toBe(true)
+
+    const withMarkingColumn = schema.replace(
+      '  votedAt DateTime @map("voted_at")',
+      '  votedAt DateTime @map("voted_at")\n  fromEnvelope Boolean @default(false)',
+    )
+    expect(withMarkingColumn).not.toBe(schema)
+    expect(voterBallotStatus!.test(withMarkingColumn)).toBe(true)
+
+    const withEditedComment = schema.replace('/// HMAC-SHA256(personnummer, IDENTITY_PEPPER).', '/// scrypt.')
+    expect(withEditedComment).not.toBe(schema)
+    expect(voterStatus!.test(withEditedComment)).toBe(false)
+  })
+
+  it('markeringen nämnd i en fil utanför det gamla flödet fäller påståendet, också i src/orchestration', () => {
+    if (!('onlyIn' in MARKING_ONLY_IN_OLD_FLOW)) throw new Error('Väntade en markör med onlyIn.')
+    expect(check(MARKING_ONLY_IN_OLD_FLOW).holds).toBe(true)
+
+    // Kontrasten mot den riktiga koden: tas en av det gamla flödets filer bort
+    // ur listan är den genast en fil utanför listan som nämner markeringen.
+    const [first, ...rest] = MARKING_ONLY_IN_OLD_FLOW.onlyIn
+    const narrowed = { ...MARKING_ONLY_IN_OLD_FLOW, onlyIn: rest }
+    const verdict = check(narrowed)
+    expect(verdict.holds).toBe(false)
+    expect(verdict.detail).toContain(first!)
+
+    // Markören täcker hela src, alltså också src/orchestration och alla rutter.
+    expect(MARKING_ONLY_IN_OLD_FLOW.under).toBe('src')
+    expect(MARKING_ONLY_IN_OLD_FLOW.matches.test('await tx.voterBallotStatus.createMany({ data })')).toBe(
+      true,
+    )
+  })
+
+  it('en andra skrivning av markeringen i det gamla flödets filer fäller påståendet', () => {
+    for (const marker of ONE_MARKING_WRITE_EACH) {
+      if (!('nowhereIn' in marker)) throw new Error('Väntade ett mönster.')
+      const content = read(marker.nowhereIn)
+
+      expect(marker.matches.test(content), marker.nowhereIn).toBe(false)
+      expect(
+        marker.matches.test(`${content}\nawait tx.voterBallotStatus.createMany({ data: [] })\n`),
+        marker.nowhereIn,
+      ).toBe(true)
+    }
+  })
+
+  it('en trigger eller rå SQL som skriver fäller påståendet', () => {
+    const [inPrisma, inSource, rawWrite] = NO_WRITES_BESIDE_THE_CODE.map((marker) => {
+      if (!('matches' in marker) || !('nowhereIn' in marker)) throw new Error('Väntade ett mönster.')
+      return marker
+    })
+
+    // Migreringarna granskas faktiskt, inte bara TypeScript.
+    expect(sourceFilesUnder(inPrisma!.nowhereIn, { skipPage: true })).toEqual(
+      expect.arrayContaining(['prisma/voters/migrations/20260101000000_init/migration.sql']),
+    )
+    for (const marker of [inPrisma!, inSource!, rawWrite!]) expect(check(marker).holds).toBe(true)
+
+    expect(
+      inPrisma!.matches.test(
+        'CREATE OR REPLACE TRIGGER mark_voted AFTER DELETE ON "pending_vote" FOR EACH ROW',
+      ),
+    ).toBe(true)
+    expect(rawWrite!.matches.test('await tx.$executeRawUnsafe(sql)')).toBe(true)
+    expect(rawWrite!.matches.test("'INSERT INTO voter_ballot_status (id) VALUES ($1)'")).toBe(true)
+    expect(rawWrite!.matches.test('UPDATE "voter_status" SET voted = true')).toBe(true)
   })
 })
 
@@ -425,6 +535,22 @@ describe('livevyn finns bara i demoläget', () => {
       expect(renders, page).toHaveLength(1)
       expect(content, page).toMatch(/\{demo \?\s*\(\s*<(LiveDatabaseView|LiveLinkQuestion)\b/)
     }
+  })
+
+  it('rutten läser röstlängden i en enda ögonblicksbild', () => {
+    /**
+     * Omröstningarnas fas och raderna i pending_vote måste komma ur samma
+     * ögonblick. Annars kan "Följ en röst" mitt i en stängning se kopplingen
+     * som raderad och ändå hitta kuvert kvar, och varna utan skäl. Därför går
+     * varje läsning av röstlängden genom en transaktion med REPEATABLE READ,
+     * och ingen läsning går förbi den.
+     */
+    const route = read('src/app/api/demo/database-state/route.ts')
+
+    expect(route).toContain('votersDb.$transaction(')
+    expect(route).toContain('isolationLevel: VotersPrisma.TransactionIsolationLevel.RepeatableRead')
+    expect(route).not.toMatch(/votersDb\.(?!\$transaction\()[$\w]+[.(]/)
+    expect(route.match(/\btx\.(election|electionBallot|voterStatus|pendingVote|\$queryRawUnsafe)\b/g)?.length).toBe(8)
   })
 
   it('utvecklingsstatus visar ingen livevy och frågar inte efter demoläget', () => {

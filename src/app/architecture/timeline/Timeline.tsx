@@ -71,8 +71,8 @@ export function Timeline() {
     <section className="card tl-section" aria-labelledby="tidslinjen">
       <h2 id="tidslinjen">Din röst, steg för steg</h2>
       <p className="muted small">
-        Välj ett moment för att se vad som händer med din röst. Ditt kuvert är markerat så länge det
-        går att peka ut vilket det är.
+        Välj ett moment för att se vad som händer med din röst. Ditt kuvert är markerat fram till
+        att namnen tas bort.
       </p>
       <p className="muted small" style={{ marginBottom: 0 }}>
         Tidslinjen visar hur valet är tänkt att fungera, och allt är inte byggt än. Vad som finns i

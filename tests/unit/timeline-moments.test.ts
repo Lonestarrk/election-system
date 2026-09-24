@@ -112,9 +112,18 @@ describe('ditt kuvert pekas bara ut så länge namnet finns', () => {
     }
   })
 
-  it('texten säger att ingen längre kan peka ut ditt kuvert, inte heller animationen', () => {
-    expect(moment('Namnen tas bort').text).toMatch(/ingen peka ut vilket kuvert som är ditt/)
-    expect(moment('Namnen tas bort').text).toMatch(/inte heller den här animationen/)
+  it('texten säger att det inte längre går att se i urnan, och nämner kopiorna', () => {
+    /**
+     * Inte att INGEN kan peka ut kuvertet: den som kopierade urnan med namnen
+     * före stängningen, till exempel via en säkerhetskopia, kan det
+     * fortfarande. Påståendet gäller urnan och animationen, och texten
+     * hänvisar till svagheterna.
+     */
+    const text = moment('Namnen tas bort').text
+    expect(text).toMatch(/inte längre att se i urnan vilket kuvert som är ditt/)
+    expect(text).toMatch(/inte heller i den här animationen/)
+    expect(text).toMatch(/kopierade urnan medan namnen fanns kvar kan fortfarande veta det/)
+    expect(text).toMatch(/svagheterna/)
   })
 })
 
@@ -127,10 +136,38 @@ describe('liknelsen säger det den måste säga', () => {
     expect(moment('Summan öppnas').text).toMatch(/De enskilda kuverten förblir stängda/)
   })
 
-  it('summan öppnas bara med två av tre, och ingen kan öppna den ensam', () => {
-    expect(moment('Valet förbereds').text).toMatch(/två av tre förtroendepersoner/)
-    expect(moment('Valet förbereds').text).toMatch(/Ingen kan öppna låset ensam, inte heller den som driver systemet/)
+  it('summan öppnas bara med två av tre, och ingen av dem kan öppna den ensam', () => {
+    const prepared = moment('Valet förbereds').text
+    expect(prepared).toMatch(/två av tre förtroendepersoner har lämnat var sin del av nyckeln/)
+    expect(prepared).toMatch(/Ingen av dem kan öppna låset ensam/)
     expect(moment('Summan öppnas').text).toMatch(/Två av de tre förtroendepersonerna/)
+  })
+
+  it('svagheten med låset nämns i samma andetag som att ingen kan öppna det ensam', () => {
+    // Spec 4.5 och 10: när låset tillverkas finns hela nyckeln ett ögonblick
+    // hos den som gör det i ordning, alltså den som driver systemet.
+    const prepared = moment('Valet förbereds').text
+    expect(prepared).toMatch(/låset görs i ordning av den som driver systemet/)
+    expect(prepared).toMatch(/hela nyckeln ett ögonblick på ett ställe/)
+  })
+
+  it('delarna av nyckeln lämnas var för sig, och summan går upp först när två finns', () => {
+    // Spec 6.2: förtroendepersonerna lämnar sina bidrag var för sig.
+    const opened = moment('Summan öppnas').text
+    expect(opened).toMatch(/lämnar var sin del av nyckeln, en i taget/)
+    expect(opened).toMatch(/Först när två delar finns/)
+  })
+
+  it('enheten raderar sina uppgifter när sidan ser att röstningen stängt, och annars bevisar de ingenting', () => {
+    // Spec 3.1 punkt 4.
+    const closing = moment('Röstningen stänger').text
+    expect(closing).toMatch(/Så snart sidan ser att röstningen har stängt/)
+    expect(closing).toMatch(/Öppnar du aldrig sidan igen ligger uppgifterna kvar, men de bevisar ingenting/)
+  })
+
+  it('ett fel i kontrollen öppnar inte röstningen igen', () => {
+    expect(moment('Kontrollen').text).toMatch(/röstningen förblir stängd/)
+    expect(moment('Kontrollen').text).not.toMatch(/stoppas stängningen/)
   })
 
   it('valet läggs i det inre kuvertet på din egen enhet', () => {
@@ -163,5 +200,35 @@ describe('liknelsen säger det den måste säga', () => {
     // räkna om utifrån, utan vilar på kontrollen före stängningen.
     expect(moment('Resultatet').text).toMatch(/kontrollera att summan öppnades rätt/)
     expect(moment('Resultatet').text).toMatch(/går inte att räkna om utifrån/)
+  })
+})
+
+describe('liknelsen lovar inte mer än specen', () => {
+  /**
+   * Tre formuleringar som stod i en tidigare version, och som alla lovade mer
+   * än specen medger. Ingen av dem får komma tillbaka i något moment.
+   */
+  const texts = MOMENTS.map((entry) => ({ number: entry.number, text: `${entry.title} ${entry.text}` }))
+
+  it('ingen påstår att ingen kan peka ut ditt kuvert', () => {
+    // Den som kopierade urnan före stängningen kan det.
+    for (const { number, text } of texts) {
+      expect(text, `moment ${number}`).not.toMatch(/ingen (kan )?peka ut|kan ingen peka ut/i)
+    }
+  })
+
+  it('ingen påstår att inte heller den som driver systemet kan öppna låset', () => {
+    // När låset tillverkas finns hela nyckeln hos den som gör det i ordning.
+    for (const { number, text } of texts) {
+      expect(text, `moment ${number}`).not.toMatch(/inte heller den som driver systemet/i)
+      expect(text, `moment ${number}`).not.toMatch(/\bIngen kan öppna\b/)
+    }
+  })
+
+  it('ingen påstår att förtroendepersonerna gör något samtidigt', () => {
+    // De lämnar sina delar var för sig (spec 6.2).
+    for (const { number, text } of texts) {
+      expect(text, `moment ${number}`).not.toMatch(/samtidigt/i)
+    }
   })
 })

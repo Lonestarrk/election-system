@@ -28,7 +28,7 @@ export function reviewQuestions({ chain }: PageLimitations): ReviewQuestion[] {
         <>
           Varje rad bär väljarens BankID-signatur över chifferhashen och räknaren. Valideringen
           före stängningen prövar signatur, räknare, valsedel och bevis medan kopplingen finns, och
-          stoppar stängningen vid en avvikelse.
+          stoppar skalningen vid en avvikelse. Röstningen förblir stängd, och ingenting raderas.
         </>
       ),
       today: (
