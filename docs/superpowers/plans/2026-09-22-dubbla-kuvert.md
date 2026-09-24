@@ -3531,6 +3531,96 @@ kan använda samma knep på egen hand.
 
 ---
 
+## Task 14f: Certifikatkedjan valideras, så att underskriften binder på riktigt
+
+**Beslut av användaren 2026-09-24:** *"Fixa sårbarhet: underskriften skyddar i dag inte
+mot den som driver systemet. BankID-certifikatkedjan valideras inte."* Körs direkt
+efter uppgift 14b, som rör samma verifieringsställen.
+
+**Vad luckan är, i koden.** Attrappen (`MockBankIdService.ts`) skapar inga riktiga
+certifikat. Den gör ett nytt RSA-nyckelpar per underskrift och ett eget format
+(`formatMockCertificate`). `PendingVote` lagrar bara den publika nyckeln
+(`bankIdPublicKey`), och `validateBeforeClose` prövar signaturen mot den nyckel raden
+själv bär: `verifySignedPayload(vote.bankIdSignature, vote.bankIdPublicKey`. Den som kan
+skriva i databasen bygger alltså ett eget nyckelpar och en egen rad som godkänns.
+Testet med den äkta förfalskningen i `validate-before-close.test.ts` visar det.
+`certificateBelongsTo` finns men används inte i produktionskoden.
+
+**Vad som ska byggas**
+
+1. **Attrappen blir en certifikatutfärdare.** Skapa en rot och en utfärdande
+   mellannivå en gång, med `openssl`, som finns på utvecklingsdatorn. Rotens privata
+   nyckel kastas efter genereringen, så att ingen kan skapa en ny mellannivå.
+   Rotcertifikatet, mellannivåns certifikat och mellannivåns privata nyckel
+   checkas in som tydligt märkta testfixturer. Attrappen utfärdar vid varje
+   underskrift ett X.509-certifikat för väljaren, med personnumret som
+   `serialNumber` i subject, med `keyUsage` digitalSignature och utan CA-rätt.
+   `node:crypto` kan läsa och verifiera X.509 men inte skapa certifikat, så
+   utfärdandet kräver en liten DER-kodare för `TBSCertificate`. Den hör bara till
+   attrappen.
+2. **Kedjan valideras mot ett fast rotcertifikat,** när rösten läggs
+   (`/api/vote/encrypted`) och i valideringen före stängningen, och därmed även vid
+   omverifieringen i skalningen. Använd `X509Certificate` i `node:crypto`: löv mot
+   mellannivå mot rot, `ca` på mellannivån, giltighetstid vid underskriften, och
+   `keyUsage` på lövet. Rotcertifikaten konfigureras, till exempel med en sökväg i
+   miljön. I demoläget används attrappens rot. Uppgift 17 ska se till att skarpt läge
+   vägrar starta med attrappens rot.
+3. **Certifikatet knyts till väljaren.** Personnumret i lövets `serialNumber` hashas
+   med samma peppar som `voter_status.identityHash`, och hashen ska vara väljarens.
+   Använd den befintliga `certificateBelongsTo`, eller ersätt den. En giltig kedja för
+   en annan väljare ska underkännas.
+4. **Certifikatet lagras krypterat.** Det innehåller personnummer och namn i klartext.
+   Lagrat som det är bryter det projektets princip att en databasdump utan pepparn inte
+   avslöjar vem som röstat. `PendingVote` får därför kedjan krypterad med AES-256-GCM
+   och en nyckel som härleds ur `IDENTITY_PEPPER`, med egen domänseparation. Den raderas
+   med raden vid skalningen. `bankIdPublicKey` tas bort, eftersom nyckeln nu kommer ur
+   lövet.
+5. **Testet med den äkta förfalskningen vänds.** En rad med eget nyckelpar och
+   självsignerat certifikat ska nu underkännas. Lägg till tester för:
+   - en kedja till en annan rot
+   - ett giltigt certifikat för en annan väljare
+   - ett utgånget certifikat
+   - en mellannivå utan CA-rätt
+   - ett löv med CA-rätt
+   Varje test ska underkännas av just sin kontroll.
+
+**Vad fixen inte ger, och som ska stå som begränsningar i
+`src/lib/known-limitations.ts` och på arkitektursidan**
+
+Posten om certifikatkedjan försvinner när dess markör försvinner. Ersätt den med de
+begränsningar som återstår. Säg dem lika rakt som den gamla:
+
+- **Den som driver systemet kan ta bort ett kuvert eller återställa en väljares
+  tidigare äkta röst.** Kedjan hindrar att nya underskrifter förfalskas, men inte
+  att äkta tas bort eller spelas upp igen, eftersom räknaren för den senaste
+  underskriften lagras i samma databas. Väljaren kan upptäcka båda på sin enhet före
+  stängningen, där jämförelsen svarar "ändrad" eller "ingen röst", och efter
+  stängningen genom markeringen "har röstat" (uppgift 11d).
+- **Ingen spärrkontroll (OCSP).** Ett spärrat BankID-certifikat godkänns.
+- **I demoläget utfärdar attrappen certifikaten själv.** Den som driver en demo kan
+  därför fortfarande förfalska. Skyddet gäller med riktig BankID, där nyckeln finns
+  hos BankID. Testerna visar egenskapen mot den inbyggda roten.
+- **Riktig BankID kräver en adapter för XML-signaturen.** BankID v6 returnerar en
+  XMLDSig med kedjan inbäddad. Kedjevalideringen ovan är oberoende av formatet, men
+  att läsa ut kedjan och den signerade texten ur XML-signaturen är inte byggt, och
+  kan inte testas utan BankID:s testmiljö.
+
+Uppdatera också spec 4.6 och 10. Och uppdatera arkitektursidans svaghet *"Underskriften
+skyddar i dag inte mot den som driver systemet"* till det som gäller efter fixen: den
+som bara kan skriva i databasen kan inte längre lägga in röster för någon som inte
+skrivit under, och en granskare med åtkomst under valideringen kan kontrollera varje
+underskrift mot BankID:s rot.
+
+**Schemaändringen** kräver en migrering och `npm run generate`, och den körande
+dev-servern låser Prismas DLL. Implementeraren skriver all kod och migreringen först
+och rapporterar sedan att generate behövs. Controllern stoppar servern, låter
+implementeraren generera, testa och migrera dev-databasen, och startar sedan servern
+igen.
+
+- [ ] Tester först, implementation, hela sviten, committa.
+
+---
+
 ## Task 14e: Pollningen bär bara orderRef, och bevakningen läser den offentliga listan
 
 **Varför:** två belastningsfel som granskningen av uppgift 14 hittade. De lyftes ur 14b,
@@ -3686,7 +3776,8 @@ och controllern stoppar och startar om den.
 ---
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
-**14** → **14b** → **14e** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
+**14** → **14b** → **14f** → **14e** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
+Uppgift 14f lades in 2026-09-24 på användarens begäran och körs direkt efter 14b.
 Uppgift 14b, 14c och 14d kom till efter uppgift 14 och ligger där de gör mest nytta:
 14b innan något mer verifieras i stor skala, 14e före 11e, som återanvänder dess lager
 för orderns tillstånd, 14d före den oberoende verifieraren i
