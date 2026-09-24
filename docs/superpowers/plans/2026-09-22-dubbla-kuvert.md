@@ -15,7 +15,10 @@
 - **Inga nya npm-beroenden**, med ett dokumenterat undantag i uppgift 17 (OpenAPI).
   Regeln skrevs för kryptot: varje kryptoberoende är en angreppsyta i just den kod
   som bär valhemligheten, och mätningen visade att inget behövs. Undantaget rör
-  varken krypto, röstdata eller identiteter. Mätt: 2,0 ms per modexp i 2048-bitars MODP räcker (0,7 s för en väljares tre valsedlar).
+  varken krypto, röstdata eller identiteter. Den ursprungliga mätningen, 2,0 ms per
+  modexp, gällde OpenSSL och inte ren BigInt. Rättade siffror står i spec 4.1: 39,7 ms i
+  Node och 4,4 ms i Chromium. Regeln står kvar, eftersom uppgift 14b når OpenSSL via
+  `node:crypto` utan nya beroenden.
 - **Grupp:** RFC 3526 MODP Group 14. `g = 4` (ordning `q`), alla exponenter mod `q = (p-1)/2`.
 - **Varje mottaget gruppelement valideras** med `1 < y < p` och `y^q ≡ 1 (mod p)` innan det används.
 - **Kommentarer och användartext på svenska**, som resten av kodbasen. Kommentarer förklarar *varför*, inte *vad*.
@@ -3491,8 +3494,10 @@ Regeln om inga nya npm-beroenden vilade på 2 ms. Den står kvar, eftersom det f
 snabba vägar utan beroenden:
 
 1. **Mät först**, i Node och i Chromium: en modexp med full exponent, alltså mod `q`,
-   med `g`, med den publika nyckeln `h` och med godtycklig bas. Skriv in siffrorna i
-   spec 4.1 och i planens globala regler, där 2,0 ms står i dag.
+   med `g`, med den publika nyckeln `h` och med godtycklig bas. Granskaren av uppgift 14
+   har redan mätt 39,7 ms i Node, 4,4 ms i Chromium och 1,6 ms i OpenSSL, och cirka 236
+   respektive 290 modexp för att kryptera och verifiera en valsedel med 26 alternativ.
+   Siffrorna står i spec 4.1. Bekräfta dem och mät igen efter varje steg nedan.
 2. **Servern räknar nativt.** `node:crypto` har ingen modexp, men
    `createDiffieHellman(p, bas)` med `setPrivateKey(exponent)` räknar `bas^exponent mod
    p` i OpenSSL. Pröva att den ger exakt samma svar som BigInt-implementationen på
@@ -3505,14 +3510,44 @@ snabba vägar utan beroenden:
 4. **Klienten får fasta baser.** `g` och `h` är desamma för varje röst i ett val, så
    förberäknade fönstertabeller ger en snabbare exponentiering utan beroenden.
    Mät före och efter.
-5. **Mål:** en riksdagsvalsedel med 26 alternativ verifieras på under en sekund på
+5. **Valsedeln skickas en gång, inte vid varje pollning.** Röstsidan skickar i dag hela
+   valsedeln, cirka 160 kB, med varje pollning av signeringen
+   (`BankIdSigning.tsx:43` och `:163`). Hastighetsgränsen 30 per minut ligger exakt på
+   pollningstakten, så två väljare bakom samma NAT stryps. Låt servern hålla valsedeln
+   med ordern från `sign-start`, och låt pollningen bara bära `orderRef`.
+6. **Mål:** en riksdagsvalsedel med 26 alternativ verifieras på under en sekund på
    servern och krypteras på under en sekund i Chromium. Mät också hur lång tid
-   valideringen före stängningen tar för 100 röster, och skriv in siffran.
+   valideringen före stängningen tar för 100 röster, och skriv in siffran. I dag är det
+   cirka 39 s per väljare med tre valsedlar, alltså ungefär en timme för 100 väljare.
 
 Den oberoende verifieraren i uppgift 13 får inte importera `src`. Den kör i Node och
 kan använda samma knep på egen hand.
 
 - [ ] Mätningar först, sedan tester, implementation, hela sviten, committa.
+
+---
+
+## Task 14d: Fiat–Shamir binder hela valsedeln
+
+**Varför:** spec 4.4 säger att bevisens utmaning binder hela chifferlistan. Koden
+binder varje alternativs OR-bevis bara till sitt eget chiffer (`proofs.ts:43-49`).
+Granskaren av uppgift 14 hittade det och hittade ingen praktisk attack, men ett bevis
+som inte binder sitt sammanhang kan i princip klippas ut ur en valsedel och sättas in
+i en annan. Specen och koden ska säga samma sak, och den starkare egenskapen är den
+specen lovar.
+
+Låt utmaningen för varje OR-bevis och för summabeviset binda valets och valsedelns id,
+alternativets index och hela listan av chiffer, med den domänseparation som redan
+finns. Ändringen ändrar bevisens format. Den ska därför göras **före uppgift 13**, som
+skriver den oberoende verifieraren mot formatet. Klienten och servern ska ändras i
+samma commit, och e2e-sviten ska visa att en valsedel krypterad i Chromium fortfarande
+godkänns på servern.
+
+Lägg ett test som klipper ut ett giltigt OR-bevis ur en valsedel och sätter in det i en
+annan, och som ska underkännas. Före ändringen ska testet bli rött eller visa att
+attacken inte fungerar av annat skäl. Skriv i så fall ut skälet.
+
+- [ ] Tester först, implementation i klient och server, hela sviten, committa.
 
 ---
 
@@ -3615,10 +3650,11 @@ och controllern stoppar och startar om den.
 ---
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
-**14** → **14b** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18. Uppgift 14b
-och 14c kom till efter uppgift 14 och ligger där de gör mest nytta: 14b innan något
-mer verifieras i stor skala, och 14c före uppgift 15, som annars hade gjort
-folkomröstningar omöjliga. Uppgift 11f ligger först
+**14** → **14b** → **14d** → 11d → 11e → 12 → 12b → 13 → **14c** → 15 → 16 → 17 → 18.
+Uppgift 14b, 14c och 14d kom till efter uppgift 14 och ligger där de gör mest nytta:
+14b innan något mer verifieras i stor skala, 14d före den oberoende verifieraren i
+uppgift 13, eftersom den ändrar bevisens format, och 14c före uppgift 15, som annars
+hade gjort folkomröstningar omöjliga. Uppgift 11f ligger först
 eftersom användaren prioriterade arkitektursidan. Uppgift 14 flyttades fram
 2026-09-23 på användarens begäran, så att det gamla tokenflödet försvinner ur det
 man klickar sig igenom. Beroendet är kontrollerat: uppgift 14 använder bara
@@ -3716,6 +3752,15 @@ Kör: `npx vitest run tests/integration/tally.test.ts`
 Förväntat: FAIL, modulen saknas
 
 - [ ] **Steg 3: Implementera `tally.usecase.ts`**
+
+**Spärr mellan det gamla flödets bok och kuverten.** Granskaren av uppgift 14 fann att
+en väljare med direkta anrop kan ha både en röst i det gamla flödet (`vote`, med
+markering i `voter_ballot_status`) och ett kuvert på samma valsedel. Röstsidan spärrar
+det, men inte servern. Ingen räkning dubblerar i dag, eftersom de två böckerna aldrig
+räknas ihop. Men den här uppgiften bygger kuvertens räkning, och spärren ska finnas på
+servern innan dess: `castEncryptedBallot` ska vägra om väljaren har en markering från
+det gamla flödet på valsedeln, och det gamla flödets utfärdande ska vägra om väljaren
+har ett liggande kuvert. Spärren tas bort med det gamla flödet i uppgift 15.
 
 Summera komponentvis över alla `EncryptedVote` för valsedeln, spara varje
 förtroendemans bidrag med bevis, och kombinera när k stycken finns. Ta den diskreta
@@ -4661,8 +4706,11 @@ git commit -m "Demoläge och skarpt läge, med produktion som felläge"
 **Beroendeundantaget, och varför det är motiverat**
 
 Projektets globala krav säger inga nya npm-beroenden. Det skrevs för kryptot —
-poängen var att 2 ms per modexp räcker, så inget kryptobibliotek behövs, och att
-varje kryptoberoende är en angreppsyta i just den kod som bär valhemligheten.
+poängen var att inget kryptobibliotek behövs, eftersom OpenSSL:s modexp nås via
+`node:crypto` (spec 4.1 och uppgift 14b), och att varje kryptoberoende är en
+angreppsyta i just den kod som bär valhemligheten. Skriv inte in siffran 2 ms i
+ARCHITECTURE.md. Den gällde OpenSSL och inte ren BigInt, och de rättade siffrorna står
+i spec 4.1.
 
 Den här uppgiften gör ett undantag för två paket, och skälet ska stå i
 `ARCHITECTURE.md`, inte bara i ett commit-meddelande:

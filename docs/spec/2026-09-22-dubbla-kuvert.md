@@ -143,9 +143,24 @@ vilket öppnar för angrepp i undergruppen av ordning 2. `4 = 2²` har ordning `
 primtal. **Alla exponenter räknas mod `q`, och varje mottaget gruppelement kontrolleras
 med `y^q ≡ 1 (mod p)` innan det används.**
 
-Mätt kostnad: **2,0 ms per modexp**. En riksdagsvalsedel kostar ~134 modexp ≈ 0,3 s, och
-en väljares tre valsedlar ~0,7 s. Ren BigInt räcker — **inget kryptobibliotek läggs
-till**, och projektets nollberoendelinje för krypto står kvar.
+**Mätt kostnad, rättad 2026-09-24.** Den första versionen sa 2,0 ms per modexp och
+cirka 134 modexp per riksdagsvalsedel. Båda var fel, och felet upptäcktes först när
+röstsidan byggdes. Två oberoende mätningar är överens om:
+
+| Var | En modexp med full exponent (2048 bitar) |
+|---|---|
+| Ren BigInt i Node 22 | 39,7 ms |
+| Ren BigInt i Chromium 153 | 4,4 ms |
+| OpenSSL | 1,6 ms |
+
+De 2 ms motsvarade alltså OpenSSL, inte BigInt i Node. En riksdagsvalsedel med
+personval har 26 alternativ och kräver cirka 236 modexp för att krypteras och cirka
+290 för att verifieras. Det ger 1,1 s i Chromium för krypteringen och 11,2 s i Node för
+verifieringen, synkront, med händelseslingan stillastående.
+
+**Inget kryptobibliotek läggs till.** Nollberoendelinjen står kvar, eftersom det finns
+snabba vägar utan beroenden: OpenSSL:s modexp nås via `node:crypto`, verifieringen kan
+flyttas till en egen tråd, och fasta baser går att förberäkna. Se planens uppgift 14b.
 
 ### 4.2 Exponentiell ElGamal
 
