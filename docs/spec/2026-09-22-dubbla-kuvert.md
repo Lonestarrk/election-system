@@ -341,9 +341,22 @@ Vad signaturen ger nu:
 | En självkonsekvent förfalskning med eget nyckelpar, också från den som skriver direkt i databasen | Ett spärrat BankID-certifikat, eftersom ingen spärrkontroll görs |
 | En annan väljares äkta underskrift, lagd i fel rad | Den som driver en demo, eftersom attrappen utfärdar certifikaten själv |
 
-Den som bara kan skriva i databasen kan alltså inte längre lägga in röster för någon som
-inte skrivit under, och en granskare med åtkomst under valideringen kan kontrollera varje
-underskrift mot BankID:s rot. Borttagning och återställning går inte att se i databasen,
+Den som bara kan skriva i **röstlängden** (`voters_db`) kan alltså inte längre få in en röst
+för någon som inte skrivit under. Det gäller med fyra förbehåll:
+
+1. **Med riktig BankID.** I demon utfärdar attrappen certifikaten själv.
+2. **Stängningen flyttar exakt de kuvert den validerat**, i en enda läsning. Sedan 14f:s
+   fixrunda prövades det mot 55 skrivningar i sex tidsfönster runt stängningen, och ingen
+   förfalskning nådde urnan. Före fixrundan kunde en rad som togs bort mellan två
+   läsningar flyttas utan att ha validerats.
+3. **En granskare behöver pepparn** för att öppna kedjorna och kontrollera underskrifterna
+   mot BankID:s rot under valideringen, och samma hemlighet öppnar namnen.
+4. **Den som kan skriva i röstdatabasen** (`votes_db`) kan än så länge byta ut ett chiffer.
+   Det kan ske före infogningen, genom en rad med ett äkta kuverts hash men ett annat
+   chiffer, som infogningen hoppar över. Det kan också ske efter stängningen, eftersom
+   ingenting kontrollerar urnan då, och kuvertroten går inte att räkna om när
+   signaturerna är raderade. Uppgift 11d läser tillbaka varje flyttat chiffer, och
+   uppgift 12b räknar om en urnrot som publiceras vid stängningen. Borttagning och återställning går inte att se i databasen,
 eftersom räknaren för den senaste underskriften lagras där. Väljaren kan däremot upptäcka
 båda själv: före stängningen svarar jämförelsen på hennes enhet "ändrad" eller "ingen röst",
 och efter stängningen ska markeringen "har röstat" visa att hon röstat (uppgift 11d).

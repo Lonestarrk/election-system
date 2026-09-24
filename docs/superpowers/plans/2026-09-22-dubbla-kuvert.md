@@ -3694,6 +3694,26 @@ omöjlig. Det gör raderingen vid stängningen.
   lämnade en HSM och att fingeravtrycken räknades där. Det är inte byggt.
 - I demoläget och lokalt ligger hemligheterna i `.env`, inte i ett valv.
 
+**Texter från omgranskningen av 14f som den här uppgiften äger**, eftersom den ändå rör
+filerna:
+- `Weaknesses.tsx:64–65` säger att "bara de röster som prövats räknas". Det stämmer för
+  vad stängningen flyttar, men inte för vad som räknas: ingen räkning finns än, och
+  ingenting kontrollerar urnan efter stängningen. "Databasen" där och i
+  `WhatItDoesNotGive.tsx:33` ska vara röstlängden, eftersom den som skriver i röstdatabasen
+  kan byta ut ett chiffer (spec 4.6, förbehåll 4).
+- `validate-before-close.usecase.ts:35–36` säger "Ingen med databasåtkomst kan förfalska
+  dem" utan avgränsning. Det är falskt i demon, och bevisen kan vem som helst ta fram.
+- `known-limitations.ts:216` och `sealed-chain.ts:20` säger att förseglingen "avslöjar
+  ingenting nytt". Det gäller kedjan, men inte signaturkolumnen med riktig BankID, vars
+  längd följer lövets nyckeltyp och kan peka ut utfärdaren.
+- Posten `bankid-xmldsig-adapter-missing` ska säga att BankID:s `signature` är en XMLDSig
+  med kedjan inbäddad. En adapter som lagrar den som den är lägger namn och personnummer i
+  klartext bredvid kuvertet. Den ska förseglas som kedjan.
+- `close/route.ts:98` säger "INGENTING ÄR RADERAT", vilket är falskt när en andra
+  stängning redan hunnit radera. Avgränsa till det som är känt.
+- Ental "mellannivå" i `pending-vote.service.ts:210` och `prisma/voters/schema.prisma:376`
+  ska vara "mellannivåer", eftersom kedjan nu har en till tre.
+
 **Tekniska detaljer** får ett avsnitt om hemligheterna, med tabellen ovan, rollerna och
 det valvet inte ger. **Utvecklingsstatus** säger att Azure-uppsättningen finns som Bicep
 och vad som är byggt.
@@ -3826,8 +3846,35 @@ arkitektursidan, vars fastabell därför säger "skrivs aldrig" om de övriga.
      hash inte finns i den nya, validerade läsningen kommer från en avbruten körning och
      tas bort före infogningen. Det ska loggas och synas i rapporten.
    - **En andra stängning ger i dag ett falskt `untouched`** om den läser fasen före den
-     förstas COMMIT men kuverten efter. Jämför-och-sätt på fasen, punkt 4 ovan, stänger
-     det.
+     förstas COMMIT men kuverten efter (`close-election.usecase.ts:614–627`). Svaret
+     säger då att 0 kuvert skulle flyttas men 2 finns och att kopplingen är orörd, fast
+     fasen är STRIPPED. Jämför-och-sätt på fasen, punkt 4 ovan, stänger det. Läs också
+     fasen innan steget påstår `untouched`, som `settleChangedEnvelopes` redan gör.
+   - **Städningen av rester kräver att bara en stängning kör åt gången.** Omgranskningen
+     av 14f visade att en automatisk städning utan lås är farlig: i fel ordning ser den
+     en tom läsning och raderar det en annan stängning just flyttat, när kopplingen
+     redan är borta. Villkor för städningen: jämför-och-sätt, eller ett advisory lock,
+     fasen skild från STRIPPED och roten null. Radera då exakt de rader i
+     `encrypted_vote` på omröstningens valsedlar vars hash inte finns i den nyss
+     validerade läsningen, logga antalet och peka ut dem i beskedet.
+   - **Läs tillbaka varje flyttat chiffer.** Den som kan skriva i votes_db kan före
+     infogningen lägga en rad med ett äkta kuverts hash men ett annat chiffer, och
+     `skipDuplicates` behåller den. Steg 5 räknar bara rader, så stängningen svarar
+     `closed` fast urnans chiffer inte ger sin egen hash (`:600–614`). Efter infogningen
+     ska varje flyttat kuvert läsas tillbaka och vara byte för byte det validerade,
+     chiffer och bevis.
+   - **Läs kuverten i omgångar.** `readEnvelopes` (`validate-before-close.usecase.ts:426`)
+     läser allt i en fråga, och Prisma kastar för svar över 536 870 888 tecken. Med
+     14f:s utfyllnad på 32 KiB per kuvert blir taket cirka 9 850 kuvert per stängning
+     vid 3 alternativ, och cirka 3 000 vid 26. Stängningen faller säkert till
+     `untouched`, men ett större val går inte att stänga. Läs i omgångar och validera
+     läsningen som helhet.
+   - **Dubbel stängning med noll kuvert** ger i dag två `closed` och två LINK_CLEARED.
+     Jämför-och-sätt stänger det.
+   - **Fönstret W6:** en rad som committas mellan `left`-räkningen och COMMIT blir kvar,
+     och då svarar stängningen `closed` och sedan `already_closed` med ett liggande
+     kuvert. Det är punkt 5b:s fönster, som nu är smalare. CLOSED före läsningen och
+     fasen i läggningens transaktion stänger det.
    Skriv ett test som låter en röst skrivas mellan läsningen och raderingen, och som
    kräver att den antingen flyttas eller att väljaren får ett fel, aldrig "lagd".
 6. **Markeringen "har röstat", utan tidsstämpel.** Spec 3.1 punkt 6 säger att
@@ -4115,6 +4162,14 @@ Kontroller som ska finnas efteråt, och som var och en ska kunna fallera:
    röster, och en omkombination av de lagrade partiella dekrypteringarna ger de
    publicerade talen.
 5. **Kuvertroten finns** och kopplingen är raderad (`link_cleared`, finns redan).
+5b. **Urnroten stämmer.** Kuvertroten binder (chifferhash, signatur) och går inte att räkna
+   om efter stängningen, eftersom signaturerna är raderade. Den som kan skriva i votes_db
+   kan därför byta ut ett chiffer och dess hash mot en ny, självkonsekvent rad med
+   giltiga bevis, och ingenting märker det. Omgranskningen av 14f hittade luckan.
+   Stängningen ska därför också beräkna och publicera en **urnrot**, en Merklerot över
+   de flyttade chifferhasharna sorterade, i samma transaktion som kuvertroten.
+   Slutkontrollen räknar om den ur `encrypted_vote` och kräver att den är densamma.
+   Roten är en hash och publicerar ingenting per röst, så den följer spec 3.1.
 6. **Fasen är `TALLIED`** innan fastställandet tillåts, och fastställandet sätter
    fasen `CERTIFIED` med jämför-och-sätt, som övergångarna i uppgift 11d.
 7. **Revisionskedjan är obruten** (`audit_chain_intact`, finns redan).
