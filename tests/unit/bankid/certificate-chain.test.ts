@@ -8,6 +8,7 @@ import {
   type ChainVerdict,
 } from '@/modules/eligibility/bankid/certificate-chain'
 import {
+  customHierarchy,
   lookalikeHierarchy,
   MOCK_INTERMEDIATE,
   MOCK_ROOT,
@@ -15,7 +16,9 @@ import {
   rsaKeys,
   selfSignedLeaf,
   signPayload,
+  subjectWithTwoPersonalNumbers,
   voterLeaf,
+  type CaOptions,
 } from './forged-certificates'
 
 /**
@@ -143,7 +146,23 @@ describe('varje kontroll underkänner sitt eget fall', () => {
     const tooShort = voterLeaf(voter, { personalNumber: '9001011234' })
     const withDash = voterLeaf(voter, { personalNumber: '19900101-1234' })
 
-    for (const leaf of [without, tooShort, withDash]) {
+    /**
+     * Två serialNumber, i var sin RDN, i samma RDN och två likadana
+     * (granskningen av uppgift 14f, M1). Testet prövade förut aldrig två, och
+     * en prövning som godtog det första av flera överlevde det. Två
+     * personnummer i ett certifikat är två svar på vems underskriften är.
+     */
+    const twoApart = voterLeaf(voter, {
+      subject: subjectWithTwoPersonalNumbers('199001011234', '198505152345', { together: false }),
+    })
+    const twoTogether = voterLeaf(voter, {
+      subject: subjectWithTwoPersonalNumbers('199001011234', '198505152345', { together: true }),
+    })
+    const sameTwice = voterLeaf(voter, {
+      subject: subjectWithTwoPersonalNumbers('199001011234', '199001011234', { together: false }),
+    })
+
+    for (const leaf of [without, tooShort, withDash, twoApart, twoTogether, sameTwice]) {
       expect(reasonOf(verify([leaf, MOCK_INTERMEDIATE]))).toBe('no_personal_number')
     }
   })
@@ -152,7 +171,117 @@ describe('varje kontroll underkänner sitt eget fall', () => {
     const leaf = voterLeaf(voter)
 
     expect(reasonOf(verify([leaf]))).toBe('malformed')
+    // Roten följer aldrig med kedjan, inte ens sist, där den är självsignerad.
     expect(reasonOf(verify([leaf, MOCK_INTERMEDIATE, MOCK_ROOT]))).toBe('malformed')
+  })
+})
+
+describe('kedjans längd och varje nivås rätt att utfärda (granskningen av uppgift 14f, M2 och M3)', () => {
+  /**
+   * Kedjan hade förut exakt två certifikat, och texten sa att BankID:s kedja
+   * har samma form. Det är inte bekräftat, och granskaren tror att BankID har
+   * två CA-nivåer under roten. Kedjan är nu ett löv och en till tre
+   * mellannivåer, och varje nivå prövas för sig.
+   *
+   * Varje fel läggs så långt upp i kedjan som det går, så att en prövning som
+   * bara ser på den mellannivå som utfärdat lövet inte går igenom testerna.
+   */
+  function chainUnder(label: string, root: CaOptions, levels: CaOptions[]) {
+    const hierarchy = customHierarchy(label, root, levels)
+    const leaf = voterLeaf(voter, { issuer: hierarchy.issuer })
+    return { chain: [leaf, ...hierarchy.intermediates], root: hierarchy.root, hierarchy }
+  }
+
+  const reasonUnder = ({ chain, root }: { chain: X509Certificate[]; root: X509Certificate }) =>
+    reasonOf(verify(chain, [root]))
+
+  it('godkänner två och tre mellannivåer, som BankID:s kedja kan se ut', () => {
+    expect(reasonUnder(chainUnder('två nivåer', {}, [{ pathLength: 1 }, { pathLength: 0 }]))).toBe(
+      'godkänd',
+    )
+    expect(reasonUnder(chainUnder('tre nivåer', {}, [{}, {}, {}]))).toBe('godkänd')
+  })
+
+  it('underkänner fler än tre mellannivåer', () => {
+    const tooDeep = chainUnder('fyra nivåer', {}, [{}, {}, {}, {}])
+
+    expect(tooDeep.chain).toHaveLength(5)
+    expect(reasonUnder(tooDeep)).toBe('malformed')
+  })
+
+  it('en mellannivå utan CA-rätt, också när den står överst', () => {
+    expect(reasonUnder(chainUnder('övre utan CA', {}, [{ ca: false }, {}]))).toBe('intermediate_not_ca')
+    expect(reasonUnder(chainUnder('nedre utan CA', {}, [{}, { ca: false }]))).toBe('intermediate_not_ca')
+  })
+
+  it('en mellannivå utan keyCertSign, också när OpenSSL kallar den en CA', () => {
+    // Utan keyUsage godtar OpenSSL en CA, men RFC 5280 kräver tillägget, och
+    // ett BankID-certifikat saknar det aldrig.
+    const withoutKeyUsage = chainUnder('övre utan keyUsage', {}, [{ keyUsage: null }, {}])
+    expect(withoutKeyUsage.hierarchy.intermediates[1]!.ca).toBe(true)
+    expect(reasonUnder(withoutKeyUsage)).toBe('intermediate_not_ca')
+
+    const onlyCrlSign = chainUnder('övre bara cRLSign', {}, [{ keyUsage: ['cRLSign'] }, {}])
+    expect(reasonUnder(onlyCrlSign)).toBe('intermediate_not_ca')
+  })
+
+  it('en mellannivå med pathLen 0 får inte ha en mellannivå under sig', () => {
+    expect(reasonUnder(chainUnder('övre pathLen 0', {}, [{ pathLength: 0 }, {}]))).toBe(
+      'path_length_exceeded',
+    )
+    // Kontrasten: pathLen 1 räcker för en nivå under, och den som utfärdat
+    // lövet klarar pathLen 0, eftersom lövet inte räknas.
+    expect(reasonUnder(chainUnder('övre pathLen 1', {}, [{ pathLength: 1 }, { pathLength: 0 }]))).toBe(
+      'godkänd',
+    )
+  })
+
+  it('en rot med pathLen 0 får inte utfärda en mellannivå', () => {
+    // Granskarens fall. OpenSSL och RFC 5280 säger nej, och förut godkändes det.
+    expect(reasonUnder(chainUnder('rot pathLen 0', { pathLength: 0 }, [{}]))).toBe('path_length_exceeded')
+    expect(reasonUnder(chainUnder('rot pathLen 1, två nivåer', { pathLength: 1 }, [{}, {}]))).toBe(
+      'path_length_exceeded',
+    )
+    expect(reasonUnder(chainUnder('rot pathLen 1', { pathLength: 1 }, [{}]))).toBe('godkänd')
+  })
+
+  it('ett led i mitten som inte är utfärdat av ledet ovanför', () => {
+    // Den övre mellannivån kommer ur en annan betrodd hierarki. Varje led för
+    // sig är en giltig CA, men kedjan hänger inte ihop.
+    const lower = customHierarchy('nedre hierarki', {}, [{}, {}])
+    const upper = customHierarchy('övre hierarki', {}, [{}])
+    const leaf = voterLeaf(voter, { issuer: lower.issuer })
+
+    expect(reasonOf(verify([leaf, lower.intermediates[0]!, upper.intermediates[0]!], [upper.root]))).toBe(
+      'not_issued_by_intermediate',
+    )
+  })
+
+  it('en utgången rot underkänner kedjan, fast lövet och mellannivån gäller', () => {
+    const expired = chainUnder('utgången rot', { notAfter: new Date('2021-01-01T00:00:00Z') }, [{}])
+    expect(reasonUnder(expired)).toBe('not_valid_when_signed')
+
+    const notYet = chainUnder('rot som ännu inte gäller', { notBefore: new Date(Date.now() + 30 * DAY) }, [{}])
+    expect(reasonUnder(notYet)).toBe('not_valid_when_signed')
+  })
+
+  it('kontrasten: under en rot som senare gått ut godkänns en underskrift från när den gällde', () => {
+    const hierarchy = customHierarchy('rot som gick ut 2021', { notAfter: new Date('2021-01-01T00:00:00Z') }, [{}])
+    const leaf = voterLeaf(voter, {
+      issuer: hierarchy.issuer,
+      notBefore: new Date('2020-03-01T00:00:00Z'),
+      notAfter: new Date('2020-12-01T00:00:00Z'),
+    })
+
+    expect(
+      reasonOf(verify([leaf, ...hierarchy.intermediates], [hierarchy.root], signedAt(new Date('2020-06-01T12:00:00Z')))),
+    ).toBe('godkänd')
+  })
+
+  it('också en övre mellannivå ska ha gällt vid underskriften', () => {
+    expect(
+      reasonUnder(chainUnder('övre utgången', {}, [{ notAfter: new Date('2021-01-01T00:00:00Z') }, {}])),
+    ).toBe('not_valid_when_signed')
   })
 })
 
@@ -243,5 +372,13 @@ describe('tolkningen av kedjan ur BankID:s svar', () => {
     expect(parseCertificateChain('-----BEGIN CERTIFICATE-----')).toBeNull()
     expect(parseCertificateChain([42])).toBeNull()
     expect(parseCertificateChain([])).toBeNull()
+  })
+
+  it('läser upp till fyra certifikat, men inte fler', () => {
+    const leaf = voterLeaf(voter)
+    const four = pemChain(leaf, MOCK_INTERMEDIATE, MOCK_INTERMEDIATE, MOCK_INTERMEDIATE)
+
+    expect(parseCertificateChain(four)).toHaveLength(4)
+    expect(parseCertificateChain([...four, MOCK_ROOT.toString()])).toBeNull()
   })
 })

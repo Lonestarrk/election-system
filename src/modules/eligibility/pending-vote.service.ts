@@ -473,44 +473,67 @@ export async function compareWithPendingVotes(
 }
 
 /**
- * Raderar samtliga liggande kuvert för en omröstning.
+ * Hur många kuvert som raderas per sats. PostgreSQL tar ett begränsat antal
+ * parametrar per sats, och varje kuvert kostar två, id och chifferhash.
+ */
+const CLEAR_BATCH_SIZE = 1_000
+
+/**
+ * Raderar kopplingen för exakt de kuvert skalningen flyttat, och räknar det
+ * som ligger kvar på omröstningens valsedlar.
+ *
+ * EFTER ID OCH CHIFFERHASH, INTE EFTER VALSEDEL (granskningen av uppgift 14f,
+ * K1). Fram till fixrundan raderades allt som låg på valsedlarna när
+ * transaktionen kördes, och det var inte alltid det som flyttats. Ett kuvert
+ * som tagits bort efter läsningen märktes inte, och ett som lagts till eller
+ * bytts ut efter läsningen raderades utan att ha flyttats. En väljare som
+ * ändrade sig i sista stund förlorade då sin nya röst medan den gamla
+ * räknades. Chifferhashen står med i villkoret, så ett kuvert som bytts ut i
+ * samma rad räknas inte längre som samma kuvert.
+ *
+ * FUNKTIONEN AVGÖR INGENTING SJÄLV. Skalningen jämför `removed` med antalet
+ * flyttade och kräver att `left` är noll, inne i transaktionen och före COMMIT,
+ * så att en avvikelse rullar tillbaka raderingen med allt annat. Se
+ * `EnvelopesChangedError` i src/orchestration/close-election.usecase.ts.
  *
  * `PendingVote.ballotId` har medvetet ingen foreign key mot `ElectionBallot`
- * (valsedelns innehåll hör till den andra databasen), så kopplingen till en
- * omröstning görs här via en uppslagning i två steg i stället för en direkt
- * relationsfråga.
+ * (valsedelns innehåll hör till den andra databasen), så det som ligger kvar
+ * för omröstningen räknas via en uppslagning i två steg i stället för en
+ * direkt relationsfråga.
  *
- * Anropas av skalningen (uppgift 11) efter att kuverten flyttats till den
- * anonyma sidan. Rösten som redan flyttats påverkas inte — det som raderas
- * här är bara kopplingen mellan väljare och kuvert, aldrig innehållet.
+ * Rösten som redan flyttats påverkas inte. Det som raderas här är bara
+ * kopplingen mellan väljare och kuvert, aldrig innehållet.
  *
- * @param client Klienten raderingen körs med. Skalningen skickar in sin
- *   transaktion, så att raderingen och fasövergången blir odelbara — en krasch
- *   däremellan hade lämnat en omröstning i OPEN utan kuvert kvar, vilket en
- *   omkörning inte kan skilja från en omröstning där ingen röstat.
- *
- *   PARAMETERN ÄR VALFRI, OCH DET ÄR EN FÄLLA VÄRD ATT KÄNNA TILL. Ett
- *   framtida anrop inuti ett `$transaction` som glömmer att skicka `tx` kör
- *   raderingen UTANFÖR transaktionen, och varken TypeScript eller testerna
- *   säger ifrån — raderingen skulle då ligga kvar även när resten rullas
- *   tillbaka. Den är valfri bara för att de befintliga anroparna (testerna för
- *   uppgift 9) ska slippa ändras. Skriver du ett anrop inuti en transaktion,
- *   skicka alltid med `tx`.
+ * @param client Skalningens transaktion, så att raderingen och fasövergången
+ *   blir odelbara. En krasch däremellan hade lämnat en omröstning i OPEN utan
+ *   kuvert kvar, vilket en omkörning inte kan skilja från en omröstning där
+ *   ingen röstat. Parametern är obligatorisk, så att ett anrop inuti en
+ *   transaktion inte kan glömma den och tyst radera utanför transaktionen.
  */
 export async function clearPendingVotes(
   electionId: string,
-  client: PendingVoteClient = votersDb,
-): Promise<number> {
+  envelopes: ReadonlyArray<{ id: string; ciphertextHash: string }>,
+  client: PendingVoteClient,
+): Promise<{ removed: number; left: number }> {
+  let removed = 0
+
+  for (let start = 0; start < envelopes.length; start += CLEAR_BATCH_SIZE) {
+    const batch = envelopes.slice(start, start + CLEAR_BATCH_SIZE)
+    const result = await client.pendingVote.deleteMany({
+      where: { OR: batch.map(({ id, ciphertextHash }) => ({ id, ciphertextHash })) },
+    })
+    removed += result.count
+  }
+
   const ballots = await client.electionBallot.findMany({
     where: { electionId },
     select: { id: true },
   })
-
-  const result = await client.pendingVote.deleteMany({
+  const left = await client.pendingVote.count({
     where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },
   })
 
-  return result.count
+  return { removed, left }
 }
 
 /** Se `clearPendingVotes`. Den delade klienten eller en transaktion. */

@@ -198,7 +198,11 @@ export const STRIPPING_TRANSACTION: Marker = {
     '          data: { envelopeRoot },',
     '        })',
     '',
-    '        const removed = await clearPendingVotes(electionId, tx)',
+    '        // Exakt de kuvert som validerades och flyttades, och inga andra.',
+    '        const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)',
+    '        if (removed !== moved || left !== 0) {',
+    '          throw new EnvelopesChangedError({ moved, removed, left })',
+    '        }',
     '',
     '        await tx.election.update({',
     '          where: { id: electionId },',
@@ -226,18 +230,28 @@ export const STRIPPING_HELPERS: Marker[] = [
     contains: [
       'export async function clearPendingVotes(',
       '  electionId: string,',
-      '  client: PendingVoteClient = votersDb,',
-      '): Promise<number> {',
+      '  envelopes: ReadonlyArray<{ id: string; ciphertextHash: string }>,',
+      '  client: PendingVoteClient,',
+      '): Promise<{ removed: number; left: number }> {',
+      '  let removed = 0',
+      '',
+      '  for (let start = 0; start < envelopes.length; start += CLEAR_BATCH_SIZE) {',
+      '    const batch = envelopes.slice(start, start + CLEAR_BATCH_SIZE)',
+      '    const result = await client.pendingVote.deleteMany({',
+      '      where: { OR: batch.map(({ id, ciphertextHash }) => ({ id, ciphertextHash })) },',
+      '    })',
+      '    removed += result.count',
+      '  }',
+      '',
       '  const ballots = await client.electionBallot.findMany({',
       '    where: { electionId },',
       '    select: { id: true },',
       '  })',
-      '',
-      '  const result = await client.pendingVote.deleteMany({',
+      '  const left = await client.pendingVote.count({',
       '    where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },',
       '  })',
       '',
-      '  return result.count',
+      '  return { removed, left }',
       '}',
     ].join('\n'),
   },
@@ -487,19 +501,34 @@ export const CURRENTLY = {
    * Uppgift 14f ersatte "signaturen prövas mot nyckeln som raden själv bär,
    * inte mot BankID:s CA". Markörerna följer prövningen på båda ställena där
    * den görs, och förvalet av attrappens rot i demoläget, som sidan nämner.
+   *
+   * Fixrunda 1 av uppgift 14f lade till att stängningen validerar den läsning
+   * den flyttar. Före den läste valideringen pending_vote för sig, och en rad
+   * som försvann mellan läsningarna flyttades utan att ha prövats. Markörerna
+   * följer den enda läsningen: stängningen validerar och flyttar `snapshot`,
+   * och valideringen tar sina rader ur den.
    */
   validationGatesClose: {
     text:
-      'Byggt: valideringen körs inuti stängningen och stoppar den vid en avvikelse. Varje ' +
+      'Byggt: stängningen läser kuverten en gång, validerar just den läsningen och stoppar vid en ' +
+      'avvikelse, och flyttar och raderar sedan exakt de kuvert som validerats. Varje ' +
       'underskrift prövas mot BankID:s rotcertifikat och varje certifikat mot väljarens ' +
       'identitetshash, både när rösten läggs och i valideringen, och kedjan lagras krypterad i ' +
       'pending_vote. I demoläget är roten attrappens egen, och attrappen utfärdar certifikaten själv.',
     holdsWhile: [
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'const report = await validateBeforeClose(electionId)',
+        contains: 'const report = await validateEnvelopes(snapshot)',
       },
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'if (!report.summary.passed)' },
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: 'const envelopes: readonly Envelope[] = snapshot.envelopes',
+      },
+      {
+        file: 'src/orchestration/validate-before-close.usecase.ts',
+        contains: 'const { electionId, ballots, envelopes: pendingVotes } = snapshot',
+      },
       // Valideringen öppnar kedjan, prövar den mot rötterna och jämför lövet med väljaren.
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
@@ -534,9 +563,9 @@ export const CURRENTLY = {
   envelopeRootCommitment: {
     text:
       'Byggt: roten räknas ut innan något raderas och skrivs en enda gång, och stängningen ' +
-      'avbryter om antalet som flyttats inte är exakt antalet som fanns. Ingen inklusionsväg ' +
-      'lagras, och efter stängningen är signaturerna raderade, så ingen utomstående kan räkna om ' +
-      'roten.',
+      'avbryter om antalet som flyttats inte är exakt antalet som fanns, eller om raderingen inte ' +
+      'träffar exakt de kuvert som flyttats. Ingen inklusionsväg lagras, och efter stängningen är ' +
+      'signaturerna raderade, så ingen utomstående kan räkna om roten.',
     holdsWhile: [
       {
         file: 'src/orchestration/close-election.usecase.ts',
@@ -547,6 +576,12 @@ export const CURRENTLY = {
         contains: 'where: { id: electionId, envelopeRoot: null }',
       },
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'if (moved !== envelopes.length) {' },
+      // Raderingen efter id och chifferhash, och jämförelsen före COMMIT.
+      {
+        file: 'src/modules/eligibility/pending-vote.service.ts',
+        contains: 'where: { OR: batch.map(({ id, ciphertextHash }) => ({ id, ciphertextHash })) },',
+      },
+      { file: 'src/orchestration/close-election.usecase.ts', contains: 'if (removed !== moved || left !== 0) {' },
       { nowhereIn: 'src/lib/merkle.ts', matches: /export function \w*(Proof|Path|Inclusion)/ },
       STRIPPING_DELETES_ENVELOPES,
     ],
@@ -776,7 +811,7 @@ export const PHASES: PhaseRow[] = [
         neverWritten('VALIDATED'),
         {
           file: 'src/orchestration/close-election.usecase.ts',
-          contains: 'await validateBeforeClose(electionId)',
+          contains: 'await validateEnvelopes(snapshot)',
         },
       ],
     },

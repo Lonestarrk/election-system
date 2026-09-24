@@ -7,7 +7,14 @@ import {
   isMockBankIdRoot,
   trustedBankIdRoots,
 } from '@/modules/eligibility/bankid/trusted-roots'
-import { lookalikeHierarchy, MOCK_INTERMEDIATE, MOCK_ROOT, rsaKeys, voterLeaf } from './forged-certificates'
+import {
+  customHierarchy,
+  lookalikeHierarchy,
+  MOCK_INTERMEDIATE,
+  MOCK_ROOT,
+  rsaKeys,
+  voterLeaf,
+} from './forged-certificates'
 
 /**
  * VILKA RÖTTER KEDJAN PRÖVAS MOT.
@@ -103,6 +110,20 @@ describe('en fil som inte håller stoppar', () => {
     vi.stubEnv('BANKID_ROOT_CERTIFICATES', rootFile(MOCK_ROOT.toString(), 'skräp efter\n'))
 
     expect(() => trustedBankIdRoots()).toThrow(/BANKID_ROOT_CERTIFICATES/)
+  })
+
+  it('när en rots basicConstraints inte går att läsa för kedjeprövningen', () => {
+    /**
+     * Kedjeprövningen läser rotens pathLen sedan granskningen av uppgift 14f
+     * (M2). Ett pathLen på fyra byte godtar OpenSSL, men den strikta läsaren
+     * inte. Utan den här kontrollen hade roten lästs in och fällt varje kedja
+     * under sig, som om varje väljare vore förfalskad.
+     */
+    const { root } = customHierarchy('rot med pathLen på fyra byte', { pathLength: 2 ** 24 }, [])
+    expect(root.ca).toBe(true)
+    vi.stubEnv('BANKID_ROOT_CERTIFICATES', rootFile(root.toString()))
+
+    expect(() => trustedBankIdRoots()).toThrow(/basicConstraints/)
   })
 })
 

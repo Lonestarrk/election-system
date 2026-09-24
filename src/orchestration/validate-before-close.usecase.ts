@@ -55,9 +55,18 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  *   4. personnumret i lövet är väljarens: hashat med samma peppar som
  *      röstlängden ska det ge radens identitetshash
  *
- * Den som bara kan skriva i databasen kan därmed inte längre lägga in en röst
- * för någon som inte skrivit under, och en granskare med åtkomst under
- * valideringen kan pröva varje underskrift mot BankID:s rot.
+ * Med riktig BankID, där nyckeln som utfärdar certifikaten finns hos BankID,
+ * kan den som bara kan skriva i databasen därmed inte längre lägga in en röst
+ * för någon som inte skrivit under. Det håller bara för att stängningen flyttar
+ * exakt de rader som prövats här. Sedan fixrunda 1 av uppgift 14f läser den
+ * kuverten en gång, med `readEnvelopes`, och skickar just den läsningen hit.
+ * Före det läste stängningen två gånger, och en förfalskad rad som togs bort
+ * mellan läsningarna flyttades utan att ha prövats.
+ *
+ * En granskare med åtkomst under valideringen kan pröva varje underskrift mot
+ * BankID:s rot, men bara med pepparn. Kedjorna är krypterade med en nyckel ur
+ * IDENTITY_PEPPER, alltså samma hemlighet som öppnar namnen och personnumren i
+ * dem, så den som granskar underskrifterna får också veta vem som röstat.
  *
  * DET SOM INTE STÄNGS står i src/lib/known-limitations.ts. Den som driver
  * systemet kan ta bort ett kuvert eller lägga tillbaka en väljares tidigare
@@ -266,6 +275,13 @@ async function judgeSignature(
    * på dygnet när. Att pröva mot dagen för valideringen hade underkänt en röst
    * vars certifikat gick ut efter att den lades, och det som gällde när
    * väljaren skrev under är det som avgör, som i spec 7.4.
+   *
+   * Dagen kommer ur `updatedAt`, och den kolumnen kan den som skriver i
+   * databasen ändra. Ett utgånget certifikat godkänns därför om raden
+   * bakdateras till en dag då det gällde (granskningen av uppgift 14f, M4). Det
+   * kräver ett äkta certifikat och dess privata nyckel, och står i posten
+   * `no-revocation-check` i src/lib/known-limitations.ts, eftersom tidpunkten i
+   * BankID:s OCSP-svar hade stängt det.
    */
   const certificate = verifyCertificateChain(chain, {
     roots,
@@ -379,8 +395,72 @@ async function proofHoldsSafely(
 }
 
 /**
- * Kör hela valideringen för en omröstning, medan `PendingVote` fortfarande
- * pekar på `voterStatusId`.
+ * Omröstningens valsedlar och liggande kuvert, lästa en gång.
+ *
+ * DET SOM VALIDERAS ÄR DET SOM FLYTTAS (granskningen av uppgift 14f, K1).
+ *
+ * Fram till fixrunda 1 av uppgift 14f läste stängningen pending_vote två
+ * gånger: en gång för det den skulle flytta och en gång här inne, i
+ * valideringen. Granskaren skrev en förfalskad rad, utan underskrift, som fanns
+ * vid den första läsningen och togs bort före den andra. Valideringen såg den
+ * aldrig, stängningen flyttade den och svarade `closed`, och den förfalskade
+ * rösten låg i urnan. Fönstret var en fråga brett, men den som kan skriva i
+ * databasen kan träffa det varje gång.
+ *
+ * Nu läser stängningen kuverten en gång, med den här funktionen, och ger just
+ * den läsningen till `validateEnvelopes`, som aldrig läser pending_vote själv.
+ * Sedan flyttar stängningen exakt de rader som validerats, och raderar dem
+ * efter id och chifferhash. Allt som ändrats efter läsningen märks där, se
+ * `clearPendingVotes`.
+ *
+ * Varje fält som någon kontroll prövar läses här, också väljarens kommun och
+ * identitetshash. Ingenting i valideringen ska behöva gå tillbaka till
+ * databasen och kunna få ett annat svar.
+ */
+export async function readEnvelopes(electionId: string) {
+  const ballots = await votersDb.electionBallot.findMany({
+    where: { electionId },
+    select: { id: true, kind: true, areaCode: true },
+  })
+
+  const envelopes = await votersDb.pendingVote.findMany({
+    where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },
+    select: {
+      id: true,
+      voterStatusId: true,
+      ballotId: true,
+      ciphertext: true,
+      proofs: true,
+      ciphertextHash: true,
+      castSequence: true,
+      bankIdSignature: true,
+      bankIdCertificateChain: true,
+      updatedAt: true,
+      voterStatus: {
+        select: { municipalityCode: true, regionCode: true, externalIdentityHash: true },
+      },
+    },
+  })
+
+  return { electionId, ballots, envelopes }
+}
+
+/** En läsning ur `readEnvelopes`: det valideringen prövar och det stängningen flyttar. */
+export type EnvelopeSnapshot = Awaited<ReturnType<typeof readEnvelopes>>
+
+/**
+ * Läser kuverten och validerar dem, för den som bara vill ha rapporten.
+ *
+ * Stängningen använder INTE den här, eftersom den måste flytta samma läsning
+ * som valideras. Den anropar `readEnvelopes` och `validateEnvelopes` för sig.
+ */
+export async function validateBeforeClose(electionId: string): Promise<ValidationReport> {
+  return validateEnvelopes(await readEnvelopes(electionId))
+}
+
+/**
+ * Kör hela valideringen över en läsning av kuverten, medan `PendingVote`
+ * fortfarande pekar på `voterStatusId`.
  *
  * KONTROLLERNA KÖRS I ORDNING, BILLIGAST FÖRST — MEN ALLA KÖRS, FÖR VARJE
  * RAD, OAVSETT OM EN TIDIGARE REDAN TRÄFFAT.
@@ -409,32 +489,13 @@ async function proofHoldsSafely(
  * väljare som strukits efter att ha röstat — dödsfall är det realistiska
  * fallet — ska få sin röst räknad, precis som en svensk förtidsröst. Ingen
  * kontroll här läser `VoterStatus.isEligible`.
+ *
+ * INGENTING HÄR LÄSER PENDING_VOTE. Raderna kommer ur `snapshot`, och det är
+ * samma rader som stängningen sedan flyttar, se `readEnvelopes`.
  */
-export async function validateBeforeClose(electionId: string): Promise<ValidationReport> {
-  const ballots = await votersDb.electionBallot.findMany({
-    where: { electionId },
-    select: { id: true, kind: true, areaCode: true },
-  })
+export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<ValidationReport> {
+  const { electionId, ballots, envelopes: pendingVotes } = snapshot
   const ballotById = new Map(ballots.map((ballot) => [ballot.id, ballot]))
-
-  const pendingVotes = await votersDb.pendingVote.findMany({
-    where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },
-    select: {
-      id: true,
-      voterStatusId: true,
-      ballotId: true,
-      ciphertext: true,
-      proofs: true,
-      ciphertextHash: true,
-      castSequence: true,
-      bankIdSignature: true,
-      bankIdCertificateChain: true,
-      updatedAt: true,
-      voterStatus: {
-        select: { municipalityCode: true, regionCode: true, externalIdentityHash: true },
-      },
-    },
-  })
 
   /**
    * Rötterna läses en gång per körning. Går de inte att fastställa kastar

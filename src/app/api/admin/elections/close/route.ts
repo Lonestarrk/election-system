@@ -93,9 +93,10 @@ export async function POST(request: Request) {
    * ETT KAST HÄR ÄR INTE ETT OKÄNT FEL — DET ÄR SKYDDSMEKANISMEN SOM LÖSTE UT.
    *
    * `closeElection` kastar hellre än att gå vidare när ett antagande brustit:
-   * när antalet flyttade kuvert inte stämmer, och när skrivningarna i
-   * röstlängden inte finns kvar efter transaktionen. Gemensamt för de vägarna
-   * är att INGENTING ÄR RADERAT — och det är det administratören behöver veta.
+   * när antalet flyttade kuvert inte stämmer, när raderingen inte träffar
+   * exakt de kuvert som flyttats, och när skrivningarna i röstlängden inte
+   * finns kvar efter transaktionen. Gemensamt för de vägarna är att INGENTING
+   * ÄR RADERAT — och det är det administratören behöver veta.
    * En naken 500 hade sagt minst precis där beskedet betyder mest.
    *
    * SVARET PÅSTÅR INGEN ORSAK. Rutten kan inte veta vilken av vägarna som

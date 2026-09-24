@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { openCertificateChain, sealCertificateChain } from '@/modules/eligibility/sealed-chain'
-import { MOCK_INTERMEDIATE, rsaKeys, voterLeaf } from './forged-certificates'
+import {
+  openCertificateChain,
+  SEALED_CHAIN_LENGTH,
+  sealCertificateChain,
+} from '@/modules/eligibility/sealed-chain'
+import { customHierarchy, MOCK_INTERMEDIATE, rsaKeys, voterLeaf } from './forged-certificates'
 
 /**
  * KEDJAN LAGRAS KRYPTERAD, BUNDEN TILL SIN RAD.
@@ -89,7 +93,8 @@ describe('den krypterade kedjan', () => {
       'v1:',
       'inte-en-kedja',
       stored.toUpperCase(),
-      stored.replace(/^v1:/, 'v2:'),
+      // Det gamla formatets version, före utfyllnaden, går inte att öppna.
+      stored.replace(/^v2:/, 'v1:'),
       `${stored}:00`,
       stored.slice(0, -1),
       'v1:' + '0'.repeat(24) + ':' + '0'.repeat(32) + ':' + '0'.repeat(64),
@@ -100,6 +105,41 @@ describe('den krypterade kedjan', () => {
     ]) {
       expect(openCertificateChain(junk, row)).toBeNull()
     }
+  })
+
+  it('är lika lång för varje kedja, oavsett namnets längd och antalet mellannivåer', () => {
+    /**
+     * Granskningen av uppgift 14f, V1: AES-GCM bevarar längden, och före
+     * utfyllnaden gav "Robin Ek" 3765 tecken och "Charlie Näslund" 3797, helt
+     * förutsägbart. Med riktig BankID hade längden sannolikt också sagt vilken
+     * bank som utfärdat certifikatet. Nu är varje förseglad kedja lika lång.
+     */
+    const robin = voterLeaf(rsaKeys('väljaren'), { name: { givenName: 'Robin', surname: 'Ek' } })
+    const charlie = voterLeaf(rsaKeys('väljaren'), { name: { givenName: 'Charlie', surname: 'Näslund' } })
+    expect(charlie.raw.length).toBeGreaterThan(robin.raw.length)
+
+    const deep = customHierarchy('djup kedja', {}, [{}, {}, {}])
+    const deepLeaf = voterLeaf(rsaKeys('väljaren'), { issuer: deep.issuer })
+
+    const lengths = [
+      sealCertificateChain([robin, MOCK_INTERMEDIATE], row),
+      sealCertificateChain([charlie, MOCK_INTERMEDIATE], row),
+      sealCertificateChain([deepLeaf, ...deep.intermediates], row),
+      sealCertificateChain([robin], row),
+    ].map((stored) => stored.length)
+
+    expect(new Set(lengths)).toEqual(new Set([SEALED_CHAIN_LENGTH]))
+
+    // Och kedjan kommer tillbaka hel, utan utfyllnaden.
+    const opened = openCertificateChain(sealCertificateChain([deepLeaf, ...deep.intermediates], row), row)
+    expect(fingerprints(opened)).toEqual(fingerprints([deepLeaf, ...deep.intermediates]))
+  })
+
+  it('vägrar en kedja som inte ryms, i stället för att fylla ut den till en egen längd', () => {
+    // Tjugo mellannivåer är långt mer än någon kedja som prövningen godkänner.
+    const oversized = [leaf, ...Array.from({ length: 20 }, () => MOCK_INTERMEDIATE)]
+
+    expect(() => sealCertificateChain(oversized, row)).toThrow(/ryms inte/)
   })
 
   it('kastar när pepparn saknas, eftersom det är ett fel i driftsättningen och inte i raden', () => {

@@ -4,6 +4,9 @@
   "private": true,
   "license": "MIT",
   "description": "Proof-of-concept: digitalt valsystem med separerad identitet och röst",
+  "engines": {
+    "node": ">=22.10"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

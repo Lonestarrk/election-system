@@ -95,6 +95,12 @@ export type CertificateRequest = {
   notAfter: Date
   /** basicConstraints med cA satt. */
   ca: boolean
+  /**
+   * pathLenConstraint i basicConstraints: hur många mellannivåer som får stå
+   * under certifikatet. Utelämnat betyder ingen gräns. Det skrivs också utan
+   * cA, fast ingen CA borde utfärda ett sådant, eftersom testerna behöver det.
+   */
+  pathLength?: number
   /** Null utelämnar tillägget helt. */
   keyUsage: KeyUsageBit[] | null
 }
@@ -137,9 +143,13 @@ function extension(type: string, value: Buffer): Buffer {
   return derSequence(derOid(type), derBoolean(true), derOctetString(value))
 }
 
-function basicConstraints(ca: boolean): Buffer {
+function basicConstraints(ca: boolean, pathLength: number | undefined): Buffer {
   // cA har förvalet FALSE, och DER skriver aldrig ut ett förval.
-  return extension(BASIC_CONSTRAINTS, ca ? derSequence(derBoolean(true)) : derSequence())
+  const fields = [
+    ...(ca ? [derBoolean(true)] : []),
+    ...(pathLength === undefined ? [] : [derSmallInteger(pathLength)]),
+  ]
+  return extension(BASIC_CONSTRAINTS, derSequence(...fields))
 }
 
 /**
@@ -172,7 +182,7 @@ export function issueCertificate(request: CertificateRequest): X509Certificate {
   const serialNumber = randomBytes(16)
   serialNumber[0]! &= 0x7f
 
-  const extensions = [basicConstraints(request.ca)]
+  const extensions = [basicConstraints(request.ca, request.pathLength)]
   if (request.keyUsage !== null) extensions.push(keyUsage(request.keyUsage))
 
   const tbs = derSequence(

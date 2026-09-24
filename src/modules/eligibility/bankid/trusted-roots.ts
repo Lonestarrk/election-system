@@ -2,7 +2,7 @@ import { X509Certificate } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { isDemoMode } from '@/lib/demo-mode'
 import { env } from '@/lib/env'
-import { certificateFromPem } from './certificate-chain'
+import { certificateFromPem, hasReadableConstraints } from './certificate-chain'
 import { MOCK_BANKID_ROOT_CERTIFICATE } from './mock-ca/root-certificate'
 
 /**
@@ -25,7 +25,17 @@ import { MOCK_BANKID_ROOT_CERTIFICATE } from './mock-ca/root-certificate'
  *
  * Varje rot måste vara en självsignerad CA. En mellannivå eller ett löv som
  * lades i filen av misstag hade annars blivit en rot, och kedjan hade kunnat
- * hoppa över ett led.
+ * hoppa över ett led. Rotens basicConstraints ska dessutom gå att läsa med
+ * kedjeprövningens strikta läsare, eftersom prövningen läser rotens pathLen.
+ * En rot som OpenSSL godtar men som prövningen inte kan läsa hade annars fällt
+ * varje kedja under sig, och det hade sett ut som ett angrepp på varje väljare.
+ *
+ * ROTENS TID PRÖVAS INTE HÄR, UTAN NÄR KEDJAN PRÖVAS (granskningen av uppgift
+ * 14f, M2). Förut prövades den ingenstans, och en betrodd rot som gått ut
+ * godkändes. Nu ska roten ha gällt vid underskriften, precis som lövet och
+ * mellannivåerna, se `verifyCertificateChain`. Att i stället vägra läsa in en
+ * utgången rot hade gjort stängningen omöjlig för röster som lades medan roten
+ * gällde, och det som gällde när väljaren skrev under är det som avgör.
  */
 
 /** Filen läses en gång per process och sökväg. En ny rot kräver att servern startas om. */
@@ -69,6 +79,13 @@ function loadRoots(path: string): X509Certificate[] {
         path,
         `certifikat ${index + 1} (${root.subject.replace(/\n/g, ', ')}) är ingen självsignerad CA ` +
           'och kan inte vara en rot.',
+      )
+    }
+    if (!hasReadableConstraints(root)) {
+      throw configurationError(
+        path,
+        `certifikat ${index + 1} (${root.subject.replace(/\n/g, ', ')}) har ett basicConstraints ` +
+          'som kedjeprövningen inte kan läsa, och då går inget pathLen att pröva.',
       )
     }
     return root

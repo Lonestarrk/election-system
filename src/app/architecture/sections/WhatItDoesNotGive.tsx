@@ -28,12 +28,14 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
         </li>
         <li style={listItemStyle}>
           <strong>Signaturen hindrar inte att äkta kuvert tas bort eller läggs tillbaka.</strong>{' '}
-          Varje signatur prövas mot BankID:s rotcertifikat och varje certifikat mot väljarens
-          identitetshash, så den som kan skriva i databasen kan inte lägga in en röst för någon som
-          inte skrivit under, och en granskare med åtkomst under valideringen kan pröva varje
-          underskrift mot roten. Men ett kuvert kan raderas, och ett äldre äkta kuvert kan läggas
-          tillbaka med sin räknare, eftersom räknaren lagras i samma databas. Väljaren ser det på
-          sin enhet före stängningen. <LimitationReference entry={removal} />
+          Med riktig BankID prövas varje signatur mot BankID:s rotcertifikat och varje certifikat
+          mot väljarens identitetshash, och stängningen flyttar exakt de kuvert som prövats, så den
+          som kan skriva i databasen kan inte lägga in en röst för någon som inte skrivit under. En
+          granskare med åtkomst under valideringen kan pröva varje underskrift mot roten, men bara
+          med pepparn: kedjorna är krypterade med en nyckel ur den, och samma hemlighet öppnar namnen
+          och personnumren i dem. Däremot kan ett kuvert raderas, och ett äldre äkta kuvert kan
+          läggas tillbaka med sin räknare, eftersom räknaren lagras i samma databas. Väljaren ser det
+          på sin enhet före stängningen. <LimitationReference entry={removal} />
         </li>
         <li style={listItemStyle}>
           <strong>Nyckeln har funnits hel.</strong> Tröskelnyckeln skapas av en betrodd utdelare

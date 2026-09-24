@@ -8,23 +8,37 @@ import { votersDb } from '@/modules/eligibility/db'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { closeStateOf } from '@/modules/eligibility/election.service'
 import { clearPendingVotes } from '@/modules/eligibility/pending-vote.service'
-import { validateBeforeClose, type ValidationReport } from './validate-before-close.usecase'
+import {
+  readEnvelopes,
+  validateEnvelopes,
+  type ValidationReport,
+} from './validate-before-close.usecase'
 
 /**
  * SKALNINGEN: ATT TA BORT DET YTTRE KUVERTET.
  *
  * Ordningen är noga vald och kan inte kastas om.
  *
- *   1. validera enligt uppgift 10 — avbryt vid avvikelse
+ *   1. läs kuverten EN gång och validera just den läsningen — avbryt vid avvikelse
  *   2. beräkna Merkleroten över kuverten (skrivs i steg 6, se nedan)
  *   3. verifiera varje valsedel EN GÅNG TILL
  *   4. infoga i votes_db, sorterat på chifferhash
  *   5. kontrollera att antalet stämmer
- *   6. först då, odelbart: skriv roten, radera kopplingen, växla fas
+ *   6. först då, odelbart: skriv roten, radera exakt de flyttade kuverten,
+ *      kontrollera att inget annat ligger kvar, växla fas
  *
  * Steg 1 är en SPÄRR, inte en rapport. Att skala ändå vore att kasta bort
  * bevismaterialet för det problem man just hittat: efter steg 6 finns ingen
  * väljare att fråga och ingen signatur att kontrollera.
+ *
+ * STEG 1 OCH 6 GÄLLER SAMMA RADER (granskningen av uppgift 14f, K1). Varje steg
+ * efter läsningen arbetar på just de rader som validerades. Stängningen läste
+ * tidigare pending_vote en gång för det som flyttades och en gång till i
+ * valideringen, och raderade sedan allt som låg på valsedlarna. En förfalskad
+ * rad som fanns vid den första läsningen men inte vid den andra flyttades då
+ * utan att ha validerats. Nu raderas kuverten efter id och chifferhash, och
+ * antalet raderade ska vara antalet flyttade innan transaktionen får gå
+ * igenom. Se `readEnvelopes` och `EnvelopesChangedError`.
  *
  * Steg 2 MÅSTE ligga före steg 6. Merkleroten över (ciphertextHash,
  * bankIdSignature) är det enda som överlever raderingen av signaturerna:
@@ -64,8 +78,10 @@ export type CloseOutcome =
  * avbrutits.
  *
  * `untouched` — kontrollerat: ingenting är raderat, och det går att säga rakt
- *   ut. Så är det på varje väg som bryter FÖRE transaktionen, och på den väg
- *   där efterkontrollen visar att transaktionen rullade tillbaka.
+ *   ut. Så är det på varje väg som bryter FÖRE transaktionen, på den väg där
+ *   efterkontrollen visar att transaktionen rullade tillbaka, och när
+ *   transaktionen själv avbröt för att kuverten ändrats medan stängningen
+ *   pågick och fasen efteråt står kvar i OPEN (se `settleChangedEnvelopes`).
  *
  * `unknown` — OKONTROLLERAT. Transaktionen kan ha commitat; vi kunde bara inte
  *   läsa tillbaka utfallet. Det enda ärliga beskedet är att stängningen KAN ha
@@ -172,18 +188,169 @@ export function envelopeLeaf(envelope: { ciphertextHash: string; bankIdSignature
  * poängen: roten säger ingenting om i vilken ordning väljarna röstade.
  */
 export function envelopeRootOf(
-  envelopes: Array<{ ciphertextHash: string; bankIdSignature: string }>,
+  envelopes: ReadonlyArray<{ ciphertextHash: string; bankIdSignature: string }>,
 ): string {
   return merkleRoot(envelopes.map(envelopeLeaf))
 }
 
-/** Det som läses ur röstlängden för att kunna skalas. */
+/**
+ * Det skalningen behöver ur ett kuvert. Raderna kommer ur `readEnvelopes`, som
+ * läser mer, eftersom valideringen prövar samma läsning.
+ */
 type Envelope = {
+  id: string
   ballotId: string
   ciphertext: unknown
   proofs: unknown
   ciphertextHash: string
   bankIdSignature: string
+}
+
+/**
+ * Har kopplingen redan raderats, att döma av fasen?
+ *
+ * I dag skrivs bara OPEN och STRIPPED, och STRIPPED bara i skalningens
+ * transaktion, tillsammans med raderingen. Allt som inte är OPEN betyder
+ * därför att kopplingen är raderad. Villkoret står på ett ställe, eftersom både
+ * förberedelsen och transaktionens avbrott avgör `already_closed` med det.
+ * Uppgift 11d skriver CLOSED och VALIDATED före skalningen, och då ska svaret
+ * bli STRIPPED eller senare, här och ingen annanstans.
+ */
+function linkAlreadyCleared(phase: string): boolean {
+  return phase !== 'OPEN'
+}
+
+/**
+ * Raderingen träffade inte exakt de kuvert som flyttats (granskningen av
+ * uppgift 14f, K1).
+ *
+ * Två saker kan ha hänt efter att kuverten lästes och validerades, och båda
+ * betyder att det som raderas inte längre är det som flyttats:
+ *
+ *   `removed < moved`  ett kuvert som flyttats fanns inte kvar oförändrat. Det
+ *                      har tagits bort, eller bytts ut, som när en väljare
+ *                      ändrar sig i sista stund. Raderingen görs efter id och
+ *                      chifferhash, så ett utbytt kuvert är inte längre samma.
+ *   `left > 0`         ett kuvert har lagts till. Det är varken validerat eller
+ *                      flyttat, och en radering som låtit det ligga kvar hade
+ *                      gjort `already_closed` osant.
+ *
+ * Före rättelsen märktes ingetdera. Raderingen tog allt som låg på
+ * valsedlarna, och en väljare som ändrade sig efter läsningen förlorade sin
+ * nya röst medan den gamla räknades.
+ *
+ * KASTAS INIFRÅN TRANSAKTIONEN, FÖRE COMMIT. Prisma skickar då ingen COMMIT
+ * utan rullar tillbaka och lämnar vidare just det här felet, så raderingen
+ * försvinner tillsammans med roten, fasen och revisionsposten. Att det är en
+ * egen klass gör att `closeElection` kan skilja det från ett fel vid COMMIT,
+ * där ingen vet om transaktionen gick igenom.
+ */
+class EnvelopesChangedError extends Error {
+  readonly moved: number
+  readonly removed: number
+  readonly left: number
+
+  constructor(counts: { moved: number; removed: number; left: number }) {
+    super(describeChangedEnvelopes(counts))
+    this.name = 'EnvelopesChangedError'
+    this.moved = counts.moved
+    this.removed = counts.removed
+    this.left = counts.left
+  }
+}
+
+/**
+ * Vad som hänt, i siffror, för loggen och för den som ska utreda. Texten säger
+ * bara det som alltid är sant. Vad det betyder för kopplingen avgörs av
+ * `settleChangedEnvelopes`, som läser fasen.
+ */
+function describeChangedEnvelopes({
+  moved,
+  removed,
+  left,
+}: {
+  moved: number
+  removed: number
+  left: number
+}): string {
+  const rolledBack =
+    'Transaktionen rullades tillbaka före COMMIT, så den här körningen har inte raderat något.'
+
+  if (removed !== moved) {
+    return (
+      `Stängningen avbröts: ${moved} kuvert flyttades, men bara ${removed} av dem fanns kvar med ` +
+      'samma innehåll när kopplingen skulle raderas. Resten har tagits bort eller bytts ut efter ' +
+      `att kuverten lästes och validerades. ${rolledBack}`
+    )
+  }
+
+  return (
+    `Stängningen avbröts: ${left} kuvert i röstlängden lästes inte före valideringen. Kuvert ` +
+    'som läggs till medan stängningen pågår är varken validerade eller flyttade. ' +
+    rolledBack
+  )
+}
+
+/** Vad en administratör kan vänta sig av en omkörning, när kopplingen är orörd. */
+function afterChangedEnvelopes(change: EnvelopesChangedError): string {
+  if (change.removed !== change.moved) {
+    return (
+      'Chiffren för alla flyttade kuvert ligger redan i röstdatabasen, så en omkörning stoppas ' +
+      'av antalskontrollen tills det som saknas eller bytts ut är utrett.'
+    )
+  }
+  return 'En omkörning validerar och flyttar också de tillkomna kuverten.'
+}
+
+/**
+ * Vad ett `EnvelopesChangedError` betyder för kopplingen.
+ *
+ * Den här körningen raderade ingenting, eftersom transaktionen avbröt sig själv
+ * före COMMIT. Men att raderingen inte träffade rätt kuvert kan ha två helt
+ * olika orsaker, och bara fasen skiljer dem åt:
+ *
+ *   Fasen står kvar i OPEN. Någon har tagit bort, bytt ut eller lagt till ett
+ *   kuvert medan stängningen pågick, och kopplingen ligger kvar. Det är en
+ *   avvikelse att utreda, och beskedet är att kopplingen är orörd.
+ *
+ *   Fasen har lämnat OPEN. En annan stängning, till exempel efter ett
+ *   dubbelklick, hann före och raderade kopplingen i sin egen transaktion.
+ *   Kuverten saknades för att de redan var raderade. Då vore "orörd" falskt,
+ *   och svaret är detsamma som för en omkörning.
+ *
+ * Går fasen inte att läsa vet vi inte vilket, och då blir beskedet det
+ * försiktiga.
+ */
+async function settleChangedEnvelopes(
+  electionId: string,
+  change: EnvelopesChangedError,
+): Promise<CloseOutcome> {
+  let state
+  try {
+    state = await closeStateOf(electionId)
+  } catch (error) {
+    throw new CloseAbortedError(
+      'unknown',
+      `${change.message} Fasen gick sedan inte att läsa, så det går inte att säga om en annan ` +
+        'stängning hunnit radera kopplingen.',
+      { cause: error },
+    )
+  }
+
+  if (state === null) {
+    throw new CloseAbortedError(
+      'unknown',
+      `${change.message} Omröstningen fanns sedan inte längre i röstlängden.`,
+    )
+  }
+
+  if (linkAlreadyCleared(state.phase)) return { status: 'already_closed' }
+
+  throw new CloseAbortedError(
+    'untouched',
+    `${change.message} Fasen står kvar i OPEN, så kopplingen är orörd. ` +
+      afterChangedEnvelopes(change),
+  )
 }
 
 /**
@@ -284,7 +451,7 @@ async function ballotVerifies(
  */
 async function firstUnverifiableEnvelope(
   electionId: string,
-  envelopes: Envelope[],
+  envelopes: readonly Envelope[],
 ): Promise<string | null> {
   const shapes = new Map<string, Awaited<ReturnType<typeof getEncryptedBallotShape>>>()
 
@@ -311,7 +478,13 @@ async function firstUnverifiableEnvelope(
  */
 type Preparation =
   | { kind: 'settled'; outcome: CloseOutcome }
-  | { kind: 'ready'; envelopeRoot: string; moved: number }
+  | {
+      kind: 'ready'
+      envelopeRoot: string
+      moved: number
+      /** Exakt de kuvert som validerades och flyttades. Bara dem raderar transaktionen. */
+      envelopes: ReadonlyArray<{ id: string; ciphertextHash: string }>
+    }
 
 /**
  * Steg 1–5: allt som sker INNAN transaktionen.
@@ -334,7 +507,7 @@ async function prepareClose(electionId: string): Promise<Preparation> {
    * och det finns ingenting kvar att flytta. Att i stället låta klockan avgöra
    * hade gjort en omkörning omöjlig att skilja från en förstagångskörning.
    */
-  if (election.phase !== 'OPEN') {
+  if (linkAlreadyCleared(election.phase)) {
     return { kind: 'settled', outcome: { status: 'already_closed' } }
   }
 
@@ -342,25 +515,23 @@ async function prepareClose(electionId: string): Promise<Preparation> {
     return { kind: 'settled', outcome: { status: 'too_early', closesAt: election.closesAt } }
   }
 
-  const ballots = await votersDb.electionBallot.findMany({
-    where: { electionId },
-    select: { id: true },
-  })
-  const ballotIds = ballots.map((ballot) => ballot.id)
+  // --- 1. En läsning, och valideringen av just den, som spärr -------------
+  /**
+   * EN LÄSNING, OCH ALLT EFTER DEN ARBETAR PÅ DEN (granskningen av uppgift
+   * 14f, K1).
+   *
+   * `envelopes` är de rader valideringen prövar. Roten, omverifieringen,
+   * infogningen, antalskontrollen och raderingen använder samma rader och
+   * läser aldrig pending_vote igen. Förut läste valideringen en gång till för
+   * sig, och en rad som fanns vid den ena läsningen men inte vid den andra
+   * flyttades utan att ha validerats. Det som ändras efter läsningen fångas i
+   * stället av raderingen, som bara tar exakt de här raderna.
+   */
+  const snapshot = await readEnvelopes(electionId)
+  const envelopes: readonly Envelope[] = snapshot.envelopes
+  const ballotIds = snapshot.ballots.map((ballot) => ballot.id)
 
-  const envelopes: Envelope[] = await votersDb.pendingVote.findMany({
-    where: { ballotId: { in: ballotIds } },
-    select: {
-      ballotId: true,
-      ciphertext: true,
-      proofs: true,
-      ciphertextHash: true,
-      bankIdSignature: true,
-    },
-  })
-
-  // --- 1. Valideringen, som spärr ----------------------------------------
-  const report = await validateBeforeClose(electionId)
+  const report = await validateEnvelopes(snapshot)
 
   if (!report.summary.passed) {
     /**
@@ -456,7 +627,7 @@ async function prepareClose(electionId: string): Promise<Preparation> {
     )
   }
 
-  return { kind: 'ready', envelopeRoot, moved }
+  return { kind: 'ready', envelopeRoot, moved, envelopes }
 }
 
 /**
@@ -506,7 +677,7 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
 
   if (preparation.kind === 'settled') return preparation.outcome
 
-  const { envelopeRoot, moved } = preparation
+  const { envelopeRoot, moved, envelopes } = preparation
 
   /**
    * --- 6. Först nu raderas kopplingen mellan väljare och röst -------------
@@ -519,6 +690,13 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
    * omröstningen i OPEN utan kuvert: ett tillstånd en omkörning inte kan
    * skilja från "ingen har röstat", och som utan roten skriven här hade fått
    * omkörningen att publicera roten över en tom mängd.
+   *
+   * RADERINGEN TAR EXAKT DE FLYTTADE KUVERTEN, OCH ANTALET PRÖVAS FÖRE COMMIT
+   * (granskningen av uppgift 14f, K1). Kuverten raderas efter id och
+   * chifferhash, och antalet raderade ska vara antalet flyttade, med ingenting
+   * kvar på omröstningens valsedlar. Varje avvikelse kastar inifrån
+   * transaktionen, och då följer raderingen med i rollbacken. Se
+   * `EnvelopesChangedError`.
    *
    * Revisionsposten ligger med inuti, efter fasövergången. En rollback tar
    * då posten med sig — en logg som påstår att kopplingen raderats när den
@@ -537,7 +715,11 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
           data: { envelopeRoot },
         })
 
-        const removed = await clearPendingVotes(electionId, tx)
+        // Exakt de kuvert som validerades och flyttades, och inga andra.
+        const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)
+        if (removed !== moved || left !== 0) {
+          throw new EnvelopesChangedError({ moved, removed, left })
+        }
 
         await tx.election.update({
           where: { id: electionId },
@@ -552,11 +734,12 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
        * TIDSGRÄNSEN ÄR VALD, INTE ÄRVD (fixrunda 2, uppgift 11).
        *
        * Prismas standard är 5 sekunder, och `db.ts` sätter ingen
-       * `transactionOptions`. Raderingen är en enda `deleteMany` över samtliga
-       * kuvert i omröstningen — i ett riktigt val hundratusentals rader — och
-       * den kan mycket väl ta längre tid än så. En P2028 hade rullat tillbaka
-       * allt, men det är en felväg som inte fanns när raderingen låg utanför
-       * en transaktion, och den ska inte uppstå av att ingen valde något.
+       * `transactionOptions`. Raderingen går över samtliga kuvert i
+       * omröstningen, i omgångar om tusen — i ett riktigt val hundratusentals
+       * rader — och den kan mycket väl ta längre tid än så. En P2028 hade
+       * rullat tillbaka allt, men det är en felväg som inte fanns när
+       * raderingen låg utanför en transaktion, och den ska inte uppstå av att
+       * ingen valde något.
        *
        * Två minuter är tilltaget för att rymma en radering i den storleken
        * utan att vara obegränsat: en transaktion som hänger håller lås på
@@ -568,14 +751,22 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
     )
   } catch (error) {
     /**
-     * TRANSAKTIONEN ÄR DÄR KUNSKAPEN TAR SLUT.
+     * TRANSAKTIONEN ÄR DÄR KUNSKAPEN TAR SLUT — MED ETT UNDANTAG.
      *
      * Ett kast här betyder oftast en rollback, alltså att ingenting raderats —
      * men inte alltid. En tappad anslutning i samma ögonblick som COMMIT
      * skickas ger samma undantag oavsett om servern hann genomföra den eller
      * inte, och den skillnaden går inte att läsa ur felet. Då är `unknown` det
      * enda ärliga svaret, även om det oftare är försiktigt än nödvändigt.
+     *
+     * Undantaget är `EnvelopesChangedError`. Det kastar transaktionen själv,
+     * inifrån, och då skickar Prisma aldrig någon COMMIT utan rullar tillbaka
+     * och lämnar vidare just det felet. Att den här körningen inte raderat
+     * något är alltså känt. Om en annan körning har gjort det avgör fasen, se
+     * `settleChangedEnvelopes`.
      */
+    if (error instanceof EnvelopesChangedError) return settleChangedEnvelopes(electionId, error)
+
     throw new CloseAbortedError(
       'unknown',
       'Stängningen kunde inte bekräftas: transaktionen avbröts utan besked om den hann ' +

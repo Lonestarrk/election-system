@@ -114,6 +114,11 @@ vi.mock('@/modules/eligibility/election.service', async (importOriginal) => {
  * valideringen släpper igenom en. För att pröva den för sig måste valideringen
  * gå förbi, och det går inte utan att försvaga den, bara genom att byta ut
  * den här. Alla andra anrop går till den äkta funktionen.
+ *
+ * Det är `validateEnvelopes` som byts ut, eftersom stängningen sedan
+ * granskningen av uppgift 14f (K1) validerar sin egen läsning av kuverten och
+ * aldrig anropar `validateBeforeClose`. Läsningen skickas vidare orörd, så att
+ * testerna här prövar samma väg som i drift.
  */
 const validationControl = vi.hoisted(() => ({ forcePass: false }))
 
@@ -123,8 +128,8 @@ vi.mock('@/orchestration/validate-before-close.usecase', async (importOriginal) 
 
   return {
     ...actual,
-    validateBeforeClose: async (electionId: string) => {
-      if (!validationControl.forcePass) return actual.validateBeforeClose(electionId)
+    validateEnvelopes: async (snapshot: Parameters<typeof actual.validateEnvelopes>[0]) => {
+      if (!validationControl.forcePass) return actual.validateEnvelopes(snapshot)
       return { summary: { votes: 0, voters: 0, byKind: {}, passed: true }, anomalies: [] }
     },
   }

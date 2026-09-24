@@ -585,9 +585,34 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     await cast(voter, 'bp-s')
     await cast(kim, 'bp-m')
 
-    const cleared = await clearPendingVotes(electionId)
+    const envelopes = await votersDb.pendingVote.findMany({ select: { id: true, ciphertextHash: true } })
+    const cleared = await clearPendingVotes(electionId, envelopes, votersDb)
 
-    expect(cleared).toBe(2)
+    expect(cleared).toEqual({ removed: 2, left: 0 })
     expect(await votersDb.pendingVote.count()).toBe(0)
+  })
+
+  it('clearPendingVotes raderar bara de kuvert den får, och bara med rätt chifferhash', async () => {
+    /**
+     * Granskningen av uppgift 14f, K1: skalningen raderade förut allt som låg
+     * på valsedlarna, också det som tillkommit eller bytts ut efter att
+     * kuverten lästes. Nu raderas bara de kuvert skalningen flyttat, och ett
+     * kuvert vars innehåll bytts ut är inte längre samma kuvert.
+     */
+    await cast(voter, 'bp-s')
+    await cast(kim, 'bp-m')
+
+    const [first, second] = await votersDb.pendingVote.findMany({
+      select: { id: true, ciphertextHash: true },
+      orderBy: { id: 'asc' },
+    })
+    const cleared = await clearPendingVotes(
+      electionId,
+      [first!, { id: second!.id, ciphertextHash: 'f'.repeat(64) }],
+      votersDb,
+    )
+
+    expect(cleared).toEqual({ removed: 1, left: 1 })
+    expect(await votersDb.pendingVote.findMany({ select: { id: true } })).toEqual([{ id: second!.id }])
   })
 })

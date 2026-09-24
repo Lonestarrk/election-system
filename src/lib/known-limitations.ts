@@ -110,17 +110,20 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * UPPGIFT 14f ERSATTE POSTEN "BankID-certifikatkedjan valideras inte".
    *
    * Valideringen prövar nu varje kedja mot BankID:s rot och varje löv mot
-   * väljarens identitet, så den som bara kan skriva i databasen kan inte längre
-   * lägga in en röst för någon som inte skrivit under. De fyra första posterna
-   * nedan är det som kedjan inte ger, och den femte är priset för att den
-   * lagras.
+   * väljarens identitet, och sedan fixrunda 1 flyttar stängningen exakt de
+   * kuvert som validerats. Med riktig BankID kan den som bara kan skriva i
+   * databasen därför inte längre lägga in en röst för någon som inte skrivit
+   * under. De fyra första posterna nedan är det som kedjan inte ger, och den
+   * femte är priset för att den lagras.
    */
   {
     id: 'operator-can-remove-or-restore-envelope',
     title: 'Den som driver systemet kan ta bort ett kuvert eller lägga tillbaka en tidigare röst',
     why:
-      'Varje underskrift prövas mot BankID:s rot och mot väljarens identitet, så den som kan skriva ' +
-      'i databasen kan inte längre förfalska en ny. Men en äkta underskrift går att ta bort, och ' +
+      'Med riktig BankID prövas varje underskrift mot BankID:s rot och mot väljarens identitet, och ' +
+      'stängningen flyttar bara de kuvert som prövats, så den som kan skriva i databasen kan inte ' +
+      'längre förfalska en ny. I demon kan den som driver systemet fortfarande det, eftersom ' +
+      'attrappen utfärdar certifikaten själv. Men en äkta underskrift går att ta bort, och ' +
       'en väljares tidigare äkta kuvert går att lägga tillbaka i stället för hennes senaste. ' +
       'Räknaren som visar vilket kuvert som är det senaste lagras i samma databas, och den som ' +
       'lägger tillbaka det gamla kuvertet lägger tillbaka dess räknare, så valideringen före ' +
@@ -148,7 +151,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'godkänns alltså så länge certifikatet gäller i tid. Riktig BankID skickar med ett OCSP-svar ' +
       'som visar certifikatets status vid underskriften, och det är det som ska prövas, både när ' +
       'rösten läggs och i valideringen före stängningen. Attrappen har inget sådant svar, och ' +
-      'kedjeprövningen tar inte emot något.',
+      'kedjeprövningen tar inte emot något. Dessutom kommer tiden för underskriften i valideringen ' +
+      'ur kuvertets updatedAt, som den som kan skriva i databasen kan ändra. Ett certifikat som ' +
+      'gått ut godkänns därför om raden bakdateras till en dag då det gällde. Det kräver ett äkta ' +
+      'certifikat och dess privata nyckel, och tidpunkten i OCSP-svaret hade stängt också det.',
     // Prövningen tar emot rötterna och tidpunkten för underskriften, och
     // ingenting annat. En spärrkontroll behöver ett OCSP-svar in, och då
     // ändras just den här raden.
@@ -204,14 +210,17 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     title: 'Den som har pepparn kan läsa namn och personnummer för varje liggande kuvert',
     why:
       'Varje liggande kuvert bär väljarens BankID-certifikat, med personnummer och namn i klartext, ' +
-      'krypterat med en nyckel som härleds ur IDENTITY_PEPPER. Nyckeln måste finnas hos servern, ' +
-      'eftersom valideringen före stängningen öppnar varje kedja. En databasdump utan pepparn ' +
-      'avslöjar därför ingenting nytt, men den som har både databasen och pepparn öppnar varje ' +
-      'kedja och får namn och personnummer för alla som har röstat och ännu inte fått sitt kuvert ' +
-      'skalat, utan en enda hashning. Det är mer än röstlängden ger i dag: identitetshashen låter ' +
-      'den som har pepparn pröva ett personnummer i taget, och namnen finns ingen annanstans i ' +
-      'databasen. Pepparn ligger i samma miljö som applikationen, så den som tagit sig in i ' +
-      'servern har ofta båda. Kedjan raderas med raden vid skalningen.',
+      'krypterat med en nyckel som härleds ur IDENTITY_PEPPER och utfyllt till en fast längd, så ' +
+      'att inte heller längden säger något om namnet eller banken. Nyckeln måste finnas hos ' +
+      'servern, eftersom valideringen före stängningen öppnar varje kedja. En databasdump utan ' +
+      'pepparn avslöjar därför ingenting nytt, men den som har både databasen och pepparn öppnar ' +
+      'varje kedja och får namn och personnummer för alla som har röstat och ännu inte fått sitt ' +
+      'kuvert skalat, utan en enda hashning. Det är mer än röstlängden ger i dag: identitetshashen ' +
+      'låter den som har pepparn pröva ett personnummer i taget, och namnen finns ingen annanstans ' +
+      'i databasen. Det gäller också den som ska granska underskrifterna: för att pröva kedjorna ' +
+      'mot BankID:s rot behöver granskaren pepparn, och får då också veta vem som röstat. Pepparn ' +
+      'ligger i samma miljö som applikationen, så den som tagit sig in i servern har ofta båda. ' +
+      'Kedjan raderas med raden vid skalningen.',
     // Kedjans nyckel härleds ur pepparn. Kom den i stället från något som
     // servern inte bär, till exempel förtroendemännens andelar, ändrades raden.
     stillTrueIf: {

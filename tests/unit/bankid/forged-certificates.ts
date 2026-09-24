@@ -1,5 +1,12 @@
 import { createPrivateKey, createSign, generateKeyPairSync, type KeyObject, X509Certificate } from 'node:crypto'
 import {
+  derOid,
+  derPrintableString,
+  derSequence,
+  derSet,
+  derUtf8String,
+} from '@/modules/eligibility/bankid/mock-ca/der-encoder'
+import {
   encodeName,
   issueCertificate,
   issuerFrom,
@@ -54,6 +61,10 @@ const DAY = 86_400_000
 
 export type LeafOptions = {
   personalNumber?: string | null
+  /** Förnamn och efternamn. Förvalet är Anna Lindqvist. */
+  name?: PersonName
+  /** Ett färdigkodat subject, som ersätter namn och personnummer. */
+  subject?: Uint8Array
   issuer?: CertificateIssuer
   notBefore?: Date
   notAfter?: Date
@@ -61,15 +72,40 @@ export type LeafOptions = {
   keyUsage?: KeyUsageBit[] | null
 }
 
+export type PersonName = { givenName: string; surname: string }
+
+const ANNA: PersonName = { givenName: 'Anna', surname: 'Lindqvist' }
+
 /** Namnet i ett BankID-certifikat: land, efternamn, förnamn, personnummer och hela namnet. */
-export function voterName(personalNumber: string | null): DistinguishedName {
+export function voterName(personalNumber: string | null, name: PersonName = ANNA): DistinguishedName {
   return {
     country: 'SE',
-    surname: 'Lindqvist',
-    givenName: 'Anna',
+    surname: name.surname,
+    givenName: name.givenName,
     ...(personalNumber === null ? {} : { serialNumber: personalNumber }),
-    commonName: 'Anna Lindqvist',
+    commonName: `${name.givenName} ${name.surname}`,
   }
+}
+
+/**
+ * Ett subject med två serialNumber, som ingen CA borde utfärda. `together`
+ * lägger dem i samma RDN, annars står de i var sin.
+ */
+export function subjectWithTwoPersonalNumbers(
+  first: string,
+  second: string,
+  options: { together: boolean },
+): Buffer {
+  const attribute = (oid: string, value: Buffer) => derSequence(derOid(oid), value)
+  const serialNumber = (value: string) => attribute('2.5.4.5', derPrintableString(value))
+
+  return derSequence(
+    derSet(attribute('2.5.4.6', derPrintableString('SE'))),
+    ...(options.together
+      ? [derSet(serialNumber(first), serialNumber(second))]
+      : [derSet(serialNumber(first)), derSet(serialNumber(second))]),
+    derSet(attribute('2.5.4.3', derUtf8String('Anna Lindqvist'))),
+  )
 }
 
 /** Ett löv för en väljare, som attrappen hade utfärdat det om inget anges. */
@@ -78,7 +114,7 @@ export function voterLeaf(pair: KeyPair, options: LeafOptions = {}): X509Certifi
   const personalNumber = options.personalNumber === undefined ? '199001011234' : options.personalNumber
 
   return issueCertificate({
-    subject: voterName(personalNumber),
+    subject: options.subject ?? voterName(personalNumber, options.name),
     publicKey: pair.publicKey,
     issuer: options.issuer ?? MOCK_ISSUER,
     notBefore: options.notBefore ?? new Date(now - 60_000),
@@ -138,6 +174,63 @@ export function lookalikeHierarchy(options: { intermediateIsCa?: boolean } = {})
   })
 
   return { root, intermediate, issuer: issuerFrom(intermediate, intermediateKeys.privateKey) }
+}
+
+/** Hur en CA i en egen hierarki ska se ut. Det som inte anges är som hos en riktig CA. */
+export type CaOptions = {
+  ca?: boolean
+  pathLength?: number
+  keyUsage?: KeyUsageBit[] | null
+  notBefore?: Date
+  notAfter?: Date
+}
+
+/**
+ * En egen rot med mellannivåer under sig, för testerna av kedjans form.
+ *
+ * `levels` räknas uppifrån: den första utfärdas av roten, nästa av den första,
+ * och så vidare. Svaret har mellannivåerna i kedjans ordning, alltså från den
+ * som utfärdar lövet och uppåt, och den utfärdare ett löv ska ha. Allt gäller
+ * från 2020 till 2046 om inget annat anges, och namnet `label` gör att två
+ * hierarkier i samma test aldrig delar namn eller nycklar.
+ */
+export function customHierarchy(label: string, rootOptions: CaOptions, levels: CaOptions[]) {
+  const validity = (options: CaOptions) => ({
+    notBefore: options.notBefore ?? new Date('2020-01-01T00:00:00Z'),
+    notAfter: options.notAfter ?? new Date('2046-01-01T00:00:00Z'),
+  })
+  const authority = (options: CaOptions) => ({
+    ca: options.ca ?? true,
+    ...(options.pathLength === undefined ? {} : { pathLength: options.pathLength }),
+    keyUsage: options.keyUsage === undefined ? (['keyCertSign', 'cRLSign'] as KeyUsageBit[]) : options.keyUsage,
+  })
+
+  const rootKeys = rsaKeys(`${label}: rot`)
+  const rootName = encodeName({ country: 'SE', organization: 'Egen testhierarki', commonName: `${label}: rot` })
+  const root = issueCertificate({
+    subject: rootName,
+    publicKey: rootKeys.publicKey,
+    issuer: { name: rootName, privateKey: rootKeys.privateKey },
+    ...validity(rootOptions),
+    ...authority(rootOptions),
+  })
+
+  let issuer = issuerFrom(root, rootKeys.privateKey)
+  const fromTop: X509Certificate[] = []
+  levels.forEach((options, index) => {
+    const keys = rsaKeys(`${label}: nivå ${index + 1}`)
+    const certificate = issueCertificate({
+      subject: { country: 'SE', organization: 'Egen testhierarki', commonName: `${label}: nivå ${index + 1}` },
+      publicKey: keys.publicKey,
+      issuer,
+      ...validity(options),
+      ...authority(options),
+    })
+    fromTop.push(certificate)
+    issuer = issuerFrom(certificate, keys.privateKey)
+  })
+
+  return { root, intermediates: [...fromTop].reverse(), issuer }
 }
 
 /** En underskrift som BankID gör den: RSA med SHA-256, i base64. */

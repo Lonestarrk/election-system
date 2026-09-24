@@ -12,12 +12,14 @@ import { limitationHref, listItemStyle } from './shared'
  * medan namnen fanns kvar har kopplingen.
  *
  * Spec 4.6 kräver att det sägs rakt ut vad underskriften inte skyddar mot.
- * Sedan uppgift 14f prövas den mot BankID:s rot, så den som bara kan skriva i
- * databasen kan inte längre förfalska en röst. Kvar är att den som driver
- * systemet kan ta bort ett äkta kuvert eller lägga tillbaka ett tidigare, och
- * att attrappen i demon utfärdar certifikaten själv. Spec 10 räknar dessutom
- * upp insidern som både kan läsa databasen och kommer åt en enhet. Allt det
- * står här, inte bara på Tekniska detaljer.
+ * Sedan uppgift 14f prövas den mot BankID:s rot, och sedan dess fixrunda 1
+ * flyttar stängningen bara de kuvert som prövats. Med riktigt BankID kan den
+ * som bara kan skriva i databasen därför inte längre förfalska en röst. Kvar är
+ * att den som driver systemet kan ta bort ett äkta kuvert eller lägga tillbaka
+ * ett tidigare, att den som granskar underskrifterna behöver pepparn, som också
+ * öppnar namnen, och att attrappen i demon utfärdar certifikaten själv. Spec 10
+ * räknar dessutom upp insidern som både kan läsa databasen och kommer åt en
+ * enhet. Allt det står här, inte bara på Tekniska detaljer.
  *
  * Där en punkt motsvarar en post i listan över kända begränsningar tar sidan
  * emot posten och länkar dit. Tas posten bort kastar uppslaget i page.tsx, och
@@ -59,12 +61,13 @@ export function Weaknesses({
         </li>
         <li style={listItemStyle}>
           <strong>Den som driver systemet kan ta bort din röst eller lägga tillbaka en tidigare.</strong>{' '}
-          Varje underskrift prövas mot BankID:s rotcertifikat, så den som bara kan skriva direkt i
-          databasen kan inte längre lägga in röster för någon som inte skrivit under, och den som
-          granskar kontrollen före stängningen kan pröva varje underskrift själv. Men en äkta röst
-          kan tas bort, och en tidigare röst som du verkligen skrev under kan läggas tillbaka i
-          stället för din senaste. Enheten du röstade från märker det före stängningen: den säger då
-          att rösten har ändrats, eller att ingen röst finns.{' '}
+          Med riktigt BankID prövas varje underskrift mot BankID:s rotcertifikat, och bara de röster
+          som prövats räknas, så den som bara kan skriva direkt i databasen kan inte längre lägga in
+          röster för någon som inte skrivit under. Den som granskar kontrollen före stängningen kan
+          pröva varje underskrift själv, men behöver då samma hemliga nyckel som visar namnen på dem
+          som röstat. Däremot kan en äkta röst tas bort, och en tidigare röst som du verkligen skrev
+          under kan läggas tillbaka i stället för din senaste. Enheten du röstade från märker det före
+          stängningen: den säger då att rösten har ändrats, eller att ingen röst finns.{' '}
           <Link href={limitationHref(removal)}>Mer om underskriften</Link>
         </li>
         <li style={listItemStyle}>
