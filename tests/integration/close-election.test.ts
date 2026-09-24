@@ -639,7 +639,22 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       data: { phase: 'OPEN', linkClearedAt: null },
     })
 
-    await expect(closeElection(electionId)).rejects.toThrow()
+    const error = await closeElection(electionId).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    )
+    expect(error).toBeInstanceOf(CloseAbortedError)
+
+    /**
+     * ROTEN ÄR SKRIVEN, SÅ KOPPLINGEN HAR RADERATS EN GÅNG (uppgift 11d).
+     *
+     * Bara skalningens transaktion skriver roten, och den raderar kopplingen i
+     * samma COMMIT. Att fasen här står före STRIPPED kan bara komma av en
+     * skrivning förbi stängningen. Före 11d svarade stängningen att kopplingen
+     * var ORÖRD, fast den var raderad.
+     */
+    expect(linkStateOf(error)).toBe('unknown')
+    expect(abortedMessageFor(error)).not.toContain('ORÖRD')
 
     const after = await votersDb.election.findUniqueOrThrow({
       where: { id: electionId },
@@ -648,7 +663,8 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     expect(after.envelopeRoot).toBe(before.envelopeRoot)
     expect(after.envelopeRoot).not.toBe(envelopeRootOf([]))
-    // Chiffren ligger kvar — omkörningen fick inte radera dem heller.
+    // Chiffren ligger kvar — omkörningen fick inte radera dem heller, varken
+    // som kuvert eller som rester i röstdatabasen.
     expect(await votesDb.encryptedVote.count()).toBe(2)
   })
 
@@ -746,11 +762,13 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       select: { phase: true, envelopeRoot: true, linkClearedAt: true },
     })
 
-    // Ingenting av det transaktionen påstod sig ha gjort finns kvar.
-    expect(election.phase).toBe('OPEN')
+    // Ingenting av det transaktionen påstod sig ha gjort finns kvar. Fasen
+    // står i VALIDATED, som skrevs före transaktionen, men inte i STRIPPED.
+    expect(election.phase).toBe('VALIDATED')
     expect(election.envelopeRoot).toBeNull()
     expect(election.linkClearedAt).toBeNull()
     expect(await votersDb.pendingVote.count()).toBe(2)
+    expect(await votersDb.votedMarker.count()).toBe(0)
 
     /**
      * Och stängningen går att köra om när felet är åtgärdat — det är hela
@@ -847,18 +865,25 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
   it('säger däremot rakt ut att kopplingen är orörd när det ÄR kontrollerat', async () => {
     // Motstycket: den kontrollerade vägen ska inte ha blivit försiktigare än
-    // den behöver vara. Antalskontrollen i steg 5 vet att ingenting raderats.
-    await castFor(anna, 'bp-s')
-    // Ett chiffer som redan ligger i röstdatabasen med en ANNAN hash gör att
-    // antalet inte kan stämma: kuvertet flyttas, men räkningen ser en rad för
-    // mycket på valsedeln.
+    // den behöver vara. Återläsningen i steg 5 vet att ingenting raderats.
+    const annas = await castFor(anna, 'bp-s')
+    /**
+     * En rad med Annas hash men ett annat chiffer ligger redan i
+     * röstdatabasen. Infogningen hoppar över Annas kuvert, och återläsningen
+     * ser att urnans chiffer inte är det validerade.
+     *
+     * Fram till uppgift 11d användes här ett chiffer med en ANNAN hash, som
+     * fick antalet att inte stämma. Sedan 11d tas ett sådant bort som en rest
+     * före infogningen, och stängningen går igenom.
+     */
+    const other = await buildBallot('bp-m')
     await votesDb.encryptedVote.create({
       data: {
-        id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        id: idForEnvelope(annas),
         ballotId,
-        ciphertext: [],
-        proofs: {},
-        ciphertextHash: 'en-hash-som-inte-hor-till-nagot-kuvert',
+        ciphertext: other.ciphertext as unknown as Prisma.InputJsonValue,
+        proofs: other.proofs as unknown as Prisma.InputJsonValue,
+        ciphertextHash: annas,
       },
     })
 

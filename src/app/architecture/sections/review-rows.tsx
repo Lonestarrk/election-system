@@ -73,10 +73,15 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       ),
       today: (
         <>
-          {CURRENTLY.deviceViewBuilt.text} {CURRENTLY.votedMarkerNotKept.text}
+          {CURRENTLY.deviceViewBuilt.text} {CURRENTLY.votedMarkerWritten.text}{' '}
+          {CURRENTLY.votedMarkerNotShown.text}
         </>
       ),
-      statuses: [CURRENTLY.deviceViewBuilt.status!, CURRENTLY.votedMarkerNotKept.status!],
+      statuses: [
+        CURRENTLY.deviceViewBuilt.status!,
+        CURRENTLY.votedMarkerWritten.status!,
+        CURRENTLY.votedMarkerNotShown.status!,
+      ],
     },
     {
       question: 'Räknades rösterna korrekt?',

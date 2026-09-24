@@ -12,7 +12,8 @@ import { StatusBadge } from './StatusBadge'
  * begränsningar i kuvertmodellen, med länk till listan: BankID-ordern och
  * adaptern för XML-signaturen har specen redan en åtgärd för (spec 4.6 och
  * 10), liksom den som kan skriva i röstdatabasen och byta ut ett chiffer
- * (spec 4.6, förbehåll 4, uppgift 11d och 12b, granskningen av 11g).
+ * (spec 4.6, förbehåll 4, granskningen av 11g). Uppgift 11d stängde bytet före
+ * infogningen, och bytet efter stängningen står kvar till uppgift 12b.
  * Spärrkontrollen (OCSP) har specen också en åtgärd för, men ingen uppgift i
  * planen prövar svaret — bara uppgift 17b sparar det förseglat — så den
  * punkten är märkt "ingår inte", inte "kommer" (fixrunda 1 av uppgift 11h).

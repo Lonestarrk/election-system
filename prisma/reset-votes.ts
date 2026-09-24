@@ -50,6 +50,8 @@ async function main() {
   await votesDb.ballotTally.deleteMany()
 
   const ballotStatuses = await votersDb.voterBallotStatus.deleteMany()
+  // Kuvertmodellens markering "har röstat", som skalningen skriver (uppgift 11d).
+  const votedMarkers = await votersDb.votedMarker.deleteMany()
   // Före omröstningarna nedan: kuvertet har ingen främmande nyckel mot
   // valsedeln, så ett kuvert i en borttagen testomröstning skulle annars bli
   // kvar utan något att höra till.
@@ -69,8 +71,8 @@ async function main() {
 
   process.stdout.write(
     `Nollställt: ${votes.count} röster, ${commitments.count} åtaganden, ` +
-      `${ballotStatuses.count} markeringar, ${outerEnvelopes.count} yttre och ` +
-      `${innerEnvelopes.count} inre kuvert.\n`,
+      `${ballotStatuses.count} markeringar i det gamla flödet, ${votedMarkers.count} i ` +
+      `kuvertmodellen, ${outerEnvelopes.count} yttre och ${innerEnvelopes.count} inre kuvert.\n`,
   )
 }
 

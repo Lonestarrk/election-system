@@ -127,6 +127,10 @@ export async function castEncryptedBallot(
    * omvända fallet: att tiden gått ut men stängningen ännu inte körts, alltså
    * att fasen fortfarande står i OPEN. Utan den skulle röster kunna tillkomma
    * i glappet mellan `closesAt` och den administratör som trycker på knappen.
+   *
+   * Prövningen här sparar bara arbete: en röst i en stängd omröstning ska inte
+   * verifieras först. Den som avgör är samma prövning i transaktionen som
+   * skriver kuvertet, längst ned (uppgift 11d).
    */
   if (
     !election ||
@@ -296,29 +300,68 @@ export async function castEncryptedBallot(
    */
   const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })
 
-  await votersDb.pendingVote.upsert({
-    where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
-    update: {
-      ciphertext: ballot.ciphertext,
-      proofs: ballot.proofs,
-      ciphertextHash: ballot.ciphertextHash,
-      castSequence: signedPayload.castSequence,
-      bankIdSignature: envelope.signature,
-      bankIdCertificateChain,
-      updatedAt: truncateToDay(new Date()),
-    },
-    create: {
-      voterStatusId,
-      ballotId,
-      ciphertext: ballot.ciphertext,
-      proofs: ballot.proofs,
-      ciphertextHash: ballot.ciphertextHash,
-      castSequence: signedPayload.castSequence,
-      bankIdSignature: envelope.signature,
-      bankIdCertificateChain,
-      updatedAt: truncateToDay(new Date()),
-    },
+  /**
+   * FASEN PRÖVAS EN GÅNG TILL, I SAMMA TRANSAKTION SOM SKRIVNINGEN (uppgift 11d).
+   *
+   * Prövningen överst är en läsning. Mellan den och skrivningen ligger
+   * verifieringen av bevisen, som sedan uppgift 14b kan stå i kö, prövningen
+   * av kedjan och underskriften, och hashningen. Under den tiden kan
+   * stängningen hinna skriva CLOSED, läsa kuverten och radera kopplingen. Före
+   * uppgift 11d skrevs kuvertet ändå, efter skalningen, och väljaren fick
+   * beskedet att rösten var lagd, fast den aldrig skulle räknas.
+   *
+   * VILLKORET HÅLLS AV DATABASEN, INTE AV EN LÄSNING FÖRE. `FOR SHARE` låser
+   * omröstningens rad mot ändringar tills den här transaktionen är klar, men
+   * inte mot andra läggningar. Stängningens övergång till CLOSED är en UPDATE
+   * på samma rad. Den väntar därför på varje läggning som redan prövat fasen
+   * här, och varje läggning som prövar den efteråt ser CLOSED och avvisas.
+   * Ett kuvert som läggs finns alltså på plats innan stängningen läser
+   * kuverten, och inget kan läggas efter.
+   *
+   * Rå SQL, eftersom Prisma inte har `FOR SHARE`. Satsen läser bara.
+   */
+  const recorded = await votersDb.$transaction(async (tx) => {
+    const [current] = await tx.$queryRaw<
+      Array<{ phase: string; closes_at: Date; link_cleared_at: Date | null }>
+    >`SELECT phase, closes_at, link_cleared_at FROM election WHERE id = ${electionId} FOR SHARE`
+
+    if (
+      !current ||
+      current.phase !== 'OPEN' ||
+      current.link_cleared_at !== null ||
+      current.closes_at <= new Date()
+    ) {
+      return false
+    }
+
+    await tx.pendingVote.upsert({
+      where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
+      update: {
+        ciphertext: ballot.ciphertext,
+        proofs: ballot.proofs,
+        ciphertextHash: ballot.ciphertextHash,
+        castSequence: signedPayload.castSequence,
+        bankIdSignature: envelope.signature,
+        bankIdCertificateChain,
+        updatedAt: truncateToDay(new Date()),
+      },
+      create: {
+        voterStatusId,
+        ballotId,
+        ciphertext: ballot.ciphertext,
+        proofs: ballot.proofs,
+        ciphertextHash: ballot.ciphertextHash,
+        castSequence: signedPayload.castSequence,
+        bankIdSignature: envelope.signature,
+        bankIdCertificateChain,
+        updatedAt: truncateToDay(new Date()),
+      },
+    })
+
+    return true
   })
+
+  if (!recorded) return { status: 'closed' }
 
   return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: existing !== null }
 }
@@ -538,3 +581,102 @@ export async function clearPendingVotes(
 
 /** Se `clearPendingVotes`. Den delade klienten eller en transaktion. */
 export type PendingVoteClient = Pick<typeof votersDb, 'electionBallot' | 'pendingVote'>
+
+/**
+ * Hur många markeringar som skrivs per sats. Varje markering kostar tre
+ * parametrar: id, väljare och valsedel.
+ */
+const MARK_BATCH_SIZE = 1_000
+
+/**
+ * Skriver markeringen "har röstat" för exakt de kuvert skalningen ska radera
+ * (spec 3.1 punkt 6, uppgift 11d).
+ *
+ * UR DE RADER SOM RADERAS, OCH FÖRE RADERINGEN. Markeringarna skrivs ur raderna
+ * i pending_vote med kuvertens id och chifferhash, samma villkor som
+ * `clearPendingVotes` sedan raderar efter, och i samma transaktion.
+ * Markeringarna härifrån finns därför bara för väljare vars kuvert flyttades,
+ * och säger ingenting annat än att kuvertet räknades. En markering skriven
+ * förbi stängningen säger vad den som skrev den ville.
+ *
+ * INGEN TIDSSTÄMPEL, OCH INGEN ORDNING EFTER TID. Markeringen har ingen kolumn
+ * för tid. Raderna i pending_vote kommer i regel tillbaka i den ordning de
+ * senast skrevs, alltså ungefär den ordning väljarna röstade, och skrevs
+ * markeringarna i den ordningen skulle tabellens fysiska ordning säga vem som
+ * röstade före vem. De sorteras därför på valsedel och väljarens id, som är
+ * slumpat, innan de skrivs.
+ *
+ * FUNKTIONEN AVGÖR INGENTING SJÄLV, som `clearPendingVotes`. Den svarar med hur
+ * många markeringar den skrev och hur många som finns per valsedel efteråt, och
+ * skalningen kräver att båda är antalet flyttade kuvert, före COMMIT. En
+ * markering som redan fanns, skriven förbi stängningen, gör att antalet inte
+ * stämmer: för en väljare med kuvert hoppas den nya över, och för en väljare
+ * utan kuvert blir det en markering för mycket på valsedeln.
+ *
+ * @param client Skalningens transaktion. Parametern är obligatorisk av samma
+ *   skäl som i `clearPendingVotes`: en markering utanför transaktionen hade
+ *   kunnat finnas kvar fast raderingen rullades tillbaka.
+ */
+export async function markEnvelopesAsVoted(
+  electionId: string,
+  envelopes: ReadonlyArray<{ id: string; ciphertextHash: string }>,
+  client: VotedMarkerClient,
+): Promise<{ marked: number; markersByBallot: Array<{ ballotId: string; markers: number }> }> {
+  const voters: Array<{ voterStatusId: string; ballotId: string }> = []
+
+  for (let start = 0; start < envelopes.length; start += CLEAR_BATCH_SIZE) {
+    const batch = envelopes.slice(start, start + CLEAR_BATCH_SIZE)
+    const rows = await client.pendingVote.findMany({
+      where: { OR: batch.map(({ id, ciphertextHash }) => ({ id, ciphertextHash })) },
+      select: { voterStatusId: true, ballotId: true },
+    })
+    voters.push(...rows)
+  }
+
+  voters.sort(byBallotThenVoter)
+
+  let marked = 0
+  for (let start = 0; start < voters.length; start += MARK_BATCH_SIZE) {
+    const result = await client.votedMarker.createMany({
+      data: voters.slice(start, start + MARK_BATCH_SIZE),
+      skipDuplicates: true,
+    })
+    marked += result.count
+  }
+
+  const ballots = await client.electionBallot.findMany({
+    where: { electionId },
+    select: { id: true },
+  })
+  const counts = await client.votedMarker.groupBy({
+    by: ['ballotId'],
+    where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },
+    _count: { _all: true },
+  })
+  const byBallot = new Map(counts.map((count) => [count.ballotId, count._count._all]))
+
+  return {
+    marked,
+    markersByBallot: ballots.map((ballot) => ({ ballotId: ballot.id, markers: byBallot.get(ballot.id) ?? 0 })),
+  }
+}
+
+/**
+ * Samma jämförelse som `Array.prototype.sort` gör på strängar, avsiktligt
+ * inte `localeCompare`, så att ordningen inte beror på serverns språk.
+ */
+function byBallotThenVoter(
+  a: { voterStatusId: string; ballotId: string },
+  b: { voterStatusId: string; ballotId: string },
+): number {
+  if (a.ballotId !== b.ballotId) return a.ballotId < b.ballotId ? -1 : 1
+  if (a.voterStatusId !== b.voterStatusId) return a.voterStatusId < b.voterStatusId ? -1 : 1
+  return 0
+}
+
+/**
+ * Se `markEnvelopesAsVoted`. Klienten når bara kuverten, valsedlarna och
+ * markeringarna, så att den inte kan skriva i någon annan tabell genom
+ * transaktionen utan att typen ändras först.
+ */
+export type VotedMarkerClient = Pick<typeof votersDb, 'electionBallot' | 'pendingVote' | 'votedMarker'>

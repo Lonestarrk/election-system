@@ -427,15 +427,57 @@ async function proofHoldsSafely(
  * Varje fält som någon kontroll prövar läses här, också väljarens kommun och
  * identitetshash. Ingenting i valideringen ska behöva gå tillbaka till
  * databasen och kunna få ett annat svar.
+ *
+ * I OMGÅNGAR, MEN SOM EN LÄSNING (uppgift 11d). Prisma kastar för ett svar över
+ * 536 870 888 tecken, och med utfyllnaden av kedjan från 14f gick ett val med
+ * fler än några tusen kuvert inte att stänga. Kuverten läses därför i
+ * omgångar om `ENVELOPE_READ_BATCH_SIZE`, i id-ordning, och läggs ihop till en
+ * läsning som valideras som helhet. Det försvagar inte det ovan: allt som
+ * ändras medan omgångarna läses fångas av raderingen efter id och chifferhash,
+ * som för en enda fråga. Ett kuvert som läses och sedan tas bort eller byts ut
+ * gör att färre raderas än flyttas, och ett kuvert som läggs till bakom
+ * läsningen blir kvar och stoppar transaktionen. Sedan 11d kan dessutom ingen
+ * väljare lägga ett kuvert medan läsningen pågår, eftersom stängningen
+ * skriver CLOSED först.
  */
 export async function readEnvelopes(electionId: string) {
   const ballots = await votersDb.electionBallot.findMany({
     where: { electionId },
     select: { id: true, kind: true, areaCode: true },
   })
+  const ballotIds = ballots.map((ballot) => ballot.id)
 
-  const envelopes = await votersDb.pendingVote.findMany({
-    where: { ballotId: { in: ballots.map((ballot) => ballot.id) } },
+  const envelopes: EnvelopeRow[] = []
+  let after: string | null = null
+
+  for (;;) {
+    const batch = await readEnvelopeBatch(ballotIds, after)
+    envelopes.push(...batch)
+    if (batch.length < ENVELOPE_READ_BATCH_SIZE) break
+    after = batch[batch.length - 1]!.id
+  }
+
+  return { electionId, ballots, envelopes }
+}
+
+/**
+ * Hur många kuvert som läses per fråga.
+ *
+ * Ett kuvert är chiffret och bevisen, uppmätt omkring 6 300 tecken per
+ * alternativ, och kedjan, som är utfylld till 32 829 tecken. Vid 200
+ * alternativ, det mesta läggningen tar emot, är det omkring 1,3 miljoner tecken
+ * per kuvert, och hundra kuvert blir omkring 130 miljoner, en fjärdedel av
+ * Prismas tak. En rad som skrivits förbi läggningen kan vara större än så, och
+ * då stoppas stängningen med kopplingen orörd i stället.
+ */
+export const ENVELOPE_READ_BATCH_SIZE = 100
+
+/** En omgång kuvert efter `after` i id-ordning, med allt valideringen prövar. */
+function readEnvelopeBatch(ballotIds: string[], after: string | null) {
+  return votersDb.pendingVote.findMany({
+    where: { ballotId: { in: ballotIds }, ...(after === null ? {} : { id: { gt: after } }) },
+    orderBy: { id: 'asc' },
+    take: ENVELOPE_READ_BATCH_SIZE,
     select: {
       id: true,
       voterStatusId: true,
@@ -452,9 +494,9 @@ export async function readEnvelopes(electionId: string) {
       },
     },
   })
-
-  return { electionId, ballots, envelopes }
 }
+
+type EnvelopeRow = Awaited<ReturnType<typeof readEnvelopeBatch>>[number]
 
 /** En läsning ur `readEnvelopes`: det valideringen prövar och det stängningen flyttar. */
 export type EnvelopeSnapshot = Awaited<ReturnType<typeof readEnvelopes>>

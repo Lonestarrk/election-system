@@ -233,40 +233,42 @@ const STRIPPING_DELETES_ENVELOPES: Marker = {
  * SKALNINGENS TRANSAKTION, ORD FÖR ORD.
  *
  * Spec 3.1 punkt 6 säger att markeringen "har röstat" skrivs i skalningens
- * transaktion, och uppgift 11d ska bygga den. Markören som fanns före den här
- * letade bara efter två namn, `voterBallotStatus` och `markBallotAsVoted`, i
- * tre filer. En markering i en ny modell, eller via en ny hjälpfunktion, hade
- * gått förbi den, och påståendet att ingenting markerar en kuvertröst hade
- * stått kvar grönt när det blivit falskt.
+ * transaktion, och uppgift 11d byggde den. Före 11d låste markören
+ * transaktionen för påståendet att ingenting markerade en kuvertröst: en ny
+ * rad var som helst i den hade fällt det påståendet. Nu bär markören det
+ * omvända påståendet, att markeringen skrivs just här, ur de kuvert som
+ * raderas och före raderingen, och att antalet prövas före COMMIT.
  *
- * Markören låser därför transaktionens hela text, kommentarerna inräknade. En
- * ny rad var som helst i den, en skrivning eller ett anrop med `tx`, fäller
- * påståendet. En ändrad kommentar fäller det också, i onödan, och det är priset
- * för att ingen skrivning kan glida förbi. Exporteras för testet som visar att
- * markören faktiskt slår fel.
+ * Markören låser transaktionens hela text, kommentarerna inräknade. En ny rad
+ * var som helst i den, en skrivning eller ett anrop med `tx`, fäller
+ * påståendet, liksom en ändrad ordning eller ett borttaget villkor. En ändrad
+ * kommentar fäller det också, i onödan, och det är priset för att ingen
+ * skrivning kan glida förbi. Exporteras för testet som visar att markören
+ * faktiskt slår fel.
  */
 export const STRIPPING_TRANSACTION: Marker = {
   file: 'src/orchestration/close-election.usecase.ts',
   contains: [
     '      async (tx) => {',
-    '        // Skriv-en-gång: en redan publicerad rot får aldrig ersättas.',
-    '        // `updateMany` och inte `update`, eftersom en träfflös `update` kastar',
-    '        // — här ska en redan satt rot hoppas över, inte fälla körningen.',
-    '        await tx.election.updateMany({',
-    '          where: { id: electionId, envelopeRoot: null },',
-    '          data: { envelopeRoot },',
+    '        const stripped = await tx.election.updateMany({',
+    "          where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
+    "          data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
     '        })',
+    '        if (stripped.count !== 1) throw new PhaseMovedError()',
+    '',
+    '        // Markeringarna, ur exakt de kuvert som raderas, före raderingen.',
+    '        const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)',
     '',
     '        // Exakt de kuvert som validerades och flyttades, och inga andra.',
     '        const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)',
-    '        if (removed !== moved || left !== 0) {',
-    '          throw new EnvelopesChangedError({ moved, removed, left })',
-    '        }',
     '',
-    '        await tx.election.update({',
-    '          where: { id: electionId },',
-    "          data: { phase: 'STRIPPED', linkClearedAt: new Date() },",
-    '        })',
+    '        const markersMatch =',
+    '          markersByBallot.every(({ ballotId, markers }) => markers === (movedByBallot.get(ballotId) ?? 0)) &&',
+    '          ballotIds.every((ballotId) => markersByBallot.some((entry) => entry.ballotId === ballotId))',
+    '',
+    '        if (removed !== moved || left !== 0 || marked !== moved || !markersMatch) {',
+    '          throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })',
+    '        }',
     '',
     '        await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)',
     '',
@@ -276,12 +278,15 @@ export const STRIPPING_TRANSACTION: Marker = {
 }
 
 /**
- * De två funktioner transaktionen lämnar `tx` till, låsta på samma sätt.
+ * De tre funktioner transaktionen lämnar `tx` till, låsta på samma sätt.
  *
- * `clearPendingVotes` låses ord för ord, och båda klienttyperna låses: en
+ * `clearPendingVotes` låses ord för ord, och markeringens hjälpfunktion i de
+ * delar som avgör vad som markeras: raderna efter id och chifferhash, samma
+ * villkor som raderingen, sorterade, och skrivna med `skipDuplicates`, så att
+ * en markering som redan finns syns i antalet. Klienttyperna låses: en
  * funktion som bara får `pendingVote` och `electionBallot`, respektive
- * `auditEvent`, kan inte skriva i någon annan tabell genom transaktionen utan
- * att typen ändras först.
+ * `votedMarker` därtill eller `auditEvent`, kan inte skriva i någon annan
+ * tabell genom transaktionen utan att typen ändras först.
  */
 export const STRIPPING_HELPERS: Marker[] = [
   {
@@ -319,23 +324,90 @@ export const STRIPPING_HELPERS: Marker[] = [
     contains: "export type PendingVoteClient = Pick<typeof votersDb, 'electionBallot' | 'pendingVote'>",
   },
   {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains: [
+      '    const rows = await client.pendingVote.findMany({',
+      '      where: { OR: batch.map(({ id, ciphertextHash }) => ({ id, ciphertextHash })) },',
+      '      select: { voterStatusId: true, ballotId: true },',
+      '    })',
+      '    voters.push(...rows)',
+      '  }',
+      '',
+      '  voters.sort(byBallotThenVoter)',
+      '',
+      '  let marked = 0',
+      '  for (let start = 0; start < voters.length; start += MARK_BATCH_SIZE) {',
+      '    const result = await client.votedMarker.createMany({',
+      '      data: voters.slice(start, start + MARK_BATCH_SIZE),',
+      '      skipDuplicates: true,',
+      '    })',
+      '    marked += result.count',
+      '  }',
+    ].join('\n'),
+  },
+  {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains:
+      "export type VotedMarkerClient = Pick<typeof votersDb, 'electionBallot' | 'pendingVote' | 'votedMarker'>",
+  },
+  {
     file: 'src/modules/eligibility/audit.service.ts',
     contains: "export type AuditClient = Pick<typeof votersDb, 'auditEvent'>",
   },
 ]
 
 /**
+ * Markeringen skrivs bara av hjälpfunktionen, och hjälpfunktionen anropas
+ * bara av skalningen.
+ *
+ * Mönstren gäller hela src. En skrivning av markeringen i en rutt eller en
+ * tjänst, eller ett nytt anrop till hjälpfunktionen någon annanstans än i
+ * stängningen, fäller påståendet att markeringen bara skrivs i skalningens
+ * transaktion. Att anropet i stängningen står i transaktionen och med `tx`
+ * vaktar STRIPPING_TRANSACTION. Exporteras för testet.
+ */
+export const MARKER_WRITTEN_ONLY_IN_STRIPPING: Marker[] = [
+  {
+    onlyIn: ['src/modules/eligibility/pending-vote.service.ts'],
+    under: 'src',
+    matches: /votedMarker\.(?:create|createMany|upsert|update|updateMany)\(/,
+  },
+  {
+    onlyIn: ['src/modules/eligibility/pending-vote.service.ts', 'src/orchestration/close-election.usecase.ts'],
+    under: 'src',
+    matches: /\bmarkEnvelopesAsVoted\b/,
+  },
+]
+
+/**
+ * Markeringen har inga andra fält än väljaren och valsedeln, och alltså ingen
+ * tid. Mönstret matchar ett fält i modellen som INTE står i listan, på samma
+ * sätt som VOTER_MODEL_FIELDS_TODAY. Exporteras för testet.
+ */
+export const VOTED_MARKER_HAS_NO_TIME: Marker = {
+  nowhereIn: 'prisma/voters/schema.prisma',
+  matches: /model VotedMarker \{[^}]*\n\s+(?!(?:id|voterStatusId|voterStatus|ballotId|ballot)\s)[A-Za-z]\w*\s/,
+}
+
+/** Ingen sida och ingen rutt läser markeringen än. Verifieringssidan byggs i uppgift 13. */
+const NO_PAGE_SHOWS_VOTED_MARKER: Marker = {
+  nowhereIn: 'src/app',
+  matches: /votedMarker|VotedMarker|voted_marker/,
+}
+
+/**
  * Röstlängdens modeller, som de är i dag.
  *
- * En markering kan också hamna i en ny tabell som skrivs någon annanstans än i
- * transaktionen. Därför fäller varje ny modell i röstlängden påståendet, och
- * den som lägger till en får pröva om den är en sådan markering. Mönstret
- * matchar en modell som INTE står i listan.
+ * En annan markering, till exempel en med tid, kan också hamna i en ny tabell
+ * som skrivs någon annanstans än i transaktionen. Därför fäller varje ny modell
+ * i röstlängden påståendet om markeringen, och den som lägger till en får pröva
+ * om den säger något om vem som röstat eller när. Mönstret matchar en modell
+ * som INTE står i listan. VotedMarker kom till i uppgift 11d.
  */
 export const VOTERS_MODELS_TODAY: Marker = {
   nowhereIn: 'prisma/voters/schema.prisma',
   matches:
-    /^model (?!(?:VoterStatus|Election|ElectionBallot|VoterBallotStatus|VotingSession|AdminSession|PushSubscription|AuditEvent|PendingVote) \{)/m,
+    /^model (?!(?:VoterStatus|Election|ElectionBallot|VoterBallotStatus|VotedMarker|VotingSession|AdminSession|PushSubscription|AuditEvent|PendingVote) \{)/m,
 }
 
 /**
@@ -346,12 +418,13 @@ export const VOTERS_MODELS_TODAY: Marker = {
  * en ny tabell. Mönstret matchar ett fält, alltså en rad som börjar med ett
  * namn, som INTE står i listan. Kommentarer och @@-rader börjar inte med ett
  * namn och räknas inte, så en rättad kommentar fäller inte påståendet.
+ * `votedMarkers` är relationen till kuvertmodellens markering.
  */
 export const VOTER_MODEL_FIELDS_TODAY: Marker[] = [
   {
     nowhereIn: 'prisma/voters/schema.prisma',
     matches:
-      /model VoterStatus \{[^}]*\n\s+(?!(?:id|externalIdentityHash|isEligible|isAdmin|municipalityCode|regionCode|sessions|adminSessions|ballotStatuses|pendingVotes)\s)[A-Za-z]\w*\s/,
+      /model VoterStatus \{[^}]*\n\s+(?!(?:id|externalIdentityHash|isEligible|isAdmin|municipalityCode|regionCode|sessions|adminSessions|ballotStatuses|pendingVotes|votedMarkers)\s)[A-Za-z]\w*\s/,
   },
   {
     nowhereIn: 'prisma/voters/schema.prisma',
@@ -622,30 +695,50 @@ export const CURRENTLY = {
     status: statusPlanned('13'),
   },
 
-  votedMarkerNotKept: {
+  /**
+   * Uppgift 11d ersatte påståendet att ingenting i röstlängden markerade en
+   * kuvertröst efter stängningen. Markörerna är till stor del desamma, men
+   * bär nu det omvända: att markeringen skrivs just i skalningens transaktion
+   * och ingen annanstans, en per flyttat kuvert, och utan tid.
+   */
+  votedMarkerWritten: {
     text:
-      'Efter stängningen finns i dag ingenting i röstlängden som säger att en väljare lagt ett ' +
-      'kuvert: raden i pending_vote raderas, och markeringen i voter_ballot_status görs bara av ' +
-      'det gamla flödet.',
+      'Skalningen skriver markeringen "har röstat" i röstlängden, i samma transaktion som raderar ' +
+      'kopplingen, ur de kuvert som raderas: en per väljare och valsedel, utan tidsstämpel och i en ' +
+      'ordning som inte följer läggningen. Stängningen kräver att antalet markeringar per valsedel ' +
+      'är antalet flyttade kuvert innan den gör COMMIT. Markeringen står i en egen tabell och inte ' +
+      'i det gamla flödets voter_ballot_status.',
     holdsWhile: [
-      // Skalningens transaktion och det den lämnar `tx` till är orörda. Här
-      // skulle markeringen skrivas enligt spec 3.1 punkt 6, och varje ny rad
-      // i dem fäller påståendet.
+      // Skalningens transaktion och det den lämnar `tx` till, ord för ord:
+      // markeringen skrivs där, före raderingen, och antalet prövas före COMMIT.
       STRIPPING_TRANSACTION,
       ...STRIPPING_HELPERS,
-      // Ingen ny tabell i röstlängden, och ingen ny kolumn i de modeller där
-      // en markering per väljare kunde stå, var den än skrivs.
+      // Markeringen skrivs ingen annanstans i src, och hjälpfunktionen anropas
+      // bara av stängningen.
+      ...MARKER_WRITTEN_ONLY_IN_STRIPPING,
+      // Ingen tid i markeringen, och ingen ny tabell eller kolumn i röstlängden
+      // där en annan markering per väljare kunde stå.
+      VOTED_MARKER_HAS_NO_TIME,
       VOTERS_MODELS_TODAY,
       ...VOTER_MODEL_FIELDS_TODAY,
       // Det gamla flödets markering nämns bara i det gamla flödet, också i
-      // src/orchestration, och skrivs där en gång per fil.
+      // src/orchestration, och skrivs där en gång per fil. Kuvertmodellens
+      // markering hamnar alltså inte där.
       MARKING_ONLY_IN_OLD_FLOW,
       ...ONE_MARKING_WRITE_EACH,
       // Och ingen trigger eller rå SQL skriver förbi allt det här.
       ...NO_WRITES_BESIDE_THE_CODE,
       STRIPPING_DELETES_ENVELOPES,
     ],
-    status: statusPlanned('11d'),
+    status: STATUS_DONE,
+  },
+
+  votedMarkerNotShown: {
+    text:
+      'Ingen sida visar markeringen än, så efter stängningen ser väljaren ännu inte att hon ' +
+      'röstat. Verifieringssidan ska visa det, men inte vad hon röstat på.',
+    holdsWhile: [NO_PAGE_SHOWS_VOTED_MARKER, AFTER_CLOSE_VIEW_NOT_BUILT],
+    status: statusPlanned('13'),
   },
 
   castOnlyWhileOpen: {
@@ -728,12 +821,19 @@ export const CURRENTLY = {
     status: STATUS_DONE,
   },
 
+  /**
+   * Uppgift 11d ersatte antalskontrollen med en återläsning: varje flyttat
+   * chiffer läses tillbaka och jämförs med det validerade, och antalet på
+   * valsedlarna ska vara antalet flyttade. Roten skrivs sedan 11d i samma sats
+   * som STRIPPED, med villkor på både fasen och en oskriven rot.
+   */
   envelopeRootCommitment: {
     text:
-      'Byggt: roten räknas ut innan något raderas och skrivs en enda gång, och stängningen ' +
-      'avbryter om antalet som flyttats inte är exakt antalet som fanns, eller om raderingen inte ' +
-      'träffar exakt de kuvert som flyttats. Ingen inklusionsväg lagras, och efter stängningen är ' +
-      'signaturerna raderade, så ingen utomstående kan räkna om roten.',
+      'Byggt: roten räknas ut innan något raderas och skrivs en enda gång. Stängningen läser ' +
+      'tillbaka varje flyttat chiffer och avbryter om urnan inte är exakt de validerade kuverten, ' +
+      'med samma valsedel, chiffer och bevis, eller om raderingen inte träffar exakt de kuvert som ' +
+      'flyttats. Ingen inklusionsväg lagras, och efter stängningen är signaturerna raderade, så ' +
+      'ingen utomstående kan räkna om roten.',
     holdsWhile: [
       {
         file: 'src/orchestration/close-election.usecase.ts',
@@ -741,15 +841,32 @@ export const CURRENTLY = {
       },
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'where: { id: electionId, envelopeRoot: null }',
+        contains: "where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
       },
-      { file: 'src/orchestration/close-election.usecase.ts', contains: 'if (moved !== envelopes.length) {' },
+      // Återläsningen: valsedel, chiffer och bevis för varje flyttat kuvert,
+      // och antalet på valsedlarna.
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: [
+          '        row.ballotId !== envelope.ballotId ||',
+          '        !sameJson(row.ciphertext, envelope.ciphertext) ||',
+          '        !sameJson(row.proofs, envelope.proofs)',
+        ].join('\n'),
+      },
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: 'if (onBallots === envelopes.length && missing === 0 && different === 0) return null',
+      },
+      { file: 'src/orchestration/close-election.usecase.ts', contains: 'const mismatch = await urnMismatch(ballotIds, envelopes)' },
       // Raderingen efter id och chifferhash, och jämförelsen före COMMIT.
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
         contains: 'where: { OR: batch.map(({ id, ciphertextHash }) => ({ id, ciphertextHash })) },',
       },
-      { file: 'src/orchestration/close-election.usecase.ts', contains: 'if (removed !== moved || left !== 0) {' },
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: 'if (removed !== moved || left !== 0 || marked !== moved || !markersMatch) {',
+      },
       { nowhereIn: 'src/lib/merkle.ts', matches: /export function \w*(Proof|Path|Inclusion)/ },
       STRIPPING_DELETES_ENVELOPES,
     ],
@@ -1410,16 +1527,36 @@ export const PHASES: PhaseRow[] = [
     next: 'validering',
     today: {
       text:
-        'Skrivs aldrig. Efter closesAt står fasen kvar i OPEN tills stängningen körs, men rösten ' +
-        'avvisas ändå, eftersom läggningen prövar både fasen och klockan.',
+        'Skrivs först i stängningen, med jämför-och-sätt från OPEN, innan kuverten läses. ' +
+        'Därefter tar läggningen inte emot något kuvert, inte heller om valideringen hittar en ' +
+        'avvikelse, eftersom den prövar fasen i samma transaktion som den skriver kuvertet. Efter ' +
+        'closesAt står fasen i OPEN tills stängningen körs, och kuvertet avvisas då av klockan.',
       holdsWhile: [
-        neverWritten('CLOSED'),
+        {
+          file: 'src/orchestration/close-election.usecase.ts',
+          contains: "where: { id: electionId, phase: 'OPEN', envelopeRoot: null, closesAt: { lte: now } },",
+        },
+        { file: 'src/orchestration/close-election.usecase.ts', contains: "data: { phase: 'CLOSED' }," },
+        // Skrivningen kommer före läsningen av kuverten.
+        {
+          file: 'src/orchestration/close-election.usecase.ts',
+          contains: [
+            "    data: { phase: 'CLOSED' },",
+            '  })',
+            '',
+            '  const election = await votersDb.election.findUniqueOrThrow({',
+          ].join('\n'),
+        },
+        {
+          file: 'src/modules/eligibility/pending-vote.service.ts',
+          contains: '>`SELECT phase, closes_at, link_cleared_at FROM election WHERE id = ${electionId} FOR SHARE`',
+        },
         {
           file: 'src/modules/eligibility/pending-vote.service.ts',
           contains: 'election.closesAt <= new Date()',
         },
       ],
-      status: statusPlanned('11d'),
+      status: STATUS_DONE,
     },
   },
   {
@@ -1429,16 +1566,26 @@ export const PHASES: PhaseRow[] = [
     next: 'skalning',
     today: {
       text:
-        'Skrivs aldrig. Valideringen körs som en spärr inuti stängningen, i samma körning som ' +
-        'skalningen.',
+        'Skrivs när valideringen och omverifieringen passerat, med jämför-och-sätt från CLOSED ' +
+        'eller VALIDATED. En omkörning från CLOSED eller VALIDATED går hela vägen igen, och en ' +
+        'omkörning som stoppas av valideringen lämnar fasen i VALIDATED, eftersom ingen fas går ' +
+        'baklänges. Skalningen kräver ändå att den egna körningens validering passerat.',
       holdsWhile: [
-        neverWritten('VALIDATED'),
+        {
+          file: 'src/orchestration/close-election.usecase.ts',
+          contains: "where: { id: electionId, phase: { in: ['CLOSED', 'VALIDATED'] }, envelopeRoot: null },",
+        },
+        { file: 'src/orchestration/close-election.usecase.ts', contains: "data: { phase: 'VALIDATED' }," },
         {
           file: 'src/orchestration/close-election.usecase.ts',
           contains: 'await validateEnvelopes(snapshot)',
         },
+        {
+          file: 'src/orchestration/close-election.usecase.ts',
+          contains: "const LINKED_PHASES: readonly string[] = ['OPEN', 'CLOSED', 'VALIDATED']",
+        },
       ],
-      status: statusPlanned('11d'),
+      status: STATUS_DONE,
     },
   },
   {
@@ -1448,13 +1595,23 @@ export const PHASES: PhaseRow[] = [
     next: 'partiella dekrypteringar',
     today: {
       text:
-        'Skrivs av stängningen, i samma transaktion som raderar kopplingen och skriver ' +
-        'kuvertroten.',
+        'Skrivs av stängningen, med jämför-och-sätt från VALIDATED, i samma transaktion som raderar ' +
+        'kopplingen, skriver markeringarna och skriver kuvertroten. En stängning i den här fasen ' +
+        'eller en senare svarar att omröstningen redan är stängd, och rör ingenting.',
       holdsWhile: [
         {
           file: 'src/orchestration/close-election.usecase.ts',
-          contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date() }",
+          contains: "where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
         },
+        {
+          file: 'src/orchestration/close-election.usecase.ts',
+          contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
+        },
+        {
+          file: 'src/orchestration/close-election.usecase.ts',
+          contains: "const CLEARED_PHASES: readonly string[] = ['STRIPPED', 'TALLIED', 'CERTIFIED']",
+        },
+        STRIPPING_TRANSACTION,
       ],
       status: STATUS_DONE,
     },
@@ -1504,22 +1661,13 @@ export const PHASES: PhaseRow[] = [
  * "Kommer att implementeras" på Utvecklingsstatus visar listan i den här
  * ordningen. tests/security/architecture-page.test.ts läser planens rad och
  * kräver att varje punkts uppgiftsnummer står i samma inbördes ordning där.
- * Två punkter får dela nummer (11d), men ingen punkt får stå före en annan
- * vars uppgift körs tidigare.
+ * Två punkter får dela nummer, men ingen punkt får stå före en annan vars
+ * uppgift körs tidigare.
+ *
+ * Uppgift 11d strök de två första punkterna, faserna CLOSED och VALIDATED och
+ * markeringen "har röstat". De står nu under Klart.
  */
 export const REMAINING: CodeFact[] = [
-  {
-    text:
-      'Faserna CLOSED och VALIDATED blir egna tillstånd i stängningen, med övergångar som bara går ' +
-      'framåt.',
-    holdsWhile: [neverWritten('CLOSED'), neverWritten('VALIDATED')],
-    status: statusPlanned('11d'),
-  },
-  {
-    text: 'Markeringen "har röstat" skrivs i röstlängden vid skalningen, utan tidsstämpel.',
-    holdsWhile: CURRENTLY.votedMarkerNotKept.holdsWhile,
-    status: CURRENTLY.votedMarkerNotKept.status,
-  },
   {
     text: 'Tröskeldekrypteringen av summorna, med spärren som kräver att fasen är STRIPPED.',
     holdsWhile: [DECRYPTION_NOT_BUILT, neverWritten('TALLIED')],
@@ -1591,9 +1739,26 @@ export const BUILT: CodeFact[] = [
   },
   {
     text:
-      'Kuvertroten binder vilka kuvert som fanns i röstlängden, och stängningen avbryter om antalet ' +
-      'inte stämmer.',
+      'Kuvertroten binder vilka kuvert som fanns i röstlängden, och stängningen avbryter om urnan ' +
+      'inte är exakt de validerade kuverten.',
     holdsWhile: CURRENTLY.envelopeRootCommitment.holdsWhile,
+    status: STATUS_DONE,
+  },
+  {
+    text:
+      'Faserna är verkliga tillstånd: stängningen skriver CLOSED innan kuverten läses, VALIDATED när ' +
+      'valideringen passerat och STRIPPED när kopplingen raderas, var och en med jämför-och-sätt, så ' +
+      'att ingen fas går baklänges.',
+    holdsWhile: PHASES.filter((row) => ['CLOSED', 'VALIDATED', 'STRIPPED'].includes(row.phase)).flatMap(
+      (row) => row.today.holdsWhile,
+    ),
+    status: STATUS_DONE,
+  },
+  {
+    text:
+      'Skalningen skriver markeringen "har röstat" i röstlängden, ur de kuvert som raderas och utan ' +
+      'tidsstämpel.',
+    holdsWhile: CURRENTLY.votedMarkerWritten.holdsWhile,
     status: STATUS_DONE,
   },
   {
@@ -1702,5 +1867,7 @@ export const LIMITATION_STATUS: Record<string, Status> = {
   'bankid-order-carries-link': statusPlanned('11e'),
   'no-revocation-check': STATUS_OUT_OF_SCOPE,
   'bankid-xmldsig-adapter-missing': statusPlanned('17b'),
-  'votes-db-writer-can-swap-ciphertext': statusPlanned('11d'),
+  // Uppgift 11d stängde bytet före infogningen med återläsningen. Bytet efter
+  // stängningen står kvar tills 12b räknar om en urnrot.
+  'votes-db-writer-can-swap-ciphertext': statusPlanned('12b'),
 }

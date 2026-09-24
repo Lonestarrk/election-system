@@ -21,7 +21,11 @@ import {
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
 import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
-import { castEncryptedBallot, nextCastSequence } from '@/modules/eligibility/pending-vote.service'
+import {
+  castEncryptedBallot,
+  nextCastSequence,
+  type CastOutcome,
+} from '@/modules/eligibility/pending-vote.service'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
 /**
@@ -41,6 +45,14 @@ import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from 
  * ska antingen stoppa stängningen eller komma med i nästa körning. Ingen får
  * leda till att en rad flyttas som inte validerats, eller att en rad raderas
  * som inte flyttats.
+ *
+ * SEDAN UPPGIFT 11D kan en väljare inte längre skriva i fönstret. Stängningen
+ * skriver CLOSED innan den läser kuverten, och läggningen prövar fasen i samma
+ * transaktion som den skriver, så en röst i sista stund avvisas med ett fel.
+ * Skrivningar direkt i databasen prövas fortfarande, med äkta kuvert som
+ * förberetts innan stängningen. Ett kuvert som tas bort eller byts ut efter
+ * läsningen lämnar sitt chiffer kvar i votes_db, och sedan 11d tar omkörningen
+ * bort det i stället för att stoppas av det.
  */
 
 /**
@@ -189,8 +201,14 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
     })
   }
 
-  /** En ärlig röstläggning med underskrift ur attrappen. Svarar med chifferhashen. */
-  async function castFor(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<string> {
+  /**
+   * En ärlig röstläggning med underskrift ur attrappen, medan klockan står
+   * öppen. Svarar med utfallet, så att en röst som avvisas går att pröva.
+   */
+  async function tryCastFor(
+    voterStatusId: string,
+    party: 'bp-s' | 'bp-m',
+  ): Promise<{ outcome: CastOutcome; ciphertextHash: string }> {
     await setClosesAt(new Date(Date.now() + 3_600_000))
 
     try {
@@ -225,14 +243,60 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
         },
         await getEncryptedBallotShape(ballotId),
       )
-      if (outcome.status !== 'recorded') {
-        throw new Error(`Kunde inte lägga rösten (${outcome.status}).`)
-      }
 
-      return ballot.ciphertextHash
+      return { outcome, ciphertextHash: ballot.ciphertextHash }
     } finally {
       await setClosesAt(new Date(Date.now() - 60_000))
     }
+  }
+
+  /** En ärlig röstläggning som ska lyckas. Svarar med chifferhashen. */
+  async function castFor(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<string> {
+    const { outcome, ciphertextHash } = await tryCastFor(voterStatusId, party)
+    if (outcome.status !== 'recorded') {
+      throw new Error(`Kunde inte lägga rösten (${outcome.status}).`)
+    }
+    return ciphertextHash
+  }
+
+  type PendingRow = Awaited<ReturnType<typeof votersDb.pendingVote.findFirstOrThrow>>
+
+  async function rowOf(voterStatusId: string): Promise<PendingRow> {
+    return votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId } })
+  }
+
+  /** Skriver ett kuverts innehåll över raden med `id`, som den som skriver i databasen kan. */
+  async function overwrite(id: string, row: PendingRow): Promise<void> {
+    await votersDb.pendingVote.update({
+      where: { id },
+      data: {
+        ciphertext: row.ciphertext as Prisma.InputJsonValue,
+        proofs: row.proofs as Prisma.InputJsonValue,
+        ciphertextHash: row.ciphertextHash,
+        castSequence: row.castSequence,
+        bankIdSignature: row.bankIdSignature,
+        bankIdCertificateChain: row.bankIdCertificateChain,
+        updatedAt: row.updatedAt,
+      },
+    })
+  }
+
+  /** Lägger tillbaka ett sparat kuvert som det var, med sitt id, direkt i databasen. */
+  async function insertRow(row: PendingRow): Promise<void> {
+    await votersDb.pendingVote.create({
+      data: {
+        id: row.id,
+        voterStatusId: row.voterStatusId,
+        ballotId: row.ballotId,
+        ciphertext: row.ciphertext as Prisma.InputJsonValue,
+        proofs: row.proofs as Prisma.InputJsonValue,
+        ciphertextHash: row.ciphertextHash,
+        castSequence: row.castSequence,
+        bankIdSignature: row.bankIdSignature,
+        bankIdCertificateChain: row.bankIdCertificateChain,
+        updatedAt: row.updatedAt,
+      },
+    })
   }
 
   /**
@@ -282,22 +346,30 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
     return attempt
   }
 
+  /** Chifferhasharna i urnan, sorterade, så att en jämförelse inte beror på radernas ordning. */
   async function tally(): Promise<string[]> {
     const rows = await votesDb.encryptedVote.findMany({ select: { ciphertextHash: true } })
-    return rows.map((row) => row.ciphertextHash)
+    return rows.map((row) => row.ciphertextHash).sort()
   }
 
   async function linkClearedEvents(): Promise<number> {
     return votersDb.auditEvent.count({ where: { eventType: AUDIT_EVENTS.LINK_CLEARED } })
   }
 
-  /** Ingenting av det skalningens transaktion skriver finns kvar. */
-  async function expectStillOpen(): Promise<void> {
+  /**
+   * Ingenting av det skalningens transaktion skriver finns kvar.
+   *
+   * Sedan uppgift 11d står fasen inte kvar i OPEN efter ett avbrott. Den är
+   * CLOSED om valideringen stoppade stängningen och VALIDATED om den passerade,
+   * och går aldrig tillbaka. Det som bara transaktionen skriver, STRIPPED,
+   * roten, tiden för raderingen och revisionsposten, ska inte finnas.
+   */
+  async function expectNotStripped(phase: 'CLOSED' | 'VALIDATED'): Promise<void> {
     const election = await votersDb.election.findUniqueOrThrow({
       where: { id: electionId },
       select: { phase: true, envelopeRoot: true, linkClearedAt: true },
     })
-    expect(election).toEqual({ phase: 'OPEN', envelopeRoot: null, linkClearedAt: null })
+    expect(election).toEqual({ phase, envelopeRoot: null, linkClearedAt: null })
     expect(await linkClearedEvents()).toBe(0)
   }
 
@@ -332,12 +404,12 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
     expect(outcome?.status).toBe('validation_failed')
     expect(await tally()).not.toContain(forged)
     expect(await tally()).toHaveLength(0)
-    await expectStillOpen()
+    await expectNotStripped('CLOSED')
   })
 
   it('ett äkta kuvert som tas bort efter läsningen stoppar raderingen, och ingenting raderas', async () => {
-    await castFor(anna, 'bp-s')
-    await castFor(kim, 'bp-m')
+    const annas = await castFor(anna, 'bp-s')
+    const kims = await castFor(kim, 'bp-m')
 
     const { outcome, error } = await closeWithWriteInWindow(async () => {
       await votersDb.pendingVote.deleteMany({ where: { voterStatusId: anna } })
@@ -356,67 +428,121 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
      * och revisionsposten rullades tillbaka tillsammans med raderingen.
      */
     expect(await votersDb.pendingVote.count({ where: { voterStatusId: kim } })).toBe(1)
-    await expectStillOpen()
+    await expectNotStripped('VALIDATED')
 
     /**
      * Annas chiffer ligger redan i röstdatabasen, men hennes kuvert gör det
-     * inte längre. En omkörning ska därför inte heller gå vidare: den läser ett
-     * kuvert och hittar två chiffer.
+     * inte längre. Fram till uppgift 11d stoppades varje omkörning av
+     * antalskontrollen, eftersom den läste ett kuvert och hittade två chiffer.
+     * Nu tar omkörningen bort chiffret, som inte hör till något validerat
+     * kuvert, och flyttar Kims.
      */
-    const rerun = await closeElection(electionId).then(
-      () => null,
-      (thrown: unknown) => thrown,
-    )
-    expect(linkStateOf(rerun)).toBe('untouched')
-    expect(await votersDb.pendingVote.count()).toBe(1)
-    await expectStillOpen()
+    expect(await tally()).toEqual([annas, kims].sort())
+    const rerun = await closeElection(electionId)
+    expect(rerun).toMatchObject({ status: 'closed', moved: 1, cleared: 1, residueRemoved: [annas] })
+    expect(await tally()).toEqual([kims])
+    expect(await votersDb.pendingVote.count()).toBe(0)
   })
 
-  it('ett kuvert som byts ut efter läsningen stoppar raderingen, och den nya rösten ligger kvar', async () => {
-    await castFor(anna, 'bp-s')
+  it('ett kuvert som byts ut i databasen efter läsningen stoppar raderingen, och en omkörning tar det nya', async () => {
+    const annas = await castFor(anna, 'bp-s')
     const first = await castFor(kim, 'bp-m')
+    const kimsFirst = await rowOf(kim)
+    // Kims andra, äkta kuvert, med högre räknare. Det första läggs tillbaka,
+    // och det andra sparas för att skrivas direkt i databasen i fönstret.
+    const replacement = await castFor(kim, 'bp-s')
+    const kimsSecond = await rowOf(kim)
+    await overwrite(kimsFirst.id, kimsFirst)
 
-    // Kim ändrar sig i sista stund, efter att stängningen läst hennes kuvert.
-    let replacement = ''
     const { outcome, error } = await closeWithWriteInWindow(async () => {
-      replacement = await castFor(kim, 'bp-s')
+      await overwrite(kimsFirst.id, kimsSecond)
     })
 
     /**
-     * Före rättelsen: `closed`. Det gamla kuvertet flyttades, och raderingen
-     * efter valsedel tog med sig det nya, som aldrig räknades.
+     * Före rättelsen i 14f: `closed`. Det gamla kuvertet flyttades, och
+     * raderingen efter valsedel tog med sig det nya, som aldrig räknades.
      */
     expect(outcome).toBeNull()
     expect(linkStateOf(error)).toBe('untouched')
     expect((error as Error).message).toContain('2 kuvert flyttades, men bara 1 av dem')
 
-    const kimsEnvelope = await votersDb.pendingVote.findFirstOrThrow({
-      where: { voterStatusId: kim },
-      select: { ciphertextHash: true },
-    })
+    const kimsEnvelope = await rowOf(kim)
     expect(replacement).not.toBe(first)
     expect(kimsEnvelope.ciphertextHash).toBe(replacement)
-    await expectStillOpen()
+    await expectNotStripped('VALIDATED')
+
+    // Omkörningen validerar det nya kuvertet och tar bort det gamla chiffret.
+    expect(await closeElection(electionId)).toMatchObject({
+      status: 'closed',
+      moved: 2,
+      cleared: 2,
+      residueRemoved: [first],
+    })
+    expect(await tally()).toEqual([annas, replacement].sort())
   })
 
-  it('ett kuvert som läggs efter läsningen stoppar raderingen, och en omkörning tar med det', async () => {
-    await castFor(anna, 'bp-s')
-    await castFor(kim, 'bp-m')
+  it('en väljare som ändrar sig efter läsningen får ett fel, och det lästa kuvertet flyttas', async () => {
+    const annas = await castFor(anna, 'bp-s')
+    const first = await castFor(kim, 'bp-m')
 
-    let late = ''
+    // Kim ändrar sig i sista stund, efter att stängningen läst hennes kuvert.
+    let revote: CastOutcome | null = null
     const { outcome, error } = await closeWithWriteInWindow(async () => {
-      late = await castFor(robin, 'bp-s')
+      revote = (await tryCastFor(kim, 'bp-s')).outcome
     })
 
     /**
-     * Före rättelsen: `closed`, med två flyttade och tre raderade. Robin hade
-     * fått beskedet att rösten var lagd, och den räknades aldrig.
+     * Före uppgift 11d lades den nya rösten, och stängningen avbröts, eller
+     * före 14f:s rättelse raderades den nya rösten utan att räknas. Nu har
+     * stängningen redan skrivit CLOSED, och Kim får beskedet att röstningen
+     * stängt. Det kuvert som lästes är det som flyttas.
      */
+    expect(revote).toEqual({ status: 'closed' })
+    expect(error).toBeNull()
+    expect(outcome).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
+    expect(await tally()).toEqual([annas, first].sort())
+    expect(await votersDb.pendingVote.count()).toBe(0)
+  })
+
+  it('en röst som läggs efter läsningen avvisas med ett fel, och ingen röst sägs vara lagd utan att flyttas', async () => {
+    const annas = await castFor(anna, 'bp-s')
+    const kims = await castFor(kim, 'bp-m')
+
+    let late: { outcome: CastOutcome; ciphertextHash: string } | null = null
+    const { outcome, error } = await closeWithWriteInWindow(async () => {
+      late = await tryCastFor(robin, 'bp-s')
+    })
+
+    /**
+     * Före rättelsen i 14f: `closed`, med två flyttade och tre raderade. Robin
+     * hade fått beskedet att rösten var lagd, och den räknades aldrig. Efter
+     * 14f lades rösten, och stängningen avbröts. Nu avvisas den med ett fel.
+     */
+    expect(late!.outcome).toEqual({ status: 'closed' })
+    expect(error).toBeNull()
+    expect(outcome).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
+    expect(await tally()).toEqual([annas, kims].sort())
+    expect(await tally()).not.toContain(late!.ciphertextHash)
+    expect(await votersDb.pendingVote.count()).toBe(0)
+  })
+
+  it('ett kuvert som skrivs in i databasen efter läsningen stoppar raderingen, och en omkörning tar med det', async () => {
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    // Robins äkta kuvert, sparat och borttaget, för att skrivas in i fönstret.
+    const late = await castFor(robin, 'bp-s')
+    const robinsRow = await rowOf(robin)
+    await votersDb.pendingVote.delete({ where: { id: robinsRow.id } })
+
+    const { outcome, error } = await closeWithWriteInWindow(async () => {
+      await insertRow(robinsRow)
+    })
+
     expect(outcome).toBeNull()
     expect(linkStateOf(error)).toBe('untouched')
     expect((error as Error).message).toContain('1 kuvert i röstlängden lästes inte')
     expect(await votersDb.pendingVote.count()).toBe(3)
-    await expectStillOpen()
+    await expectNotStripped('VALIDATED')
 
     // Omkörningen läser alla tre, validerar dem och flyttar dem.
     expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 3, cleared: 3 })
@@ -424,27 +550,31 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
     expect(await votersDb.pendingVote.count()).toBe(0)
   })
 
-  it('en annan stängning som hinner före svarar already_closed, aldrig ett falskt "orörd"', async () => {
+  it('en andra stängning medan den första pågår svarar att en stängning pågår, aldrig ett falskt "orörd"', async () => {
     await castFor(anna, 'bp-s')
     await castFor(kim, 'bp-m')
 
-    // En andra stängning, till exempel efter ett dubbelklick, går hela vägen i fönstret.
-    let first: CloseOutcome | null = null
+    // En andra stängning, till exempel efter ett dubbelklick, startar i fönstret.
+    let second: CloseOutcome | null = null
     const { outcome, error } = await closeWithWriteInWindow(async () => {
-      first = await closeElection(electionId)
+      second = await closeElection(electionId)
     })
 
-    expect(first).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
-
     /**
-     * Den här körningen raderade ingenting, eftersom den andra hann före. Men
-     * kopplingen är raderad, så "orörd" hade varit falskt. Svaret är detsamma
-     * som för en omkörning, och loggen har bara en radering.
+     * Före uppgift 11d gick den andra stängningen hela vägen, och den första
+     * svarade already_closed. Hade den andra läst fasen före den förstas
+     * COMMIT men kuverten efter, hade den svarat att kopplingen var orörd fast
+     * den var raderad. Nu kör bara en stängning åt gången, och den andra
+     * svarar att en stängning pågår, utan att röra något.
      */
+    expect(second).toEqual({ status: 'in_progress' })
     expect(error).toBeNull()
-    expect(outcome).toEqual({ status: 'already_closed' })
+    expect(outcome).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
     expect(await linkClearedEvents()).toBe(1)
     expect(await votersDb.pendingVote.count()).toBe(0)
     expect(await tally()).toHaveLength(2)
+
+    // En omkörning efteråt svarar som för en stängd omröstning.
+    expect(await closeElection(electionId)).toEqual({ status: 'already_closed' })
   })
 })

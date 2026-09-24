@@ -13,8 +13,8 @@ import Link from 'next/link'
  * röstsidan, på enheten väljaren röstade från, där servern varje gång sidan
  * laddas bekräftar att den håller exakt den rösten. Efter stängningen ska den
  * här sidan visa att väljaren röstat, men inte vad. Det är inte byggt än, och
- * sidan säger det. Det byggs i uppgift 13, som behöver markeringen "har
- * röstat" från uppgift 11d.
+ * sidan säger det. Det byggs i uppgift 13, som läser markeringen "har röstat"
+ * som skalningen skriver sedan uppgift 11d.
  *
  * Sidan anropar ingenting. /api/verify finns kvar med det gamla flödet och
  * tas bort med det.

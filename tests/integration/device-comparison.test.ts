@@ -18,6 +18,7 @@ import {
   type CastOutcome,
 } from '@/modules/eligibility/pending-vote.service'
 import { createVotingSession } from '@/modules/eligibility/voting-session.service'
+import { closeElection } from '@/orchestration/close-election.usecase'
 import { POST as compare } from '@/app/api/vote/compare/route'
 import { POST as session } from '@/app/api/vote/session/route'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOnce } from './helpers'
@@ -352,6 +353,34 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
 
     const after = JSON.parse(await (await post(session, {})).text())
     expect(after.ballots[0]).toMatchObject({ hasPendingVote: false, votedInOldFlow: true })
+  })
+
+  it('skalningens markering "har röstat" tolkas inte som en röst i det gamla flödet', async () => {
+    /**
+     * Uppgift 11d skriver markeringen i en egen tabell, voted_marker, och inte i
+     * det gamla flödets voter_ballot_status, som röstsidan sedan uppgift 14
+     * visar som en röst som inte går att byta. Före stängningen finns
+     * markeringen aldrig, och efter stängningen är röstsidan stängd. Här prövas
+     * båda, och att sessionen inte säger att väljaren röstat i det gamla flödet.
+     */
+    const { outcome } = await cast(bpS)
+    expect(outcome.status).toBe('recorded')
+    expect(await votersDb.votedMarker.count()).toBe(0)
+
+    const open = JSON.parse(await (await post(session, {})).text())
+    expect(open.ballots[0]).toMatchObject({ hasPendingVote: true, votedInOldFlow: false })
+
+    await votersDb.election.update({ where: { id: electionId }, data: { closesAt: new Date(Date.now() - 1000) } })
+    await votesDb.election.update({ where: { id: electionId }, data: { closesAt: new Date(Date.now() - 1000) } })
+    expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1 })
+    expect(await votersDb.votedMarker.count({ where: { voterStatusId: anna, ballotId } })).toBe(1)
+
+    const closed = JSON.parse(await (await post(session, {})).text())
+    expect(closed).toMatchObject({
+      phase: 'STRIPPED',
+      acceptsVotes: false,
+      ballots: [{ id: ballotId, hasPendingVote: false, votedInOldFlow: false }],
+    })
   })
 
   it('när closesAt passerats tar sessionen inte längre emot röster, precis som läggningen', async () => {

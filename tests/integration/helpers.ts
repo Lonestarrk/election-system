@@ -142,6 +142,8 @@ export async function resetElectionData(): Promise<void> {
   await votersDb.adminSession.deleteMany()
   await votersDb.votingSession.deleteMany()
   await votersDb.voterBallotStatus.deleteMany()
+  // Markeringen "har röstat" har RESTRICT mot väljaren, som kuverten nedan.
+  await votersDb.votedMarker.deleteMany()
   /**
    * MÅSTE TÖMMAS FÖRE voterStatus.
    *

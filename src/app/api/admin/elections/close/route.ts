@@ -93,15 +93,15 @@ export async function POST(request: Request) {
    * ETT KAST HÄR ÄR INTE ETT OKÄNT FEL — DET ÄR SKYDDSMEKANISMEN SOM LÖSTE UT.
    *
    * `closeElection` kastar hellre än att gå vidare när ett antagande brustit:
-   * när antalet flyttade kuvert inte stämmer, när raderingen inte träffar
-   * exakt de kuvert som flyttats, och när skrivningarna i röstlängden inte
-   * finns kvar efter transaktionen. Gemensamt för de vägarna är att DEN HÄR
-   * KÖRNINGEN INTE HAR RADERAT NÅGOT — och det är det administratören behöver
-   * veta. Att ingen annan körning har gjort det följer inte. En andra
-   * stängning som läste fasen innan den första hann göra COMMIT, men kuverten
-   * efteråt, kan i dag stoppas av antalskontrollen och beskriva kopplingen som
-   * orörd, fast den första redan raderat den. Uppgift 11d läser fasen innan det
-   * påståendet görs, som `settleChangedEnvelopes` redan gör.
+   * när urnan inte är exakt de validerade kuverten, när raderingen inte
+   * träffar exakt de kuvert som flyttats, och när skrivningarna i röstlängden
+   * inte finns kvar efter transaktionen. Gemensamt för de vägarna är att DEN
+   * HÄR KÖRNINGEN INTE HAR RADERAT NÅGOT KUVERT — och det är det
+   * administratören behöver veta. Att ingen annan körning har gjort det följer
+   * inte av det ensamt. Före uppgift 11d kunde en andra stängning som läste
+   * fasen innan den första hann göra COMMIT, men kuverten efteråt, beskriva
+   * kopplingen som orörd, fast den första redan raderat den. Sedan 11d kör bara
+   * en stängning åt gången, och fasen läses innan "orörd" sägs.
    * En naken 500 hade sagt minst precis där beskedet betyder mest.
    *
    * SVARET PÅSTÅR INGEN ORSAK. Rutten kan inte veta vilken av vägarna som
@@ -170,6 +170,26 @@ export async function POST(request: Request) {
     })
   }
 
+  if (outcome.status === 'in_progress') {
+    /**
+     * En annan stängning av samma omröstning pågår, till exempel efter ett
+     * dubbelklick eller i en annan process. Den här har inte rört något, och
+     * beskedet säger inget om kopplingen, eftersom den andra kan radera den
+     * när som helst. 409, som för ett för tidigt försök: begäran var behörig,
+     * men omröstningen kan inte stängas av den just nu.
+     */
+    return jsonResponse(
+      {
+        status: 'in_progress',
+        message:
+          'En annan stängning av omröstningen pågår, och den här har inte gjort något. Den ' +
+          'andra svarar själv med sitt utfall. Kör om när den är klar, så svarar en stängd ' +
+          'omröstning att den är stängd.',
+      },
+      409,
+    )
+  }
+
   if (outcome.status === 'validation_failed') {
     /**
      * SPÄRREN, INTE RAPPORTEN.
@@ -203,11 +223,29 @@ export async function POST(request: Request) {
     )
   }
 
+  /**
+   * RESTERNA SYNS I SVARET (uppgift 11d).
+   *
+   * Stängningen tar före infogningen bort chiffer i röstdatabasen som inte hör
+   * till något av de validerade kuverten, till exempel från en stängning som
+   * avbrutits sedan ett kuvert tagits bort. Administratören ska se att det
+   * skett och vilka det gällde. Chifferhasharna står i svaret till den
+   * inloggade administratören, men inte i loggen, som maskerar dem och bara
+   * får antalet.
+   */
+  const residue =
+    outcome.residueRemoved.length === 0
+      ? ''
+      : ` Före flytten togs ${outcome.residueRemoved.length} chiffer bort ur röstdatabasen som inte ` +
+        'hörde till något av de validerade kuverten, till exempel efter en stängning som ' +
+        'avbrutits.'
+
   return jsonResponse({
     status: 'closed',
-    message: 'Omröstningen är stängd. Kopplingen mellan väljare och röst är raderad.',
+    message: `Omröstningen är stängd. Kopplingen mellan väljare och röst är raderad.${residue}`,
     moved: outcome.moved,
     cleared: outcome.cleared,
     envelopeRoot: outcome.envelopeRoot,
+    residueRemoved: outcome.residueRemoved,
   })
 }

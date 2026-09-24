@@ -36,11 +36,14 @@ datasource db {
 model VoterStatus {
   id String @id @default(uuid())
 
-  /// HMAC-SHA256(personnummer, IDENTITY_PEPPER).
+  /// scrypt av personnumret, med IDENTITY_PEPPER som salt (se
+  /// src/modules/eligibility/identity.ts). Hashen var tidigare HMAC-SHA256,
+  /// och den här kommentaren sa det fram till uppgift 11d.
   /// Personnumret lagras aldrig i klartext. Peppret gör att en databasdump
   /// inte räcker för att brute-forca fram personnummer — utfallsrummet för
   /// svenska personnummer är litet nog att en ren SHA-256 skulle falla på
-  /// sekunder.
+  /// sekunder. Den som har pepparn kan däremot pröva alla, ungefär 17
+  /// processordygn med scrypt, och arbetet går att dela upp (spec 10).
   externalIdentityHash String @unique @map("external_identity_hash")
 
   isEligible Boolean @default(true) @map("is_eligible")
@@ -74,6 +77,7 @@ model VoterStatus {
   adminSessions  AdminSession[]
   ballotStatuses VoterBallotStatus[]
   pendingVotes   PendingVote[]
+  votedMarkers   VotedMarker[]
 
   @@map("voter_status")
 }
@@ -165,15 +169,18 @@ model ElectionBallot {
   displayOrder Int @map("display_order")
 
   voterStatuses VoterBallotStatus[]
+  votedMarkers  VotedMarker[]
 
   @@index([electionId])
   @@map("election_ballot")
 }
 
-/// "Har röstat", per person och valsedel.
+/// "Har röstat", per person och valsedel, i DET GAMLA FLÖDET.
 ///
 /// Detta ersätter den tidigare booleanen på VoterStatus. Raden skapas först
 /// när personen faktiskt röstat — frånvaro av rad betyder "har inte röstat".
+/// Kuvertmodellens markering är en egen modell, VotedMarker nedan, och den här
+/// tas bort med det gamla flödet i uppgift 15.
 model VoterBallotStatus {
   id String @id @default(uuid())
 
@@ -196,6 +203,49 @@ model VoterBallotStatus {
   @@unique([voterStatusId, ballotId])
   @@index([ballotId])
   @@map("voter_ballot_status")
+}
+
+/// Markeringen "har röstat" i kuvertmodellen, en per väljare och valsedel
+/// (spec 3.1 punkt 6, uppgift 11d).
+///
+/// SKRIVS BARA I SKALNINGENS TRANSAKTION, ur de kuvert som raderas och före
+/// raderingen. En markering finns alltså bara för en väljare vars kuvert
+/// flyttades till urnan, och den kan inte säga något annat än att kuvertet
+/// räknades. Stängningen kräver att antalet markeringar per valsedel är lika
+/// med antalet flyttade kuvert innan den gör COMMIT. Se `markEnvelopesAsVoted`
+/// i src/modules/eligibility/pending-vote.service.ts.
+///
+/// INGEN TIDSSTÄMPEL. Markeringen säger att väljaren röstade, men inte när.
+/// Raderna skrivs dessutom i en ordning som följer väljarens id och inte den
+/// ordning kuverten lades, så att inte heller tabellens fysiska ordning säger
+/// vem som röstade före vem.
+///
+/// SKILD FRÅN VoterBallotStatus. Den modellen har en obligatorisk tidpunkt, är
+/// det gamla flödets dubbelröstningsspärr och läses av röstsidan som en röst i
+/// det gamla flödet (`votedInOldFlow`). En gemensam tabell hade gjort en
+/// kuvertröst till en röst som röstsidan säger inte går att byta, och en
+/// väljare med en rad från det gamla flödet hade stoppat skalningen på
+/// unikhetskravet.
+///
+/// Den som kan skriva i röstlängden kan skriva eller radera en markering förbi
+/// stängningen, precis som ett kuvert. Före skalningen stoppar en sådan rad
+/// stängningen, eftersom antalet då inte stämmer.
+model VotedMarker {
+  id String @id @default(uuid())
+
+  voterStatusId String @map("voter_status_id")
+
+  /// RESTRICT, INTE CASCADE, av samma skäl som PendingVote. En struken väljares
+  /// röst räknas (spec 7.4), och markeringen är det uppgift 12b jämför urnans
+  /// antal mot. En radering av väljaren får inte tyst ta markeringen med sig.
+  voterStatus VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Restrict)
+
+  ballotId String         @map("ballot_id")
+  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
+
+  @@unique([voterStatusId, ballotId])
+  @@index([ballotId])
+  @@map("voted_marker")
 }
 
 /// Kortlivad session mellan lyckad legitimering och lagd röst.

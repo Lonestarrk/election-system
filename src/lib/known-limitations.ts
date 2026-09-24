@@ -132,9 +132,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'Räknaren som visar vilket kuvert som är det senaste lagras i samma databas, och den som ' +
       'lägger tillbaka det gamla kuvertet lägger tillbaka dess räknare, så valideringen före ' +
       'stängningen ser ingenting fel. Väljaren kan upptäcka båda före stängningen på enheten hon ' +
-      'röstade från, där jämförelsen svarar att rösten ändrats eller att ingen röst finns. Efter ' +
-      'stängningen ska markeringen "har röstat" visa att hon röstat, men den är inte byggd än ' +
-      '(uppgift 11d).',
+      'röstade från, där jämförelsen svarar att rösten ändrats eller att ingen röst finns. Vid ' +
+      'skalningen skrivs markeringen "har röstat" för varje kuvert som flyttas, så ett borttaget ' +
+      'kuvert ger ingen markering, medan ett återställt äldre kuvert ger en markering som vilket ' +
+      'annat. Men ingen sida visar markeringen än (uppgift 13), och den som kan skriva i ' +
+      'röstlängden kan också skriva eller radera en markering efter stängningen.',
     stillTrueIf: [
       // Räknaren som valideringen jämför med är radens egen. Kom den från
       // något som den som driver systemet inte kan skriva om, till exempel en
@@ -144,6 +146,9 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         contains: 'castSequence: vote.castSequence,',
       },
       { file: 'prisma/voters/schema.prisma', contains: 'castSequence Int @map("cast_sequence")' },
+      // Ingen sida visar markeringen efter stängningen. När verifieringssidan
+      // gör det i uppgift 13 ändras raden, och texten ska ses över.
+      { file: 'src/app/verify/page.tsx', contains: 'Den delen är inte byggd än.' },
     ],
   },
   /**
@@ -153,28 +158,43 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * det gäller något annat: inte röstlängden, där underskriften skyddar, utan
    * röstdatabasen, där den inte gör det. Som bisats hade det ingen egen markör
    * och syntes inte på egen hand i listan.
+   *
+   * OMSKRIVEN I UPPGIFT 11D. Återläsningen stängde bytet före infogningen, men
+   * bytet efter stängningen står kvar tills uppgift 12b räknar om en urnrot, och
+   * ett byte före infogningen kan fortfarande stoppa stängningen.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
     title: 'Den som kan skriva i röstdatabasen kan byta ut ett chiffer',
     why:
       'Underskriften och kedjan skyddar det yttre kuvertet i röstlängden, inte chiffret i ' +
-      'röstdatabasen. Före infogningen kan den som skriver i votes_db lägga en rad med ett äkta ' +
-      'kuverts chifferhash men ett annat chiffer, och infogningen hoppar då över det äkta, eftersom ' +
-      'den hoppar över rader som redan finns. Stängningen räknar bara rader och svarar ändå closed. ' +
-      'Efter stängningen kontrollerar ingenting urnan, och kuvertroten går inte att räkna om när ' +
-      'signaturerna är raderade. Uppgift 11d ska läsa tillbaka varje flyttat chiffer och jämföra det ' +
-      'byte för byte med det validerade, och uppgift 12b ska räkna om en urnrot som publiceras vid ' +
-      'stängningen.',
+      'röstdatabasen. Efter stängningen kontrollerar ingenting urnan, och kuvertroten går inte att ' +
+      'räkna om när signaturerna är raderade. Den som kan skriva i votes_db kan då byta ut ett ' +
+      'chiffer och dess hash mot en ny rad med giltiga bevis, utan att något märker det. Uppgift ' +
+      '12b ska räkna om en urnrot, en Merklerot över de flyttade chifferhasharna, som skrivs vid ' +
+      'stängningen. Före infogningen kan samma person lägga en rad med ett äkta kuverts ' +
+      'chifferhash men ett annat innehåll, och infogningen hoppar då över det äkta kuvertet. ' +
+      'Sedan uppgift 11d läser stängningen tillbaka varje flyttat chiffer och avbryter, med ' +
+      'kopplingen orörd, om urnan inte har samma valsedel, chiffer och bevis som det validerade. ' +
+      'Ett sådant byte räknas alltså inte, men det stoppar stängningen, och varje omkörning, tills ' +
+      'raden tagits bort, så den som kan skriva i votes_db kan hålla ett val från att stängas.',
     stillTrueIf: [
-      // Infogningen hoppar över rader som redan finns ...
+      // Infogningen hoppar över rader som redan finns, så en rad med samma
+      // hash stoppar stängningen i stället för att ersättas ...
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'skipDuplicates: true,' },
-      // ... och det enda stängningen gör med resultatet är att räkna raderna.
-      // Läser den tillbaka varje flyttat chiffer ändras just den här raden, också
-      // om `skipDuplicates` står kvar, och posten ska ses över.
+      // ... och städningen av rester tar bara bort rader vars hash saknas i
+      // den validerade läsningen, inte en rad med rätt hash och fel innehåll.
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'const moved = await votesDb.encryptedVote.count({ where: { ballotId: { in: ballotIds } } })',
+        contains: 'if (!validated.has(row.ciphertextHash)) residue.push(row.ciphertextHash)',
+      },
+      // Efter stängningen: slutkontrollen prövar ännu det gamla flödets röster
+      // och läser inte encrypted_vote, och skalningen skriver bara kuvertroten,
+      // ingen urnrot. Skriver 12b en urnrot i samma sats ändras raden nedan.
+      { file: 'src/orchestration/final-check.usecase.ts', contains: "id: 'every_vote_authorised'" },
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
       },
     ],
   },

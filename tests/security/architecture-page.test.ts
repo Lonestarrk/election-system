@@ -21,6 +21,8 @@ import {
   MARKING_ONLY_IN_OLD_FLOW,
   ONE_MARKING_WRITE_EACH,
   NO_WRITES_BESIDE_THE_CODE,
+  MARKER_WRITTEN_ONLY_IN_STRIPPING,
+  VOTED_MARKER_HAS_NO_TIME,
   OLD_FLOW_VOTES_AND_RECEIPTS,
   type CodeFact,
   type Marker,
@@ -473,17 +475,20 @@ describe('arkitektursidans påståenden om koden', () => {
   })
 })
 
-describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () => {
+describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () => {
   /**
-   * Påståendet votedMarkerNotKept säger att ingenting i röstlängden markerar
-   * en kuvertröst efter stängningen. Uppgift 11d ska skriva en sådan
-   * markering i skalningens transaktion (spec 3.1 punkt 6), kanske i en ny
-   * modell eller genom en hjälpfunktion. Markören som fanns innan letade bara
-   * efter två namn i tre filer, och hade stått kvar grönt.
+   * Fram till uppgift 11d sa påståendet votedMarkerNotKept att ingenting i
+   * röstlängden markerade en kuvertröst efter stängningen, och markörerna här
+   * vaktade att ingen sådan markering kunde glida förbi. Uppgift 11d skrev
+   * markeringen, i skalningens transaktion (spec 3.1 punkt 6), och påståendet
+   * är nu det omvända: votedMarkerWritten säger att markeringen skrivs just
+   * där, ur de kuvert som raderas, en per flyttat kuvert och utan tid.
    *
-   * Här prövas att varje sådan skrivning fäller påståendet: en ny rad i
-   * transaktionen, ett nytt anrop med `tx`, en ny skrivning i hjälpfunktionen
-   * den anropar och en ny tabell i röstlängden.
+   * Markörerna är till stor del desamma, och här prövas att varje sätt att
+   * skriva en markering någon annanstans fäller påståendet: en ny rad i
+   * transaktionen, en ny skrivning i en hjälpfunktion, en skrivning av
+   * markeringen eller ett anrop till hjälpfunktionen utanför stängningen, en
+   * kolumn för tid, en ny tabell och en trigger.
    */
   function textMarker(marker: Marker): { file: string; contains: string } {
     if (!('file' in marker)) throw new Error('Väntade en markör av formen { file, contains }.')
@@ -495,12 +500,14 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
   const pendingVoteService = read(textMarker(STRIPPING_HELPERS[0]!).file)
 
   it('markörerna ingår i påståendet och håller i dag', () => {
-    const markers = CURRENTLY.votedMarkerNotKept.holdsWhile
+    const markers = CURRENTLY.votedMarkerWritten.holdsWhile
     expect(markers).toContain(STRIPPING_TRANSACTION)
     expect(markers).toContain(VOTERS_MODELS_TODAY)
     expect(markers).toContain(MARKING_ONLY_IN_OLD_FLOW)
+    expect(markers).toContain(VOTED_MARKER_HAS_NO_TIME)
     for (const marker of [
       ...STRIPPING_HELPERS,
+      ...MARKER_WRITTEN_ONLY_IN_STRIPPING,
       ...VOTER_MODEL_FIELDS_TODAY,
       ...ONE_MARKING_WRITE_EACH,
       ...NO_WRITES_BESIDE_THE_CODE,
@@ -510,23 +517,31 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
 
     expect(transaction.includes(contains(STRIPPING_TRANSACTION))).toBe(true)
     expect(check(VOTERS_MODELS_TODAY).holds).toBe(true)
+
+    // Transaktionen skriver markeringen före raderingen, och prövar antalet.
+    const stripping = contains(STRIPPING_TRANSACTION)
+    expect(stripping.indexOf('markEnvelopesAsVoted(')).toBeGreaterThan(-1)
+    expect(stripping.indexOf('markEnvelopesAsVoted(')).toBeLessThan(stripping.indexOf('clearPendingVotes('))
+    expect(stripping).toContain('marked !== moved || !markersMatch')
   })
 
   it('en ny skrivning i skalningens transaktion fäller påståendet', () => {
-    const opening = '      async (tx) => {\n'
+    // Förankrad i transaktionens första sats: stängningens lås har en egen
+    // transaktion längre upp i filen, som också börjar med `async (tx) => {`.
+    const opening = '      async (tx) => {\n        const stripped = await tx.election.updateMany({\n'
     expect(transaction).toContain(opening)
 
     const insertions = [
-      // En markering i en ny modell.
-      '        await tx.votedMarker.createMany({ data: [] })\n',
+      // En markering i en annan modell.
+      '        await tx.votedAt.createMany({ data: [] })\n',
       // Det gamla flödets markering.
       '        await tx.voterBallotStatus.createMany({ data: [] })\n',
       // En hjälpfunktion som får transaktionen.
-      '        await markEnvelopesAsVoted(electionId, tx)\n',
+      '        await markEnvelopesAsVotedAgain(electionId, tx)\n',
     ]
 
     for (const insertion of insertions) {
-      const first = transaction.replace(opening, opening + insertion)
+      const first = transaction.replace(opening, opening.replace('{\n', `{\n${insertion}`))
       const beforeReturn = transaction.replace(
         '        return removed\n',
         insertion + '        return removed\n',
@@ -534,10 +549,23 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
       expect(first.includes(contains(STRIPPING_TRANSACTION)), insertion).toBe(false)
       expect(beforeReturn.includes(contains(STRIPPING_TRANSACTION)), insertion).toBe(false)
     }
+
+    // Och en markering efter raderingen i stället för före fäller det också.
+    const marking = [
+      '        // Markeringarna, ur exakt de kuvert som raderas, före raderingen.',
+      '        const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)',
+    ].join('\n')
+    const clearing = [
+      '        // Exakt de kuvert som validerades och flyttades, och inga andra.',
+      '        const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)',
+    ].join('\n')
+    const swapped = transaction.replace(`${marking}\n\n${clearing}`, `${clearing}\n\n${marking}`)
+    expect(swapped).not.toBe(transaction)
+    expect(swapped.includes(contains(STRIPPING_TRANSACTION))).toBe(false)
   })
 
-  it('en ny skrivning i raderingen som transaktionen anropar fäller påståendet', () => {
-    const [clearPendingVotes, pendingVoteClient] = STRIPPING_HELPERS.map(contains)
+  it('en ny skrivning i en hjälpfunktion som transaktionen anropar fäller påståendet', () => {
+    const [clearPendingVotes, pendingVoteClient, markHelper, votedMarkerClient] = STRIPPING_HELPERS.map(contains)
     const deletion = '  const result = await client.pendingVote.deleteMany({\n'
     expect(pendingVoteService).toContain(deletion)
 
@@ -547,12 +575,47 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
     )
     expect(mutated.includes(clearPendingVotes!)).toBe(false)
 
-    // Och för att nå en annan tabell genom transaktionen måste klienttypen vidgas.
+    // Markeringen utan sortering, eller utan skipDuplicates, fäller påståendet.
+    expect(pendingVoteService).toContain(markHelper!)
+    expect(pendingVoteService.replace('  voters.sort(byBallotThenVoter)\n', '').includes(markHelper!)).toBe(false)
+    expect(pendingVoteService.replace('      skipDuplicates: true,\n', '').includes(markHelper!)).toBe(false)
+
+    // Och för att nå en annan tabell genom transaktionen måste en klienttyp vidgas.
     const widened = pendingVoteService.replace(
       "'electionBallot' | 'pendingVote'>",
-      "'electionBallot' | 'pendingVote' | 'votedMarker'>",
+      "'electionBallot' | 'pendingVote' | 'votedAt'>",
     )
     expect(widened.includes(pendingVoteClient!)).toBe(false)
+    const widenedMarker = pendingVoteService.replace(
+      "'electionBallot' | 'pendingVote' | 'votedMarker'>",
+      "'electionBallot' | 'pendingVote' | 'votedMarker' | 'voterStatus'>",
+    )
+    expect(widenedMarker.includes(votedMarkerClient!)).toBe(false)
+  })
+
+  it('en skrivning av markeringen, eller ett anrop till hjälpfunktionen, utanför skalningen fäller påståendet', () => {
+    const [writes, calls] = MARKER_WRITTEN_ONLY_IN_STRIPPING
+    if (!writes || !('onlyIn' in writes) || !calls || !('onlyIn' in calls)) {
+      throw new Error('Väntade två markörer med onlyIn.')
+    }
+    expect(check(writes).holds).toBe(true)
+    expect(check(calls).holds).toBe(true)
+
+    // Kontrasten mot den riktiga koden: tas filen där markeringen skrivs bort
+    // ur listan är den genast en fil utanför listan.
+    const narrowedWrites = check({ ...writes, onlyIn: [] })
+    expect(narrowedWrites.holds).toBe(false)
+    expect(narrowedWrites.detail).toContain('src/modules/eligibility/pending-vote.service.ts')
+    const narrowedCalls = check({ ...calls, onlyIn: ['src/modules/eligibility/pending-vote.service.ts'] })
+    expect(narrowedCalls.holds).toBe(false)
+    expect(narrowedCalls.detail).toContain('src/orchestration/close-election.usecase.ts')
+
+    // Mönstren gäller hela src och träffar en skrivning och ett anrop.
+    expect(writes.under).toBe('src')
+    expect(calls.under).toBe('src')
+    expect(writes.matches.test('await votersDb.votedMarker.create({ data })')).toBe(true)
+    expect(writes.matches.test('await votersDb.votedMarker.count()')).toBe(false)
+    expect(calls.matches.test('await markEnvelopesAsVoted(electionId, envelopes, votersDb)')).toBe(true)
   })
 
   it('en ny tabell i röstlängden fäller påståendet', () => {
@@ -560,22 +623,24 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
     const schema = read('prisma/voters/schema.prisma')
 
     expect(VOTERS_MODELS_TODAY.matches.test(schema)).toBe(false)
-    expect(VOTERS_MODELS_TODAY.matches.test(`${schema}\nmodel VotedMarker {\n  id String\n}\n`)).toBe(
-      true,
-    )
+    expect(VOTERS_MODELS_TODAY.matches.test(`${schema}\nmodel VotedAt {\n  id String\n}\n`)).toBe(true)
     // Ett namn som börjar som ett befintligt räknas inte som det befintliga.
     expect(VOTERS_MODELS_TODAY.matches.test('model PendingVoteMark {\n  id String\n}')).toBe(true)
+    expect(VOTERS_MODELS_TODAY.matches.test('model VotedMarkerAt {\n  id String\n}')).toBe(true)
   })
 
-  it('en ny kolumn i VoterStatus eller VoterBallotStatus fäller påståendet, en ändrad kommentar inte', () => {
+  it('en ny kolumn i VoterStatus, VoterBallotStatus eller VotedMarker fäller påståendet, en ändrad kommentar inte', () => {
     const schema = read('prisma/voters/schema.prisma')
     const [voterStatus, voterBallotStatus] = VOTER_MODEL_FIELDS_TODAY.map((marker) => {
       if (!('matches' in marker)) throw new Error('Väntade ett mönster.')
       return marker.matches
     })
+    if (!('matches' in VOTED_MARKER_HAS_NO_TIME)) throw new Error('Väntade ett mönster.')
+    const votedMarker = VOTED_MARKER_HAS_NO_TIME.matches
 
     expect(voterStatus!.test(schema)).toBe(false)
     expect(voterBallotStatus!.test(schema)).toBe(false)
+    expect(votedMarker.test(schema)).toBe(false)
 
     const withColumn = schema.replace(
       '  isEligible Boolean',
@@ -591,12 +656,29 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
     expect(withMarkingColumn).not.toBe(schema)
     expect(voterBallotStatus!.test(withMarkingColumn)).toBe(true)
 
-    const withEditedComment = schema.replace('/// HMAC-SHA256(personnummer, IDENTITY_PEPPER).', '/// scrypt.')
+    // En tid i kuvertmodellens markering är just det den inte får ha.
+    const withTime = schema.replace(
+      '  @@map("voted_marker")',
+      '  markedAt DateTime @map("marked_at")\n\n  @@map("voted_marker")',
+    )
+    expect(withTime).not.toBe(schema)
+    expect(votedMarker.test(withTime)).toBe(true)
+
+    const withEditedComment = schema.replace(
+      '/// scrypt av personnumret, med IDENTITY_PEPPER som salt (se',
+      '/// scrypt.',
+    )
     expect(withEditedComment).not.toBe(schema)
     expect(voterStatus!.test(withEditedComment)).toBe(false)
+    const withEditedMarkerComment = schema.replace(
+      '/// INGEN TIDSSTÄMPEL. Markeringen säger att väljaren röstade, men inte när.',
+      '/// Ingen tid.',
+    )
+    expect(withEditedMarkerComment).not.toBe(schema)
+    expect(votedMarker.test(withEditedMarkerComment)).toBe(false)
   })
 
-  it('markeringen nämnd i en fil utanför det gamla flödet fäller påståendet, också i src/orchestration', () => {
+  it('det gamla flödets markering nämnd i en fil utanför det gamla flödet fäller påståendet, också i src/orchestration', () => {
     if (!('onlyIn' in MARKING_ONLY_IN_OLD_FLOW)) throw new Error('Väntade en markör med onlyIn.')
     expect(check(MARKING_ONLY_IN_OLD_FLOW).holds).toBe(true)
 
@@ -615,7 +697,7 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
     )
   })
 
-  it('en andra skrivning av markeringen i det gamla flödets filer fäller påståendet', () => {
+  it('en andra skrivning av det gamla flödets markering i dess filer fäller påståendet', () => {
     for (const marker of ONE_MARKING_WRITE_EACH) {
       if (!('nowhereIn' in marker)) throw new Error('Väntade ett mönster.')
       const content = read(marker.nowhereIn)
@@ -636,7 +718,10 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
 
     // Migreringarna granskas faktiskt, inte bara TypeScript.
     expect(sourceFilesUnder(inPrisma!.nowhereIn, { skipPage: true })).toEqual(
-      expect.arrayContaining(['prisma/voters/migrations/20260101000000_init/migration.sql']),
+      expect.arrayContaining([
+        'prisma/voters/migrations/20260101000000_init/migration.sql',
+        'prisma/voters/migrations/20260924230000_voted_marker/migration.sql',
+      ]),
     )
     for (const marker of [inPrisma!, inSource!, rawWrite!]) expect(check(marker).holds).toBe(true)
 
@@ -646,8 +731,12 @@ describe('markeringen "har röstat" kan inte skrivas förbi påståendet', () =>
       ),
     ).toBe(true)
     expect(rawWrite!.matches.test('await tx.$executeRawUnsafe(sql)')).toBe(true)
-    expect(rawWrite!.matches.test("'INSERT INTO voter_ballot_status (id) VALUES ($1)'")).toBe(true)
+    expect(rawWrite!.matches.test("'INSERT INTO voted_marker (id) VALUES ($1)'")).toBe(true)
     expect(rawWrite!.matches.test('UPDATE "voter_status" SET voted = true')).toBe(true)
+    // Läggningens prövning av fasen läser bara, och fäller inte påståendet.
+    expect(
+      rawWrite!.matches.test('SELECT phase, closes_at, link_cleared_at FROM election WHERE id = $1 FOR SHARE'),
+    ).toBe(false)
   })
 })
 
@@ -1197,14 +1286,18 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       expectValidStatus(`fasen ${row.phase}`, row.today.status)
     })
 
-    it('OPEN och STRIPPED är klara; CLOSED, VALIDATED, TALLIED och CERTIFIED är planerade', () => {
+    it('OPEN, CLOSED, VALIDATED och STRIPPED är klara; TALLIED och CERTIFIED är planerade', () => {
+      // Uppgift 11d gjorde CLOSED och VALIDATED till verkliga tillstånd.
       const byPhase = Object.fromEntries(PHASES.map((row) => [row.phase, row.today.status]))
       expect(byPhase['OPEN']).toEqual(STATUS_DONE)
+      expect(byPhase['CLOSED']).toEqual(STATUS_DONE)
+      expect(byPhase['VALIDATED']).toEqual(STATUS_DONE)
       expect(byPhase['STRIPPED']).toEqual(STATUS_DONE)
-      expect(byPhase['CLOSED']).toEqual(statusPlanned('11d'))
-      expect(byPhase['VALIDATED']).toEqual(statusPlanned('11d'))
       expect(byPhase['TALLIED']).toEqual(statusPlanned('12'))
       expect(byPhase['CERTIFIED']).toEqual(statusPlanned('12b'))
+      // Och fastabellen säger inte längre "skrivs aldrig" om någon fas som skrivs.
+      expect(check(neverWritten('CLOSED')).holds).toBe(false)
+      expect(check(neverWritten('VALIDATED')).holds).toBe(false)
     })
 
     const labelled = [
@@ -1212,7 +1305,8 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       'envelopeRootCommitment',
       'envelopeRootNotPublished',
       'deviceViewBuilt',
-      'votedMarkerNotKept',
+      'votedMarkerWritten',
+      'votedMarkerNotShown',
       'decryptionNotBuilt',
       'decryptionGateNotBuilt',
       'sumsNotPublished',

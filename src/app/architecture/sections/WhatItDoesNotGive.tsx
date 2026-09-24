@@ -32,8 +32,9 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
           mot väljarens identitetshash, och stängningen flyttar exakt de kuvert som prövats, så den
           som kan skriva i röstlängden, voters_db, kan inte lägga in en röst för någon som inte
           skrivit under. Det gäller inte röstdatabasen, votes_db, där den som kan skriva än så länge
-          kan byta ut ett chiffer, före infogningen eller efter stängningen (spec 4.6, förbehåll 4);
-          det ska uppgift 11d och 12b stänga. <LimitationReference entry={swapCiphertext} /> En
+          kan byta ut ett chiffer efter stängningen (spec 4.6, förbehåll 4); det ska uppgift 12b
+          stänga. Ett byte före infogningen räknas inte, men det stoppar stängningen tills raden
+          tagits bort. <LimitationReference entry={swapCiphertext} /> En
           granskare med åtkomst under valideringen kan pröva varje underskrift mot roten, men bara
           med pepparn, som i Azure ligger i valvet:
           kedjorna är krypterade med en nyckel ur den, och samma hemlighet öppnar namnen och
