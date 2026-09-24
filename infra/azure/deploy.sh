@@ -46,9 +46,16 @@ fi
 command -v az >/dev/null 2>&1 || die "Azure CLI (az) saknas."
 command -v docker >/dev/null 2>&1 || die "docker saknas."
 
-# Sökvägar till az.cmd måste vara Windows-sökvägar under Git Bash; @/tmp/...
-# översätts inte automatiskt.
+# Git Bash (MSYS) skriver om varje argument som ser ut som en Unix-sökväg när
+# det skickas till ett Windows-program. Ett resurs-id som /subscriptions/...
+# blir då C:/Program Files/Git/subscriptions/..., och az svarar med ett fel som
+# såg ut som "hemligheten finns inte" — skriptet skrev över befintliga
+# hemligheter. Omskrivningen stängs därför av helt, och de sökvägar som
+# verkligen är filer översätts uttryckligen med native_path.
+export MSYS_NO_PATHCONV=1
 native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+REPO_NATIVE="$(native_path "$REPO_ROOT")"
+git_repo() { git -c safe.directory="$(printf '%s' "$REPO_NATIVE" | tr '\\' '/')" -C "$REPO_NATIVE" "$@"; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -105,7 +112,19 @@ KV_URI="$(output keyvault keyVaultUri)"
 # Existensen prövas via kontrollplanet (ARM), som inte lämnar ut värdet.
 # Distributören behöver alltså ingen roll som kan LÄSA hemligheterna.
 
-secret_exists() { az resource show --ids "$KV_ID/secrets/$1" --output none >/dev/null 2>&1; }
+# Tre utfall, inte två: finns, finns inte, eller gick inte att avgöra. Det
+# sista stoppar, eftersom "vet inte" tolkat som "finns inte" skriver över en
+# befintlig hemlighet — för identity-pepper ett fel som inte går att ångra.
+secret_exists() {
+  local out
+  if out="$(az resource show --ids "$KV_ID/secrets/$1" --query name -o tsv 2>&1)"; then
+    return 0
+  fi
+  case "$out" in
+    *ResourceNotFound*|*"was not found"*|*NotFound*) return 1 ;;
+    *) die "Kunde inte avgöra om hemligheten $1 finns: $out" ;;
+  esac
+}
 
 put_secret() { # put_secret <namn> <värde>
   local file="$WORK/secret-$1.json"
@@ -164,7 +183,7 @@ PG_ADMIN="$(output infra postgresAdminLogin)"
 
 # --- Imagen ---------------------------------------------------------------
 
-COMMIT="$(git -c safe.directory="$REPO_ROOT" -C "$REPO_ROOT" rev-parse --short=12 "$GIT_REF")"
+COMMIT="$(git_repo rev-parse --short=12 "$GIT_REF")"
 IMAGE="$ACR_SERVER/election-app:$COMMIT"
 az acr login --name "$ACR_NAME" --output none
 
@@ -175,7 +194,7 @@ else
   mkdir -p "$WORK/src"
   # core.autocrlf=false: annars får entrypoint.sh CRLF på Windows och containern startar inte
   # ("exec /usr/local/bin/entrypoint.sh: no such file or directory").
-  git -c safe.directory="$REPO_ROOT" -c core.autocrlf=false -C "$REPO_ROOT" archive "$COMMIT" | tar -x -C "$WORK/src"
+  git_repo -c core.autocrlf=false archive "$COMMIT" | tar -x -C "$WORK/src"
   docker build --platform linux/amd64 -t "$IMAGE" "$(native_path "$WORK/src")"
   docker push "$IMAGE"
 fi
