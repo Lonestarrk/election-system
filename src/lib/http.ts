@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { clientAddressFrom, trustedProxyHops } from './client-address'
 import { env } from './env'
 
 /**
@@ -43,14 +44,17 @@ export function errorResponse(
  * VIKTIGT: returvärdet får bara användas till hastighetsbegränsning och får
  * aldrig skickas vidare till den anonyma röstmodulen, loggas eller lagras.
  * En IP-adress tillsammans med en tidsstämpel är i praktiken en identitet.
+ *
+ * X-FORWARDED-FOR TROS BARA NÄR EN BETRODD PROXY ÄR KONFIGURERAD.
+ *
+ * Förut togs den första posten i rubriken, och den kan klienten välja själv.
+ * Varje klient kunde då ta sig förbi varje hastighetsgräns genom att skicka en
+ * ny adress per begäran. Nu tas anslutningens adress, eller den adress en
+ * betrodd proxy skrev, se src/lib/client-address.ts. X-Real-IP läses inte
+ * längre, av samma skäl: den kan också klienten sätta.
  */
 export function getClientIp(request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for')
-  if (forwarded) {
-    const first = forwarded.split(',')[0]?.trim()
-    if (first) return first
-  }
-  return request.headers.get('x-real-ip') ?? 'okand'
+  return clientAddressFrom(request.headers.get('x-forwarded-for'), trustedProxyHops())
 }
 
 /**

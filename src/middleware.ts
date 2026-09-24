@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
+import { trustedProxyHops } from '@/lib/client-address'
 
 /**
  * Säkerhetsheaders och CORS.
@@ -121,6 +122,18 @@ export function middleware(request: NextRequest) {
   // `x-nonce` och märker sina egna skripttaggar med det.
   const requestHeaders = new Headers(request.headers)
   requestHeaders.set('x-nonce', nonce)
+
+  /**
+   * X-FORWARDED-FOR FRÅN KLIENTEN TAS BORT NÄR INGEN PROXY ÄR BETRODD.
+   *
+   * Rubriken kan klienten sätta själv, och hastighetsbegränsningen gick efter
+   * den: en ny påhittad adress per begäran tog sig förbi varje gräns. En
+   * rubrik som saknas sätter Next själv till anslutningens adress innan
+   * rutten körs, och det är den adressen rutten ska se. Med en betrodd proxy
+   * framför appen står rubriken kvar, och src/lib/client-address.ts läser den
+   * adress proxyn skrev.
+   */
+  if (trustedProxyHops() === 0) requestHeaders.delete('x-forwarded-for')
 
   const response = NextResponse.next({ request: { headers: requestHeaders } })
 

@@ -9,6 +9,7 @@ import {
   type EncryptedBallot,
 } from '@/lib/crypto/verify-ballot'
 import { encryptBallot } from '@/lib/encrypt-client'
+import { encryptedBallotSchema } from '@/lib/validation'
 import fixture from './fixtures/ballot-26-before-14b.json'
 import { seededRandomValues } from './seeded-random'
 
@@ -93,6 +94,13 @@ describe('bevisens format före och efter uppgift 14b', () => {
     expect(verdict).toBe(true)
     // En paus efter varje alternativs undergruppskontroll och en efter varje bevis.
     expect(pauses).toHaveLength(2 * options.length)
+  })
+
+  it('och av trådschemat, som sedan fixrunda 1 tolkar varje tal lika strikt som verifieringen', () => {
+    // Formatet är oförändrat. Bara tolkningen är strängare: kanoniska tal,
+    // högst 617 siffror, utmaningar och svar under q. Ett ärligt bevis har
+    // alltid sådana tal, också ett från före uppgift 14b.
+    expect(encryptedBallotSchema.safeParse(ballot).success).toBe(true)
   })
 
   it('samma slumptal ger byte för byte samma valsedel som före ändringen, med tabellerna', () => {

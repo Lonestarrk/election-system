@@ -22,12 +22,16 @@ import {
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  envelopePayload,
+  publicKeyFromCertificate,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
+import { forgeBallot } from '../unit/crypto/forged-ballot'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
 /**
@@ -105,6 +109,29 @@ vi.mock('@/modules/eligibility/election.service', async (importOriginal) => {
 })
 
 /**
+ * Låter valideringen säga ja, på begäran (fixrunda 1, uppgift 14b).
+ *
+ * Omverifieringen i steg 3 ska stoppa en förfalskad valsedel också den dag
+ * valideringen släpper igenom en. För att pröva den för sig måste valideringen
+ * gå förbi, och det går inte utan att försvaga den, bara genom att byta ut
+ * den här. Alla andra anrop går till den äkta funktionen.
+ */
+const validationControl = vi.hoisted(() => ({ forcePass: false }))
+
+vi.mock('@/orchestration/validate-before-close.usecase', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/orchestration/validate-before-close.usecase')>()
+
+  return {
+    ...actual,
+    validateBeforeClose: async (electionId: string) => {
+      if (!validationControl.forcePass) return actual.validateBeforeClose(electionId)
+      return { summary: { votes: 0, voters: 0, byKind: {}, passed: true }, anomalies: [] }
+    },
+  }
+})
+
+/**
  * Uppgift 11: stängningen — den punkt där valhemligheten uppstår.
  *
  * Allt före den är återställbart: kuvertet ligger kvar i röstlängden med
@@ -174,6 +201,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
   beforeEach(async () => {
     auditControl.poisonTransaction = false
     electionServiceControl.failCloseStateRead = false
+    validationControl.forcePass = false
     await resetElectionData()
 
     // Partiregistret är delad referensdata och tas inte bort av
@@ -374,6 +402,36 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     })
   }
 
+  /**
+   * Förfalskningen från granskningen av uppgift 14b: +1000 för S och −999 för
+   * blankt, med en äkta underskrift över hashen. En väljare kan få den
+   * underskriften själv, eftersom `sign-start` tar hashen från klienten. Hur
+   * bevisen byggs står i tests/unit/crypto/forged-ballot.ts.
+   */
+  async function plantForgedBallot(voterStatusId: string): Promise<EncryptedBallot> {
+    const { ballot } = forgeBallot(BigInt(publicKey), electionId, ballotId, [-999n, 1000n, 0n])
+    const castSequence = await nextCastSequence(voterStatusId, ballotId)
+    const envelope = await signAs(voterStatusId, ballot.ciphertextHash, castSequence)
+
+    const data = {
+      ciphertext: ballot.ciphertext as unknown as Prisma.InputJsonValue,
+      proofs: ballot.proofs as unknown as Prisma.InputJsonValue,
+      ciphertextHash: ballot.ciphertextHash,
+      castSequence,
+      bankIdSignature: envelope.signature,
+      bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
+      updatedAt: new Date(),
+    }
+
+    await votersDb.pendingVote.upsert({
+      where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
+      create: { voterStatusId, ballotId, ...data },
+      update: data,
+    })
+
+    return ballot
+  }
+
   it('flyttar chiffren och raderar kopplingen', async () => {
     await castFor(anna, 'bp-s')
     await castFor(kim, 'bp-m')
@@ -516,6 +574,34 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     expect((await closeElection(electionId)).status).toBe('invalid_ballot')
     expect(await votersDb.pendingVote.count()).toBe(1)
+  })
+
+  it('stoppar en förfalskad valsedel med +1000 och −999, och ingenting flyttas', async () => {
+    // Före fixrunda 1 blev utfallet `closed`, och tusen röster på S hamnade i
+    // röstdatabasen utan väljare att fråga.
+    await castFor(anna, 'bp-s')
+    const forged = await plantForgedBallot(kim)
+
+    const outcome = await closeElection(electionId)
+
+    expect(outcome).toEqual({ status: 'invalid_ballot', ciphertextHash: forged.ciphertextHash })
+    expect(await votesDb.encryptedVote.count()).toBe(0)
+    expect(await votersDb.pendingVote.count()).toBe(2)
+  })
+
+  it('omverifieringen stoppar förfalskningen också när valideringen har släppt igenom den', async () => {
+    // Steg 3 är den sista punkt där ett fel kan pekas ut. Valideringen tvingas
+    // här säga ja, så att det är omverifieringen, och bara den, som ska
+    // stoppa raden.
+    await castFor(anna, 'bp-s')
+    const forged = await plantForgedBallot(kim)
+    validationControl.forcePass = true
+
+    const outcome = await closeElection(electionId)
+
+    expect(outcome).toEqual({ status: 'invalid_ballot', ciphertextHash: forged.ciphertextHash })
+    expect(await votesDb.encryptedVote.count()).toBe(0)
+    expect(await votersDb.pendingVote.count()).toBe(2)
   })
 
   it('en omkörning efter ett krascherfönster rör inte den publicerade roten', async () => {

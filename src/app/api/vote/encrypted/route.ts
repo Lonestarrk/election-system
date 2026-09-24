@@ -1,6 +1,11 @@
 import { cookies } from 'next/headers'
 import { clearVotingCookies, SESSION_COOKIE } from '@/lib/cookies'
 import { isValidCsrfToken } from '@/lib/csrf'
+import {
+  VerificationAborted,
+  VerificationQueueFull,
+  verificationQueueIsFull,
+} from '@/lib/crypto/server'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { castEncryptedBallotSchema, parseJsonBody } from '@/lib/validation'
@@ -96,6 +101,24 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_BALLOT', 'Valsedeln gäller inte den här omröstningen.', 400)
   }
 
+  /**
+   * KÖN PRÖVAS INNAN BANKID-ORDERN HÄMTAS (granskningen av uppgift 14b,
+   * MINDRE 3).
+   *
+   * Ordern förbrukas när den hämtas. Avvisades valsedeln först efteråt, för att
+   * verifieringskön var full, hade väljaren fått skriva under en gång till. Här
+   * lever ordern kvar, så svaret blir `queued`, som när BankID ännu inte är
+   * klart, och röstsidan frågar igen vid nästa varv. 503 säger samma sak till
+   * den som bara läser statusraden.
+   */
+  if (verificationQueueIsFull()) {
+    return jsonResponse(
+      { status: 'queued', message: 'Många röstar just nu. Rösten prövas så fort det finns plats.' },
+      503,
+      { 'Retry-After': '1' },
+    )
+  }
+
   const collected = await bankIdService.collect(body.data.orderRef)
 
   if (collected.status === 'pending') {
@@ -114,19 +137,46 @@ export async function POST(request: Request) {
 
   const shape = await getEncryptedBallotShape(body.data.ballotId)
 
-  const outcome = await castEncryptedBallot(
-    session.voterStatusId,
-    session.electionId,
-    body.data.ballotId,
-    body.data.ballot,
-    {
-      // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
-      signature: collected.completionData.signature,
-      certificate: collected.completionData.certificate,
-      signedData: collected.completionData.signedData,
-    },
-    shape,
-  )
+  let outcome: CastOutcome
+  try {
+    outcome = await castEncryptedBallot(
+      session.voterStatusId,
+      session.electionId,
+      body.data.ballotId,
+      body.data.ballot,
+      {
+        // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
+        signature: collected.completionData.signature,
+        certificate: collected.completionData.certificate,
+        signedData: collected.completionData.signedData,
+      },
+      shape,
+      request.signal,
+    )
+  } catch (error) {
+    /**
+     * Kön fylldes efter frågan ovan, och ordern är redan förbrukad. Svaret
+     * säger därför rakt ut att rösten inte lades, i stället för `queued`,
+     * som hade fått röstsidan att vänta på en order som inte finns längre.
+     */
+    if (error instanceof VerificationQueueFull) {
+      return errorResponse(
+        'BUSY',
+        'Servern har för mycket att göra just nu, och rösten lades inte. Försök igen om en stund.',
+        503,
+        { 'Retry-After': '5' },
+      )
+    }
+    /**
+     * Besökaren gav upp, och ingenting lades. Ingen läser svaret, men det ska
+     * inte bli ett serverfel i loggen. 499 är den vedertagna koden för en
+     * begäran som klienten stängde.
+     */
+    if (error instanceof VerificationAborted) {
+      return errorResponse('CLIENT_CLOSED', 'Begäran avbröts innan rösten lades.', 499)
+    }
+    throw error
+  }
 
   return jsonResponse(outcome, httpStatusFor(outcome.status))
 }

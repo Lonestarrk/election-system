@@ -1,6 +1,6 @@
 import { safeEqual } from '@/lib/crypto'
 import { truncateToDay } from '@/lib/time'
-import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
+import { VerificationAborted, verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
 import {
@@ -86,6 +86,10 @@ export type EncryptedBallotShape = { publicKey: string; optionCount: number }
  *   anroparen via den anonyma modulens publika API. Null betyder att
  *   valsedeln inte finns, inte stöds av det krypterade flödet (en
  *   FRAGA-valsedel), eller att omröstningen saknar krypteringsnyckel.
+ * @param signal Begärans signal, när rösten läggs åt en besökare. Då
+ *   gäller verifieringsköns tak, och kastar funktionen `VerificationQueueFull`
+ *   när kön är full. Ger besökaren upp kastar den `VerificationAborted`, och
+ *   ingenting läggs. Se src/lib/crypto/server.ts.
  */
 export async function castEncryptedBallot(
   voterStatusId: string,
@@ -94,6 +98,7 @@ export async function castEncryptedBallot(
   ballot: EncryptedBallot,
   envelope: SignedEnvelope,
   shape: EncryptedBallotShape | null,
+  signal?: AbortSignal,
 ): Promise<CastOutcome> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
@@ -141,6 +146,7 @@ export async function castEncryptedBallot(
       ballotId,
       shape.optionCount,
       ballot,
+      signal ? { signal } : undefined,
     ))
   ) {
     return { status: 'invalid_proof' }
@@ -243,6 +249,17 @@ export async function castEncryptedBallot(
   if (!signerIsTheVoter) {
     return { status: 'invalid_signature' }
   }
+
+  /**
+   * BESÖKAREN KAN HA GETT UPP UNDER TIDEN (granskningen av uppgift 14b,
+   * MINDRE 3).
+   *
+   * Verifieringen stannar vid nästa steg när signalen avbryts, men dess sista
+   * steg, läsningarna och hashningen ovan kan hinna bli klara ändå. En röst ska
+   * inte läggas åt en besökare som aldrig får veta det: väljaren har inte sett
+   * "lagd", och då ska rösten inte heller vara det.
+   */
+  if (signal?.aborted) throw new VerificationAborted()
 
   await votersDb.pendingVote.upsert({
     where: { voterStatusId_ballotId: { voterStatusId, ballotId } },

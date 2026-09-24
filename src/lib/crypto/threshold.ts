@@ -1,4 +1,4 @@
-import { G, P, Q, modPow, randomScalar } from './group'
+import { G, P, Q, isInSubgroup, modPow, randomScalar } from './group'
 import type { Ciphertext } from './elgamal'
 import { challengeHash, type EqualityProof } from './proofs'
 
@@ -69,6 +69,21 @@ export function verifyPartialDecryption(
   partial: PartialDecryption,
 ): boolean {
   const { proof } = partial
+
+  /**
+   * DET PARTIELLA VÄRDET MÅSTE LIGGA I UNDERGRUPPEN (granskningen av uppgift
+   * 14b, MINDRE 7).
+   *
+   * Beviset binder värdet bara upp till tecknet. För p − v i stället för v
+   * håller det när utmaningen är jämn, eftersom (p − v)^c = (−1)^c · v^c, och
+   * en förtroendeman kan pröva nya åtaganden tills utmaningen blir det.
+   * Granskaren fick igenom p − v på tredje försöket. Summan blev ändå rätt,
+   * eftersom `combine` inverterar med exponenten q − 1, som är jämn och tar
+   * bort tecknet. Det är en egenskap hos dagens kod och ingenting som uppgift
+   * 12 ska behöva veta om. Kontrollen är densamma som för varje annat mottaget
+   * element.
+   */
+  if (!isInSubgroup(partial.value)) return false
 
   if (
     proof.challenge !==

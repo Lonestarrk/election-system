@@ -6,14 +6,19 @@ import { encrypt } from '@/lib/crypto/elgamal'
 import { G, P, Q, isInSubgroup, modPow } from '@/lib/crypto/group'
 import {
   MAX_CONCURRENT_VERIFICATIONS,
+  MAX_WAITING_VERIFICATIONS,
+  VerificationAborted,
+  VerificationQueueFull,
   generateKeyPair,
   inVerificationTurn,
   partiallyDecrypt,
   publicShare,
   splitSecret,
+  verificationQueueIsFull,
   verificationQueueState,
   verifyEncryptedBallotOnServer,
   verifyPartialDecryption,
+  type VerificationRequest,
 } from '@/lib/crypto/server'
 import {
   hashCiphertext,
@@ -155,7 +160,7 @@ describe('en annan begäran besvaras medan en valsedel verifieras', () => {
 
 describe('verifieringarna går i tur och ordning', () => {
   /** En uppgift som håller sin plats tills testet släpper den. */
-  function heldTask(log: string[], name: string) {
+  function heldTask(log: string[], name: string, request?: VerificationRequest) {
     let release!: () => void
     const done = new Promise<void>((resolve) => (release = resolve))
     const promise = inVerificationTurn(async () => {
@@ -163,7 +168,7 @@ describe('verifieringarna går i tur och ordning', () => {
       await done
       log.push(`slut ${name}`)
       return name
-    })
+    }, request)
     return { promise, release }
   }
 
@@ -194,22 +199,30 @@ describe('verifieringarna går i tur och ordning', () => {
   })
 
   it('en verifiering som kastar lämnar tillbaka sin plats', async () => {
-    // Ett missformat tal i en databasrad kastar inne i verifieringen, och
-    // anroparna gör det till BAD_PROOF. Utan finally hade varje sådan rad
-    // minskat kapaciteten permanent, och efter två vore servern låst.
+    // Ett missformat tal i en databasrad kastade förut inne i verifieringen.
+    // Sedan fixrunda 1 av uppgift 14b underkänner tolkningen det i stället,
+    // men verifieringen kastar fortfarande på en trasig nyckel, som är
+    // serverns egen. Utan finally hade varje sådant kast minskat kapaciteten
+    // permanent, och efter två vore servern låst.
+    for (let round = 0; round < MAX_CONCURRENT_VERIFICATIONS + 1; round += 1) {
+      await expect(
+        verifyEncryptedBallotOnServer('inte en nyckel', 'val', 'valsedel', optionCount, ballot),
+      ).rejects.toThrow()
+    }
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
+
+    // Kontrasten: ett tal som inte går att tolka underkänner valsedeln utan
+    // att kasta, och lämnar också tillbaka sin plats.
     const ciphertext = [{ c1: 'inte ett tal', c2: '1' }]
     const malformed: EncryptedBallot = {
       ciphertext,
       proofs: { components: [ballot.proofs.components[0]!], sum: ballot.proofs.sum },
-      // Rätt hash, så att kastet kommer från BigInt och inte stoppas av hashkontrollen.
+      // Rätt hash, så att det är tolkningen som säger nej och inte hashkontrollen.
       ciphertextHash: hashCiphertext(ciphertext),
     }
-
-    for (let round = 0; round < MAX_CONCURRENT_VERIFICATIONS + 1; round += 1) {
-      await expect(
-        verifyEncryptedBallotOnServer(fixture.publicKey, 'val', 'valsedel', 1, malformed),
-      ).rejects.toThrow()
-    }
+    expect(await verifyEncryptedBallotOnServer(fixture.publicKey, 'val', 'valsedel', 1, malformed)).toBe(
+      false,
+    )
     expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
   })
 
@@ -237,6 +250,121 @@ describe('verifieringarna går i tur och ordning', () => {
     holders.forEach((holder) => holder.release())
     expect(await waiting).toBe(true)
     await Promise.all(holders.map((holder) => holder.promise))
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
+  })
+
+  it('taket gäller besökare: den som kommer när kön är full avvisas och prövas inte', async () => {
+    // Granskningen av uppgift 14b, MINDRE 3. Utan tak växte kön utan gräns,
+    // med en valsedel i minnet för varje väntande och 0,4 s väntan per plats.
+    const log: string[] = []
+    const visitor = { signal: new AbortController().signal }
+    const holders = Array.from(
+      { length: MAX_CONCURRENT_VERIFICATIONS + MAX_WAITING_VERIFICATIONS },
+      (_, index) => heldTask(log, `besökare ${index}`, visitor),
+    )
+    await settle()
+
+    expect(verificationQueueState()).toEqual({
+      running: MAX_CONCURRENT_VERIFICATIONS,
+      waiting: MAX_WAITING_VERIFICATIONS,
+    })
+    expect(verificationQueueIsFull()).toBe(true)
+
+    await expect(heldTask(log, 'en till', visitor).promise).rejects.toBeInstanceOf(
+      VerificationQueueFull,
+    )
+    seen.exponents.length = 0
+    await expect(
+      verifyEncryptedBallotOnServer(
+        fixture.publicKey,
+        fixture.electionId,
+        fixture.ballotId,
+        optionCount,
+        ballot,
+        visitor,
+      ),
+    ).rejects.toBeInstanceOf(VerificationQueueFull)
+    expect(seen.exponents).toHaveLength(0)
+
+    // Valideringen före stängningen skickar ingen begäran och får alltid vänta.
+    // En full kö får inte göra en giltig röst till BAD_PROOF.
+    const validation = heldTask(log, 'validering')
+    await settle()
+    expect(verificationQueueState().waiting).toBe(MAX_WAITING_VERIFICATIONS + 1)
+
+    holders.forEach((holder) => holder.release())
+    validation.release()
+    await Promise.all([...holders.map((holder) => holder.promise), validation.promise])
+
+    expect(log).not.toContain('start en till')
+    expect(log).toContain('slut validering')
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
+    expect(verificationQueueIsFull()).toBe(false)
+  })
+
+  it('en besökare som ger upp i kön lämnar den och prövas aldrig, och de efter flyttar fram', async () => {
+    const log: string[] = []
+    const holders = [heldTask(log, 'a'), heldTask(log, 'b')]
+    await settle()
+
+    const controller = new AbortController()
+    const gaveUp = heldTask(log, 'ger upp', { signal: controller.signal })
+    const after = heldTask(log, 'efter')
+    await settle()
+    expect(verificationQueueState()).toEqual({ running: 2, waiting: 2 })
+
+    controller.abort()
+    await expect(gaveUp.promise).rejects.toBeInstanceOf(VerificationAborted)
+    expect(verificationQueueState()).toEqual({ running: 2, waiting: 1 })
+
+    holders[0]!.release()
+    await settle()
+    expect(log).toContain('start efter')
+    expect(log).not.toContain('start ger upp')
+
+    holders[1]!.release()
+    after.release()
+    await Promise.all([...holders.map((holder) => holder.promise), after.promise])
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
+  })
+
+  it('en besökare som redan har gett upp prövas inte alls', async () => {
+    seen.exponents.length = 0
+    await expect(
+      verifyEncryptedBallotOnServer(
+        fixture.publicKey,
+        fixture.electionId,
+        fixture.ballotId,
+        optionCount,
+        ballot,
+        { signal: AbortSignal.abort() },
+      ),
+    ).rejects.toBeInstanceOf(VerificationAborted)
+
+    expect(seen.exponents).toHaveLength(0)
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
+  })
+
+  it('en besökare som ger upp mitt i verifieringen stoppas vid nästa steg', async () => {
+    const controller = new AbortController()
+    seen.exponents.length = 0
+    const verification = verifyEncryptedBallotOnServer(
+      fixture.publicKey,
+      fixture.electionId,
+      fixture.ballotId,
+      optionCount,
+      ballot,
+      { signal: controller.signal },
+    )
+
+    // Ett par steg hinner köras, sedan går anslutningen.
+    await settle()
+    controller.abort()
+
+    await expect(verification).rejects.toBeInstanceOf(VerificationAborted)
+    // Hela riksdagsvalsedeln är 264 exponentieringar.
+    expect(seen.exponents.length).toBeGreaterThan(0)
+    expect(seen.exponents.length).toBeLessThan(20)
     expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
   })
 

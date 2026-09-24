@@ -3,16 +3,23 @@ import { buildFixedBaseTable, type FixedBaseTable } from './fixed-base'
 /**
  * RFC 3526 MODP Group 14, 2048 bitar.
  *
- * VARFÖR g = 4 OCH INTE RFC:ns g = 2
+ * VARFÖR g = 4
  *
- * Med g = 2 genereras hela multiplikativa gruppen, vars ordning är 2q. Den
- * innehåller då en undergrupp av ordning 2, och ett element därifrån läcker en
- * bit av den privata nyckeln vid varje partiell dekryptering. Efter tillräckligt
- * många röster är nyckeln utläsbar.
+ * g = 4 = 2² har ordning q, och q är ett primtal. Ett kvadrattal ligger alltid
+ * i undergruppen av ordning q när p = 2q + 1 är ett säkert primtal, så valet
+ * håller oberoende av vilken säker prim som används.
  *
- * g = 2² har ordning q, som är primtal, och då finns ingen liten undergrupp att
- * hamna i. Priset är att varje mottaget element måste kontrolleras — se
- * isInSubgroup.
+ * Den här kommentaren sa först att RFC:ns g = 2 genererar hela gruppen, av
+ * ordning 2q. Det stämmer inte för den här gruppen: p ≡ 7 (mod 8), så 2 är en
+ * kvadratisk rest och har redan ordning q. Granskaren av uppgift 14b prövade
+ * att 2^q ≡ 1 (mod p). Båda generatorerna hade alltså fungerat.
+ *
+ * Det som skyddar mot den lilla undergruppen är inte generatorn. Talen modulo
+ * p bildar en grupp av ordning 2q vilken generator som än väljs, och där finns
+ * en undergrupp av ordning 2. Ett mottaget element utanför undergruppen av
+ * ordning q läcker en bit av den privata nyckeln vid varje partiell
+ * dekryptering, och efter tillräckligt många röster är nyckeln utläsbar.
+ * Därför kontrolleras varje mottaget element, se isInSubgroup.
  */
 export const P = BigInt(
   '0x' +
@@ -45,14 +52,42 @@ export const G = 4n
 export const G_INVERSE = (P + 1n) / 4n
 
 /**
+ * EN NEGATIV EXPONENT KASTAR, I VARJE IMPLEMENTATION.
+ *
+ * Förut räknades den som 1: slingan i bigintModPow körde aldrig, och
+ * OpenSSL-vägen lämnade den till bigintModPow. Det var ena halvan av felet som
+ * lät en förfalskad valsedel med +1000 för ett parti och −999 för blankt
+ * godkännas (granskningen av uppgift 14b, KRITISKT 1). Med nollgrenens
+ * utmaning negativ blev c1^utmaning lika med 1 för vilket chiffer som helst,
+ * och nollgrenens ekvationer höll utan att bevisaren visste något. Den andra
+ * halvan var tolkningen, se parseScalar nedan.
+ *
+ * Kryptot självt använder aldrig en negativ exponent. Varje exponent är ett
+ * slumptal, en utmaning eller ett svar i [0, q), eller q minus ett sådant. En
+ * negativ exponent betyder alltså att ett tal utifrån har kommit förbi
+ * tolkningen, och då ska räkningen stanna i stället för att hitta på ett svar.
+ */
+export function rejectNegativeExponent(exponent: bigint): void {
+  if (exponent < 0n) {
+    throw new RangeError('En negativ exponent räknas inte: talet har kommit förbi tolkningen.')
+  }
+}
+
+/**
  * Kvadrera och multiplicera, en bit i taget, i ren BigInt.
  *
  * Referensen som varje snabbare väg jämförs mot, och den väg allt faller
  * tillbaka på. Den ska inte ändras: tabellerna i fixed-base.ts och OpenSSL i
  * native-exponentiation.ts är prövade mot exakt den här funktionen, också på
  * gränsfallen, så att "samma svar" betyder samma svar för varje indata.
+ *
+ * Den har ändrats en gång, i fixrunda 1 av uppgift 14b: en negativ exponent
+ * kastar i stället för att ge 1, se rejectNegativeExponent. OpenSSL-vägen
+ * kastar på samma sätt, så svaren är fortfarande desamma för varje indata.
  */
 export function bigintModPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
+  rejectNegativeExponent(exponent)
+
   let result = 1n
   let b = base % modulus
   let e = exponent
@@ -72,6 +107,11 @@ export function bigintModPow(base: bigint, exponent: bigint, modulus: bigint): b
  * Den måste ge exakt samma svar som `bigintModPow(bas, exponent, P)`, för varje
  * indata. Den får alltså inte validera, avrunda eller vägra något. Validering
  * är anroparens sak och sker före, med isInSubgroup.
+ *
+ * Det enda undantaget är en negativ exponent. Den kastar i bigintModPow och
+ * ska därför kasta här också. modPow prövar den dessutom själv innan den
+ * väljer väg, så att inte heller en exponentiering som ett test registrerar
+ * kan räkna den som något.
  */
 export type GroupExponentiation = (base: bigint, exponent: bigint) => bigint
 
@@ -149,6 +189,10 @@ function fixedBaseTableFor(base: bigint): FixedBaseTable | null {
 }
 
 export function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
+  // Före valet av väg, så att regeln gäller vilken exponentiering som än är
+  // registrerad och också när en tabell svarar null.
+  rejectNegativeExponent(exponent)
+
   if (modulus !== P) return bigintModPow(base, exponent, modulus)
   if (registered) return registered(base, exponent)
 
@@ -212,4 +256,65 @@ export function randomScalar(): bigint {
 export function isInSubgroup(value: bigint): boolean {
   if (value <= 1n || value >= P) return false
   return (modPow(value, Q - 1n, P) * value) % P === 1n
+}
+
+/**
+ * TOLKNINGEN AV ETT TAL UTIFRÅN.
+ *
+ * Varje tal i en valsedel kommer utifrån: från väljarens webbläsare, eller ur
+ * databasen, där den som har skrivrätt kan ha skrivit vad som helst. Före
+ * fixrunda 1 av uppgift 14b tolkades de med `BigInt()` och ingenting annat.
+ * Det gav tre fel, och de här funktionerna stänger dem på det ställe som varje
+ * väg går igenom.
+ *
+ *   – En negativ utmaning gick rakt in i beviset, och eftersom en negativ
+ *     exponent räknades som 1 blev en förfalskad valsedel giltig. Trådschemat
+ *     stoppade minustecknet, men valideringen före stängningen och
+ *     omverifieringen i skalningen läser raden förbi schemat.
+ *   – Ett tal hade ingen längdgräns. Ett svar förlängt med k·q är likvärdigt
+ *     mod q, så beviset höll, men en exponent med en miljon bitar låste
+ *     händelseslingan i över en halv sekund i ett enda steg.
+ *   – Samma tal kunde skrivas på flera sätt, "7", "007" och "+7", och samma
+ *     chiffer fick då flera chifferhashar.
+ *
+ * Tolkningen är därför kanonisk: bara siffror, ingen inledande nolla utom i
+ * "0" självt, och högst lika många siffror som p. En exponent ska dessutom
+ * ligga i [0, q) och ett tal modulo p i [1, p). Allt annat ger null och aldrig
+ * ett undantag, så att en valsedel med ett felaktigt tal underkänns i stället
+ * för att fälla den som prövar den.
+ *
+ * Trådschemat i src/lib/validation.ts använder samma funktioner, så att
+ * gränsen mot klienten och databasvägen säger samma sak om varje tal.
+ */
+
+/** Antal siffror i p, 617. Inget tal i gruppen, varken exponent eller element, är längre. */
+export const MAX_DECIMAL_DIGITS = P.toString().length
+
+/** Bara ASCII-siffror, och ingen inledande nolla utom i "0". Längden prövas för sig, före. */
+const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/
+
+function parseCanonicalDecimal(value: unknown): bigint | null {
+  if (typeof value !== 'string' || value.length > MAX_DECIMAL_DIGITS) return null
+  if (!CANONICAL_DECIMAL.test(value)) return null
+  return BigInt(value)
+}
+
+/** En exponent, alltså en utmaning eller ett svar i ett bevis: ett heltal i [0, q). */
+export function parseScalar(value: unknown): bigint | null {
+  const parsed = parseCanonicalDecimal(value)
+  return parsed !== null && parsed < Q ? parsed : null
+}
+
+/**
+ * Ett tal modulo p som ska vara ett gruppelement: ett heltal i [1, p).
+ *
+ * Bara intervallet prövas här. Om talet ligger i undergruppen av ordning q
+ * avgör isInSubgroup, som kostar en exponentiering och därför bara körs där den
+ * behövs, på chiffret. Åtagandena i bevisen behöver den inte: bevisets egna
+ * ekvationer, g^s = a · y^c med g och y i undergruppen, kan bara hålla för ett
+ * åtagande som också ligger där.
+ */
+export function parseElement(value: unknown): bigint | null {
+  const parsed = parseCanonicalDecimal(value)
+  return parsed !== null && parsed >= 1n && parsed < P ? parsed : null
 }

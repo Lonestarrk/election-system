@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MAX_DECIMAL_DIGITS, parseElement, parseScalar } from './crypto/group'
 
 /**
  * Indatavalidering med Zod.
@@ -104,40 +105,54 @@ export const issueCredentialSchema = z.object({
 })
 
 /**
- * En decimalsträng — grundformatet för allt kryptografiskt talmaterial i den
- * krypterade valsedeln (chiffer och bevis).
+ * Talen i den krypterade valsedeln, chiffer och bevis, som decimalsträngar.
  *
- * Kontrollerar bara att strängen går att tolka som ett heltal, inte att
- * talet faktiskt ligger i undergruppen eller att beviset håller — det gör
- * `verifyEncryptedBallot`. Utan den här spärren skulle ett ogiltigt tecken
- * få `BigInt(...)` att kasta ett ofångat undantag långt in i
- * verifieringskedjan, och en felformad begäran skulle ge ett serverfel i
- * stället för ett tydligt 400-svar.
+ * SAMMA TOLKNING SOM VERIFIERINGEN, INTE EN EGEN (fixrunda 1, uppgift 14b).
+ *
+ * Förut godtog schemat varje följd av siffror, utan längdgräns, och
+ * verifieringen tolkade på sitt eget sätt, med `BigInt()`. "007" och ett svar
+ * plus q gick igenom båda, och ett bevisfält kunde ha hundratusentals siffror.
+ * Nu prövar schemat med parseScalar och parseElement i src/lib/crypto/group.ts,
+ * samma funktioner som verifieringen använder, och de två säger därför samma
+ * sak om varje tal: kanoniskt skrivet, högst 617 siffror, en utmaning eller ett
+ * svar i [0, q) och ett chiffer eller ett åtagande i [1, p). Ett annat tal ger
+ * ett tydligt 400-svar här, innan något räknas.
+ *
+ * Om ett chiffer ligger i undergruppen, och om bevisen håller, avgör
+ * fortfarande `verifyEncryptedBallot`.
  */
-const decimalStringSchema = z.string().regex(/^\d+$/, 'Ogiltigt talformat.')
+const scalarStringSchema = z
+  .string()
+  .max(MAX_DECIMAL_DIGITS, 'Ogiltigt talformat.')
+  .refine((value) => parseScalar(value) !== null, 'Ogiltigt talformat.')
+
+const elementStringSchema = z
+  .string()
+  .max(MAX_DECIMAL_DIGITS, 'Ogiltigt talformat.')
+  .refine((value) => parseElement(value) !== null, 'Ogiltigt talformat.')
 
 const zeroOrOneProofSchema = z.object({
-  a0: decimalStringSchema,
-  b0: decimalStringSchema,
-  a1: decimalStringSchema,
-  b1: decimalStringSchema,
-  challenge0: decimalStringSchema,
-  challenge1: decimalStringSchema,
-  response0: decimalStringSchema,
-  response1: decimalStringSchema,
+  a0: elementStringSchema,
+  b0: elementStringSchema,
+  a1: elementStringSchema,
+  b1: elementStringSchema,
+  challenge0: scalarStringSchema,
+  challenge1: scalarStringSchema,
+  response0: scalarStringSchema,
+  response1: scalarStringSchema,
 })
 
 const equalityProofSchema = z.object({
-  a: decimalStringSchema,
-  b: decimalStringSchema,
-  challenge: decimalStringSchema,
-  response: decimalStringSchema,
+  a: elementStringSchema,
+  b: elementStringSchema,
+  challenge: scalarStringSchema,
+  response: scalarStringSchema,
 })
 
 /** Den krypterade valsedeln, på trådformat — se `EncryptedBallot` i `verify-ballot.ts`. */
 export const encryptedBallotSchema = z.object({
   ciphertext: z
-    .array(z.object({ c1: decimalStringSchema, c2: decimalStringSchema }))
+    .array(z.object({ c1: elementStringSchema, c2: elementStringSchema }))
     .min(1)
     .max(200),
   proofs: z.object({
@@ -332,6 +347,66 @@ export const adminLoginSchema = z.object({
   orderRef: z.string().uuid('Ogiltig referens.'),
 })
 
+/**
+ * Största kropp som läses, i byte.
+ *
+ * VARFÖR EN GRÄNS (fixrunda 1, uppgift 14b)
+ *
+ * `request.json()` läser hela kroppen, hur stor den än är, innan schemat får
+ * säga något. Granskaren visade att stoppet i händelseslingan växte med
+ * omkring 4 s per MB kropp, när talen i en valsedel förlängdes. Talen har nu en
+ * egen gräns i schemat, men att läsa och tolka en kropp på hundratals MB
+ * kostar minne och tid ändå.
+ *
+ * VARFÖR JUST 2 MiB
+ *
+ * Den största kropp någon rutt behöver är en krypterad valsedel med de 200
+ * alternativ som schemat tillåter: tio tal om högst 617 siffror per
+ * alternativ, omkring 6,3 kB, alltså knappt 1,3 MB. En riksdagsvalsedel med
+ * 26 alternativ är omkring 170 kB. De andra rutterna tar emot betydligt
+ * mindre: ett id, en hash, eller en omröstning att skapa.
+ */
+export const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+
+/**
+ * Kroppen som text, eller null om den är större än gränsen.
+ *
+ * Content-Length prövas först, så att en för stor kropp inte läses alls. Men
+ * rubriken saknas vid chunkad överföring, och den kan ljuga. Därför räknas
+ * också varje byte som faktiskt läses, och läsningen avbryts så fort gränsen
+ * passerats, i stället för att först läsa allt och sedan mäta.
+ */
+async function readBodyWithin(request: Request, maxBytes: number): Promise<string | null> {
+  const declared = Number(request.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) return null
+  if (!request.body) return ''
+
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let received = 0
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    received += value.byteLength
+    if (received > maxBytes) {
+      await reader.cancel()
+      return null
+    }
+    chunks.push(value)
+  }
+
+  const bytes = new Uint8Array(received)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  // Som `request.json()`: UTF-8, och ett inledande byte order mark tas bort.
+  return new TextDecoder().decode(bytes)
+}
+
 /** Läser och validerar JSON-body. Kastar aldrig vidare råa parserfel. */
 export async function parseJsonBody<T>(
   request: Request,
@@ -339,7 +414,9 @@ export async function parseJsonBody<T>(
 ): Promise<{ ok: true; data: T } | { ok: false; message: string }> {
   let raw: unknown
   try {
-    raw = await request.json()
+    const text = await readBodyWithin(request, MAX_JSON_BODY_BYTES)
+    if (text === null) return { ok: false, message: 'Begäran är för stor.' }
+    raw = JSON.parse(text)
   } catch {
     return { ok: false, message: 'Ogiltig begäran.' }
   }

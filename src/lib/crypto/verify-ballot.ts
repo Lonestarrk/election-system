@@ -1,4 +1,4 @@
-import { isInSubgroup } from './group'
+import { isInSubgroup, parseElement, parseScalar } from './group'
 import { multiply, type Ciphertext } from './elgamal'
 import { verifySumIsOne, verifyZeroOrOne, type EqualityProof, type ZeroOrOneProof } from './proofs'
 import { sha256Hex } from './sha256'
@@ -43,17 +43,51 @@ export function serialiseZeroOrOneProof(proof: ZeroOrOneProof): SerialisedZeroOr
   }
 }
 
-function parseZeroOrOneProof(proof: SerialisedZeroOrOneProof): ZeroOrOneProof {
-  return {
-    a0: BigInt(proof.a0),
-    b0: BigInt(proof.b0),
-    a1: BigInt(proof.a1),
-    b1: BigInt(proof.b1),
-    challenge0: BigInt(proof.challenge0),
-    challenge1: BigInt(proof.challenge1),
-    response0: BigInt(proof.response0),
-    response1: BigInt(proof.response1),
+/**
+ * Ett objekt med fält. En rad ur databasen har inte passerat något schema och
+ * kan vara vad som helst.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Alla fält, eller null om ett enda av dem inte gick att tolka. */
+function everyField<T extends Record<string, bigint | null>>(
+  fields: T,
+): { [K in keyof T]: bigint } | null {
+  for (const value of Object.values(fields)) {
+    if (value === null) return null
   }
+  return fields as { [K in keyof T]: bigint }
+}
+
+/**
+ * STRIKT TOLKNING AV ETT BEVIS. VARJE VÄG TILL VERIFIERINGEN GÅR HÄR IGENOM.
+ *
+ * Åtagandena är tal i [1, p), utmaningarna och svaren exponenter i [0, q), och
+ * varje tal är kanoniskt skrivet, med högst 617 siffror (se parseScalar i
+ * group.ts). Förut gjordes bara `BigInt()`. En negativ utmaning gick då rakt
+ * in i beviset, och en förfalskad valsedel med +1000 för ett parti och −999
+ * för blankt godkändes när den lästes ur databasen (granskningen av uppgift
+ * 14b, KRITISKT 1). Trådschemat stoppade minustecknet, men valideringen före
+ * stängningen och omverifieringen i skalningen går förbi schemat. Här går de
+ * inte förbi, och inte heller kod som skrivs senare, som räkningen i uppgift
+ * 12 och slutkontrollen i uppgift 12b, så länge den verifierar härigenom.
+ *
+ * Null betyder att beviset inte går att tolka, och valsedeln underkänns.
+ */
+function parseZeroOrOneProof(proof: unknown): ZeroOrOneProof | null {
+  if (!isRecord(proof)) return null
+  return everyField({
+    a0: parseElement(proof.a0),
+    b0: parseElement(proof.b0),
+    a1: parseElement(proof.a1),
+    b1: parseElement(proof.b1),
+    challenge0: parseScalar(proof.challenge0),
+    challenge1: parseScalar(proof.challenge1),
+    response0: parseScalar(proof.response0),
+    response1: parseScalar(proof.response1),
+  })
 }
 
 export function serialiseEqualityProof(proof: EqualityProof): SerialisedEqualityProof {
@@ -65,13 +99,55 @@ export function serialiseEqualityProof(proof: EqualityProof): SerialisedEquality
   }
 }
 
-function parseEqualityProof(proof: SerialisedEqualityProof): EqualityProof {
-  return {
-    a: BigInt(proof.a),
-    b: BigInt(proof.b),
-    challenge: BigInt(proof.challenge),
-    response: BigInt(proof.response),
+/** Samma strikta tolkning för summabeviset. */
+function parseEqualityProof(proof: unknown): EqualityProof | null {
+  if (!isRecord(proof)) return null
+  return everyField({
+    a: parseElement(proof.a),
+    b: parseElement(proof.b),
+    challenge: parseScalar(proof.challenge),
+    response: parseScalar(proof.response),
+  })
+}
+
+type ParsedBallot = { ciphertexts: Ciphertext[]; components: ZeroOrOneProof[]; sum: EqualityProof }
+
+/**
+ * Hela valsedeln, tolkad innan något räknas med den.
+ *
+ * Formen prövas också. En rad ur databasen kan ha `null` där chiffret ska stå
+ * och en sträng där bevisen ska stå. Förut kastade det inne i verifieringen,
+ * och anroparna fick fånga det. Nu underkänns valsedeln, precis som en
+ * valsedel vars bevis inte håller.
+ */
+function parseBallot(ballot: unknown, expectedLength: number): ParsedBallot | null {
+  if (!isRecord(ballot) || !isRecord(ballot.proofs)) return null
+
+  const { ciphertext } = ballot
+  const { components, sum } = ballot.proofs
+  if (!Array.isArray(ciphertext) || !Array.isArray(components)) return null
+  if (ciphertext.length !== expectedLength || components.length !== expectedLength) return null
+
+  const ciphertexts: Ciphertext[] = []
+  for (const pair of ciphertext) {
+    const parsed = isRecord(pair)
+      ? everyField({ c1: parseElement(pair.c1), c2: parseElement(pair.c2) })
+      : null
+    if (!parsed) return null
+    ciphertexts.push(parsed)
   }
+
+  const proofs: ZeroOrOneProof[] = []
+  for (const component of components) {
+    const parsed = parseZeroOrOneProof(component)
+    if (!parsed) return null
+    proofs.push(parsed)
+  }
+
+  const parsedSum = parseEqualityProof(sum)
+  if (!parsedSum) return null
+
+  return { ciphertexts, components: proofs, sum: parsedSum }
 }
 
 /**
@@ -119,8 +195,26 @@ function* ballotVerification(
   expectedLength: number,
   ballot: EncryptedBallot,
 ): Generator<void, boolean, void> {
-  if (ballot.ciphertext.length !== expectedLength) return false
-  if (ballot.proofs.components.length !== expectedLength) return false
+  /**
+   * VALETS NYCKEL ÄR SERVERNS EGEN, OCH EN TRASIG NYCKEL KASTAR.
+   *
+   * Nyckeln kommer ur valets rad och inte från väljaren. Går den inte att
+   * tolka kan ingen valsedel prövas, och felet ligger hos servern, inte hos
+   * valsedeln. Allt nedan kommer utifrån, och det underkänns i stället.
+   */
+  const key = parseElement(publicKey)
+  if (key === null) throw new Error('Valets publika nyckel är inte ett tal i [1, p).')
+
+  /**
+   * HELA VALSEDELN TOLKAS FÖRST, INNAN NÅGOT RÄKNAS MED DEN.
+   *
+   * Billigast först, och det är också vad som gör tidsgränsen för ett steg
+   * sann. Ett tal utanför sitt intervall, eller längre än 617 siffror,
+   * underkänns här utan en enda exponentiering. Förut kunde ett svar förlängt
+   * med k·q låsa händelseslingan i sekunder i ett enda steg.
+   */
+  const parsed = parseBallot(ballot, expectedLength)
+  if (!parsed) return false
 
   /**
    * HASHEN MASTE RAKNAS OM, INTE TAS PA ORD.
@@ -137,34 +231,25 @@ function* ballotVerification(
    */
   if (ballot.ciphertextHash !== hashCiphertext(ballot.ciphertext)) return false
 
-  const key = BigInt(publicKey)
-  const ciphertexts: Ciphertext[] = []
-
-  for (const pair of ballot.ciphertext) {
-    const c1 = BigInt(pair.c1)
-    const c2 = BigInt(pair.c2)
-
+  for (const { c1, c2 } of parsed.ciphertexts) {
     // REVIEW FOCUS 1. Ett element utanför undergruppen läcker en bit av
     // tröskelnyckeln vid varje partiell dekryptering. Varje element prövas
     // innan något bevis räknas med det, också när stegen körs ett i taget.
     if (!isInSubgroup(c1) || !isInSubgroup(c2)) return false
-
-    ciphertexts.push({ c1, c2 })
     yield
   }
 
-  for (const [index, ciphertext] of ciphertexts.entries()) {
-    const proof = parseZeroOrOneProof(ballot.proofs.components[index]!)
+  for (const [index, ciphertext] of parsed.ciphertexts.entries()) {
+    const proof = parsed.components[index]!
     if (!verifyZeroOrOne(key, ciphertext, proof, proofContext(electionId, ballotId, index))) {
       return false
     }
     yield
   }
 
-  const product = ciphertexts.reduce((a, b) => multiply(a, b))
-  const sumProof = parseEqualityProof(ballot.proofs.sum)
+  const product = parsed.ciphertexts.reduce((a, b) => multiply(a, b))
 
-  return verifySumIsOne(key, product, sumProof, proofContext(electionId, ballotId, -1))
+  return verifySumIsOne(key, product, parsed.sum, proofContext(electionId, ballotId, -1))
 }
 
 /** Alla steg i ett svep, för testerna och för den som inte har någon händelseslinga att hålla fri. */
@@ -188,9 +273,10 @@ export function verifyEncryptedBallot(
  * Ett steg är ett alternativs undergruppskontroll, två exponentieringar, eller
  * ett alternativs bevis, åtta. Pausen avgör vad som får köra däremellan. På
  * servern är det `setImmediate`, som släpper fram väntande I/O, alltså andra
- * besökares begäranden. Kastar ett steg, till exempel på ett tal som inte går
- * att tolka, blir det ett avvisat löfte, precis som den synkrona varianten
- * kastar.
+ * besökares begäranden. Ett tal som inte går att tolka underkänner
+ * valsedeln, som ett bevis som inte håller. Kastar ett steg ändå, till exempel
+ * på en trasig nyckel eller när `pause` avbryter, blir det ett avvisat löfte,
+ * precis som den synkrona varianten kastar.
  */
 export async function verifyEncryptedBallotInSteps(
   publicKey: string,

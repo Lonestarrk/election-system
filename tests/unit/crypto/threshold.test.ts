@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { G, P, modPow, randomScalar } from '@/lib/crypto/group'
+import { G, P, Q, modPow, randomScalar } from '@/lib/crypto/group'
 import { discreteLog, encrypt, generateKeyPair, multiply } from '@/lib/crypto/elgamal'
+import { challengeHash } from '@/lib/crypto/proofs'
 import {
   combine,
   partiallyDecrypt,
   publicShare,
   splitSecret,
   verifyPartialDecryption,
+  type PartialDecryption,
 } from '@/lib/crypto/threshold'
 
 describe('delning av nyckeln', () => {
@@ -66,6 +68,50 @@ describe('bevis för partiell dekryptering', () => {
     const tampered = { ...partial, value: (partial.value * G) % P }
 
     expect(verifyPartialDecryption(publicShare(shares[0]!), ciphertext, tampered)).toBe(false)
+  })
+
+  it('ett värde utanför undergruppen avvisas, också när beviset går ihop', () => {
+    /**
+     * Granskningen av uppgift 14b, MINDRE 7. Beviset binder värdet bara upp
+     * till tecknet: (p − v)^c = (−1)^c · v^c, så för en jämn utmaning håller
+     * det också för p − v. En förtroendeman som känner sin andel kan pröva nya
+     * åtaganden tills utmaningen blir jämn, och det gör testet här, precis som
+     * granskaren, som fick igenom p − v på tredje försöket.
+     */
+    const keys = generateKeyPair()
+    const [share] = splitSecret(keys.privateKey, 3, 2)
+    const ciphertext = encrypt(keys.publicKey, 1n, randomScalar())
+    const honest = partiallyDecrypt(share!, ciphertext)
+    const negated = P - honest.value
+    const expectedShare = publicShare(share!)
+
+    let forged: PartialDecryption | null = null
+    for (let attempt = 0; attempt < 64 && forged === null; attempt += 1) {
+      const commitment = randomScalar()
+      const a = modPow(G, commitment, P)
+      const b = modPow(ciphertext.c1, commitment, P)
+      const challenge = challengeHash('partiell-dekryptering', [
+        expectedShare,
+        ciphertext.c1,
+        negated,
+        a,
+        b,
+      ])
+      if (challenge % 2n === 0n) {
+        const response = (commitment + challenge * share!.value) % Q
+        forged = { trusteeIndex: share!.index, value: negated, proof: { a, b, challenge, response } }
+      }
+    }
+
+    // Ekvationerna håller verkligen för p − v. Utan det säger testet ingenting.
+    const { proof } = forged!
+    expect(modPow(ciphertext.c1, proof.response, P)).toBe(
+      (proof.b * modPow(negated, proof.challenge, P)) % P,
+    )
+
+    expect(verifyPartialDecryption(expectedShare, ciphertext, forged!)).toBe(false)
+    // Kontrasten: det ärliga bidraget godkänns fortfarande.
+    expect(verifyPartialDecryption(expectedShare, ciphertext, honest)).toBe(true)
   })
 
   it('ett bevis från ett annat chiffer avvisas', () => {

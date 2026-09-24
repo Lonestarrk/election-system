@@ -245,10 +245,13 @@ export function idForEnvelope(ciphertextHash: string): string {
  * Steg 3, per kuvert — skyddad mot kast av samma skäl som `proofHoldsSafely` i
  * `validate-before-close.usecase.ts`.
  *
- * Raden kommer direkt ur databasen, förbi varje Zod-schema, och
- * `verifyEncryptedBallotOnServer` gör `BigInt(...)` på chiffer- och bevisfälten utan
- * eget felfång. Ett missformat chiffer ska peka ut raden, inte krascha
- * stängningen. `await` står innanför `try` av samma skäl som där: kastet kommer
+ * Raden kommer direkt ur databasen, förbi varje Zod-schema. Verifieringen
+ * tolkar därför själv varje tal strikt, och ett missformat eller förfalskat
+ * chiffer pekar ut raden i stället för att krascha stängningen. Före
+ * fixrunda 1 av uppgift 14b godkändes här en valsedel med +1000 för ett parti
+ * och −999 för blankt, eftersom en negativ utmaning räknades som 1.
+ * Verifieringen kan fortfarande kasta, på en trasig nyckel eller ett internt
+ * fel, och `await` står innanför `try` av samma skäl som där: kastet kommer
  * som ett avvisat löfte.
  */
 async function ballotVerifies(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { G, P, Q, isInSubgroup, modPow, randomScalar } from '@/lib/crypto/group'
+import { G, P, Q, bigintModPow, isInSubgroup, modPow, randomScalar } from '@/lib/crypto/group'
 import {
   decryptWithSecret,
   discreteLog,
@@ -10,12 +10,16 @@ import {
 
 describe('gruppen', () => {
   it('g har ordning q, inte 2q', () => {
-    // RFC 3526 anger g = 2, som genererar hela gruppen av ordning 2q. Vi
-    // använder g = 4 = 2², vars ordning är primtalet q. Utan det finns en
-    // undergrupp av ordning 2, och ett element därifrån läcker en bit av
-    // nyckeln vid varje partiell dekryptering.
+    // Vi använder g = 4 = 2², ett kvadrattal, och ett sådant har ordning q för
+    // varje säker prim. Här stod förut att RFC 3526:s g = 2 genererar hela
+    // gruppen av ordning 2q. Det stämmer inte för den här gruppen: p ≡ 7
+    // (mod 8), så 2 är en kvadratisk rest och har också ordning q, som
+    // raden nedan visar. Mot den lilla undergruppen skyddar i stället
+    // kontrollen av varje mottaget element.
     expect(modPow(G, Q, P)).toBe(1n)
-    expect(G).not.toBe(2n)
+    expect(G).toBe(4n)
+    expect(P % 8n).toBe(7n)
+    expect(bigintModPow(2n, Q, P)).toBe(1n)
   })
 
   it('avvisar element utanför undergruppen', () => {

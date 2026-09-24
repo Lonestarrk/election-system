@@ -209,3 +209,48 @@ describe('övriga säkerhetsheaders', () => {
     expect(response.headers.get('Cache-Control')).toContain('private')
   })
 })
+
+describe('X-Forwarded-For från klienten', () => {
+  /**
+   * Fixrunda 1, uppgift 14b. Hastighetsbegränsningen gick efter rubriken, och
+   * den kan klienten sätta själv. En rutt ser inte anslutningen, bara
+   * rubrikerna, och Next sätter X-Forwarded-For till anslutningens adress bara
+   * när rubriken saknas. Därför tas klientens rubrik bort här, innan rutten
+   * körs. Next läser `x-middleware-override-headers` och tar bort varje rubrik
+   * som inte står i den listan. Att det räcker hela vägen prövas mot den
+   * riktiga servern i tests/e2e/rate-limit.spec.ts.
+   */
+  function forwarded(value: string) {
+    const headers = new Headers({ 'x-forwarded-for': value })
+    return new NextRequest(`${ORIGIN_A}/api/verify`, { method: 'POST', headers })
+  }
+
+  const passedOn = (response: { headers: Headers }) => ({
+    names: (response.headers.get('x-middleware-override-headers') ?? '')
+      .split(',')
+      .map((name) => name.trim()),
+    forwardedFor: response.headers.get('x-middleware-request-x-forwarded-for'),
+  })
+
+  it('tas bort när ingen proxy är betrodd, så att Next sätter anslutningens adress', async () => {
+    const middleware = await loadMiddleware({ NODE_ENV: 'production', APP_ORIGIN: ORIGIN_A })
+    const request = passedOn(middleware(forwarded('203.0.113.9')))
+
+    expect(request.names).not.toContain('x-forwarded-for')
+    expect(request.forwardedFor).toBeNull()
+    // Kontrasten: listan är inte tom av något annat skäl, nonce skickas vidare.
+    expect(request.names).toContain('x-nonce')
+  })
+
+  it('står kvar bakom en betrodd proxy, som har skrivit den', async () => {
+    const middleware = await loadMiddleware({
+      NODE_ENV: 'production',
+      APP_ORIGIN: ORIGIN_A,
+      TRUSTED_PROXY_HOPS: '1',
+    })
+    const request = passedOn(middleware(forwarded('203.0.113.9, 198.51.100.4')))
+
+    expect(request.names).toContain('x-forwarded-for')
+    expect(request.forwardedFor).toBe('203.0.113.9, 198.51.100.4')
+  })
+})

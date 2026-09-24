@@ -208,8 +208,8 @@ function mismatchesVoterArea(
 /**
  * `ciphertext`/`proofs` lagras som Prisma `Json` och har därför ingen statisk
  * form i klienten. Bara ett typläge — ingen runtime-kontroll sker här. Formen
- * kontrolleras av `verifyEncryptedBallotOnServer`, som anropas via `proofHoldsSafely`
- * nedan, INTE direkt: se den funktionens dokumentation för varför.
+ * och varje tal prövas strikt av verifieringen själv (se `parseBallot` i
+ * src/lib/crypto/verify-ballot.ts), som anropas via `proofHoldsSafely` nedan.
  */
 function toEncryptedBallot(vote: {
   ciphertext: unknown
@@ -227,21 +227,24 @@ function toEncryptedBallot(vote: {
  * BAD_PROOF-kontrollen, skyddad mot kast (fixrunda 2, uppgift 10:s
  * granskning).
  *
- * `verifyEncryptedBallotOnServer` (src/lib/crypto/server.ts) gör `BigInt(...)`
- * på chiffer- och bevisfälten utan eget felfång. Det är rätt för dess EGNA
- * normala anropskedja: `castEncryptedBallot` når den bara med en valsedel som
- * redan passerat `castEncryptedBallotSchema` (`decimalStringSchema`, se
- * `src/lib/validation.ts`) — fälten är garanterat decimalsträngar innan de
- * når fram, så ett kast där vore ett verkligt programmeringsfel att stanna
- * på.
- *
- * HÄR FINNS INGEN SÅDAN GARANTI. Raden kommer direkt ur databasen, förbi
+ * HÄR FINNS INGET SCHEMA FRAMFÖR. Raden kommer direkt ur databasen, förbi
  * varje Zod-schema, och den här filens dokumentationshuvud handlar
  * genomgående om att en angripare med skrivrättighet kan ha skrivit precis
  * den raden. Ett missformat chiffer (icke-numeriska strängar, `null` i
  * stället för en array, fel längd) är då inte ett programmeringsfel — det ÄR
  * avvikelsen valideringen finns för att hitta, och ska rapporteras som
  * BAD_PROOF precis som ett välformat men matematiskt ogiltigt bevis.
+ *
+ * DET RÄCKTE INTE ATT FÅNGA KAST (granskningen av uppgift 14b, KRITISKT 1).
+ * Verifieringen gjorde då bara `BigInt(...)` på fälten, och ett tal som gick
+ * att tolka gick rakt in i beviset. En negativ utmaning räknades som 1, och
+ * en förfalskad valsedel med +1000 för ett parti och −999 för blankt
+ * godkändes här, med en äkta underskrift, fast trådschemat hade stoppat den.
+ * Nu tolkar verifieringen själv varje tal strikt och svarar nej på en rad som
+ * inte håller, se `parseBallot` i src/lib/crypto/verify-ballot.ts.
+ *
+ * Fånget står kvar, eftersom verifieringen fortfarande kan kasta: på en
+ * trasig publik nyckel, som är serverns egen, eller på ett internt fel.
  *
  * VALIDERINGEN ÄR EN SPÄRR (spec 7.1), OCH EN SPÄRR SOM KRASCHAR HAR HJÄLPT
  * ANGRIPAREN I STÄLLET FÖR ATT STOPPA HONOM. Ett okatchat undantag här skulle
@@ -251,15 +254,13 @@ function toEncryptedBallot(vote: {
  * skrivrättighet, vore då en spärr mot att någonsin stänga valet — strax
  * effektivare för en angripare än den avvikelse raden annars hade orsakat.
  *
- * Att linda in HELA anropet (i stället för att härda `BigInt(...)` punktvis
- * inne i `verifyEncryptedBallotOnServer`) är avsiktligt: den funktionens kryptologik
- * rörs inte alls här, och skyddet täcker varje sätt den kan kasta på skräp —
- * chiffer, bevis eller längder — utan att räkna upp dem en och en.
+ * Att linda in HELA anropet är avsiktligt: skyddet täcker varje sätt
+ * verifieringen kan kasta, utan att räkna upp dem en och en.
  *
  * `await` STÅR INNANFÖR `try`, OCH DET ÄR INTE EN DETALJ. Verifieringen körs i
- * steg sedan uppgift 14b, så ett kast på ett missformat tal kommer som ett
- * avvisat löfte. Returnerades löftet utan `await` skulle det passera förbi
- * `catch`, och en enda trasig rad fälla hela valideringen igen.
+ * steg sedan uppgift 14b, så ett kast kommer som ett avvisat löfte.
+ * Returnerades löftet utan `await` skulle det passera förbi `catch`, och en
+ * enda trasig rad kunna fälla hela valideringen igen.
  */
 async function proofHoldsSafely(
   shape: { publicKey: string; optionCount: number },

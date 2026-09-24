@@ -22,6 +22,7 @@ import {
   nextCastSequence,
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
+import { forgeBallot } from '../unit/crypto/forged-ballot'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
 /**
@@ -543,6 +544,49 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       .sort()
 
     expect(forGunvor).toEqual(['BAD_PROOF', 'WRONG_BALLOT'])
+  })
+
+  it('en förfalskad valsedel med +1000 för ett parti och −999 för blankt fångas som BAD_PROOF', async () => {
+    /**
+     * KRITISKT 1 i granskningen av uppgift 14b.
+     *
+     * Raden bär en äkta underskrift. `sign-start` tar hashen från klienten, så
+     * en väljare kan själv låta BankID skriva under hashen över en förfalskad
+     * valsedel, och signaturkontrollen håller. Det enda som kan stoppa raden
+     * är bevisen. Före fixrunda 1 godkändes de: raden läses förbi
+     * trådschemat, och en negativ utmaning räknades som 1. Valideringen
+     * släppte alltså igenom tusen röster på ett parti, och Kim hade inte ens
+     * behövt skriva i databasen för att få underskriften, bara för att lägga
+     * raden där.
+     */
+    const { ballot } = forgeBallot(BigInt(publicKey), electionId, ballotId, [-999n, 1000n, 0n])
+    const castSequence = await nextCastSequence(kim, ballotId)
+    const envelope = await signAs(kim, ballotId, ballot.ciphertextHash, castSequence)
+
+    const data = {
+      ciphertext: ballot.ciphertext as unknown as Prisma.InputJsonValue,
+      proofs: ballot.proofs as unknown as Prisma.InputJsonValue,
+      ciphertextHash: ballot.ciphertextHash,
+      castSequence,
+      bankIdSignature: envelope.signature,
+      bankIdPublicKey: publicKeyFromCertificate(envelope.certificate),
+      updatedAt: new Date(),
+    }
+    await votersDb.pendingVote.upsert({
+      where: { voterStatusId_ballotId: { voterStatusId: kim, ballotId } },
+      create: { voterStatusId: kim, ballotId, ...data },
+      update: data,
+    })
+    // En ärlig röst bredvid, som kontrast: den ska inte ge någon avvikelse.
+    await castFor(anna, 'bp-s')
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.summary.passed).toBe(false)
+    // Bara bevisen avviker. Underskriften är äkta, och valsedeln gäller Kim.
+    expect(report.anomalies).toEqual([
+      expect.objectContaining({ kind: 'BAD_PROOF', voterStatusId: kim }),
+    ])
   })
 
   it('rapportens sammanfattning namnger ingen väljare', async () => {

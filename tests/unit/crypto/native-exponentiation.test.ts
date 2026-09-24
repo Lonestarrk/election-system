@@ -2,8 +2,9 @@ import type { DiffieHellman } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { encrypt } from '@/lib/crypto/elgamal'
 import { G, G_INVERSE, P, Q, randomScalar, registerGroupExponentiation } from '@/lib/crypto/group'
-import { nativeModPow } from '@/lib/crypto/native-exponentiation'
+import { nativeModPow, resetUnexpectedFallbackReport } from '@/lib/crypto/native-exponentiation'
 import { challengeHash, verifyZeroOrOne, type ZeroOrOneProof } from '@/lib/crypto/proofs'
+import { logger } from '@/lib/logger'
 
 /**
  * OPENSSL MOT BIGINT.
@@ -181,15 +182,26 @@ describe('nativeModPow ger samma svar som BigInt', () => {
     }
   })
 
-  it('för negativa tal, som BigInt räknar på sitt eget sätt', () => {
-    // Förekommer aldrig i kryptot, men "samma svar för varje indata" ska vara sant.
+  it('för negativa baser, medan en negativ exponent kastar i båda', () => {
+    // Här stod förut att negativa tal aldrig förekommer i kryptot, och att
+    // båda därför fick räkna en negativ exponent som 1. Det stämde inte. En
+    // negativ utmaning ur en databasrad nådde exponentieringen och gjorde en
+    // förfalskad valsedel giltig (granskningen av uppgift 14b, KRITISKT 1).
+    // Nu kastar båda. En negativ bas når inte kryptot efter tolkningen, men
+    // ger fortfarande samma svar.
     for (const [base, exponent] of [
       [-5n, 3n],
       [-P, 7n],
-      [5n, -3n],
-      [-2n, -2n],
     ] as const) {
       expect(nativeModPow(base, exponent)).toBe(bigintModPow(base, exponent, P))
+    }
+    for (const [base, exponent] of [
+      [5n, -3n],
+      [-2n, -2n],
+      [G, -(Q - 1n)],
+    ] as const) {
+      expect(() => bigintModPow(base, exponent, P)).toThrow(RangeError)
+      expect(() => nativeModPow(base, exponent)).toThrow(RangeError)
     }
   })
 
@@ -266,7 +278,7 @@ describe('vad som räknas i OpenSSL och vad som faller tillbaka på BigInt', () 
     expect(fellBack(P - subgroupElement(), Q)).toBe(false)
   })
 
-  it('bara baserna 0, 1 och p − 1, exponenter under 1 och negativa baser faller tillbaka', () => {
+  it('bara baserna 0, 1 och p − 1, exponenten 0 och negativa baser faller tillbaka', () => {
     // I alla dessa fall är BigInt trivial: talen blir 0 eller 1 efter första
     // varvet, eller så räknas ingenting alls.
     for (const [base, exponent] of [
@@ -275,11 +287,16 @@ describe('vad som räknas i OpenSSL och vad som faller tillbaka på BigInt', () 
       [P - 1n, Q],
       [P, Q],
       [subgroupElement(), 0n],
-      [subgroupElement(), -1n],
       [-3n, 5n],
     ] as const) {
       expect(fellBack(base, exponent), `bas ${base}, exponent ${exponent}`).toBe(true)
     }
+  })
+
+  it('en negativ exponent når varken OpenSSL eller BigInt, utan kastar före båda', () => {
+    vi.mocked(fallback).mockClear()
+    expect(() => nativeModPow(subgroupElement(), -1n)).toThrow(RangeError)
+    expect(vi.mocked(fallback).mock.calls).toHaveLength(0)
   })
 })
 
@@ -361,5 +378,86 @@ describe('objektet i OpenSSL', () => {
     expect(nativeModPow(base, share)).toBe(bigintModPow(base, share, P))
 
     expect(created.objects[0]!.getPrivateKey('hex')).toBe('01')
+  })
+})
+
+describe('ett okänt skäl att falla tillbaka syns i loggen', () => {
+  /**
+   * Granskningen av uppgift 14b, MINDRE 8. Förut svaldes varje undantag, och
+   * allt räknades tyst i BigInt: rätt, men långsamt och inte i konstant tid.
+   * Nu faller bara det okända tillbaka, och det loggas en gång, genom loggern.
+   *
+   * Objektet i OpenSSL finns redan här, eftersom blocken ovan har räknat. Dess
+   * `computeSecret` byts ut för att framkalla det Node och OpenSSL i dag inte
+   * gör.
+   */
+  // Bara överlagringen som modulen anropar, så att spionen får rätt typ.
+  type SecretComputer = { computeSecret(otherPublicKey: NodeJS.ArrayBufferView): Buffer }
+
+  const engine = (): SecretComputer => {
+    nativeModPow(subgroupElement(), 5n)
+    return created.objects[0]!
+  }
+
+  function withLogSpy(run: (logged: ReturnType<typeof vi.spyOn>) => void): void {
+    resetUnexpectedFallbackReport()
+    const logged = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    try {
+      run(logged)
+    } finally {
+      logged.mockRestore()
+    }
+  }
+
+  it('ett undantag ur OpenSSL räknas i BigInt, med rätt svar, och loggas en gång', () => {
+    withLogSpy((logged) => {
+      const unknown = Object.assign(new Error('ett nytt fel ur OpenSSL'), { code: 'ERR_OKANT' })
+      const failing = vi.spyOn(engine(), 'computeSecret').mockImplementation(() => {
+        throw unknown
+      })
+
+      try {
+        for (let round = 0; round < 3; round += 1) {
+          const base = subgroupElement()
+          const exponent = randomBits(2047)
+          expect(nativeModPow(base, exponent)).toBe(bigintModPow(base, exponent, P))
+        }
+      } finally {
+        failing.mockRestore()
+      }
+
+      expect(logged).toHaveBeenCalledTimes(1)
+      expect(logged.mock.calls[0]![1]).toEqual({ error: unknown })
+    })
+  })
+
+  it('ett andra anrop som inte avgör om svaret var 1 eller p − 1 räknas i BigInt och loggas', () => {
+    withLogSpy((logged) => {
+      // Två tomma buffertar i rad: den första är den kända vägran, den andra är
+      // inte det, eftersom bas^(e+1) aldrig är 1 eller p − 1 här.
+      const empty = vi.spyOn(engine(), 'computeSecret').mockImplementation(() => Buffer.alloc(0))
+
+      try {
+        const base = subgroupElement()
+        const exponent = randomBits(2047)
+        expect(nativeModPow(base, exponent)).toBe(bigintModPow(base, exponent, P))
+      } finally {
+        empty.mockRestore()
+      }
+
+      expect(logged).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('kontrasten: den kända vägran, en tom buffert för 1 och p − 1, loggas inte', () => {
+    withLogSpy((logged) => {
+      vi.mocked(fallback).mockClear()
+      expect(nativeModPow(subgroupElement(), Q)).toBe(1n)
+      expect(nativeModPow(P - subgroupElement(), Q)).toBe(P - 1n)
+      expect(nativeModPow(subgroupElement(), randomBits(2047))).toBeGreaterThan(1n)
+
+      expect(logged).not.toHaveBeenCalled()
+      expect(vi.mocked(fallback).mock.calls).toHaveLength(0)
+    })
   })
 })

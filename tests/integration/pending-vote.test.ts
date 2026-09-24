@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
@@ -6,6 +6,7 @@ import { createElection } from '@/orchestration/create-election.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { P } from '@/lib/crypto/group'
+import { VerificationAborted } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { castEncryptedBallotSchema } from '@/lib/validation'
 import {
@@ -22,6 +23,34 @@ import {
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+
+/**
+ * Låter testet ge upp i precis rätt ögonblick (fixrunda 1, uppgift 14b).
+ *
+ * Verifieringen stannar vid nästa steg när besökaren ger upp, men efter dess
+ * sista steg finns inget nästa. Omslutningen kör den äkta verifieringen och
+ * anropar sedan `afterVerification`, så att testet kan avbryta mellan
+ * verifieringen och skrivningen. Alla andra tester går rakt igenom till den
+ * äkta funktionen.
+ */
+const verificationControl = vi.hoisted(() => ({
+  afterVerification: null as null | (() => void),
+}))
+
+vi.mock('@/lib/crypto/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/crypto/server')>()
+
+  return {
+    ...actual,
+    verifyEncryptedBallotOnServer: async (
+      ...args: Parameters<typeof actual.verifyEncryptedBallotOnServer>
+    ) => {
+      const verdict = await actual.verifyEncryptedBallotOnServer(...args)
+      verificationControl.afterVerification?.()
+      return verdict
+    },
+  }
+})
 
 /**
  * Uppgift 9: väljaren kan lägga och ändra sin röst fram till stängning.
@@ -65,6 +94,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
   }
 
   beforeEach(async () => {
+    verificationControl.afterVerification = null
     await resetElectionData()
 
     // Partiregistret är delad referensdata och tas inte bort av
@@ -281,6 +311,54 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     ballot.ciphertext[0]!.c1 = (P - 1n).toString()
 
     expect((await castRaw(voter, ballot)).status).toBe('invalid_proof')
+  })
+
+  describe('en besökare som ger upp (granskningen av uppgift 14b, MINDRE 3)', () => {
+    /** Allt en ärlig röstläggning behöver, fram till anropet. */
+    async function prepared() {
+      const ballot = await buildBallot('bp-s')
+      const envelope = await signAs(voter, ballot, await nextCastSequence(voter, ballotId))
+      const shape = await getEncryptedBallotShape(ballotId)
+      return { ballot, envelope, shape }
+    }
+
+    it('får sin röst prövad men inte lagd, om den ger upp efter verifieringens sista steg', async () => {
+      // Förut prövades och lades rösten, fast klienten redan hade gått.
+      const { ballot, envelope, shape } = await prepared()
+      const controller = new AbortController()
+      verificationControl.afterVerification = () => controller.abort()
+
+      await expect(
+        castEncryptedBallot(voter, electionId, ballotId, ballot, envelope, shape, controller.signal),
+      ).rejects.toBeInstanceOf(VerificationAborted)
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+
+    it('prövas inte alls om den redan har gett upp', async () => {
+      const { ballot, envelope, shape } = await prepared()
+
+      await expect(
+        castEncryptedBallot(voter, electionId, ballotId, ballot, envelope, shape, AbortSignal.abort()),
+      ).rejects.toBeInstanceOf(VerificationAborted)
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+
+    it('kontrasten: med en signal som aldrig avbryts läggs rösten', async () => {
+      const { ballot, envelope, shape } = await prepared()
+      const signal = new AbortController().signal
+
+      const outcome = await castEncryptedBallot(
+        voter,
+        electionId,
+        ballotId,
+        ballot,
+        envelope,
+        shape,
+        signal,
+      )
+      expect(outcome.status).toBe('recorded')
+      expect(await votersDb.pendingVote.count()).toBe(1)
+    })
   })
 
   it('en röst signerad av någon annan avvisas', async () => {
