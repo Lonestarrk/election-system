@@ -98,12 +98,14 @@ Konkret:
 1. **Före stängningen ser väljaren sin nuvarande röst på den enhet hon röstade från.**
    Enheten sparar valet och chifferhashen för den senaste läggningen per valsedel, men
    **inte slumptalet**. Enheten skickar sin sparade hash till servern, som jämför med
-   väljarens liggande röst och svarar bara *lika*, *olika* eller *ingen röst*. Servern
-   lämnar aldrig ut sin hash. Annars skulle en enhet få veta hashen för en röst som lagts
+   väljarens liggande röst och svarar bara *lika*, *olika* eller *ingen röst*.
+   **Röstsidan får aldrig serverns hash.** Annars skulle en enhet få veta hashen för en röst som lagts
    från en annan enhet, alltså den röst som räknas, och den tillsammans med läsrätt i
    `votes_db` pekar ut rätt rad efter stängningen. Är svaret *lika* visas valet, med
    beskedet att servern håller exakt den röst som lades härifrån. Är det *olika* har
-   rösten ändrats från en annan enhet, och innehållet visas inte.
+   rösten ändrats från en annan enhet, och innehållet visas inte. Livevyn på
+   arkitektursidan visar i demoläget databasen som en insider ser den, med början av
+   hashen. Det är avsiktligt och gäller bara demoläget.
 2. **Visningen är inget kvitto.** Utan slumptalet går det inte att bevisa att chiffret
    innehåller det enheten visar. Det enheten visar kan dessutom ändras av väljaren
    själv. En köpare kan därför inte lita på skärmen, bara på att själv se läggningen, och

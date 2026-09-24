@@ -3515,7 +3515,16 @@ snabba vägar utan beroenden:
    (`BankIdSigning.tsx:43` och `:163`). Hastighetsgränsen 30 per minut ligger exakt på
    pollningstakten, så två väljare bakom samma NAT stryps. Låt servern hålla valsedeln
    med ordern från `sign-start`, och låt pollningen bara bära `orderRef`.
-6. **Mål:** en riksdagsvalsedel med 26 alternativ verifieras på under en sekund på
+6. **Bevakningen av fasen läser den offentliga listan.** Röstsidan kontrollerar sedan
+   uppgift 14 fasen när fliken blir synlig och med jämna mellanrum, så att enheten
+   raderar sina uppgifter vid stängningen (spec 3.1 punkt 4). Bevakningen delar dock
+   sessionsruttens gräns på 60 per minut och IP-adress, så ungefär 30 synliga flikar
+   bakom samma adress fyller den, och då får en annan väljare där 429. Fasen är inte
+   hemlig. Lägg den i den offentliga listan över omröstningar och låt bevakningen läsa
+   den där i stället för i väljarens session. Listan väljer i dag omröstningar på tid
+   och inte på fas. Se till att bevakningen ändå ser en omröstning som stängts före
+   sin tid.
+7. **Mål:** en riksdagsvalsedel med 26 alternativ verifieras på under en sekund på
    servern och krypteras på under en sekund i Chromium. Mät också hur lång tid
    valideringen före stängningen tar för 100 röster, och skriv in siffran. I dag är det
    cirka 39 s per väljare med tre valsedlar, alltså ungefär en timme för 100 väljare.
