@@ -17,7 +17,14 @@ import { splitDerSequences } from './bankid/der-reader'
  * ingenstans namnet, så att en databasdump utan pepparn inte ska avslöja vem
  * som röstat. En kedja i klartext hade gjort varje liggande kuvert till en
  * namngiven rad, och dumpen till en lista över vilka som röstat. Krypterad och
- * utfylld till en fast storlek avslöjar dumpen inte mer än i dag.
+ * utfylld till en fast storlek avslöjar kedjan inte mer än i dag.
+ *
+ * DET GÄLLER KEDJAN, INTE HELA RADEN. Underskriften i bankid_signature lagras
+ * som den är, och med riktig BankID följer dess längd lövets nyckeltyp, som
+ * kan skilja sig mellan bankerna och alltså peka ut vem som utfärdat
+ * certifikatet. Och BankID:s svar är en XMLDSig med kedjan inbäddad: en adapter
+ * som lagrade den som den är hade lagt namnen i klartext bredvid kedjan. Båda
+ * står i src/lib/known-limitations.ts.
  *
  * VARFÖR DEN FYLLS UT (granskningen av uppgift 14f, V1). AES-GCM bevarar
  * längden: chiffret är exakt lika långt som klartexten. Före fixrundan var
@@ -32,10 +39,12 @@ import { splitDerSequences } from './bankid/der-reader'
  *
  * NYCKELN härleds ur IDENTITY_PEPPER med HKDF-SHA256 och en egen domänsträng.
  * Pepparn är redan den hemlighet som skyddar röstlängden och som inte finns i
- * databasen, så nyckeln följer inte med en dump. Domänsträngen gör att nyckeln
- * aldrig blir densamma som något annat pepparn används till: identitetshashen
- * är scrypt med pepparn som salt, och ingen av de två kan räknas fram ur den
- * andra.
+ * databasen, så nyckeln följer inte med en dump. I Azure ligger pepparn i Key
+ * Vault, och appen får den som miljövariabel (infra/azure/app.bicep), så den
+ * som får läsa valvet eller tar sig in i appen har den. Domänsträngen gör att
+ * nyckeln aldrig blir densamma som något annat pepparn används till:
+ * identitetshashen är scrypt med pepparn som salt, och ingen av de två kan
+ * räknas fram ur den andra.
  *
  * AES-256-GCM med en slumpad nonce per kuvert. Samma kedja krypterad två
  * gånger blir två olika texter, så att en väljare som röstar om inte går att
@@ -54,7 +63,9 @@ import { splitDerSequences } from './bankid/der-reader'
  * utan att behöva räkna fram en enda hash. Det är mer än röstlängden ger den
  * som har pepparn, som bara kan pröva ett personnummer i taget och aldrig får
  * namnet. Kedjan raderas med raden vid skalningen, så efter stängningen finns
- * ingenting kvar att öppna. Det står som begränsningen
+ * ingenting kvar att öppna i den levande databasen. En säkerhetskopia från före
+ * stängningen har kedjorna kvar, och pepparn, som distributionen inte byter,
+ * öppnar dem också där. Det står som begränsningen
  * `pepper-holder-reads-voter-names` i src/lib/known-limitations.ts, och dess
  * markör är raden i `chainKey` som härleder nyckeln ur pepparn.
  */

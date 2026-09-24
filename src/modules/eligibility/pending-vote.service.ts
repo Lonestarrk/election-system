@@ -207,10 +207,10 @@ export async function castEncryptedBallot(
    *
    * Signaturen är bara värd vad nyckeln bakom den är värd, och nyckeln är
    * bara värd något om BankID står för den. Kedjan ska därför gå från lövet
-   * genom en mellannivå med CA-rätt till en betrodd rot, lövet ska få användas
-   * till underskrifter och ha gällt nu, när BankID just svarade. Först då
-   * lämnas lövets nyckel ut, och den är den enda signaturen prövas mot. Se
-   * `verifyCertificateChain` för varje kontroll.
+   * genom en till tre mellannivåer med CA-rätt till en betrodd rot, lövet ska
+   * få användas till underskrifter, och alla ska ha gällt nu, när BankID just
+   * svarade. Först då lämnas lövets nyckel ut, och den är den enda signaturen
+   * prövas mot. Se `verifyCertificateChain` för varje kontroll.
    *
    * Rötterna läses ur konfigurationen. Går de inte att fastställa kastar
    * `trustedBankIdRoots`, och rösten läggs inte, i stället för att prövas mot
@@ -289,10 +289,10 @@ export async function castEncryptedBallot(
    * KEDJAN LAGRAS, KRYPTERAD OCH BUNDEN TILL RADEN.
    *
    * Valideringen före stängningen prövar kedjan en gång till, och det är den
-   * prövningen som stoppar den som skriver direkt i databasen, eftersom den
-   * aldrig passerar läggningen. Nyckeln för sig räckte inte: den kunde bytas
-   * mot en egen. Kedjan bär personnummer och namn i klartext och krypteras
-   * därför, se `sealed-chain.ts`.
+   * prövningen som, med riktig BankID, stoppar den som skriver direkt i
+   * röstlängden, eftersom den aldrig passerar läggningen. Nyckeln för sig
+   * räckte inte: den kunde bytas mot en egen. Kedjan bär personnummer och namn
+   * i klartext och krypteras därför, se `sealed-chain.ts`.
    */
   const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })
 

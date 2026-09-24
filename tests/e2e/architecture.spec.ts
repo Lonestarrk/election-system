@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { DatabaseState } from '../../src/app/api/demo/database-state/route'
 import { MOMENTS } from '../../src/app/architecture/timeline/moments'
+import { vaultClaimProblems } from '../vault-claims'
 import { expect, test } from './fixtures'
 
 /**
@@ -327,6 +328,41 @@ async function opacities(page: Page, selector: string): Promise<number[]> {
   )
 }
 
+/**
+ * Förtroendepersonernas nycklar som syns och ligger i eller intill valvet, med
+ * sin plats. Tomt när ingen nyckel är i närheten. Marginalen gör att också en
+ * nyckel som snuddar vid valvet räknas.
+ */
+async function keysNearTheVault(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const body = document.querySelector('.tl-scene [data-vault] .tl-vault-body')
+    if (!body) return ['valvet saknas i scenen']
+    const vault = body.getBoundingClientRect()
+    const margin = 8
+
+    const visible = (element: Element) => {
+      let opacity = 1
+      for (let node: Element | null = element; node; node = node.parentElement) {
+        opacity *= Number(getComputedStyle(node).opacity)
+        if (node.classList.contains('tl-scene')) break
+      }
+      return opacity > 0.01
+    }
+
+    return [...document.querySelectorAll('.tl-scene .tl-key')]
+      .filter(visible)
+      .map((key) => key.getBoundingClientRect())
+      .filter(
+        (key) =>
+          key.left < vault.right + margin &&
+          key.right > vault.left - margin &&
+          key.top < vault.bottom + margin &&
+          key.bottom > vault.top - margin,
+      )
+      .map((key) => `nyckel vid ${Math.round(key.left)},${Math.round(key.top)}`)
+  })
+}
+
 /** Animationerna i scenen, utan övergångarna på sidans knappar. */
 async function sceneAnimationTimes(page: Page): Promise<number[]> {
   return page.evaluate(() => {
@@ -371,6 +407,16 @@ test.describe('tidslinjen', () => {
       await expect(text).toContainText(moment.text)
       await expect(text).toContainText(`Moment ${moment.number} av ${MOMENTS.length}`)
       await expect(timeline.locator('[aria-current="step"]')).toHaveCount(1)
+
+      // Anteckningen om valvet står i samma levande region som texten, så att
+      // en skärmläsare får den, och bara i de moment som har en.
+      const note = text.locator('.tl-vault-note')
+      if (moment.vault) {
+        await expect(note).toHaveCount(1)
+        await expect(note).toContainText(moment.vault.text)
+      } else {
+        await expect(note).toHaveCount(0)
+      }
     }
 
     expect(problems).toEqual([])
@@ -448,6 +494,7 @@ test.describe('tidslinjen', () => {
     const timeline = timelineOf(page)
 
     for (const [label, check] of [
+      ['Du skriver under', 'vault'],
       ['Namnen tas bort', 'anonymous'],
       ['Summan öppnas', 'result'],
     ] as const) {
@@ -466,7 +513,11 @@ test.describe('tidslinjen', () => {
       expect(await sceneAnimationTimes(page), label).toEqual([])
       expect(names, label).toEqual(['none'])
 
-      if (check === 'anonymous') {
+      if (check === 'vault') {
+        // Slutläget: valvet lyser, och intyget är inlåst i det yttre kuvertet.
+        expect(await opacities(page, '[data-vault] .tl-vault-body')).toEqual([1])
+        expect(await opacities(page, '.tl-seal')).toEqual([1])
+      } else if (check === 'anonymous') {
         // Slutläget: fem kuvert i urnan utan namn, och ingenting pekar ut ditt.
         expect(await opacities(page, '[data-anonymous]')).toEqual([1, 1, 1, 1, 1])
         expect((await opacities(page, '[data-yours]')).every((value) => value === 0)).toBe(true)
@@ -566,6 +617,73 @@ test.describe('tidslinjen', () => {
       readable: 0,
     })
     expect(await state(1600), 'när låset gått upp').toEqual({ lit: 2, readable: 3 })
+  })
+
+  test('valvet lyser bara där det används, och nyckelns delar kommer aldrig nära det', async ({
+    page,
+  }) => {
+    /**
+     * Uppgift 11g. Valvet får aldrig se ut att hålla förtroendepersonernas
+     * nycklar: ingen nyckel ritas i det, och ingen nyckel passerar det, inte
+     * heller mitt i en animation. Och valvet får inte se ut att ta bort
+     * kopplingen: i moment 9, när namnen tas bort, står det nedtonat och
+     * stilla, liksom i moment 11, när summan öppnas utan det.
+     */
+    await page.goto('/architecture')
+    const timeline = timelineOf(page)
+
+    for (const moment of MOMENTS) {
+      await timeline
+        .getByRole('button', { name: `${moment.number} ${moment.label}`, exact: true })
+        .click()
+      const label = `moment ${moment.number}`
+      const vault = page.locator('.tl-scene [data-vault]')
+      const lit = moment.vault?.inScene === true
+
+      await expect(vault, label).toHaveCount(1)
+      expect(await vault.evaluate((zone) => zone.classList.contains('tl-dimmed')), label).toBe(!lit)
+      expect(await page.locator('.tl-scene [data-vault] .tl-key').count(), label).toBe(0)
+      if (!lit) {
+        // Ingenting i valvet rör sig när momentet inte använder det.
+        expect(await page.locator('.tl-scene [data-vault] .tl-a').count(), label).toBe(0)
+      }
+
+      for (const time of [0, 300, 600, 900, 1200, 1600, 2400]) {
+        await freezeAnimationsAt(page, time)
+        expect(await keysNearTheVault(page), `${label}, ${time} ms`).toEqual([])
+      }
+    }
+  })
+
+  test('huvudsidans text låter aldrig valvet hålla nyckelns delar eller ta bort kopplingen', async ({
+    page,
+  }) => {
+    /**
+     * Samma regler som tests/unit/timeline-moments.test.ts prövar mot momenten,
+     * här mot sidan som den renderas, med förklaringen ovanför tidslinjen och
+     * svagheterna under den, i varje moment.
+     */
+    await page.goto('/architecture')
+    const timeline = timelineOf(page)
+
+    for (const moment of MOMENTS) {
+      await timeline
+        .getByRole('button', { name: `${moment.number} ${moment.label}`, exact: true })
+        .click()
+      const lines = await page.evaluate(() =>
+        [...document.querySelectorAll('main section')]
+          .filter(
+            (section) =>
+              !['livevy', 'voters-db', 'votes-db', 'folj-en-rost'].includes(
+                section.getAttribute('aria-labelledby') ?? '',
+              ),
+          )
+          .flatMap((section) => (section as HTMLElement).innerText.split('\n')),
+      )
+
+      expect(lines.some((line) => /valv/i.test(line)), `moment ${moment.number}`).toBe(true)
+      expect(lines.flatMap((line) => vaultClaimProblems(line)), `moment ${moment.number}`).toEqual([])
+    }
   })
 
   test('tidslinjen hämtar ingenting', async ({ page }) => {

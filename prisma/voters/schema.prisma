@@ -373,7 +373,7 @@ model PendingVote {
   /// Väljarens egen signatur över kuvertet, från BankID /sign.
   bankIdSignature String @map("bankid_signature")
 
-  /// BankID-certifikatkedjan bakom signaturen, löv och mellannivå, KRYPTERAD.
+  /// BankID-certifikatkedjan bakom signaturen, löv och mellannivåer, KRYPTERAD.
   ///
   /// VARFÖR KEDJAN OCH INTE BARA NYCKELN (uppgift 14f). Fram till nu lagrades
   /// bara den publika nyckeln, och valideringen före stängningen prövade

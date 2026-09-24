@@ -5,10 +5,12 @@ import { STATUS_PATH } from './shared'
  * Från huvudsidans liknelse till tekniken.
  *
  * Huvudsidan förklarar modellen utan ett enda fackord, och tidslinjen visar
- * den med kuvert, ett lås och två urnor. Här står vad var och en av de sakerna
- * är i tekniken, så att den som läst huvudsidan kan hitta vidare. Allt här är
- * design enligt docs/spec/2026-09-22-dubbla-kuvert.md; vad som är byggt står
- * på Utvecklingsstatus.
+ * den med kuvert, ett lås, två urnor och, sedan uppgift 11g, valvet i Azure.
+ * Här står vad var och en av de sakerna är i tekniken, så att den som läst
+ * huvudsidan kan hitta vidare. Allt här är design enligt
+ * docs/spec/2026-09-22-dubbla-kuvert.md; vad som är byggt står på
+ * Utvecklingsstatus. Raderna om valvet pekar vidare till Hemligheterna i Azure,
+ * där påståendena om mallarna bär markörer.
  */
 const ROWS: Array<{ metaphor: string; technology: string }> = [
   {
@@ -31,6 +33,13 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
     technology:
       'En rad i pending_vote i röstlängden, voters_db: väljarens id, chiffret, chifferhashen, ' +
       'räknaren, BankID-signaturen och certifikatkedjan bakom den, krypterad (spec 5).',
+  },
+  {
+    metaphor: 'Märket i hörnet, ditt intyg inlåst',
+    technology:
+      'Certifikatkedjan från BankID, krypterad med AES-256-GCM under en nyckel som HKDF härleder ur ' +
+      'IDENTITY_PEPPER, med väljarens och valsedelns id som autentiserad data och utfylld till en ' +
+      'fast storlek. Den raderas med raden vid skalningen (spec 4.6 punkt 3).',
   },
   {
     metaphor: 'Underskriften',
@@ -98,6 +107,24 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
       'Backuper, läsreplikor, WAL-loggen och BankID:s kopia av det väljaren signerade. Ingen av ' +
       'dem omfattas av raderingen (spec 10).',
   },
+  {
+    metaphor: 'Valvet',
+    technology:
+      'Azure Key Vault, i uppsättningen under infra/azure. Vad som ligger där, vem som kommer åt det ' +
+      'och vad det inte skyddar mot står under Hemligheterna i Azure nedan.',
+  },
+  {
+    metaphor: 'Hemligheten som gör fingeravtryck',
+    technology:
+      'Pepparn, IDENTITY_PEPPER. Fingeravtrycket är identitetshashen, och personnumret i lövet ' +
+      'hashas med samma peppar som röstlängden när certifikatet knyts till väljaren (spec 4.6 punkt 2).',
+  },
+  {
+    metaphor: 'Urnornas var sin nyckel',
+    technology:
+      'Databasadresserna i valvet, med en egen roll för var och en av databaserna. Se Hemligheterna ' +
+      'i Azure nedan.',
+  },
 ]
 
 export function FromMetaphorToTechnology() {
@@ -105,9 +132,9 @@ export function FromMetaphorToTechnology() {
     <section className="card" aria-labelledby="liknelsen">
       <h2 id="liknelsen">Från liknelsen till tekniken</h2>
       <p className="muted small">
-        <Link href="/architecture">Huvudsidan</Link> förklarar modellen med kuvert, ett lås och två
-        urnor. Så här heter sakerna i tekniken. Allt i tabellen är design; vad som är byggt står på{' '}
-        <Link href={STATUS_PATH}>Utvecklingsstatus</Link>.
+        <Link href="/architecture">Huvudsidan</Link> förklarar modellen med kuvert, ett lås, två
+        urnor och ett valv. Så här heter sakerna i tekniken. Allt i tabellen är design; vad som är
+        byggt står på <Link href={STATUS_PATH}>Utvecklingsstatus</Link>.
       </p>
 
       <div className="table-wrap" style={{ marginTop: '1rem' }}>

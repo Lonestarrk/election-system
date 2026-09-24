@@ -51,6 +51,7 @@ export default function ArchitecturePage() {
           copies={link}
           bankIdOrder={limitation('bankid-order-carries-link')}
           removal={limitation('operator-can-remove-or-restore-envelope')}
+          pepperHolder={limitation('pepper-holder-reads-voter-names')}
           demoIssuer={limitation('mock-issues-certificates-in-demo')}
           dealer={limitation('trusted-dealer')}
         />

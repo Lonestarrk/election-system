@@ -112,17 +112,21 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * Valideringen prövar nu varje kedja mot BankID:s rot och varje löv mot
    * väljarens identitet, och sedan fixrunda 1 flyttar stängningen exakt de
    * kuvert som validerats. Med riktig BankID kan den som bara kan skriva i
-   * databasen därför inte längre lägga in en röst för någon som inte skrivit
-   * under. De fyra första posterna nedan är det som kedjan inte ger, och den
-   * femte är priset för att den lagras.
+   * röstlängden därför inte längre lägga in en röst för någon som inte skrivit
+   * under. Den som kan skriva i röstdatabasen kan än så länge byta ut ett
+   * chiffer (spec 4.6, förbehåll 4). De fyra första posterna nedan är det som
+   * kedjan inte ger, och den femte är priset för att den lagras.
    */
   {
     id: 'operator-can-remove-or-restore-envelope',
     title: 'Den som driver systemet kan ta bort ett kuvert eller lägga tillbaka en tidigare röst',
     why:
       'Med riktig BankID prövas varje underskrift mot BankID:s rot och mot väljarens identitet, och ' +
-      'stängningen flyttar bara de kuvert som prövats, så den som kan skriva i databasen kan inte ' +
-      'längre förfalska en ny. I demon kan den som driver systemet fortfarande det, eftersom ' +
+      'stängningen flyttar bara de kuvert som prövats, så den som kan skriva i röstlängden kan inte ' +
+      'längre förfalska en ny. Det gäller röstlängden. Den som kan skriva i röstdatabasen kan än så ' +
+      'länge byta ut ett chiffer: före infogningen, med en rad som bär ett äkta kuverts hash men ett ' +
+      'annat chiffer och som infogningen hoppar över, eller efter stängningen, när ingenting ' +
+      'kontrollerar urnan. I demon kan den som driver systemet fortfarande förfalska, eftersom ' +
       'attrappen utfärdar certifikaten själv. Men en äkta underskrift går att ta bort, och ' +
       'en väljares tidigare äkta kuvert går att lägga tillbaka i stället för hennes senaste. ' +
       'Räknaren som visar vilket kuvert som är det senaste lagras i samma databas, och den som ' +
@@ -198,12 +202,20 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'innehållet som de är. Men att läsa ut kedjan, signaturvärdet och den signerade texten ur ' +
       'XML-signaturen, och att pröva XML-signaturen själv, är inte byggt och kan inte provas utan ' +
       'BankID:s testmiljö. Tills adaptern finns är attrappen den enda implementationen, och ingen ' +
-      'del av systemet har prövats mot ett riktigt BankID-svar.',
-    // Attrappen är den enda implementationen av gränssnittet.
-    stillTrueIf: {
-      file: 'src/modules/eligibility/bankid/index.ts',
-      contains: 'export const bankIdService: IBankIdService = new MockBankIdService()',
-    },
+      'del av systemet har prövats mot ett riktigt BankID-svar. Adaptern får inte heller lagra ' +
+      'BankID:s signature som den är. Eftersom kedjan är inbäddad bär den lövet, med namn och ' +
+      'personnummer i klartext, och i bankid_signature bredvid kuvertet hade den gjort varje ' +
+      'liggande kuvert till en namngiven rad, också för den som saknar pepparn. Den ska förseglas ' +
+      'som kedjan.',
+    stillTrueIf: [
+      // Attrappen är den enda implementationen av gränssnittet.
+      {
+        file: 'src/modules/eligibility/bankid/index.ts',
+        contains: 'export const bankIdService: IBankIdService = new MockBankIdService()',
+      },
+      // Underskriften lagras som den kommer. Med en adapter som förseglar den ändras raden.
+      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'bankIdSignature: envelope.signature,' },
+    ],
   },
   {
     id: 'pepper-holder-reads-voter-names',
@@ -213,20 +225,29 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'krypterat med en nyckel som härleds ur IDENTITY_PEPPER och utfyllt till en fast längd, så ' +
       'att inte heller längden säger något om namnet eller banken. Nyckeln måste finnas hos ' +
       'servern, eftersom valideringen före stängningen öppnar varje kedja. En databasdump utan ' +
-      'pepparn avslöjar därför ingenting nytt, men den som har både databasen och pepparn öppnar ' +
-      'varje kedja och får namn och personnummer för alla som har röstat och ännu inte fått sitt ' +
-      'kuvert skalat, utan en enda hashning. Det är mer än röstlängden ger i dag: identitetshashen ' +
-      'låter den som har pepparn pröva ett personnummer i taget, och namnen finns ingen annanstans ' +
-      'i databasen. Det gäller också den som ska granska underskrifterna: för att pröva kedjorna ' +
-      'mot BankID:s rot behöver granskaren pepparn, och får då också veta vem som röstat. Pepparn ' +
-      'ligger i samma miljö som applikationen, så den som tagit sig in i servern har ofta båda. ' +
-      'Kedjan raderas med raden vid skalningen.',
-    // Kedjans nyckel härleds ur pepparn. Kom den i stället från något som
-    // servern inte bär, till exempel förtroendemännens andelar, ändrades raden.
-    stillTrueIf: {
-      file: 'src/modules/eligibility/sealed-chain.ts',
-      contains: "hkdfSync('sha256', env.identityPepper,",
-    },
+      'pepparn avslöjar därför ingenting nytt om kedjan. Underskriften bredvid den lagras däremot ' +
+      'som den är, och med riktig BankID följer dess längd lövets nyckeltyp, som kan skilja sig ' +
+      'mellan bankerna och alltså peka ut vem som utfärdat certifikatet. Den som har både databasen ' +
+      'och pepparn öppnar varje kedja och får namn och personnummer för alla som har röstat och ' +
+      'ännu inte fått sitt kuvert skalat, utan en enda hashning. Det är mer än röstlängden ger i ' +
+      'dag: identitetshashen låter den som har pepparn pröva ett personnummer i taget, och namnen ' +
+      'finns ingen annanstans i databasen. Det gäller också den som ska granska underskrifterna: ' +
+      'för att pröva kedjorna mot BankID:s rot behöver granskaren pepparn, och får då också veta vem ' +
+      'som röstat. I Azure ligger pepparn i Key Vault, och den som får läsa valvet får den. Appen ' +
+      'hämtar den när containern startar och har den i minnet så länge den kör, så den som tagit ' +
+      'sig in i appen har den också. Kedjan raderas med raden vid skalningen, men en säkerhetskopia ' +
+      'från före stängningen har den kvar, och pepparn, som distributionen inte byter, öppnar den ' +
+      'också där.',
+    stillTrueIf: [
+      // Kedjans nyckel härleds ur pepparn. Kom den i stället från något som
+      // servern inte bär, till exempel förtroendemännens andelar, ändrades raden.
+      { file: 'src/modules/eligibility/sealed-chain.ts', contains: "hkdfSync('sha256', env.identityPepper," },
+      // Underskriften lagras som den är, utan försegling.
+      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'bankIdSignature: envelope.signature,' },
+      // I Azure kommer pepparn ur valvet och blir en miljövariabel i appen.
+      // Stannade den i en HSM, som räknade åt appen, ändrades raden.
+      { file: 'infra/azure/app.bicep', contains: "{ name: 'IDENTITY_PEPPER', secretRef: 'identity-pepper' }" },
+    ],
   },
   {
     id: 'client-code-from-server',

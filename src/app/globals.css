@@ -24,6 +24,10 @@
   --danger: #b3261e;
   --danger-soft: #fdeceb;
 
+  /* Valvet med systemets hemligheter, i tidslinjen och dess förklaring. */
+  --vault: #6a4bbf;
+  --vault-soft: #f0ebfb;
+
   --radius: 10px;
   --radius-lg: 16px;
   --shadow: 0 1px 2px rgba(20, 24, 31, 0.05), 0 8px 24px rgba(20, 24, 31, 0.06);
@@ -54,6 +58,9 @@
     --warning-soft: #2a1f11;
     --danger: #f2867e;
     --danger-soft: #2b1514;
+
+    --vault: #b49df2;
+    --vault-soft: #221c34;
 
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
   }
@@ -1021,6 +1028,33 @@ th {
   margin-bottom: 0;
 }
 
+/*
+ * Vad valvet gör i momentet. Samma figur som i scenen, i valvets färg, så att
+ * läsaren kopplar ihop anteckningen med det som lyser i bilden.
+ */
+.tl-vault-note {
+  display: grid;
+  grid-template-columns: 2.1rem 1fr;
+  gap: 0.65rem;
+  align-items: start;
+  margin-top: 0.85rem;
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid var(--vault);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--vault-soft);
+  font-size: 0.93rem;
+}
+
+.tl-vault-note p {
+  margin: 0;
+}
+
+.tl-vault-note .tl-legend-icon svg {
+  display: block;
+  width: 2.1rem;
+  height: auto;
+}
+
 /* Under scenen, så att knapparna står still hur lång texten än är. */
 .tl-nav {
   justify-content: center;
@@ -1338,6 +1372,61 @@ th {
   font-weight: 700;
 }
 
+/* Valvet och dess hemligheter. En asterisk, som lösenord visas, aldrig en nyckel. */
+.tl-vault-body {
+  fill: var(--surface);
+  stroke: var(--vault);
+  stroke-width: 1.8;
+}
+
+.tl-vault-door {
+  fill: var(--vault-soft);
+  stroke: var(--vault);
+  stroke-width: 1.1;
+}
+
+.tl-vault-foot,
+.tl-vault-hinge {
+  fill: var(--vault);
+}
+
+.tl-vault-dial {
+  fill: var(--surface);
+  stroke: var(--vault);
+  stroke-width: 1.4;
+}
+
+.tl-vault-handle {
+  stroke: var(--vault);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.tl-secret {
+  fill: none;
+  stroke: var(--vault);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+
+.tl-secret-badge circle {
+  fill: var(--vault);
+}
+
+.tl-secret-badge path {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+}
+
+/* Intyget från BankID, inlåst i det yttre kuvertet med valvets hemlighet. */
+.tl-seal {
+  fill: var(--vault);
+  stroke: var(--surface);
+  stroke-width: 0.7;
+}
+
 /*
  * Vilolägena. Det här är momentets slutläge, och det gäller alltid. Det som
  * försvinner under ett moment har opacitet 0 i vila, så att det inte heller
@@ -1350,14 +1439,22 @@ th {
 .tl-vanish,
 .tl-leave,
 .tl-away,
-.tl-sweep {
+.tl-sweep,
+.tl-emerge {
   opacity: 0;
 }
 
 .tl-move,
 .tl-pop,
-.tl-grow {
+.tl-grow,
+.tl-turn,
+.tl-emerge {
   transform-box: fill-box;
+}
+
+.tl-turn,
+.tl-emerge {
+  transform-origin: center;
 }
 
 .tl-move {
@@ -1424,6 +1521,15 @@ th {
 
   .tl-scene:not(.tl-still) .tl-draw {
     animation-name: tl-draw;
+    animation-timing-function: ease-out;
+  }
+
+  .tl-scene:not(.tl-still) .tl-turn {
+    animation-name: tl-turn;
+  }
+
+  .tl-scene:not(.tl-still) .tl-emerge {
+    animation-name: tl-emerge;
     animation-timing-function: ease-out;
   }
 
@@ -1549,6 +1655,26 @@ th {
 @keyframes tl-draw {
   from {
     stroke-dashoffset: 1;
+  }
+}
+
+@keyframes tl-turn {
+  from {
+    transform: rotate(-150deg);
+  }
+}
+
+@keyframes tl-emerge {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.2);
   }
 }
 

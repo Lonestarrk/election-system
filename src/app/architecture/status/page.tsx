@@ -1,4 +1,5 @@
 import { ArchitectureNav } from '../sections/ArchitectureNav'
+import { AzureStatus } from '../sections/AzureStatus'
 import { OldFlow } from '../sections/OldFlow'
 import { PhasesToday } from '../sections/PhasesToday'
 import { Remaining } from '../sections/Remaining'
@@ -8,7 +9,8 @@ import { StatusOverview } from '../sections/StatusOverview'
 
 /**
  * Utvecklingsstatus: vad som är byggt av kuvertmodellen och vad som inte är
- * det, vad det gamla flödet fortfarande gör och vad som återstår.
+ * det, vad det gamla flödet fortfarande gör, vad som återstår och, sedan
+ * uppgift 11g, vad som finns av driftsättningen i Azure.
  *
  * VARJE PÅSTÅENDE HÄR OM KODEN LÄSES UR ../code-facts.ts OCH BÄR MARKÖRER.
  * Ändras koden så att ett påstående slutar stämma går
@@ -50,6 +52,7 @@ export default function StatusPage() {
         <Remaining
           fixable={[limitations.bankIdOrder, limitations.revocation, limitations.xmlAdapter]}
         />
+        <AzureStatus />
       </div>
     </main>
   )

@@ -9,17 +9,19 @@ import { LimitationsList } from '../sections/LimitationsList'
 import { Metadata } from '../sections/Metadata'
 import { Phases } from '../sections/Phases'
 import { Review } from '../sections/Review'
-import { pageLimitations, STATUS_PATH } from '../sections/shared'
+import { Secrets } from '../sections/Secrets'
+import { limitation, pageLimitations, STATUS_PATH } from '../sections/shared'
 import { WhatItDoesNotGive } from '../sections/WhatItDoesNotGive'
 
 /**
  * Tekniska detaljer.
  *
  * Allt det tekniska som huvudsidan inte tar upp: kuverten i databaserna,
- * faserna, vad som publiceras, vad signaturen skyddar mot och inte,
- * databasgränsen med frågan "vem röstade på vad", metadatariskerna och hela
- * listan över kända begränsningar. Sidan beskriver designen. Vad som är byggt
- * står på Utvecklingsstatus.
+ * hemligheterna i Azure och vad valvet inte skyddar mot, faserna, vad som
+ * publiceras, vad signaturen skyddar mot och inte, databasgränsen med frågan
+ * "vem röstade på vad", metadatariskerna och hela listan över kända
+ * begränsningar. Sidan beskriver designen. Vad som är byggt står på
+ * Utvecklingsstatus.
  *
  * Sidan ska kunna läsas av någon som misstror systemet. Den redovisar därför
  * också vad som INTE är löst. En arkitektursida som bara listar styrkor är
@@ -68,6 +70,10 @@ export default function TechnicalPage() {
 
         <EnvelopeModel />
         <FromMetaphorToTechnology />
+        <Secrets
+          limitations={limitations}
+          municipality={limitation('municipality-beside-identity-hash')}
+        />
         <BeforeAndAfterClose />
         <Phases />
         <WhatItDoesNotGive limitations={limitations} />

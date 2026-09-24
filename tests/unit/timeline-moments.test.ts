@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MOMENTS } from '@/app/architecture/timeline/moments'
+import { vaultClaimProblems } from '../vault-claims'
 
 /**
  * TIDSLINJENS MOMENT.
@@ -200,6 +201,168 @@ describe('liknelsen säger det den måste säga', () => {
     // räkna om utifrån, utan vilar på kontrollen före stängningen.
     expect(moment('Resultatet').text).toMatch(/kontrollera att summan öppnades rätt/)
     expect(moment('Resultatet').text).toMatch(/går inte att räkna om utifrån/)
+  })
+})
+
+describe('valvet i tidslinjen', () => {
+  /**
+   * Uppgift 11g. I Azure ligger systemets hemligheter i Key Vault, och pepparn
+   * där används vid inloggningen, när intyget från BankID knyts till väljaren
+   * och låses in i kuvertet, och i kontrollen före stängningen. Varje moment
+   * där valvet används säger det, och två moment säger uttryckligen vad valvet
+   * inte gör: att det inte tar bort kopplingen (9) och att det inte har någon
+   * del av nyckeln till summan (11).
+   *
+   * `inScene` avgör om valvet lyser i scenen. Scenen läser fältet och ingenting
+   * annat, så att texten och bilden inte kan gå isär.
+   */
+  const withNote = MOMENTS.filter((entry) => entry.vault !== null)
+
+  it('valvet nämns i de moment där det används, och i de två där det uttryckligen inte gör något', () => {
+    expect(withNote.map((entry) => entry.label)).toEqual([
+      'Valet förbereds',
+      'Du loggar in',
+      'Du skriver under',
+      'Du ändrar dig',
+      'Kontrollen',
+      'Namnen tas bort',
+      'Summan öppnas',
+      'Efteråt',
+    ])
+  })
+
+  it('valvet lyser i scenen bara där dess hemlighet används', () => {
+    const lit = MOMENTS.filter((entry) => entry.vault?.inScene === true).map((entry) => entry.label)
+    expect(lit).toEqual([
+      'Valet förbereds',
+      'Du loggar in',
+      'Du skriver under',
+      'Du ändrar dig',
+      'Kontrollen',
+      'Efteråt',
+    ])
+    // Där valvet inte gör något står det nedtonat, också när texten nämner det.
+    expect(moment('Namnen tas bort').vault?.inScene).toBe(false)
+    expect(moment('Summan öppnas').vault?.inScene).toBe(false)
+  })
+
+  it('varje anteckning är en till tre meningar på vardagsspråk', () => {
+    for (const entry of withNote) {
+      const text = entry.vault!.text
+      expect(text.length, `moment ${entry.number}`).toBeGreaterThan(40)
+      expect(sentences(text), `moment ${entry.number}: ${text}`).toBeGreaterThanOrEqual(1)
+      expect(sentences(text), `moment ${entry.number}: ${text}`).toBeLessThanOrEqual(3)
+      expect(text, `moment ${entry.number}`).not.toMatch(/krypt|chiff|homomorf|tröskel|hash|merkle|signatur/i)
+      // Sidan kallar det valvet. Produktnamnet står på Tekniska detaljer.
+      expect(text, `moment ${entry.number}`).not.toMatch(/Key Vault|Azure/)
+    }
+  })
+
+  it('valet förbereds: hemligheterna i valvet, och nyckelns delar inte där', () => {
+    const text = moment('Valet förbereds').vault!.text
+    expect(text).toMatch(/hemligheter förvaras i ett valv/)
+    expect(text).toMatch(/fingeravtryck/)
+    expect(text).toMatch(/Låsets nyckel finns inte i valvet, varken hel eller i delar/)
+    expect(text).toMatch(/delarna har förtroendepersonerna/)
+  })
+
+  it('inloggningen: ett fingeravtryck med hemligheten, och röstlängden har inte numret', () => {
+    const text = moment('Du loggar in').vault!.text
+    expect(text).toMatch(/fingeravtryck med en hemlighet ur valvet/)
+    expect(text).toMatch(/I röstlängden står fingeravtrycket, aldrig själva numret/)
+    // Inte att röstlängden BARA har fingeravtrycket: raden bär också
+    // folkbokföringskommunen, se begränsningen municipality-beside-identity-hash.
+    expect(text).not.toMatch(/bara fingeravtrycket/)
+  })
+
+  it('underskriften: intyget prövas och låses in med samma hemlighet', () => {
+    // Spec 4.6 punkt 2 och 3: personnumret i lövet hashas med samma peppar som
+    // röstlängden, och kedjan krypteras under en nyckel ur pepparn.
+    const text = moment('Du skriver under').vault!.text
+    expect(text).toMatch(/intyg med ditt namn och personnummer/)
+    expect(text).toMatch(/för att se att det är ditt/)
+    expect(text).toMatch(/låser sedan in intyget i det yttre kuvertet/)
+    expect(text).toMatch(/samma hemlighet ur valvet/)
+    expect(moment('Du ändrar dig').vault!.text).toMatch(/samma hemlighet ur valvet/)
+  })
+
+  it('kontrollen: hemligheten låser upp intygen, men valvet har ingen nyckel till de inre kuverten', () => {
+    const text = moment('Kontrollen').vault!.text
+    expect(text).toMatch(/låser upp intygen/)
+    expect(text).toMatch(/medan namnen finns kvar/)
+    expect(text).toMatch(/De inre kuverten förblir låsta/)
+    expect(text).toMatch(/har valvet ingen nyckel/)
+  })
+
+  it('namnen tas bort: det är raderingen och inte valvet, och en kopia öppnas fortfarande', () => {
+    const text = moment('Namnen tas bort').vault!.text
+    expect(text).toMatch(/De inlåsta intygen slängs med de yttre kuverten/)
+    expect(text).toMatch(/Det är raderingen som tar bort kopplingen ur urnan, inte valvet/)
+    expect(text).toMatch(/den visar aldrig vad någon har röstat på/)
+    expect(text).toMatch(/kopia av urnan från före stängningen låser den däremot fortfarande upp namnen/)
+    // Inte att hemligheten efteråt BARA kan visa vem som röstat: med den och
+    // röstlängden går också folkbokföringskommunen att läsa av, se begränsningen
+    // municipality-beside-identity-hash. Det som alltid gäller är att den aldrig
+    // visar vad någon röstat på.
+    expect(text).not.toMatch(/bara visa/)
+  })
+
+  it('summan öppnas: valvet har ingen del av nyckeln', () => {
+    const text = moment('Summan öppnas').vault!.text
+    expect(text).toMatch(/Valvet har ingen del av nyckeln till summan/)
+    expect(text).toMatch(/förtroendepersonernas egna lösenord/)
+    expect(text).toMatch(/inte heller i valvet/)
+  })
+
+  it('efteråt: fingeravtrycket hittar dig, och röstlängden säger inte vad', () => {
+    expect(moment('Efteråt').vault!.text).toMatch(/fingeravtrycket/)
+    expect(moment('Efteråt').vault!.text).toMatch(/inte vad/)
+  })
+})
+
+describe('valvet håller aldrig förtroendepersonernas nycklar och tar aldrig bort kopplingen', () => {
+  /**
+   * De två liknelsekraven som uppgift 11g lade till de åtta från 11f. Reglerna
+   * står i tests/vault-claims.ts och prövas här mot varje text i varje moment,
+   * och i tests/security/architecture-page.test.ts mot huvudsidans filer.
+   */
+  it('ingen text i något moment bryter mot reglerna', () => {
+    for (const entry of MOMENTS) {
+      const text = `${entry.title}. ${entry.text} ${entry.vault?.text ?? ''}`
+      expect(vaultClaimProblems(text), `moment ${entry.number}`).toEqual([])
+    }
+  })
+
+  it('ingen anteckning om valvet lovar att något blir omöjligt', () => {
+    for (const entry of MOMENTS) {
+      expect(entry.vault?.text ?? '', `moment ${entry.number}`).not.toMatch(/omöjlig|anonym/i)
+    }
+  })
+
+  it('reglerna hittar de formuleringar de finns till för', () => {
+    // Kontrasten. Utan den kunde en regel som aldrig slår till få testet ovan
+    // att passera för evigt.
+    const flagged = [
+      'Valvet förvarar förtroendepersonernas nycklar.',
+      'Nyckelns delar ligger i valvet.',
+      'Delarna av nyckeln förvaras i valvet, väl skyddade.',
+      'Tack vare valvet går kopplingen inte att återskapa.',
+      'Valvet gör kopplingen omöjlig.',
+      'Med valvet blir rösten anonym.',
+    ]
+    for (const sentence of flagged) {
+      expect(vaultClaimProblems(sentence).length, sentence).toBe(1)
+    }
+
+    const allowed = [
+      'Låsets nyckel finns inte i valvet, varken hel eller i delar: delarna har förtroendepersonerna.',
+      'Valvet har ingen del av nyckeln till summan.',
+      'Det är raderingen som tar bort kopplingen ur urnan, inte valvet.',
+      'Förtroendepersonerna lämnar var sin del av nyckeln.',
+    ]
+    for (const sentence of allowed) {
+      expect(vaultClaimProblems(sentence), sentence).toEqual([])
+    }
   })
 })
 

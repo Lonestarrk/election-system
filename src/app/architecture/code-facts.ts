@@ -26,8 +26,16 @@
  *                          filerna, och i ingen annan fil under sökvägen. För
  *                          påståenden om att något bara görs på ett ställe.
  *
- * Kataloger genomsöks efter .ts, .tsx, .sql och .prisma, så att också
- * migreringar och scheman kan granskas.
+ * Kataloger genomsöks efter .ts, .tsx, .sql, .prisma och .bicep, så att också
+ * migreringar, scheman och mallarna för Azure kan granskas.
+ *
+ * AZURE-UPPSÄTTNINGEN ÄGS AV EN ANNAN SESSION (uppgift 11g). Mallarna under
+ * infra/azure skrivs av sessionen som distribuerar till Azure, och
+ * arkitektursidan ändrar dem aldrig. Markörerna mot dem är valda ur innehåll
+ * som fanns både i den committade versionen och i arbetskopian när de
+ * skrevs, så att en pågående ändring där inte fäller dem i onödan. Ändrar den
+ * sessionen något som ett påstående bygger på går testet rött, och det är
+ * meningen: då ska påståendet skrivas om, inte markören tas bort.
  *
  * Radslut normaliseras till \n innan markörerna prövas, eftersom arbetskopian
  * på Windows har CRLF.
@@ -345,6 +353,88 @@ export const NO_WRITES_BESIDE_THE_CODE: Marker[] = [
   { nowhereIn: 'prisma', matches: /CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER/i },
   { nowhereIn: 'src', matches: /CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER/i },
   { nowhereIn: 'src', matches: /\$executeRaw|\b(?:INSERT\s+INTO|DELETE\s+FROM)\b|\bUPDATE\s+"?\w+"?\s+SET\b/i },
+]
+
+// ---------------------------------------------------------------------------
+// Markörer för hemligheterna i Azure (uppgift 11g)
+// ---------------------------------------------------------------------------
+
+/** Pepparn kommer ur valvet och blir en miljövariabel i appen. */
+const PEPPER_FROM_VAULT: Marker[] = [
+  {
+    file: 'infra/azure/app.bicep',
+    contains:
+      "{ name: 'identity-pepper', keyVaultUrl: '${keyVaultUri}secrets/identity-pepper', identity: appIdentityId }",
+  },
+  { file: 'infra/azure/app.bicep', contains: "{ name: 'IDENTITY_PEPPER', secretRef: 'identity-pepper' }" },
+]
+
+/** Båda databasadresserna kommer ur valvet och blir miljövariabler i appen. */
+const DATABASE_URLS_FROM_VAULT: Marker[] = [
+  {
+    file: 'infra/azure/app.bicep',
+    contains:
+      "{ name: 'voters-database-url', keyVaultUrl: '${keyVaultUri}secrets/voters-database-url', identity: appIdentityId }",
+  },
+  {
+    file: 'infra/azure/app.bicep',
+    contains:
+      "{ name: 'votes-database-url', keyVaultUrl: '${keyVaultUri}secrets/votes-database-url', identity: appIdentityId }",
+  },
+  { file: 'infra/azure/app.bicep', contains: "{ name: 'VOTERS_DATABASE_URL', secretRef: 'voters-database-url' }" },
+  { file: 'infra/azure/app.bicep', contains: "{ name: 'VOTES_DATABASE_URL', secretRef: 'votes-database-url' }" },
+]
+
+/** Pepparn skapas bara när distributionen inte hittar den, och skälet står bredvid. */
+const PEPPER_CREATED_ONCE: Marker[] = [
+  {
+    file: 'infra/azure/deploy.sh',
+    contains:
+      'if secret_exists identity-pepper; then echo "   identity-pepper finns redan"; else put_secret identity-pepper "$(random_hex 32)"; fi',
+  },
+  {
+    file: 'infra/azure/deploy.sh',
+    contains: '# IDENTITY_PEPPER skapas EN gång och byts aldrig: byts den matchar ingen hash i röstlängden.',
+  },
+]
+
+/**
+ * Ingen mall slår på valvets granskningslogg. Loggen kräver en
+ * diagnostikinställning, och ingen fil under infra/azure nämner en.
+ */
+const NO_VAULT_AUDIT_LOG: Marker = { nowhereIn: 'infra/azure', matches: /diagnosticSettings/i }
+
+/** Rensningsskyddet är inte påslaget i någon mall. */
+const NO_PURGE_PROTECTION: Marker = { nowhereIn: 'infra/azure', matches: /enablePurgeProtection/ }
+
+/** Valvet är av typen Standard, utan HSM. */
+const VAULT_SKU_STANDARD: Marker = {
+  file: 'infra/azure/keyvault.bicep',
+  contains: "sku: { family: 'A', name: 'standard' }",
+}
+
+/** Appens identitet får läsa hela valvet, inte enskilda hemligheter. */
+const APP_READS_WHOLE_VAULT: Marker = {
+  file: 'infra/azure/infra.bicep',
+  contains: [
+    "resource kvSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {",
+    '  name: guid(kv.id, appIdentity.id, keyVaultSecretsUserRoleId)',
+    '  scope: kv',
+    '',
+  ].join('\n'),
+}
+
+/** Inget ord för förtroendemännen eller deras lösenfraser, i mallarna och i distributionen. */
+const NO_TRUSTEE_SECRETS_IN_AZURE: Marker[] = [
+  { nowhereIn: 'infra/azure', matches: /trustee|förtroende|fortroende|passphrase|lösenfras/i },
+  { nowhereIn: 'infra/azure/deploy.sh', matches: /trustee|förtroende|fortroende|passphrase|lösenfras/i },
+]
+
+/** Demovalets andelar är krypterade med tre kända fraser, och entrypoint seedar vid varje start. */
+const DEMO_PASSPHRASES_SEEDED: Marker[] = [
+  { file: 'prisma/seed.ts', contains: "'demo-fortroendeman-ett'," },
+  { file: 'prisma/seed.ts', contains: "const existing = await votesDb.election.findFirst({ where: { name: 'Valet 2026' } })" },
+  { file: 'docker/entrypoint.sh', contains: 'npx tsx prisma/seed.ts' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -735,6 +825,419 @@ export const CURRENTLY = {
       'i klartext.',
     holdsWhile: [
       { file: 'src/modules/eligibility/identity.ts', contains: 'scryptHex(normalised, env.identityPepper)' },
+    ],
+  },
+
+  // -------------------------------------------------------------------------
+  // Hemligheterna i Azure (uppgift 11g)
+  //
+  // Påståendena på Tekniska detaljer och Utvecklingsstatus om valvet. Varje
+  // mening om vad valvet skyddar är avgränsad till var den gäller, och det
+  // valvet inte skyddar mot står lika tydligt. Se kommentaren överst om vem
+  // som äger infra/azure.
+  // -------------------------------------------------------------------------
+
+  vaultToEnvironment: {
+    text:
+      'Mallarna bär bara adresserna till hemligheterna i valvet, aldrig värdena, och distributionen ' +
+      'genererar värdena själv, så de finns varken i repot eller i imagen. Container Apps hämtar ' +
+      'dem med appens identitet och lägger dem i miljövariabler när containern startar. Appen läser ' +
+      'dem därifrån och har dem i minnet så länge den kör.',
+    holdsWhile: [
+      ...PEPPER_FROM_VAULT,
+      ...DATABASE_URLS_FROM_VAULT,
+      // Ingen hemlig variabel får ett värde direkt i mallen.
+      {
+        nowhereIn: 'infra/azure/app.bicep',
+        matches:
+          /name: '(?:IDENTITY_PEPPER|VOTERS_DATABASE_URL|VOTES_DATABASE_URL|VAPID_PUBLIC_KEY|VAPID_PRIVATE_KEY)', value:/,
+      },
+      { file: 'infra/azure/deploy.sh', contains: 'put_secret identity-pepper "$(random_hex 32)"' },
+      { file: 'infra/azure/deploy.sh', contains: 'gen_voters() { local pw; pw="$(random_hex 24)";' },
+      { file: 'src/lib/env.ts', contains: 'const value = process.env[name]' },
+    ],
+  },
+
+  vaultPepper: {
+    text:
+      'Blir IDENTITY_PEPPER i appen. Pepparn är saltet i identitetshashen, scrypt av personnumret, ' +
+      'vid inloggningen och när certifikatet bakom en underskrift knyts till väljaren. Ur den ' +
+      'härleds med HKDF nyckeln som krypterar certifikatkedjan i pending_vote, när rösten läggs, och ' +
+      'valideringen före stängningen öppnar kedjan med samma nyckel och hashar personnumret i lövet.',
+    holdsWhile: [
+      ...PEPPER_FROM_VAULT,
+      { file: 'src/modules/eligibility/identity.ts', contains: 'scryptHex(normalised, env.identityPepper)' },
+      {
+        file: 'src/modules/eligibility/voter-status.service.ts',
+        contains: 'const identityHash = await hashPersonalNumber(personalNumber)',
+      },
+      {
+        file: 'src/modules/eligibility/pending-vote.service.ts',
+        contains: 'await hashPersonalNumber(certificate.personalNumber),',
+      },
+      { file: 'src/modules/eligibility/sealed-chain.ts', contains: "hkdfSync('sha256', env.identityPepper," },
+      {
+        file: 'src/modules/eligibility/pending-vote.service.ts',
+        contains: 'const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })',
+      },
+      {
+        file: 'src/orchestration/validate-before-close.usecase.ts',
+        contains: 'const chain = openCertificateChain(vote.bankIdCertificateChain, {',
+      },
+      {
+        file: 'src/orchestration/validate-before-close.usecase.ts',
+        contains: 'hash = hashPersonalNumber(personalNumber)',
+      },
+    ],
+  },
+
+  vaultDatabaseUrls: {
+    text:
+      'Blir VOTERS_DATABASE_URL och VOTES_DATABASE_URL. Varje adress bär lösenordet för en egen ' +
+      'roll, voters_app respektive votes_app, och ingen av rollerna får ansluta till den andras ' +
+      'databas: db-init.sql tar bort rätten att ansluta från PUBLIC på båda databaserna och ger den ' +
+      'tillbaka till en roll för var och en. Lokalt och med docker-compose ansluter appen till båda ' +
+      'som samma användare.',
+    holdsWhile: [
+      ...DATABASE_URLS_FROM_VAULT,
+      { file: 'infra/azure/deploy.sh', contains: 'postgresql://voters_app:${pw}@${PG_FQDN}:5432/voters_db' },
+      { file: 'infra/azure/deploy.sh', contains: 'postgresql://votes_app:${pw}@${PG_FQDN}:5432/votes_db' },
+      { file: 'infra/azure/db-init.sql', contains: 'REVOKE CONNECT, TEMPORARY ON DATABASE voters_db FROM PUBLIC;' },
+      { file: 'infra/azure/db-init.sql', contains: 'REVOKE CONNECT, TEMPORARY ON DATABASE votes_db FROM PUBLIC;' },
+      // Början av GRANT-raderna skiljer sig mellan versionerna; slutet, vem som får vad, gör det inte.
+      { file: 'infra/azure/db-init.sql', contains: 'ON DATABASE voters_db TO voters_app;' },
+      { file: 'infra/azure/db-init.sql', contains: 'ON DATABASE votes_db TO votes_app;' },
+      // Och ingen roll får något på den andras databas.
+      {
+        nowhereIn: 'infra/azure/db-init.sql',
+        matches: /GRANT[^;]*ON DATABASE votes_db[^;]*voters_app|GRANT[^;]*ON DATABASE voters_db[^;]*votes_app/,
+      },
+      {
+        file: '.env.example',
+        contains: 'VOTERS_DATABASE_URL="postgresql://election:election@localhost:5432/voters_db?schema=public"',
+      },
+      {
+        file: '.env.example',
+        contains: 'VOTES_DATABASE_URL="postgresql://election:election@localhost:5432/votes_db?schema=public"',
+      },
+      {
+        file: 'docker-compose.yml',
+        contains: 'VOTERS_DATABASE_URL: postgresql://election:election@postgres:5432/voters_db?schema=public',
+      },
+      {
+        file: 'docker-compose.yml',
+        contains: 'VOTES_DATABASE_URL: postgresql://election:election@postgres:5432/votes_db?schema=public',
+      },
+    ],
+  },
+
+  vaultVapid: {
+    text:
+      'Blir VAPID_PUBLIC_KEY och VAPID_PRIVATE_KEY, nycklarna för pushnotiserna. Den privata ' +
+      'signerar utskicken och identifierar systemet mot push-tjänsterna.',
+    holdsWhile: [
+      {
+        file: 'infra/azure/app.bicep',
+        contains:
+          "{ name: 'vapid-public-key', keyVaultUrl: '${keyVaultUri}secrets/vapid-public-key', identity: appIdentityId }",
+      },
+      {
+        file: 'infra/azure/app.bicep',
+        contains:
+          "{ name: 'vapid-private-key', keyVaultUrl: '${keyVaultUri}secrets/vapid-private-key', identity: appIdentityId }",
+      },
+      { file: 'infra/azure/app.bicep', contains: "{ name: 'VAPID_PUBLIC_KEY', secretRef: 'vapid-public-key' }" },
+      { file: 'infra/azure/app.bicep', contains: "{ name: 'VAPID_PRIVATE_KEY', secretRef: 'vapid-private-key' }" },
+      { file: 'src/lib/env.ts', contains: 'const privateKey = process.env.VAPID_PRIVATE_KEY' },
+    ],
+  },
+
+  vaultPgAdmin: {
+    text:
+      'Postgres-administratörens lösenord. Distributionen läser det med getSecret i infra.bicep när ' +
+      'servern skapas, och db-init-jobbet får det som miljövariabel för att sätta upp rollerna. ' +
+      'Appen får det inte som miljövariabel, men jobbet läser det ur valvet med appens identitet.',
+    holdsWhile: [
+      { file: 'infra/azure/infra.bicep', contains: "adminPassword: kv.getSecret('pg-admin-password')" },
+      {
+        file: 'infra/azure/db-init-job.bicep',
+        contains:
+          "{ name: 'pg-admin-password', keyVaultUrl: '${keyVaultUri}secrets/pg-admin-password', identity: appIdentityId }",
+      },
+      { file: 'infra/azure/db-init-job.bicep', contains: "{ name: 'PGPASSWORD', secretRef: 'pg-admin-password' }" },
+      { nowhereIn: 'infra/azure/app.bicep', matches: /pg-admin-password|PGPASSWORD/ },
+    ],
+  },
+
+  vaultPgRolePasswords: {
+    text:
+      'Rollernas lösenord, desamma som i databasadresserna. db-init-jobbet sätter dem på voters_app ' +
+      'och votes_app vid varje distribution.',
+    holdsWhile: [
+      {
+        file: 'infra/azure/db-init-job.bicep',
+        contains:
+          "{ name: 'pg-voters-password', keyVaultUrl: '${keyVaultUri}secrets/pg-voters-password', identity: appIdentityId }",
+      },
+      {
+        file: 'infra/azure/db-init-job.bicep',
+        contains:
+          "{ name: 'pg-votes-password', keyVaultUrl: '${keyVaultUri}secrets/pg-votes-password', identity: appIdentityId }",
+      },
+      { file: 'infra/azure/db-init-job.bicep', contains: '-v voters_pw="$VOTERS_PW" -v votes_pw="$VOTES_PW"' },
+      { file: 'infra/azure/db-init.sql', contains: "PASSWORD :'voters_pw';" },
+      { file: 'infra/azure/db-init.sql', contains: "PASSWORD :'votes_pw';" },
+      { file: 'infra/azure/deploy.sh', contains: 'ensure_pair pg-voters-password voters-database-url gen_voters' },
+      { file: 'infra/azure/deploy.sh', contains: 'ensure_pair pg-votes-password votes-database-url gen_votes' },
+      { file: 'infra/azure/deploy.sh', contains: 'az containerapp job start --name "$JOB_NAME"' },
+    ],
+  },
+
+  vaultHoldsOnlyThese: {
+    text: 'Distributionen skriver just de här åtta hemligheterna i valvet, och mallarna läser inga andra.',
+    holdsWhile: [
+      ...PEPPER_CREATED_ONCE,
+      { file: 'infra/azure/deploy.sh', contains: 'ensure_pair vapid-public-key vapid-private-key gen_vapid' },
+      { file: 'infra/azure/deploy.sh', contains: 'ensure_pair pg-voters-password voters-database-url gen_voters' },
+      { file: 'infra/azure/deploy.sh', contains: 'ensure_pair pg-votes-password votes-database-url gen_votes' },
+      // Ingen annan hemlighet skrivs ...
+      {
+        nowhereIn: 'infra/azure/deploy.sh',
+        matches:
+          /(?:put_secret|ensure_pair) (?!(?:pg-admin-password|identity-pepper|pg-voters-password|pg-votes-password|vapid-public-key|"\$a"|"\$b") )[\w"$-]/,
+      },
+      // ... och ingen annan läses, varken som referens i en container eller med getSecret.
+      {
+        nowhereIn: 'infra/azure',
+        matches:
+          /keyVaultUrl: '\$\{keyVaultUri\}secrets\/(?!(?:identity-pepper|voters-database-url|votes-database-url|vapid-public-key|vapid-private-key|pg-admin-password|pg-voters-password|pg-votes-password)')/,
+      },
+      { nowhereIn: 'infra/azure', matches: /getSecret\('(?!pg-admin-password')/ },
+    ],
+  },
+
+  vaultSecretsCreatedOnce: {
+    text:
+      'En hemlighet skrivs bara när distributionen inte hittar den i valvet, och pepparn skapas en ' +
+      'gång: byts den stämmer ingen identitetshash i röstlängden längre, så den kan inte roteras ' +
+      'utan att röstlängden läses in på nytt.',
+    holdsWhile: PEPPER_CREATED_ONCE,
+  },
+
+  vaultAccess: {
+    text:
+      'Appens identitet får läsa hemligheterna i just det här valvet, genom rollen Key Vault ' +
+      'Secrets User, och hämta imagen ur registret, genom AcrPull. Mallarna ger den inga andra ' +
+      'roller. Rollen gäller hela valvet och inte enskilda hemligheter, så identiteten får läsa också ' +
+      'administratörens lösenord, och db-init-jobbet kör med samma identitet.',
+    holdsWhile: [
+      {
+        file: 'infra/azure/infra.bicep',
+        contains: "var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'",
+      },
+      APP_READS_WHOLE_VAULT,
+      {
+        file: 'infra/azure/infra.bicep',
+        contains: [
+          "resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {",
+          '  name: guid(acr.id, appIdentity.id, acrPullRoleId)',
+          '  scope: acr',
+          '',
+        ].join('\n'),
+      },
+      // Rolltilldelningar finns bara i infra.bicep, och där bara de två.
+      {
+        onlyIn: ['infra/azure/infra.bicep'],
+        under: 'infra/azure',
+        matches: /Microsoft\.Authorization\/roleAssignments/,
+      },
+      {
+        nowhereIn: 'infra/azure/infra.bicep',
+        matches: /(?:Microsoft\.Authorization\/roleAssignments@[\s\S]*?){3}/,
+      },
+      { file: 'infra/azure/db-init-job.bicep', contains: "userAssignedIdentities: { '${appIdentityId}': {} }" },
+    ],
+  },
+
+  vaultSettings: {
+    text:
+      'Valvet har RBAC i stället för åtkomstpolicyer, mjuk radering i 90 dagar och SKU Standard, ' +
+      'alltså ingen HSM. Rensningsskyddet är inte påslaget, så en raderad hemlighet kan rensas bort ' +
+      'för gott innan de 90 dagarna gått. Valvet nås över internet och skyddas av inloggning och ' +
+      'roller, inte av nätverket.',
+    holdsWhile: [
+      { file: 'infra/azure/keyvault.bicep', contains: 'enableRbacAuthorization: true' },
+      { file: 'infra/azure/keyvault.bicep', contains: 'enableSoftDelete: true' },
+      { file: 'infra/azure/keyvault.bicep', contains: 'softDeleteRetentionInDays: 90' },
+      VAULT_SKU_STANDARD,
+      NO_PURGE_PROTECTION,
+      { file: 'infra/azure/keyvault.bicep', contains: "publicNetworkAccess: 'Enabled'" },
+      { nowhereIn: 'infra/azure', matches: /networkAcls|privateEndpoint/i },
+    ],
+  },
+
+  vaultNoAuditLog: {
+    text:
+      'Ingen av mallarna slår på valvets granskningslogg. Utan en diagnostikinställning sparas ingen ' +
+      'logg över vem som läser en hemlighet, och Log Analytics tar bara emot containrarnas loggar.',
+    holdsWhile: [NO_VAULT_AUDIT_LOG, { file: 'infra/azure/infra.bicep', contains: "destination: 'log-analytics'" }],
+  },
+
+  azureBackups: {
+    text:
+      'Databastjänsten sparar säkerhetskopior i sju dagar. En kopia från före stängningen har ' +
+      'pending_vote kvar, med kedjorna, och pepparn i valvet öppnar dem också där, eftersom ' +
+      'distributionen inte byter den.',
+    holdsWhile: [
+      {
+        file: 'infra/azure/postgres.bicep',
+        contains: "backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }",
+      },
+      ...PEPPER_CREATED_ONCE,
+      { file: 'src/modules/eligibility/sealed-chain.ts', contains: "hkdfSync('sha256', env.identityPepper," },
+    ],
+  },
+
+  appHoldsEverything: {
+    text:
+      'Appen har pepparn och båda databasadresserna i minnet medan den kör, och den måste ha båda ' +
+      'adresserna: stängningen flyttar chiffren till votes_db och raderar kuverten i voters_db. ' +
+      'Rollerna per databas skyddar mot att en enskild adress läcker, inte mot appen.',
+    holdsWhile: [
+      ...PEPPER_FROM_VAULT,
+      ...DATABASE_URLS_FROM_VAULT,
+      { file: 'src/orchestration/close-election.usecase.ts', contains: 'await votesDb.encryptedVote.createMany({' },
+      STRIPPING_DELETES_ENVELOPES,
+    ],
+  },
+
+  azureOwner: {
+    text:
+      'Den som distribuerar behöver Owner på resursgruppen, eller Contributor och User Access ' +
+      'Administrator, eftersom infra.bicep skapar rolltilldelningar. Med den rätten kan man ge sig ' +
+      'själv läsrätt i valvet, så valvet skyddar inte mot den som driver uppsättningen.',
+    holdsWhile: [
+      {
+        file: 'infra/azure/README.md',
+        contains: 'Tjänsteprincipalen behöver **Owner** (eller Contributor + User Access Administrator) på',
+      },
+      APP_READS_WHOLE_VAULT,
+    ],
+  },
+
+  azureRunsDemo: {
+    text:
+      'Uppsättningen i Azure kör i demoläget: BankID är attrappen, som utfärdar certifikaten själv. ' +
+      'Entrypoint kör seedningen vid varje start, och den skapar demovalet, om det saknas, med ' +
+      'förtroendemännens tre kända demofraser. Den som når röstdatabasen kan då öppna andelarna med ' +
+      'dem och dekryptera varje chiffer hen kommer åt.',
+    holdsWhile: [
+      { file: 'infra/azure/README.md', contains: 'Med MockBankID är appen i demoläge' },
+      {
+        file: 'src/modules/eligibility/bankid/index.ts',
+        contains: 'export const bankIdService: IBankIdService = new MockBankIdService()',
+      },
+      ...DEMO_PASSPHRASES_SEEDED,
+      { file: 'src/lib/crypto/share-storage.ts', contains: 'function keyFor(passphrase: string, electionId: string, trusteeIndex: number): Buffer {' },
+    ],
+  },
+
+  secretsInFilesLocally: {
+    text:
+      'Lokalt läser appen hemligheterna ur .env, efter mönstret i .env.example, och med ' +
+      'docker-compose står de i klartext i docker-compose.yml.',
+    holdsWhile: [
+      { file: '.env.example', contains: 'IDENTITY_PEPPER="byt-ut-mig-detta-ar-bara-for-lokal-utveckling-0000"' },
+      { file: 'docker-compose.yml', contains: 'IDENTITY_PEPPER: byt-ut-mig-detta-ar-bara-for-lokal-utveckling-0000' },
+    ],
+  },
+
+  sharesNotInVault: {
+    text:
+      'Förtroendemännens andelar ligger i trustee_share i röstdatabasen, krypterade med AES-256-GCM ' +
+      'under en nyckel som scrypt härleder ur förtroendemannens lösenfras. Varken mallarna eller ' +
+      'distributionen nämner dem.',
+    holdsWhile: [
+      {
+        file: 'src/lib/crypto/share-storage.ts',
+        contains: "createCipheriv('aes-256-gcm', keyFor(passphrase, electionId, trusteeIndex), iv)",
+      },
+      {
+        file: 'src/lib/crypto/share-storage.ts',
+        contains: 'return scryptSync(passphrase, `trustee-share-${electionId}-${trusteeIndex}`, 32)',
+      },
+      { file: 'prisma/votes/schema.prisma', contains: 'encryptedShare String @map("encrypted_share")' },
+      ...NO_TRUSTEE_SECRETS_IN_AZURE,
+    ],
+  },
+
+  electionKeyNotStored: {
+    text:
+      'Valets privata nyckel lagras inte alls: utdelaren delar den i tre andelar när valet skapas, ' +
+      'och röstdatabasen har ingen kolumn för en privat nyckel.',
+    holdsWhile: [
+      { file: 'src/orchestration/create-election.usecase.ts', contains: 'splitSecret(keys.privateKey' },
+      { nowhereIn: 'prisma/votes/schema.prisma', matches: /private/i },
+    ],
+  },
+
+  mockIssuerInRepo: {
+    text: 'Attrappens utfärdande mellannivå är incheckad i repot, med sin privata nyckel, som testnyckel.',
+    holdsWhile: [
+      {
+        file: 'src/modules/eligibility/bankid/MockBankIdService.ts',
+        contains: "from './mock-ca/issuing-ca-test-key'",
+      },
+    ],
+  },
+
+  oldSigningKeysInDatabase: {
+    text: 'Det gamla flödets signeringsnycklar ligger i election_ballot i röstlängden, en per valsedel.',
+    holdsWhile: [
+      { file: 'prisma/voters/schema.prisma', contains: 'signingPrivateKeyPem String @map("signing_private_key_pem")' },
+      { file: 'prisma/voters/schema.prisma', contains: '@@map("election_ballot")' },
+    ],
+  },
+
+  // -------------------------------------------------------------------------
+  // Azure-uppsättningen på Utvecklingsstatus
+  // -------------------------------------------------------------------------
+
+  azureSetupBuilt: {
+    text:
+      'Azure-uppsättningen finns som Bicep i infra/azure och distribueras med deploy.sh: en Container ' +
+      'App med exakt en replika, PostgreSQL Flexible Server utan publik ändpunkt i ett eget ' +
+      'virtuellt nätverk, Key Vault för hemligheterna och en roll per databas. Imagen byggs ur git ' +
+      'archive av en commit, aldrig ur arbetskatalogen.',
+    holdsWhile: [
+      { file: 'infra/azure/app.bicep', contains: 'scale: { minReplicas: 1, maxReplicas: 1 }' },
+      { file: 'infra/azure/postgres.bicep', contains: "publicNetworkAccess: 'Disabled'" },
+      { file: 'infra/azure/postgres.bicep', contains: 'delegatedSubnetResourceId: delegatedSubnetId' },
+      { file: 'infra/azure/keyvault.bicep', contains: "resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {" },
+      { file: 'infra/azure/db-init.sql', contains: 'CREATE ROLE voters_app LOGIN' },
+      { file: 'infra/azure/db-init.sql', contains: 'CREATE ROLE votes_app LOGIN' },
+      { file: 'infra/azure/deploy.sh', contains: 'archive "$COMMIT" | tar -x -C "$WORK/src"' },
+      { file: 'infra/azure/deploy.sh', contains: 'deploy_retry app app.bicep' },
+    ],
+  },
+
+  azureNotBuilt: {
+    text:
+      'Inte byggt i Azure: granskningslogg för valvet, rensningsskydd, att pepparn stannar i en HSM ' +
+      'och att identitetshashen och kedjornas nyckel räknas där, och fler än en replika. Fler ' +
+      'repliker kräver att attrappens ordrar, hastighetsbegränsningen och antagningskön först flyttar ' +
+      'ur processminnet.',
+    holdsWhile: [
+      NO_VAULT_AUDIT_LOG,
+      NO_PURGE_PROTECTION,
+      ...PEPPER_FROM_VAULT,
+      VAULT_SKU_STANDARD,
+      { file: 'infra/azure/app.bicep', contains: 'scale: { minReplicas: 1, maxReplicas: 1 }' },
+      {
+        file: 'infra/azure/app.bicep',
+        contains: '// MockBankID:s ordrar, hastighetsbegränsningen och antagningskön ligger i',
+      },
+      { file: 'src/lib/admission-queue.ts', contains: 'const waiting: Waiter[] = []' },
     ],
   },
 } satisfies Record<string, CodeFact>

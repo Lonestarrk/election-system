@@ -19,6 +19,7 @@ import {
 } from '@/app/architecture/code-facts'
 import { MOMENTS } from '@/app/architecture/timeline/moments'
 import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
+import { vaultClaimProblems } from '../vault-claims'
 
 /**
  * ARKITEKTURSIDAN FÅR INTE PÅSTÅ NÅGOT OM KODEN SOM KODEN INTE LÄNGRE GÖR.
@@ -69,7 +70,10 @@ function sourceFilesUnder(path: string, { skipPage }: { skipPage: boolean }): st
     if (skipPage && (child === PAGE_DIRECTORY || child.startsWith(`${PAGE_DIRECTORY}/`))) return []
     if (statSync(join(ROOT, child)).isDirectory()) return sourceFilesUnder(child, { skipPage })
     // Migreringar och scheman granskas också: en trigger står i en .sql-fil.
-    return /\.(tsx?|sql|prisma)$/.test(child) ? [child] : []
+    // Bicep-filerna under infra/azure granskas sedan uppgift 11g, eftersom
+    // sidan påstår saker om Azure-uppsättningen, bland annat att ingen av
+    // mallarna slår på valvets granskningslogg.
+    return /\.(tsx?|sql|prisma|bicep)$/.test(child) ? [child] : []
   })
 }
 
@@ -166,6 +170,20 @@ function withoutComments(source: string): string {
     .replace(/(^|[^:'"`])\/\/.*$/gm, '$1')
 }
 
+/**
+ * Texten som en läsare ungefär ser, som i tests/security/known-limitations.test.ts:
+ * utan taggar, med hopfogade strängar som en sträng och med `{' '}` och
+ * radbrytningar som ett mellanslag. Meningar som står uppdelade på flera rader
+ * i källan blir då hela igen.
+ */
+function visibleText(source: string): string {
+  return source
+    .replace(/(['"])\s*\+\s*\1/g, '')
+    .replace(/\{\s*(['"])\s*\1\s*\}/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+}
+
 describe('arkitektursidans påståenden om koden', () => {
   it.each(Object.entries(CURRENTLY))('"%s" stämmer fortfarande', (id, fact) => {
     expectFactHolds(id, fact)
@@ -194,6 +212,14 @@ describe('arkitektursidans påståenden om koden', () => {
     // Utan det kunde ett mönster som inte matchar någonting alls hålla
     // fastabellen grön för varje fas, också den dag koden börjar skriva dem.
     expect(check(neverWritten('STRIPPED')).holds).toBe(false)
+
+    // Bicep-filerna granskas faktiskt när en markör letar i infra/azure. Utan
+    // det hade påståendet att ingen mall slår på valvets granskningslogg
+    // hållit också den dag en mall gör det, eftersom ingen fil lästes.
+    expect(sourceFilesUnder('infra/azure', { skipPage: true })).toEqual(
+      expect.arrayContaining(['infra/azure/keyvault.bicep', 'infra/azure/app.bicep', 'infra/azure/db-init.sql']),
+    )
+    expect(check({ nowhereIn: 'infra/azure', matches: /keyVaultUrl/ }).holds).toBe(false)
 
     // Schemamönstren håller sig inom sin modell: PendingVote har ett
     // voterStatusId, och det får inte räknas som ett fält i AuditEvent.
@@ -658,6 +684,41 @@ describe('huvudsidan talar vardagsspråk', () => {
       expect(`${moment.label} ${moment.title} ${moment.text}`, `moment ${moment.number}`).not.toMatch(
         JARGON,
       )
+    }
+  })
+
+  it.each(mainFiles)('%s låter aldrig valvet hålla nyckelns delar eller ta bort kopplingen', (file) => {
+    /**
+     * Uppgift 11g. Valvet ska aldrig se ut att hålla förtroendepersonernas
+     * nycklar, och ingenting får antyda att det är valvet som gör kopplingen
+     * omöjlig: det gör raderingen vid stängningen. Reglerna står i
+     * tests/vault-claims.ts, och de prövas här mot texten i varje fil som
+     * huvudsidan renderar, inte bara mot momenten.
+     */
+    expect(vaultClaimProblems(visibleText(withoutComments(read(file)))), file).toEqual([])
+  })
+
+  it('valvet lyser i scenen bara när momentet säger det, och scenen ritar aldrig en nyckel i det', () => {
+    /**
+     * Scenen läser valvets läge ur momentets `vault.inScene`, som
+     * tests/unit/timeline-moments.test.ts prövar, och har inget eget. Med en
+     * egen uppgift i tabellen över zoner hade bilden kunnat lysa upp valvet i
+     * moment 9, när kopplingen tas bort, eller i moment 11, när summan öppnas,
+     * utan att någon text ändrats. Valvets figurer innehåller aldrig en nyckel:
+     * nycklarna i scenen är förtroendepersonernas.
+     */
+    const scene = read('src/app/architecture/timeline/TimelineScene.tsx')
+    const zones = scene.slice(scene.indexOf('const ACTIVE'), scene.indexOf('function isActive'))
+    expect(zones).toContain('const ACTIVE')
+    expect(zones).not.toMatch(/vault/)
+    expect(scene).toMatch(/vault\?\.inScene === true/)
+
+    const vaultParts = ['function VaultZone', 'function Vault(', 'function SecretBadge', 'function SecretMark']
+    for (const name of vaultParts) {
+      const start = scene.indexOf(name)
+      expect(start, name).toBeGreaterThan(-1)
+      const end = scene.indexOf('\nfunction ', start + name.length)
+      expect(scene.slice(start, end === -1 ? undefined : end), name).not.toMatch(/<Key\b|tl-key/)
     }
   })
 

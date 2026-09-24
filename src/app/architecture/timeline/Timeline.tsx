@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { MOMENTS } from './moments'
-import { TimelineScene } from './TimelineScene'
+import { LegendIcon, TimelineScene } from './TimelineScene'
 
 /**
  * TIDSLINJEN: HELA OMRÖSTNINGEN, ETT MOMENT I TAGET.
@@ -21,7 +21,9 @@ import { TimelineScene } from './TimelineScene'
  * TILLGÄNGLIGHET
  *
  * Texten står i en aria-live-region och bär hela berättelsen. Scenen är
- * dekorativ och dold för skärmläsare. Knapparna är vanliga knappar, som går
+ * dekorativ och dold för skärmläsare. Anteckningen om valvet står i samma
+ * region, efter texten, så att den som inte ser att valvet lyser ändå får veta
+ * vad det gör. Figuren bredvid den är dold. Knapparna är vanliga knappar, som går
  * att nå med tangentbordet och får projektets fokusram. Vid
  * `prefers-reduced-motion` spelas ingen animation: scenen visar momentets
  * slutläge direkt, och knappraden rullar utan mjuk rörelse.
@@ -72,7 +74,8 @@ export function Timeline() {
       <h2 id="tidslinjen">Din röst, steg för steg</h2>
       <p className="muted small">
         Välj ett moment för att se vad som händer med din röst. Ditt kuvert är markerat fram till
-        att namnen tas bort.
+        att namnen tas bort. Valvet, där systemet förvarar sina hemligheter, lyser upp i de moment
+        där det används.
       </p>
       <p className="muted small" style={{ marginBottom: 0 }}>
         Tidslinjen visar hur valet är tänkt att fungera, och allt är inte byggt än. Vad som finns i
@@ -131,6 +134,12 @@ export function Timeline() {
           </p>
           <h3 className="tl-title">{moment.title}</h3>
           <p className="tl-text">{moment.text}</p>
+          {moment.vault && (
+            <div className="tl-vault-note">
+              <LegendIcon kind="vault" />
+              <p>{moment.vault.text}</p>
+            </div>
+          )}
         </div>
       </div>
     </section>

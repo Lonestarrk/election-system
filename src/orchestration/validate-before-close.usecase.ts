@@ -32,8 +32,15 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  *                  angripare med skrivrättighet ordnar det lätt — det räcker
  *                  att peka på en verklig, röstberättigad väljare och en
  *                  valsedel som finns.
- *   Kryptografiska säger att raden bär ett bevis bara väljaren kunde
- *                  framställa. Ingen med databasåtkomst kan förfalska dem.
+ *   Kryptografiska prövar det som skrivrätt ensam inte räcker till, men inte
+ *                  alla lika mycket. Signaturen och kedjan kan med riktig
+ *                  BankID bara väljaren ha ställt, eftersom nyckeln som
+ *                  utfärdar certifikaten finns hos BankID. I demon utfärdar
+ *                  attrappen dem själv, med en incheckad nyckel, och den som
+ *                  driver en demo kan förfalska också dem. Bevisen för
+ *                  valsedeln binder inte väljaren alls: vem som helst kan ta
+ *                  fram dem för ett chiffer hen själv krypterat. De visar att
+ *                  chiffret är en giltig valsedel, inte vems den är.
  *
  * VAD SIGNATURKONTROLLEN (STALE_SEQUENCE/BAD_SIGNATURE NEDAN) STÄNGER, OCH
  * VAD DEN INTE STÄNGER (uppgift 14f).
@@ -56,8 +63,10 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  *      röstlängden ska det ge radens identitetshash
  *
  * Med riktig BankID, där nyckeln som utfärdar certifikaten finns hos BankID,
- * kan den som bara kan skriva i databasen därmed inte längre lägga in en röst
- * för någon som inte skrivit under. Det håller bara för att stängningen flyttar
+ * kan den som bara kan skriva i röstlängden därmed inte längre lägga in en röst
+ * för någon som inte skrivit under. Det gäller röstlängden och inte
+ * röstdatabasen, där den som kan skriva än så länge kan byta ut ett chiffer
+ * (spec 4.6, förbehåll 4). Det håller bara för att stängningen flyttar
  * exakt de rader som prövats här. Sedan fixrunda 1 av uppgift 14f läser den
  * kuverten en gång, med `readEnvelopes`, och skickar just den läsningen hit.
  * Före det läste stängningen två gånger, och en förfalskad rad som togs bort
@@ -66,7 +75,9 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  * En granskare med åtkomst under valideringen kan pröva varje underskrift mot
  * BankID:s rot, men bara med pepparn. Kedjorna är krypterade med en nyckel ur
  * IDENTITY_PEPPER, alltså samma hemlighet som öppnar namnen och personnumren i
- * dem, så den som granskar underskrifterna får också veta vem som röstat.
+ * dem, så den som granskar underskrifterna får också veta vem som röstat. I
+ * Azure ligger pepparn i Key Vault (infra/azure/app.bicep), och granskaren
+ * behöver alltså få den därifrån.
  *
  * DET SOM INTE STÄNGS står i src/lib/known-limitations.ts. Den som driver
  * systemet kan ta bort ett kuvert eller lägga tillbaka en väljares tidigare

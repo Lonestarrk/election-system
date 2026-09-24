@@ -95,18 +95,23 @@ export async function POST(request: Request) {
    * `closeElection` kastar hellre än att gå vidare när ett antagande brustit:
    * när antalet flyttade kuvert inte stämmer, när raderingen inte träffar
    * exakt de kuvert som flyttats, och när skrivningarna i röstlängden inte
-   * finns kvar efter transaktionen. Gemensamt för de vägarna är att INGENTING
-   * ÄR RADERAT — och det är det administratören behöver veta.
+   * finns kvar efter transaktionen. Gemensamt för de vägarna är att DEN HÄR
+   * KÖRNINGEN INTE HAR RADERAT NÅGOT — och det är det administratören behöver
+   * veta. Att ingen annan körning har gjort det följer inte. En andra
+   * stängning som läste fasen innan den första hann göra COMMIT, men kuverten
+   * efteråt, kan i dag stoppas av antalskontrollen och beskriva kopplingen som
+   * orörd, fast den första redan raderat den. Uppgift 11d läser fasen innan det
+   * påståendet görs, som `settleChangedEnvelopes` redan gör.
    * En naken 500 hade sagt minst precis där beskedet betyder mest.
    *
    * SVARET PÅSTÅR INGEN ORSAK. Rutten kan inte veta vilken av vägarna som
    * löste ut, och en gissning som råkar peka fel skickar utredningen åt fel
    * håll. Orsaken står i loggen, säkerhetspåståendet i svaret.
    *
-   * OCH SÄKERHETSPÅSTÅENDET FORMULERAS INTE HÄR. "Ingenting är raderat" är
-   * sant bara på de vägar som bryter innan eller under transaktionen, aldrig
-   * på den där efterkontrollens egen läsning fallerade — då kan kopplingen
-   * mycket väl vara borta. Skillnaden bärs av felet självt
+   * OCH SÄKERHETSPÅSTÅENDET FORMULERAS INTE HÄR. Att den här körningen inte
+   * raderat något är känt bara på de vägar som bryter innan eller under
+   * transaktionen, aldrig på den där efterkontrollens egen läsning fallerade —
+   * då kan kopplingen mycket väl vara borta. Skillnaden bärs av felet självt
    * (`CloseAbortedError.linkState`), och `abortedMessageFor` översätter den
    * till besked. Rutten väljer bara statuskod.
    */

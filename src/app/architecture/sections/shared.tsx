@@ -36,6 +36,11 @@ export type PageLimitations = {
   xmlAdapter: KnownLimitation
   dealer: KnownLimitation
   liveResults: KnownLimitation
+  /** Den som har pepparn, som i Azure ligger i valvet, läser namnen i de liggande kuverten. */
+  pepperHolder: KnownLimitation
+  demoIssuer: KnownLimitation
+  /** Det gamla flödets signeringsnycklar, som ligger i röstlängden och inte i valvet. */
+  signingKeys: KnownLimitation
 }
 
 export function pageLimitations(): PageLimitations {
@@ -47,6 +52,9 @@ export function pageLimitations(): PageLimitations {
     xmlAdapter: limitation('bankid-xmldsig-adapter-missing'),
     dealer: limitation('trusted-dealer'),
     liveResults: limitation('live-results-in-old-flow'),
+    pepperHolder: limitation('pepper-holder-reads-voter-names'),
+    demoIssuer: limitation('mock-issues-certificates-in-demo'),
+    signingKeys: limitation('signing-keys-in-database'),
   }
 }
 

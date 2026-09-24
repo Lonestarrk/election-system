@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
-import type { Moment } from './moments'
+import { MOMENTS, type Moment } from './moments'
 
 /**
  * SCENEN I TIDSLINJEN.
@@ -42,6 +42,22 @@ import type { Moment } from './moments'
  * ditt, och de står i ett annat mönster än i urnan med namn, så att inte heller
  * en stillbild antyder det. Allt som pekar ut ditt kuvert bär `data-yours`, så
  * att testerna kan kontrollera att inget sådant syns efteråt.
+ *
+ * VALVET (uppgift 11g) står mellan din enhet och förtroendepersonerna, långt
+ * från låset och nycklarna. Det lyser bara när momentets `vault.inScene` säger
+ * det, och scenen har inget eget läge för det. Två saker får bilden aldrig
+ * antyda:
+ *
+ *   – Att valvet håller förtroendepersonernas nycklar. Ingen nyckel ritas i
+ *     valvet, och ingen nyckel passerar det. Det som läggs i valvet i moment 1
+ *     är systemets egna hemligheter, ritade som en asterisk, som lösenord brukar
+ *     visas, och aldrig som en nyckel.
+ *   – Att valvet tar bort kopplingen. I moment 9 står valvet nedtonat och
+ *     stilla medan de yttre kuverten slängs. Det har kvar sin hemlighet, och
+ *     texten säger vad den kan göra efteråt.
+ *
+ * Märket i hörnet på varje yttre kuvert är intyget från BankID, inlåst med
+ * valvets hemlighet. Det följer med kuvertet i papperskorgen i moment 9.
  *
  * Scenen är dekorativ och dold för skärmläsare. Texten i moments.ts bär hela
  * berättelsen.
@@ -107,6 +123,25 @@ const PHONE_SCALE = 1.5
 const PHONE_OUTER = { x: 19.5, y: 45 }
 const PHONE_INNER = { x: 22.5, y: 47.5 }
 
+/**
+ * Valvet, i den tomma ytan överst mellan din enhet och förtroendepersonerna.
+ * Ingen nyckel rör sig där: nycklarna går mellan låset och förtroendepersonerna
+ * längst till höger, och kuverten går nedåt mot urnorna.
+ */
+const VAULT = { x: 114, y: 16, w: 40, h: 34 }
+/** Ratten mitt på valvets dörr, där hemligheten tas fram. */
+const DIAL = { x: 134, y: 33 }
+
+/**
+ * När ratten vrids och hemligheten tas fram, i de moment där valvet används.
+ * Tiderna följer det som händer bredvid: i moment 4 först när underskriften är
+ * ritad, eftersom det är intyget bakom den som låses in.
+ */
+const VAULT_USE_AT: Record<number, number> = { 2: 0.15, 4: 0.95, 6: 0.15, 8: 0.05, 13: 0.05 }
+
+/** När märket för det inlåsta intyget kommer på det yttre kuvertet i moment 4. */
+const SEAL_AT = 1.35
+
 /** Summakuvertets innehåll när det öppnats: A, B och C, fem röster. */
 const RESULT = [
   { option: 'A', count: 1 },
@@ -118,8 +153,12 @@ const RESULT = [
 // Vilka delar av scenen som deltar i varje moment
 // ---------------------------------------------------------------------------
 
-type Zone = 'phone' | 'trustees' | 'lock' | 'named' | 'anon' | 'bin'
+type Zone = 'phone' | 'trustees' | 'lock' | 'named' | 'anon' | 'bin' | 'vault'
 
+/**
+ * Zonerna som deltar, per moment. Valvet står inte här: det deltar när
+ * momentets `vault.inScene` säger det, se `isActive`.
+ */
 const ACTIVE: Record<number, readonly Zone[]> = {
   1: ['trustees', 'lock'],
   2: ['phone'],
@@ -137,6 +176,7 @@ const ACTIVE: Record<number, readonly Zone[]> = {
 }
 
 function isActive(zone: Zone, n: number): boolean {
+  if (zone === 'vault') return MOMENTS[n - 1]?.vault?.inScene === true
   return (ACTIVE[n] ?? []).includes(zone)
 }
 
@@ -163,6 +203,8 @@ type Kind =
   | 'scatter' /* kommer ut från (dx, dy) och glider till viloläget */
   | 'sweep' /* sveper från (dx, dy) till viloläget och försvinner */
   | 'grow' /* växer ut från vänster */
+  | 'turn' /* vrids till viloläget, som valvets ratt */
+  | 'emerge' /* växer fram ur sin plats och tonas ut, som hemligheten som tas ur valvet */
 
 type AnimProps = {
   kind: Kind
@@ -228,11 +270,13 @@ type YoursPart = 'envelope' | 'name' | 'tag'
 
 /**
  * Ett kuvert. Det yttre bär en namnlapp, i samma orange som identiteten har på
- * resten av sidan, och en underskrift. Det inre bär valets lås och inget namn.
+ * resten av sidan, en underskrift och märket för intyget från BankID, inlåst
+ * med valvets hemlighet. Det inre bär valets lås och inget namn.
  *
  * `release` är markeringen som släcks: kuvertet går från din färg till samma
  * grå som alla andras, under den tid `at` och `dur` anger. `signAt` ritar
- * underskriften medan man ser på, i moment 4.
+ * underskriften medan man ser på, i moment 4, och `sealAt` sätter märket när
+ * intyget låses in.
  */
 function Envelope({
   kind,
@@ -240,12 +284,14 @@ function Envelope({
   at = 0,
   dur = 0.4,
   signAt,
+  sealAt,
 }: {
   kind: 'outer' | 'inner'
   mark?: Mark
   at?: number
   dur?: number
   signAt?: number
+  sealAt?: number
 }) {
   const size = kind === 'outer' ? OUTER : INNER
   const className = ['tl-envelope', mark === 'yours' && 'tl-yours', mark === 'release' && 'tl-release']
@@ -277,10 +323,25 @@ function Envelope({
             d="M16 14.6 c0.9 -3 1.7 -3 2 -0.6 s1.1 1.8 1.9 -0.9 s1 -1.8 1.8 0.3"
             pathLength={1}
           />
+          <AnimateIf when={sealAt !== undefined} kind="pop" at={sealAt} dur={0.3}>
+            <Seal />
+          </AnimateIf>
         </>
       )}
     </g>
   )
+}
+
+/**
+ * Märket för intyget från BankID, inlåst i det yttre kuvertet med en nyckel ur
+ * valvets hemlighet. Samma färg som valvet, i vänstra hörnet ovanför
+ * namnlappen, eftersom intyget bär namnet. Det högra hörnet är kontrollens: där
+ * sätts bocken i moment 8. Märket sitter inte på fliken, så att det inte ser ut
+ * som ett sigill som måste brytas för att intyget ska läsas, när inget kuvert
+ * öppnas.
+ */
+function Seal() {
+  return <circle className="tl-seal" cx={4.6} cy={6.9} r={2.4} />
 }
 
 /** Valets lås i litet format, som det sitter på varje inre kuvert. */
@@ -381,6 +442,7 @@ export function TimelineScene({ moment, animate }: { moment: Moment; animate: bo
       <NamedUrnZone moment={moment} />
       <AnonUrnZone n={n} />
       <LockZone n={n} />
+      <VaultZone moment={moment} />
       <TrusteeZone n={n} />
       <PhoneZone moment={moment} />
       <Flight moment={moment} />
@@ -434,7 +496,11 @@ function PhoneZone({ moment }: { moment: Moment }) {
         </>
       )}
 
-      {/* 4: det inre kuvertet läggs i det yttre, och du skriver under. */}
+      {/*
+        4: det inre kuvertet läggs i det yttre, och du skriver under. Sist
+        låses intyget från BankID in, med märket i hörnet, när valvets
+        hemlighet har tagits fram.
+      */}
       {n === 4 && (
         <g data-yours={mark === 'yours' ? 'envelope' : undefined}>
           <At x={PHONE_INNER.x} y={PHONE_INNER.y} scale={PHONE_SCALE}>
@@ -442,7 +508,7 @@ function PhoneZone({ moment }: { moment: Moment }) {
           </At>
           <A kind="pop" at={0.1} dur={0.35}>
             <At x={PHONE_OUTER.x} y={PHONE_OUTER.y} scale={PHONE_SCALE}>
-              <Envelope kind="outer" mark={mark} signAt={0.6} />
+              <Envelope kind="outer" mark={mark} signAt={0.6} sealAt={SEAL_AT} />
             </At>
           </A>
         </g>
@@ -700,6 +766,124 @@ function Keyhole({ x, lit = false }: { x: number; lit?: boolean }) {
     <g className={lit ? 'tl-keyhole tl-keyhole-lit' : 'tl-keyhole'}>
       <circle cx={x} cy={KEYHOLE_Y} r={2.2} />
       <rect x={x - 0.9} y={KEYHOLE_Y + 1.2} width={1.8} height={5} rx={0.9} />
+    </g>
+  )
+}
+
+// --- Valvet -------------------------------------------------------------------
+
+/**
+ * VALVET MED SYSTEMETS HEMLIGHETER.
+ *
+ * I moment 1 läggs hemligheterna i valvet, medan nyckelns delar går från låset
+ * till förtroendepersonerna på andra sidan scenen. Där valvet sedan används
+ * vrids ratten, och en hemlighet kommer ut ur den och tonas bort: den lämnar
+ * valvet och används av systemet. Bilden förenklar tiden. I Azure hämtar appen
+ * hemligheterna en gång, när containern startar, och har dem sedan i minnet;
+ * scenen visar hemligheten i de moment där den används. Den går inte till
+ * någon annan plats i scenen, och allra minst till din enhet, som aldrig får
+ * den.
+ *
+ * Där momentet inte använder valvet står det nedtonat och ingenting i det rör
+ * sig. Det gäller också moment 9 och 11, där texten säger vad valvet inte gör.
+ */
+function VaultZone({ moment }: { moment: Moment }) {
+  const n = moment.number
+  const inUse = moment.vault?.inScene === true
+  const useAt = inUse && n !== 1 ? (VAULT_USE_AT[n] ?? 0.1) : undefined
+
+  return (
+    <g className={zoneClass('vault', n)} data-vault="">
+      <AnimateIf when={n === 1} kind="pop" dur={0.35}>
+        <Vault turnAt={useAt} />
+      </AnimateIf>
+      <text className="tl-label" x={DIAL.x} y={67}>
+        Valvet
+      </text>
+
+      {/* 1: systemets egna hemligheter läggs i valvet, en i taget. */}
+      {n === 1 &&
+        [-18, 0, 18].map((dx, index) => (
+          <At key={dx} x={DIAL.x} y={DIAL.y}>
+            <A kind="vanish" at={0.95 + index * 0.1} dur={0.15}>
+              <A kind="move" at={0.4 + index * 0.1} dur={0.45} dx={dx} dy={-24}>
+                <A kind="appear" at={0.3} dur={0.15}>
+                  <SecretBadge />
+                </A>
+              </A>
+            </A>
+          </At>
+        ))}
+
+      {/* Där valvet används kommer hemligheten ut ur ratten och används. */}
+      {useAt !== undefined && (
+        <At x={DIAL.x} y={DIAL.y}>
+          <A kind="emerge" at={useAt + 0.15} dur={0.6}>
+            <SecretBadge />
+          </A>
+        </At>
+      )}
+    </g>
+  )
+}
+
+/**
+ * Valvet: ett kassaskåp med dörr, gångjärn och en ratt, och på ratten
+ * hemlighetens tecken. `turnAt` vrider ratten när valvet används.
+ */
+function Vault({ turnAt }: { turnAt?: number }) {
+  return (
+    <g>
+      <rect className="tl-vault-foot" x={VAULT.x + 4} y={VAULT.y + VAULT.h - 1} width={7} height={4} rx={1} />
+      <rect
+        className="tl-vault-foot"
+        x={VAULT.x + VAULT.w - 11}
+        y={VAULT.y + VAULT.h - 1}
+        width={7}
+        height={4}
+        rx={1}
+      />
+      <rect className="tl-vault-body" x={VAULT.x} y={VAULT.y} width={VAULT.w} height={VAULT.h} rx={4} />
+      <rect
+        className="tl-vault-door"
+        x={VAULT.x + 4}
+        y={VAULT.y + 4}
+        width={VAULT.w - 8}
+        height={VAULT.h - 8}
+        rx={2.5}
+      />
+      <rect className="tl-vault-hinge" x={VAULT.x + 1.6} y={VAULT.y + 8} width={2.4} height={5} rx={1} />
+      <rect className="tl-vault-hinge" x={VAULT.x + 1.6} y={VAULT.y + 21} width={2.4} height={5} rx={1} />
+      <path className="tl-vault-handle" d={`M${VAULT.x + 32} ${DIAL.y - 5} V${DIAL.y + 5}`} />
+      <circle className="tl-vault-dial" cx={DIAL.x} cy={DIAL.y} r={8} />
+      <At x={DIAL.x} y={DIAL.y}>
+        <AnimateIf when={turnAt !== undefined} kind="turn" at={turnAt} dur={0.5}>
+          <SecretMark />
+        </AnimateIf>
+      </At>
+    </g>
+  )
+}
+
+/**
+ * Hemlighetens tecken, en asterisk, som lösenord brukar visas. Ritad kring
+ * origo. Aldrig en nyckel: nycklarna i scenen är förtroendepersonernas.
+ */
+function SecretMark() {
+  return (
+    <path
+      className="tl-secret"
+      d="M0 -4.6 V4.6 M-4 -2.3 L4 2.3 M-4 2.3 L4 -2.3"
+    />
+  )
+}
+
+/** En hemlighet för sig, på väg in i valvet eller ut ur det. Ritad kring origo. */
+function SecretBadge() {
+  return (
+    <g className="tl-secret-badge">
+      <circle r={5.2} />
+      <path d="M0 -3 V3 M-2.6 -1.5 L2.6 1.5 M-2.6 1.5 L2.6 -1.5" />
     </g>
   )
 }
@@ -1001,7 +1185,7 @@ function Flight({ moment }: { moment: Moment }) {
  * En figur ur scenen, utan animation, för förklaringen av bildspråket. Samma
  * figurer som i tidslinjen, så att läsaren känner igen dem där.
  */
-export function LegendIcon({ kind }: { kind: 'inner' | 'outer' | 'lock' | 'urns' }) {
+export function LegendIcon({ kind }: { kind: 'inner' | 'outer' | 'lock' | 'urns' | 'vault' }) {
   const figure =
     kind === 'inner' ? (
       <svg viewBox="-3 -3 28 21">
@@ -1014,6 +1198,10 @@ export function LegendIcon({ kind }: { kind: 'inner' | 'outer' | 'lock' | 'urns'
     ) : kind === 'lock' ? (
       <svg viewBox="200 67 48 50">
         <BigLock n={0} />
+      </svg>
+    ) : kind === 'vault' ? (
+      <svg viewBox="108 11 52 47">
+        <Vault />
       </svg>
     ) : (
       <svg viewBox="-2 -2 60 28">

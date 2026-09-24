@@ -89,7 +89,8 @@ export type BankIdCollectComplete = {
 
     /**
      * Certifikatkedjan signaturen verifieras mot, i PEM: lövet först och sedan
-     * den mellannivå som utfärdat det. Tom för `auth`-ordrar.
+     * de mellannivåer som utfärdat det, uppåt mot roten. Attrappen har en,
+     * prövningen tar en till tre. Tom för `auth`-ordrar.
      *
      * ROTEN INGÅR INTE, OCH FÅR INTE GÖRA DET. Kedjan prövas mot rötter som är
      * konfigurerade (se `trusted-roots.ts`). En rot som följde med svaret vore
