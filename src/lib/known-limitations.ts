@@ -52,10 +52,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    *
    * De fem första posterna gäller modellen med dubbla kuvert och är sanna i
    * koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
-   * med röstintyg och blinda signaturer, vars rutter finns kvar fast ingen sida
-   * använder dem sedan uppgift 14, eller gäller oavsett modell. Det gamla
-   * flödets poster står kvar tills flödet tas bort, och testet tvingar bort var
-   * och en när dess markör försvinner.
+   * med röstintyg och blinda signaturer, som ingen sida lägger röster i sedan
+   * uppgift 14 men vars rutter och tabeller finns kvar, eller gäller oavsett
+   * modell. Det gamla flödets poster står kvar tills flödet tas bort, och testet
+   * tvingar bort var och en när dess markör försvinner.
    */
   {
     id: 'link-exists-during-voting',

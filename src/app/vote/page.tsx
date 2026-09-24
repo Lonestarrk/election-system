@@ -11,6 +11,7 @@ import {
   ballotStatus,
   browserStorage,
   forgetDeviceVote,
+  forgetElection,
   forgetElectionsNotOpen,
   forgetIfVotingEnded,
   hashesToCompare,
@@ -18,12 +19,19 @@ import {
   rememberDeviceVote,
   staleDeviceVotes,
   storedElectionIds,
+  votingHasEnded,
   type BallotStatus,
   type DeviceComparison,
   type DeviceStorage,
   type DeviceVote,
   type ServerBallot,
 } from './device-vote'
+import {
+  PHASE_CHECK_INTERVAL_MS,
+  pageAttention,
+  watchVotingPhase,
+  windowInterval,
+} from './phase-watch'
 
 /**
  * RÖSTSIDAN: LÄGG EN RÖST, SE DEN, ÄNDRA DEN.
@@ -56,8 +64,15 @@ import {
  * Sessionen säger vilka valsedlar som gäller, om ett kuvert ligger på var och
  * en, och valets fas. Har fasen lämnat OPEN raderar sidan det enheten sparat.
  * Annars skickar den sina sparade hashar till /api/vote/compare och får bara
- * lika, olika eller ingen röst tillbaka. Servern lämnar aldrig ut sin hash;
- * se rutten för varför.
+ * lika, olika eller ingen röst tillbaka. Ingen av röstsidans rutter lämnar ut
+ * serverns hash; se jämförelserutten för varför.
+ *
+ * MEDAN SIDAN STÅR ÖPPEN
+ *
+ * En flik som står öppen över stängningen ska också radera. Sidan frågar
+ * därför om fasen igen med jämna mellanrum medan fliken syns, och direkt när
+ * väljaren kommer tillbaka till den (./phase-watch.ts). Svarar servern på en
+ * röst att röstningen har stängt raderar sidan också då.
  *
  * En post vars röst ändrats från en annan enhet raderas direkt, samma gång som
  * sidan visar att rösten ändrats. Nästa gång visar enheten bara att en röst
@@ -131,23 +146,40 @@ const closingTime = new Intl.DateTimeFormat('sv-SE', {
 })
 
 /**
- * Glömmer det enheten sparat om omröstningar som inte längre är öppna.
+ * De öppna omröstningarna ur den offentliga listan, eller null utan svar.
  *
- * Den offentliga listan över öppna omröstningar frågas utan att berätta vilka
- * omröstningar enheten har uppgifter om. `keep` är omröstningen sessionen
- * gäller, vars fas sessionen själv har svarat på.
+ * Listan frågas utan att berätta vilka omröstningar enheten har uppgifter om.
  */
-async function forgetClosedElections(storage: DeviceStorage, keep?: string): Promise<void> {
+async function openElectionIds(): Promise<string[] | null> {
   try {
     const response = await fetch('/api/elections')
-    if (!response.ok) return
+    if (!response.ok) return null
     const data = (await response.json()) as { elections?: Array<{ id: string }> }
-    const open = (data.elections ?? []).map((election) => election.id)
-    forgetElectionsNotOpen(storage, keep ? [...open, keep] : open)
+    return (data.elections ?? []).map((election) => election.id)
   } catch {
-    // Utan svar raderas ingenting. Uppgifterna bevisar ändå ingenting (spec 3.1 punkt 2).
+    return null
   }
 }
+
+/**
+ * Glömmer det enheten sparat om omröstningar som inte längre är öppna.
+ *
+ * `keep` är omröstningen sessionen gäller, vars fas sessionen själv har svarat
+ * på. Utan svar från listan raderas ingenting; uppgifterna bevisar ändå
+ * ingenting (spec 3.1 punkt 2).
+ */
+async function forgetClosedElections(storage: DeviceStorage, keep?: string): Promise<void> {
+  const open = await openElectionIds()
+  if (open) forgetElectionsNotOpen(storage, keep ? [...open, keep] : open)
+}
+
+/** Vad sidan säger när den ser att röstningen har stängt. */
+const CLOSED_NOTICE =
+  'Röstningen har stängt. Ingen röst går längre att lägga eller byta ut, och det enheten ' +
+  'hade sparat om din röst är raderat.'
+
+const CLOSED_WHILE_SIGNING_NOTICE =
+  'Röstningen har stängt, och rösten lades inte. Det enheten hade sparat om din röst är raderat.'
 
 function VoteContent() {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
@@ -159,6 +191,96 @@ function VoteContent() {
   const [notice, setNotice] = useState('')
 
   const loadDone = useRef(false)
+
+  /** Omröstningen som visas, läst av bevakningen, vars tick skapades tidigare. */
+  const electionRef = useRef<Election | null>(null)
+  useEffect(() => {
+    electionRef.current = election
+  }, [election])
+
+  /**
+   * Röstningen har tagit slut: radera det enheten sparat, och visa det.
+   *
+   * Spec 3.1 punkt 4. Anropas av bevakningen, när en ny fråga om fasen visar
+   * att den lämnat OPEN, och av underskriften, när servern svarar att den inte
+   * längre tar emot röster.
+   */
+  const votingEnded = useCallback((phase: string | null, message: string) => {
+    const current = electionRef.current
+    const storage = browserStorage()
+    if (current && storage) forgetElection(storage, current.id)
+
+    setElection((previous) =>
+      previous ? { ...previous, acceptsVotes: false, phase: phase ?? previous.phase } : previous,
+    )
+    setDeviceVotes({})
+    setComparisons({})
+    setActive(null)
+    setNotice(message)
+  }, [])
+
+  /** En fråga om fasen i taget, som pollningen i underskriften. */
+  const checking = useRef(false)
+
+  /**
+   * Frågar igen om röstningen fortfarande tar emot röster.
+   *
+   * Med en giltig session svarar sessionsrutten, med fasen. Har sessionen gått
+   * ut svarar den offentliga listan över öppna omröstningar i stället, samma
+   * väg som en sida utan session tar när den laddas (device-vote.ts). Gäller
+   * sessionen en annan omröstning, därför att väljaren legitimerat sig för en
+   * annan i en annan flik, är det också listan som svarar för den här.
+   */
+  const checkPhase = useCallback(async () => {
+    const current = electionRef.current
+    if (!current || !current.acceptsVotes || checking.current) return
+    checking.current = true
+
+    try {
+      const response = await fetch('/api/vote/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+
+      if (response.ok) {
+        const data = (await response.json()) as Record<string, unknown>
+        if (String(data.electionId) === current.id) {
+          const state = {
+            phase: typeof data.phase === 'string' ? data.phase : null,
+            acceptsVotes: data.acceptsVotes === true,
+          }
+          if (votingHasEnded(state)) votingEnded(state.phase, CLOSED_NOTICE)
+          return
+        }
+      }
+
+      const open = await openElectionIds()
+      if (!open) return
+      const storage = browserStorage()
+      if (storage) forgetElectionsNotOpen(storage, open)
+      if (!open.includes(current.id)) votingEnded(null, CLOSED_NOTICE)
+    } catch {
+      // Ingen kontakt med servern. Nästa tick frågar igen.
+    } finally {
+      checking.current = false
+    }
+  }, [votingEnded])
+
+  /**
+   * Bevakningen gäller bara medan sidan visar en öppen röstning. När den sett
+   * att röstningen stängt finns ingenting mer att vänta på.
+   */
+  const watching = load.kind === 'ready' && election?.acceptsVotes === true
+  useEffect(() => {
+    if (!watching) return
+    return watchVotingPhase({
+      check: () => void checkPhase(),
+      intervalMs: PHASE_CHECK_INTERVAL_MS,
+      attention: pageAttention(),
+      every: windowInterval,
+    })
+  }, [watching, checkPhase])
 
   const loadPage = useCallback(async () => {
     const storage = browserStorage()
@@ -497,6 +619,7 @@ function VoteContent() {
           }
           onRecorded={recorded}
           onSessionExpired={sessionExpired}
+          onClosed={() => votingEnded(null, CLOSED_WHILE_SIGNING_NOTICE)}
         />
       ))}
 
@@ -536,6 +659,7 @@ type BallotCardProps = {
   onBackToChoice: () => void
   onRecorded: (vote: RecordedVote) => void
   onSessionExpired: () => void
+  onClosed: () => void
 }
 
 /**
@@ -557,6 +681,7 @@ function BallotCard({
   onBackToChoice,
   onRecorded,
   onSessionExpired,
+  onClosed,
 }: BallotCardProps) {
   const headingId = `valsedel-${ballot.id}`
   const canVote = status.kind === 'not-voted' || status.kind === 'current' ||
@@ -628,6 +753,7 @@ function BallotCard({
                 onRecorded={onRecorded}
                 onCancel={onBackToChoice}
                 onSessionExpired={onSessionExpired}
+                onClosed={onClosed}
               />
             </>
           )}

@@ -43,7 +43,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
             <nav className="site-nav">
               <Link href="/">Rösta</Link>
-              <Link href="/verify">Verifiera röst</Link>
+              {/* Samma ord som sidans rubrik. Sidan verifierar ingen kod längre. */}
+              <Link href="/verify">Kontrollera din röst</Link>
               <Link href="/architecture">Arkitektur</Link>
               <Link href="/admin">Administration</Link>
             </nav>

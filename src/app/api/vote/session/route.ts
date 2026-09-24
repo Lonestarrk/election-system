@@ -49,9 +49,11 @@ export const dynamic = 'force-dynamic'
  * pending_vote, inte ur det gamla flödets markering, som bara säger att en
  * röst lades i det gamla flödet och därför heter `votedInOldFlow` här.
  *
- * Hashen för det liggande kuvertet lämnas inte ut, varken här eller någon
- * annanstans. Enheten som vill veta om dess röst är den som ligger frågar
- * /api/vote/compare, som bara svarar lika, olika eller ingen röst.
+ * Hashen för det liggande kuvertet lämnas inte ut, varken här eller av någon
+ * annan rutt röstsidan anropar. Enheten som vill veta om dess röst är den som
+ * ligger frågar /api/vote/compare, som bara svarar lika, olika eller ingen
+ * röst. (Livevyn i demoläget visar databasen som en insider ser den, med
+ * början av hashen, och säger det.)
  */
 export async function POST(request: Request) {
   if (!hasValidOrigin(request)) {

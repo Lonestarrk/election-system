@@ -1,4 +1,5 @@
 import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
+import { CURRENTLY } from '../code-facts'
 
 /**
  * Varför detta inte räcker för ett riktigt val: hela listan över kända
@@ -6,6 +7,10 @@ import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
  *
  * Varje rad har ett ankare, begransning-<id>, som hänvisningarna i resten av
  * sidan länkar till.
+ *
+ * Vad det gamla flödet gör i dag läses ur code-facts.ts. Här stod tidigare
+ * "det gamla flödet som röstsidan fortfarande kör" som fri text, och den
+ * meningen blev fel utan att något test sa ifrån när röstsidan byggdes om.
  */
 export function LimitationsList() {
   return (
@@ -17,9 +22,9 @@ export function LimitationsList() {
         och publicera bara summorna. Den visar inte ett valsystem redo för drift.
       </p>
       <p className="muted small">
-        Listan gäller hela systemet, både kuvertmodellen och det gamla flödet, vars rutter finns
-        kvar fast ingen sida använder dem längre. Poster som bara gäller det gamla flödet
-        försvinner ur listan när det tas bort.
+        Listan gäller hela systemet, både kuvertmodellen och det gamla flödet.{' '}
+        {CURRENTLY.oldFlowRoutesRemain.text} Poster som bara gäller det gamla flödet försvinner ur
+        listan när det tas bort.
       </p>
 
       <div className="table-wrap" style={{ marginTop: '1rem' }}>

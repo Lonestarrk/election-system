@@ -47,8 +47,8 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
     metaphor: 'Skärmen som visar din röst',
     technology:
       'Enheten sparar valet och chifferhashen men aldrig slumptalet. Servern jämför hashen med ' +
-      'sin egen och svarar bara lika, olika eller ingen röst; sin egen lämnar den aldrig ut. ' +
-      'Utan slumptalet bevisar visningen ingenting (spec 3.1).',
+      'den liggande röstens och svarar bara lika, olika eller ingen röst, så röstsidan får aldrig ' +
+      'någon annan hash än sin egen. Utan slumptalet bevisar visningen ingenting (spec 3.1).',
   },
   {
     metaphor: 'Kontrollen',

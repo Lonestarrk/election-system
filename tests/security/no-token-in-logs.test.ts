@@ -154,6 +154,7 @@ describe('röstsidan sparar valet och hashen på ett enda ställe, och ingen kod
       'BankIdSigning.tsx',
       'device-vote.ts',
       'page.tsx',
+      'phase-watch.ts',
     ])
   })
 

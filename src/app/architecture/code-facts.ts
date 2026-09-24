@@ -65,19 +65,34 @@ const DECRYPTION_NOT_BUILT: Marker = {
 }
 
 /**
- * Ingen sida anropar det gamla flödets rutter.
+ * Det gamla flödets röster och kvitton: adresserna till rutterna som lägger
+ * en röst med röstintyg och som svarar på en kvittokod, som strängar, och
+ * klientmodulen för blindningen.
+ *
+ * Exporteras för arkitektursidans test, som prövar sidans egna filer med samma
+ * mönster (se nedan).
+ */
+export const OLD_FLOW_VOTES_AND_RECEIPTS =
+  /['"`]\/api\/(vote\/cast|vote\/credential|verify)['"`]|@\/lib\/blind-client/
+
+/**
+ * Ingen sida lägger röster i det gamla flödet eller frågar efter dess kvitton.
  *
  * Fram till uppgift 14 stod här det motsatta: röstsidan lade röster med
- * röstintyg och fick en kvittokod tillbaka. Mönstret letar efter rutternas
- * adresser som strängar, i kod och kommentarer, i röstsidans och
- * verifieringssidans kataloger, och efter klientmodulen för blindningen.
+ * röstintyg och fick en kvittokod tillbaka. Mönstret prövas i hela src/app, i
+ * kod och kommentarer. Det omfattar också rutterna under src/app/api, som i dag
+ * inte nämner varandra, vilket är strängare än påståendet kräver. Behöver en
+ * rutt en dag nämna en av adresserna ska markören smalnas av då, inte
+ * påståendet. Arkitektursidans egna filer hoppar granskningen alltid över,
+ * eftersom de bär påståendena och deras mönster. För dem gör
+ * tests/security/architecture-page.test.ts samma prov för sig.
+ *
+ * Påståendet gäller röster och kvitton, inte allt i det gamla flödet.
+ * Adminsidan läser fortfarande dess statistik och fastställer i det; det står
+ * i oldFlowLiveResults och finalCheckOldModel.
  */
-const NO_PAGE_USES_OLD_FLOW: Marker[] = [
-  {
-    nowhereIn: 'src/app/vote',
-    matches: /['"`]\/api\/(vote\/cast|vote\/credential|verify)['"`]|@\/lib\/blind-client/,
-  },
-  { nowhereIn: 'src/app/verify', matches: /['"`]\/api\/(vote\/cast|vote\/credential|verify)['"`]/ },
+const NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW: Marker[] = [
+  { nowhereIn: 'src/app', matches: OLD_FLOW_VOTES_AND_RECEIPTS },
 ]
 
 /**
@@ -88,21 +103,28 @@ const VOTE_PAGE_LAYS_ENVELOPES: Marker[] = [
   { file: 'src/app/vote/page.tsx', contains: 'await encryptBallotInSteps(' },
   { file: 'src/app/vote/BankIdSigning.tsx', contains: "post('/api/vote/sign-start'" },
   { file: 'src/app/vote/BankIdSigning.tsx', contains: "post('/api/vote/encrypted'" },
-  ...NO_PAGE_USES_OLD_FLOW,
+  ...NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW,
 ]
 
 /**
  * Visningen på enheten, som spec 3.1 punkt 1 och 4 beskriver den.
  *
- * Enheten sparar valet och chifferhashen i en modul, frågar servern om hashen
- * är den som ligger, och raderar allt när fasen lämnat OPEN. Servern svarar
- * lika, olika eller ingen röst, och ingen av röstsidans rutter lämnar ut den
- * liggande hashen. Faller något av det faller påståendet.
+ * Enheten sparar valet och chifferhashen i en modul och frågar servern om
+ * hashen är den som ligger. Servern svarar lika, olika eller ingen röst, och
+ * den enda hash röstsidan får tillbaka är den den själv skickat in, när en röst
+ * läggs. Enheten raderar allt när sidan ser att fasen lämnat OPEN: när sidan
+ * laddas, när en öppen flik frågar igen, och när servern svarar på en röst att
+ * röstningen stängt. Faller något av det faller påståendet.
+ *
+ * Påståendet gäller röstsidan. Livevyn i demoläget visar databasen som en
+ * insider ser den, med början av varje kuverts hash, och säger det själv.
  */
 const DEVICE_VIEW: Marker[] = [
   { file: 'src/app/vote/device-vote.ts', contains: "const KEY_PREFIX = 'valsystem.enhetens-rost.'" },
   { file: 'src/app/vote/page.tsx', contains: "fetch('/api/vote/compare'" },
   { file: 'src/app/vote/page.tsx', contains: 'forgetIfVotingEnded(storage, current.id, current)' },
+  { file: 'src/app/vote/page.tsx', contains: 'return watchVotingPhase({' },
+  { file: 'src/app/vote/BankIdSigning.tsx', contains: "if (data.status === 'closed') {" },
   {
     file: 'src/modules/eligibility/pending-vote.service.ts',
     contains: "result: safeEqual(current, entry.ciphertextHash) ? 'same' : 'different',",
@@ -111,7 +133,29 @@ const DEVICE_VIEW: Marker[] = [
     file: 'src/app/api/vote/compare/route.ts',
     contains: 'ballots: results.map((entry) => ({ ballotId: entry.ballotId, result: entry.result })),',
   },
+  // Röstsidans övriga rutter. Sessionen och valsedeln nämner ingen hash, och
+  // underskriftens start svarar med exakt de här fälten.
   { nowhereIn: 'src/app/api/vote/session/route.ts', matches: /ciphertextHash|pendingVoteFor/ },
+  { nowhereIn: 'src/app/api/vote/ballot/route.ts', matches: /ciphertextHash|pendingVoteFor/ },
+  {
+    file: 'src/app/api/vote/sign-start/route.ts',
+    contains: [
+      '  return jsonResponse({',
+      '    orderRef: order.orderRef,',
+      '    launchUrls: {',
+      "      ios: launchUrl(order.autoStartToken, 'ios', returnUrl),",
+      "      other: launchUrl(order.autoStartToken, 'other', returnUrl),",
+      '    },',
+      '    qrImage: initialQr ? await renderQrPng(initialQr.qrData) : null,',
+      '  })',
+    ].join('\n'),
+  },
+  // Den enda hash röstsidan får tillbaka: den i valsedeln den själv lämnade in.
+  {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains:
+      "return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: existing !== null }",
+  },
 ]
 
 /** Verifieringssidan säger att visningen efter stängningen inte är byggd. */
@@ -308,10 +352,10 @@ export const CURRENTLY = {
 
   oldFlowRoutesRemain: {
     text:
-      'Ingen sida använder längre det gamla flödet, men dess rutter finns kvar och tar emot ' +
-      'röster till tabellen vote tills flödet tas bort.',
+      'Ingen sida lägger längre röster i det gamla flödet eller frågar efter dess kvitton, men ' +
+      'rutterna finns kvar och tar emot röster till tabellen vote tills flödet tas bort.',
     holdsWhile: [
-      ...NO_PAGE_USES_OLD_FLOW,
+      ...NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW,
       { file: 'src/app/api/vote/credential/route.ts', contains: 'export async function POST' },
       { file: 'src/app/api/vote/cast/route.ts', contains: 'export async function POST' },
       { file: 'src/modules/ballot-box/vote.service.ts', contains: 'votesDb.vote.create' },
@@ -322,8 +366,9 @@ export const CURRENTLY = {
     text:
       'Före stängningen är det byggt: röstsidan visar din nuvarande röst på enheten du röstade ' +
       'från. Enheten skickar den chifferhash den sparade, och servern svarar bara om den stämmer ' +
-      'med rösten som ligger, aldrig med sin egen hash. När sidan ser att fasen lämnat OPEN ' +
-      'raderar enheten det den sparat. Efter stängningen visar verifieringssidan ännu ingenting.',
+      'med rösten som ligger. Röstsidan får aldrig någon annan hash än den enheten själv räknat ' +
+      'fram. När sidan ser att fasen lämnat OPEN raderar enheten det den sparat, också i en flik ' +
+      'som står öppen över stängningen. Efter stängningen visar verifieringssidan ännu ingenting.',
     holdsWhile: [...DEVICE_VIEW, AFTER_CLOSE_VIEW_NOT_BUILT],
   },
 

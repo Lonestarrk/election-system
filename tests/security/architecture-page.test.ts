@@ -13,6 +13,7 @@ import {
   MARKING_ONLY_IN_OLD_FLOW,
   ONE_MARKING_WRITE_EACH,
   NO_WRITES_BESIDE_THE_CODE,
+  OLD_FLOW_VOTES_AND_RECEIPTS,
   type CodeFact,
   type Marker,
 } from '@/app/architecture/code-facts'
@@ -484,6 +485,24 @@ describe('arkitektursidan skriver inte själv det den läser', () => {
         /(htmlFor|id)="verifikationskod"|lookUpVerificationCode|findInEncryptedVotes/,
       )
     }
+  })
+
+  it('sidans egna filer lägger inte heller röster i det gamla flödet eller frågar efter kvitton', () => {
+    /**
+     * Påståendet oldFlowRoutesRemain gäller alla sidor, och arkitektursidan är
+     * en av dem. Markörgranskningen ovan hoppar alltid över sidans egna filer,
+     * eftersom de bär påståendena och deras mönster, så samma mönster prövas
+     * här för sig. code-facts.ts skriver mönstret med snedstreck som inte
+     * matchar mönstret självt.
+     */
+    const offenders = allPageFiles.filter((file) => OLD_FLOW_VOTES_AND_RECEIPTS.test(read(file)))
+    expect(allPageFiles.length).toBeGreaterThan(10)
+    expect(offenders).toEqual([])
+
+    // Kontrasten: mönstret hittar ett anrop och en import av blindningen.
+    expect(OLD_FLOW_VOTES_AND_RECEIPTS.test("await fetch('/api/vote/cast', {")).toBe(true)
+    expect(OLD_FLOW_VOTES_AND_RECEIPTS.test("post(`/api/verify`, { token })")).toBe(true)
+    expect(OLD_FLOW_VOTES_AND_RECEIPTS.test("import { x } from '@/lib/blind-client'")).toBe(true)
   })
 })
 

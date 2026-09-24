@@ -55,6 +55,12 @@ type Props = {
   onRecorded: (vote: RecordedVote) => void
   onCancel: () => void
   onSessionExpired: () => void
+  /**
+   * Servern har slutat ta emot röster. Sidan raderar då det enheten sparat om
+   * omröstningen, eftersom svaret är ett av de ställen där den ser att fasen
+   * lämnat OPEN (spec 3.1 punkt 4).
+   */
+  onClosed: () => void
 }
 
 type Reply = { ok: boolean; status: number; data: Record<string, unknown> }
@@ -90,9 +96,11 @@ function isIos(): boolean {
  *
  * Varje besked säger att rösten INTE lades. En väljare som är osäker på om
  * hennes röst gick in ska kunna läsa det direkt, och inte behöva gissa.
+ *
+ * `closed` står inte här. Det lämnas till sidan, som raderar det enheten
+ * sparat och säger att röstningen har stängt; se `onClosed`.
  */
 const OUTCOMES: Record<string, string> = {
-  closed: 'Röstningen har stängt. Rösten lades inte.',
   stale_sequence:
     'En nyare röst har redan lagts på den här valsedeln, kanske från en annan flik. Den här ' +
     'lades inte. Ladda om sidan för att se läget.',
@@ -110,6 +118,7 @@ export function BankIdSigning({
   onRecorded,
   onCancel,
   onSessionExpired,
+  onClosed,
 }: Props) {
   const [phase, setPhase] = useState<Phase>('choose-device')
   const [message, setMessage] = useState('')
@@ -207,6 +216,16 @@ export function BankIdSigning({
           return
         }
 
+        // Servern tar inte emot röster längre. Det är ett besked om fasen,
+        // inte bara om den här rösten, och sidan ska radera det enheten
+        // sparat.
+        if (data.status === 'closed') {
+          stopTimers()
+          orderRef.current = null
+          onClosed()
+          return
+        }
+
         const outcome = typeof data.status === 'string' ? OUTCOMES[data.status] : undefined
         const error = data.error as { message?: string } | undefined
         fail(outcome ?? error?.message ?? 'Något gick fel. Din röst lades inte.')
@@ -214,7 +233,7 @@ export function BankIdSigning({
 
       timers.current.push(collect)
     },
-    [ballot, ballotId, fail, onRecorded, onSessionExpired, stopTimers],
+    [ballot, ballotId, fail, onClosed, onRecorded, onSessionExpired, stopTimers],
   )
 
   const startQrRefresh = useCallback(

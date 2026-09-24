@@ -62,6 +62,7 @@ const ANY_HASH = /[0-9a-f]{64}/
 
 describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
   const ANNA_PN = '199001011234'
+  const KIM_PN = '198505152345'
 
   let electionId: string
   let ballotId: string
@@ -71,6 +72,9 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
   let bpM: string
   let anna: string
   let csrfSecret: string
+  /** En andra väljare, med en egen session, för proven mellan väljare. */
+  let kim: string
+  let kimSession: { id: string; csrfSecret: string }
 
   beforeEach(async () => {
     resetRateLimits()
@@ -120,10 +124,19 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
     const created = await createVotingSession(anna, electionId)
     cookieJar.session = created.id
     csrfSecret = created.csrfSecret
+
+    kim = await createVoter(KIM_PN)
+    kimSession = await createVotingSession(kim, electionId)
   })
 
-  /** Krypterar, signerar med attrappen och lägger rösten, som rutterna skulle gjort. */
-  async function cast(ballotPartyId: string): Promise<{ ballot: EncryptedBallot; outcome: CastOutcome }> {
+  /**
+   * Krypterar, signerar med attrappen och lägger rösten, som rutterna skulle
+   * gjort. Anna om inget annat sägs.
+   */
+  async function cast(
+    ballotPartyId: string,
+    voter: { id: string; personalNumber: string } = { id: anna, personalNumber: ANNA_PN },
+  ): Promise<{ ballot: EncryptedBallot; outcome: CastOutcome }> {
     const ballot = encryptBallot(publicKey, electionId, ballotId, options, {
       kind: 'PARTY',
       ballotPartyId,
@@ -137,17 +150,17 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
         electionId,
         ballotId,
         ciphertextHash: ballot.ciphertextHash,
-        castSequence: await nextCastSequence(anna, ballotId),
+        castSequence: await nextCastSequence(voter.id, ballotId),
       }),
     })
-    selectDemoIdentity(order.orderRef, ANNA_PN)
+    selectDemoIdentity(order.orderRef, voter.personalNumber)
 
     let result = await service.collect(order.orderRef)
     while (result.status === 'pending') result = await service.collect(order.orderRef)
     if (result.status !== 'complete') throw new Error('Signeringen blev inte klar.')
 
     const outcome = await castEncryptedBallot(
-      anna,
+      voter.id,
       electionId,
       ballotId,
       ballot,
@@ -225,6 +238,60 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
     const response = await post(compare, { ballots: [{ ballotId, ciphertextHash: 'a'.repeat(64) }] })
 
     expect(response.status).toBe(401)
+  })
+
+  describe('mellan två väljare', () => {
+    /**
+     * Rutten jämför alltid med kuvertet för den väljare sessionen gäller,
+     * aldrig med kuvertet för den vars hash skickas. En annan väljare som fått
+     * tag i Annas sparade hash, till exempel från hennes enhet, ska alltså inte
+     * kunna fråga om den är Annas liggande röst.
+     */
+    it('en annan väljares session får inget besked om Annas röst', async () => {
+      const { ballot: annasVote } = await cast(bpS)
+
+      cookieJar.session = kimSession.id
+      const withoutKimsVote = await post(
+        compare,
+        { ballots: [{ ballotId, ciphertextHash: annasVote.ciphertextHash }] },
+        { 'x-csrf-token': kimSession.csrfSecret },
+      )
+      const text = await withoutKimsVote.text()
+
+      // Kim har ingen röst, och svaret gäller Kims kuvert, inte Annas.
+      expect(withoutKimsVote.status).toBe(200)
+      expect(JSON.parse(text)).toEqual({ ballots: [{ ballotId, result: 'none' }] })
+      expect(text).not.toMatch(ANY_HASH)
+
+      // Samma sak när Kim har en egen röst: Annas hash är inte Kims kuvert.
+      const { ballot: kimsVote } = await cast(bpM, { id: kim, personalNumber: KIM_PN })
+      const withKimsVote = await post(
+        compare,
+        { ballots: [{ ballotId, ciphertextHash: annasVote.ciphertextHash }] },
+        { 'x-csrf-token': kimSession.csrfSecret },
+      )
+      const second = await withKimsVote.text()
+
+      expect(JSON.parse(second)).toEqual({ ballots: [{ ballotId, result: 'different' }] })
+      expect(second).not.toContain(kimsVote.ciphertextHash)
+      expect(second).not.toMatch(ANY_HASH)
+    })
+
+    it("en CSRF-token hör till sin egen session och gäller inte i den andras", async () => {
+      const { ballot } = await cast(bpS)
+      const body = { ballots: [{ ballotId, ciphertextHash: ballot.ciphertextHash }] }
+
+      // Annas session med Kims token.
+      const annaWithKimsToken = await post(compare, body, { 'x-csrf-token': kimSession.csrfSecret })
+      // Kims session med Annas token.
+      cookieJar.session = kimSession.id
+      const kimWithAnnasToken = await post(compare, body, { 'x-csrf-token': csrfSecret })
+
+      expect(annaWithKimsToken.status).toBe(403)
+      expect(kimWithAnnasToken.status).toBe(403)
+      expect(await annaWithKimsToken.text()).not.toMatch(ANY_HASH)
+      expect(await kimWithAnnasToken.text()).not.toMatch(ANY_HASH)
+    })
   })
 
   it('avvisar en främmande origin', async () => {

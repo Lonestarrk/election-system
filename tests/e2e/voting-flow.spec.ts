@@ -46,6 +46,12 @@ const VOTERS = {
    * tre orörda valsedlar att visa röstsidan med.
    */
   personalVote: 'Charlie — röstberättigad',
+  /**
+   * Också Charlie, på regionvalsedeln. Charlies tester läser bara sin egen
+   * valsedel, så ett kuvert till stör inget test som räknar träffar på hela
+   * sidan, som "kan ändra" för Anna eller "Du har en röst registrerad" för Kim.
+   */
+  closing: 'Charlie — röstberättigad',
 }
 
 const NOT_ELIGIBLE = 'Elis — ej röstberättigad'
@@ -357,5 +363,101 @@ test.describe('vad sidorna inte läcker', () => {
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
     await expect(page.getByRole('textbox')).toHaveCount(0)
     await expect(page.getByText(/inte byggd än/i)).toBeVisible()
+
+    // Menyn och rubriken säger samma sak. Menyn sa tidigare "Verifiera röst"
+    // om en sida som inte längre verifierar någon kod.
+    const title = (await page.getByRole('heading', { level: 1 }).innerText()).trim()
+    await expect(page.getByRole('navigation').getByRole('link', { name: title, exact: true })).toHaveAttribute(
+      'href',
+      '/verify',
+    )
+  })
+
+  test('menyn bryts mellan länkarna på en smal telefon, aldrig inne i en', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 800 })
+    await page.goto('/verify')
+
+    // Textraderna i varje länk räknas. Länkarnas höjd går inte att jämföra:
+    // flexraden sträcker dem till samma höjd, också när en av dem brutits.
+    const lines = await page.getByRole('navigation').getByRole('link').evaluateAll((links) =>
+      links.map((link) => {
+        const range = document.createRange()
+        range.selectNodeContents(link)
+        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size
+      }),
+    )
+
+    expect(lines).toEqual([1, 1, 1, 1])
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth),
+    ).toBe(0)
+  })
+})
+
+test.describe('när röstningen stänger medan sidan är öppen', () => {
+  /**
+   * Spec 3.1 punkt 4: enheten raderar det den sparat när sidan ser att fasen
+   * lämnat OPEN. En flik som står öppen över stängningen ska också se det,
+   * inte bara en sida som laddas efteråt.
+   *
+   * Stängningen spelas upp genom att serverns svar byts ut i webbläsaren, i
+   * stället för att valet stängs i databasen. Det som prövas är vad sidan gör
+   * med svaret, och en riktig stängning av Valet 2026 skulle lämna sviten i ett
+   * läge den inte kan fortsätta från. Att svaren säger rätt sak om fasen prövas
+   * mot riktiga databaser i tests/integration/device-comparison.test.ts.
+   */
+  test.describe.configure({ timeout: 180_000 })
+
+  function storedKeys(page: Page): Promise<string[]> {
+    return page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('valsystem.')))
+  }
+
+  test('en flik som står öppen ser att fasen lämnat OPEN och raderar det enheten sparat', async ({
+    page,
+  }) => {
+    await identify(page, VOTERS.closing)
+    await voteFor(page, 'Liberalerna')
+    expect(await storedKeys(page)).toHaveLength(1)
+
+    // Från och med nu säger sessionen att kopplingen är raderad.
+    await page.route('**/api/vote/session', async (route) => {
+      const response = await route.fetch()
+      const body = await response.json()
+      await route.fulfill({ response, json: { ...body, phase: 'STRIPPED', acceptsVotes: false } })
+    })
+
+    // Väljaren kommer tillbaka till fliken. Sidan frågar då direkt, utan att
+    // vänta på nästa tick.
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+
+    await expect(page.getByText(/röstningen har stängt\. ingen röst går längre/i)).toBeVisible()
+    await expect.poll(() => storedKeys(page)).toEqual([])
+    await expect(page.getByText(/din nuvarande röst/i)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /^(Rösta|Ändra din röst)$/ })).toHaveCount(0)
+  })
+
+  test('ett svar om att röstningen har stängt raderar också det enheten sparat', async ({ page }) => {
+    await identify(page, VOTERS.closing)
+    await voteFor(page, 'Liberalerna')
+    expect(await storedKeys(page)).toHaveLength(1)
+
+    // Nästa röst når servern först efter stängningen.
+    await page.route('**/api/vote/encrypted', (route) =>
+      route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'closed' }),
+      }),
+    )
+
+    const ballot = page.getByRole('region', { name: BALLOT })
+    await ballot.getByRole('button', { name: 'Ändra din röst' }).click()
+    await ballot.getByRole('radio', { name: /Centerpartiet/ }).check()
+    await ballot.getByRole('button', { name: 'Lägg rösten' }).click()
+    await ballot.getByRole('button', { name: 'BankID på annan enhet' }).click()
+
+    await expect(page.getByText(/röstningen har stängt, och rösten lades inte/i)).toBeVisible()
+    await expect.poll(() => storedKeys(page)).toEqual([])
+    await expect(page.getByText(/din nuvarande röst/i)).toHaveCount(0)
   })
 })
