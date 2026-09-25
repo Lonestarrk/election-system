@@ -107,7 +107,15 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
 export type SignatureFault = ChainFailure | 'unreadable' | 'signature' | 'other_voter'
 
 export type Anomaly = {
-  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF'
+  /**
+   * DUPLICATE_CIPHERTEXT: två kuvert har samma chifferhash (fixrunda 2 av
+   * uppgift 11d, ruling 129). Bara ett av dem kan flyttas, eftersom
+   * chifferhashen är unik i urnan. Läggningen tar inte emot ett sådant kuvert,
+   * och ett unikt index i pending_vote stoppar det, så en sådan rad är skriven
+   * förbi båda. Båda raderna pekas ut, eftersom ingenting säger vilken som är
+   * den äkta.
+   */
+  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF' | 'DUPLICATE_CIPHERTEXT'
   pendingVoteId: string
   /** Bara för administratörens utredning. Publiceras aldrig. */
   voterStatusId: string
@@ -539,6 +547,8 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
  *                        rad kostar flera), och en identitetshash per väljare.
  *   4. BAD_PROOF       — dyrast: en handfull modulär exponentiering per
  *                        alternativ på valsedeln.
+ *   5. DUPLICATE_CIPHERTEXT — två kuvert med samma chifferhash, prövat över
+ *                        hela läsningen när raderna är genomgångna.
  *
  * "Billigast först" avgör bara ORDNINGEN de körs i, inte OM de körs. En rad
  * kan ha flera samtidiga fel — fel valsedel OCH ett förfalskat bevis är inte
@@ -636,6 +646,25 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
 
     if (!proofHolds) {
       anomalies.push(anomaly('BAD_PROOF'))
+    }
+  }
+
+  /**
+   * 5. DUPLICATE_CIPHERTEXT — två kuvert med samma chifferhash (fixrunda 2 av
+   * uppgift 11d, ruling 129). Återläsningen i stängningen avbröt förut varje
+   * körning när det hände, och ruling 126 kallade dessutom stängningens egen
+   * rad förfalskad. Nu stoppar valideringen stängningen och pekar ut raderna.
+   */
+  const envelopesByHash = new Map<string, Array<(typeof pendingVotes)[number]>>()
+  for (const vote of pendingVotes) {
+    const same = envelopesByHash.get(vote.ciphertextHash)
+    if (same) same.push(vote)
+    else envelopesByHash.set(vote.ciphertextHash, [vote])
+  }
+  for (const same of envelopesByHash.values()) {
+    if (same.length < 2) continue
+    for (const vote of same) {
+      anomalies.push({ kind: 'DUPLICATE_CIPHERTEXT', pendingVoteId: vote.id, voterStatusId: vote.voterStatusId })
     }
   }
 

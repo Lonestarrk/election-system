@@ -23,7 +23,9 @@ import { sealCertificateChain } from './sealed-chain'
  * DUBBELRÖSTNINGSSPÄRREN ÄR ETT UNIKT INDEX, inte en kontroll i koden. Två
  * samtidiga anrop kan därför inte båda skapa en rad, oavsett hur de ligger i
  * tid. Den andra stoppas av indexet, gör om sin transaktion och prövas då mot
- * raden som finns, se `castEncryptedBallot`.
+ * raden som finns, se `castEncryptedBallot`. Ett andra unikt index, på
+ * chifferhashen, gör att samma chiffer aldrig ligger på två kuvert (fixrunda 2
+ * av uppgift 11d).
  */
 
 export type SignedEnvelope = {
@@ -68,6 +70,12 @@ export type CastOutcome =
   | { status: 'invalid_signature' }
   | { status: 'stale_sequence' }
   | { status: 'not_eligible' }
+  /**
+   * Chiffret ligger redan på ett annat kuvert, väljarens eget på en annan
+   * valsedel eller någon annans (fixrunda 2 av 11d, ruling 129). Rösten lades
+   * inte. En ny kryptering av samma val ger ett annat chiffer.
+   */
+  | { status: 'duplicate_ciphertext' }
 
 /**
  * Valsedelns kryptonyckel och antal alternativ — det `verifyEncryptedBallotOnServer`
@@ -336,6 +344,15 @@ export async function castEncryptedBallot(
    * `stale_sequence`, eller inget kuvert alls, och då skapas det. Skapar två
    * läggningar samtidigt stoppas den senare av det unika indexet. Den gör då
    * om sin transaktion en gång och prövas mot raden som finns.
+   *
+   * CHIFFRET FÅR INTE LIGGA PÅ ETT ANNAT KUVERT (fixrunda 2 av 11d, ruling
+   * 129). Chifferhashen är unik i pending_vote, som i urnan. Två kuvert med
+   * samma chiffer kan aldrig båda flyttas, och före indexet avbröt
+   * stängningens återläsning då varje körning, så att en enda väljare kunde
+   * hindra valet från att stängas. Ligger hashen redan på ett annat kuvert,
+   * väljarens eget på en annan valsedel eller någon annans, stoppar indexet
+   * skrivningen, och svaret är `duplicate_ciphertext`. Samma väljare som lägger
+   * om på samma valsedel skriver över sin egen rad, också med samma chiffer.
    */
   const envelopeData = {
     ciphertext: ballot.ciphertext,
@@ -382,8 +399,15 @@ export async function castEncryptedBallot(
   try {
     written = await writeEnvelope()
   } catch (error) {
-    if (!isUniqueViolation(error)) throw error
-    written = await writeEnvelope()
+    const conflict = uniqueConflictOf(error)
+    if (conflict === 'ciphertext') return { status: 'duplicate_ciphertext' }
+    if (conflict !== 'envelope') throw error
+    try {
+      written = await writeEnvelope()
+    } catch (retryError) {
+      if (uniqueConflictOf(retryError) === 'ciphertext') return { status: 'duplicate_ciphertext' }
+      throw retryError
+    }
   }
 
   if (written.status !== 'written') return written
@@ -394,9 +418,25 @@ export async function castEncryptedBallot(
 /** Vad skrivningen i läggningens transaktion kom fram till. */
 type EnvelopeWrite = { status: 'closed' } | { status: 'stale_sequence' } | { status: 'written'; replaced: boolean }
 
-/** En unikhetskonflikt, P2002, som när två läggningar skapar samma kuvert samtidigt. */
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
+/**
+ * Vilket unikt index en unikhetskonflikt, P2002, gällde.
+ *
+ * `envelope`    väljaren och valsedeln. Två läggningar för samma kuvert skapade
+ *               det samtidigt, och den senare gör om sin transaktion.
+ * `ciphertext`  chifferhashen (fixrunda 2 av 11d, ruling 129). Chiffret ligger
+ *               redan på ett annat kuvert, och läggningen svarar
+ *               `duplicate_ciphertext` utan att göra om något.
+ *
+ * Prisma anger indexets kolumner i `meta.target`. Saknas de räknas konflikten
+ * som kuvertets, och en ny konflikt i omförsöket kastas.
+ */
+function uniqueConflictOf(error: unknown): 'envelope' | 'ciphertext' | null {
+  if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'P2002') {
+    return null
+  }
+  const target = 'meta' in error ? (error.meta as { target?: unknown } | undefined)?.target : undefined
+  const columns = Array.isArray(target) ? target.map(String) : typeof target === 'string' ? [target] : []
+  return columns.some((column) => column.includes('ciphertext_hash')) ? 'ciphertext' : 'envelope'
 }
 
 /**

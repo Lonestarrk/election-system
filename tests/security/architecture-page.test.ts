@@ -16,6 +16,7 @@ import {
   statusPlanned,
   STRIPPING_HELPERS,
   STRIPPING_TRANSACTION,
+  STRIP_IN_LOCK_TRANSACTION,
   VOTERS_MODELS_TODAY,
   VOTER_MODEL_FIELDS_TODAY,
   MARKING_ONLY_IN_OLD_FLOW,
@@ -526,42 +527,55 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
   })
 
   it('en ny skrivning i skalningens transaktion fäller påståendet', () => {
-    // Förankrad i transaktionens första sats: stängningens lås har en egen
-    // transaktion längre upp i filen, som också börjar med `async (tx) => {`.
-    const opening = '      async (tx) => {\n        const stripped = await tx.election.updateMany({\n'
+    // Förankrad i anropet som ger skalningen låsets transaktion.
+    const opening = '  const stripping = await lock.strip(async (tx) => {\n    const stripped = await tx.election.updateMany({\n'
     expect(transaction).toContain(opening)
 
     const insertions = [
       // En markering i en annan modell.
-      '        await tx.votedAt.createMany({ data: [] })\n',
+      '    await tx.votedAt.createMany({ data: [] })\n',
       // Det gamla flödets markering.
-      '        await tx.voterBallotStatus.createMany({ data: [] })\n',
+      '    await tx.voterBallotStatus.createMany({ data: [] })\n',
       // En hjälpfunktion som får transaktionen.
-      '        await markEnvelopesAsVotedAgain(electionId, tx)\n',
+      '    await markEnvelopesAsVotedAgain(electionId, tx)\n',
     ]
 
     for (const insertion of insertions) {
       const first = transaction.replace(opening, opening.replace('{\n', `{\n${insertion}`))
-      const beforeReturn = transaction.replace(
-        '        return removed\n',
-        insertion + '        return removed\n',
-      )
+      const beforeReturn = transaction.replace('    return removed\n', insertion + '    return removed\n')
       expect(first.includes(contains(STRIPPING_TRANSACTION)), insertion).toBe(false)
       expect(beforeReturn.includes(contains(STRIPPING_TRANSACTION)), insertion).toBe(false)
     }
 
     // Och en markering efter raderingen i stället för före fäller det också.
     const marking = [
-      '        // Markeringarna, ur exakt de kuvert som raderas, före raderingen.',
-      '        const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)',
+      '    // Markeringarna, ur exakt de kuvert som raderas, före raderingen.',
+      '    const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)',
     ].join('\n')
     const clearing = [
-      '        // Exakt de kuvert som validerades och flyttades, och inga andra.',
-      '        const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)',
+      '    // Exakt de kuvert som validerades och flyttades, och inga andra.',
+      '    const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)',
     ].join('\n')
     const swapped = transaction.replace(`${marking}\n\n${clearing}`, `${clearing}\n\n${marking}`)
     expect(swapped).not.toBe(transaction)
     expect(swapped.includes(contains(STRIPPING_TRANSACTION))).toBe(false)
+  })
+
+  it('skalningen får låsets egen transaktion, och en egen transaktion fäller påståendet (fixrunda 2 av 11d)', () => {
+    const lockTransaction = contains(STRIP_IN_LOCK_TRANSACTION)
+    expect(transaction.includes(lockTransaction)).toBe(true)
+
+    // En egen transaktion för skalningen, som före ruling 128, fäller påståendet.
+    const ownTransaction = transaction.replace(
+      '              const value = await work(tx)\n',
+      '              const value = await votersDb.$transaction((own) => work(own))\n',
+    )
+    expect(ownTransaction).not.toBe(transaction)
+    expect(ownTransaction.includes(lockTransaction)).toBe(false)
+
+    // Och påståendet om fasen STRIPPED bär markören.
+    const stripped = PHASES.find((row) => row.phase === 'STRIPPED')!
+    expect(stripped.today.holdsWhile).toContain(STRIP_IN_LOCK_TRANSACTION)
   })
 
   it('en ny skrivning i en hjälpfunktion som transaktionen anropar fäller påståendet', () => {

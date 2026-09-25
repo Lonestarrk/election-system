@@ -8,7 +8,11 @@ import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
-import { validateBeforeClose } from '@/orchestration/validate-before-close.usecase'
+import {
+  readEnvelopes,
+  validateBeforeClose,
+  validateEnvelopes,
+} from '@/orchestration/validate-before-close.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -472,6 +476,28 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
 
     expect(report.summary).toMatchObject({ votes: 2, voters: 2, passed: true })
     expect(report.anomalies).toHaveLength(0)
+  })
+
+  it('två kuvert med samma chifferhash är en avvikelse för båda raderna (fixrunda 2 av 11d, ruling 129)', async () => {
+    /**
+     * Två kuvert med samma chiffer kan aldrig båda flyttas, eftersom
+     * chifferhashen är unik i urnan. Läggningen tar inte emot det, och ett
+     * unikt index i pending_vote stoppar det. Skrivs en rad ändå förbi det,
+     * till exempel sedan indexet tagits bort, ska valideringen peka ut båda
+     * raderna, i stället för att stängningen avbryts vid återläsningen.
+     * Läsningen dubbleras här i minnet, eftersom indexet stoppar det i
+     * databasen.
+     */
+    const annasRow = await castFor(anna, 'bp-s')
+    const snapshot = await readEnvelopes(electionId)
+    const original = snapshot.envelopes[0]!
+    const copy = { ...original, id: randomUUID(), voterStatusId: kim }
+
+    const report = await validateEnvelopes({ ...snapshot, envelopes: [original, copy] })
+
+    expect(report.summary.passed).toBe(false)
+    const duplicates = report.anomalies.filter((anomaly) => anomaly.kind === 'DUPLICATE_CIPHERTEXT')
+    expect(duplicates.map((anomaly) => anomaly.pendingVoteId).sort()).toEqual([annasRow.id, copy.id].sort())
   })
 
   it('upptäcker en röst lagd i någon annans namn', async () => {

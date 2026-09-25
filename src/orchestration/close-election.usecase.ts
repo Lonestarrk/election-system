@@ -1,4 +1,5 @@
 import { Prisma } from '.prisma/votes'
+import type { Prisma as VotersPrisma } from '.prisma/voters'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
 import { logger } from '@/lib/logger'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
@@ -31,8 +32,10 @@ import {
  *   4. skriv VALIDATED, ta bort rester och ersätt förfalskade rader i
  *      votes_db, och infoga, sorterat på chifferhash
  *   5. läs tillbaka varje flyttat chiffer och kontrollera antalet
- *   6. först då, odelbart: skriv STRIPPED och roten, markera väljarna, radera
- *      exakt de flyttade kuverten och kontrollera att inget annat ligger kvar
+ *   6. först då, odelbart och i låsets transaktion: skriv STRIPPED och roten,
+ *      markera väljarna, radera exakt de flyttade kuverten och kontrollera att
+ *      inget annat ligger kvar
+ *   7. efter låsets COMMIT: kontrollera att skalningen finns i röstlängden
  *
  * FASERNA ÄR TILLSTÅND (spec 6.1, uppgift 11d). Varje övergång är ett
  * jämför-och-sätt: en uppdatering med villkor på den fas raden står i, så att
@@ -102,7 +105,15 @@ export type CloseOutcome =
       urnRowsReplaced: string[]
     }
   | { status: 'too_early'; closesAt: Date }
-  | { status: 'already_closed' }
+  | {
+      status: 'already_closed'
+      /**
+       * Rader som den här körningen ersatte innan den fann omröstningen stängd
+       * (fixrunda 2 av 11d). Står bara med när det finns några, se
+       * `urnRowsReplaced` i `closed`.
+       */
+      urnRowsReplaced?: string[]
+    }
   | { status: 'in_progress' }
   | { status: 'validation_failed'; summary: ValidationReport['summary'] }
   | { status: 'invalid_ballot'; ciphertextHash: string }
@@ -115,9 +126,9 @@ export type CloseOutcome =
  *   ut. Den här körningen har inte raderat något kuvert, och stängningens lås
  *   hålls bevisligen när beskedet ges, så ingen annan stängning kan ha gjort
  *   det heller (se `withClosingLock` och `verdictFor`). Så är det på varje väg
- *   som bryter FÖRE transaktionen, på den väg där efterkontrollen visar att
- *   transaktionen rullade tillbaka, och när transaktionen själv avbröt, så
- *   länge låset hålls och fasen inte visar något annat.
+ *   som bryter FÖRE skalningen, och när skalningens satser förts tillbaka
+ *   till sparpunkten i låsets transaktion, så länge låset hålls och fasen gått
+ *   att läsa och inte visar något annat (fixrunda 2 av 11d).
  *
  * `unknown` — OKONTROLLERAT. Kopplingen kan vara raderad, av den här körningen
  *   eller av en annan. Transaktionen kan ha commitat utan att utfallet gick att
@@ -374,24 +385,67 @@ function describeUnexpectedState(state: CloseState): string {
  * tidsgräns, och en anslutning kan tappas. Då släpps låset, men stängningen
  * märker det inte av sig själv. Den frågar därför transaktionen, med
  * `stillHeld`, före de steg låset skyddar: städningen i röstdatabasen, en gång
- * före läsningen och en gång direkt före raderingen, och skalningens
- * transaktion. Har låset gått förlorat avbryts stängningen, och beskedet om
- * kopplingen kommer då ur fasen. "Orörd" sägs aldrig utan att låset frågats
- * efter att fasen lästs, se `verdictFor` (fixrunda 1 av 11d, V1). Ett lås som
+ * före läsningen och en gång direkt före raderingen, och skalningen. Har låset
+ * gått förlorat avbryts stängningen, och beskedet om kopplingen kommer då ur
+ * fasen. "Orörd" sägs aldrig utan en läst fas och ett lås som frågats efter
+ * läsningen, se `verdictWithoutDeletion` (fixrunda 1 och 2 av 11d). Ett lås som
  * gått förlorat kommer inte tillbaka, så ett ja från `stillHeld` betyder att
  * låset hållits hela vägen dit.
  *
- * Går låset förlorat mellan den sista frågan och raderingen finns ett fönster
- * på några satser. Raderingen tar bort chiffer som inte fanns i den här
- * läsningen, och en stängning som tagit över kan ha flyttat ett sådant, om
+ * SKALNINGEN KÖRS I LÅSETS TRANSAKTION (fixrunda 2 av 11d, ruling 128). Fram
+ * till rundan hade skalningen en egen transaktion, på en annan anslutning.
+ * Omgranskningens prob Z1 lät en stängning vars lås gått förlorat efter den
+ * sista frågan skala ändå, medan en annan stängning tog låset. Nu körs
+ * skalningens satser på låsets anslutning, efter en sparpunkt, och blir
+ * beständiga först när låsets transaktion gör COMMIT. Går låset förlorat går
+ * skalningen förlorad med det, och "låset hålls" betyder att ingen annan
+ * skalning kan pågå. Se `ClosingLock.strip`.
+ *
+ * Går låset förlorat mellan den sista frågan och städningens radering finns
+ * ett fönster på några satser. Raderingen tar bort chiffer som inte fanns i den
+ * här läsningen, och en stängning som tagit över kan ha flyttat ett sådant, om
  * kuvertet skrivits direkt i röstlängden efter läsningen. Därför frågas låset
  * och fasen igen efter raderingen, och stängningen larmar och ger det
  * försiktiga beskedet om något av dem inte stämmer, se `removeFromUrn`.
- * Skalningens transaktion låser omröstningens rad i sin första sats, så en
- * annan stängnings övergång till VALIDATED, och därmed dess städning, väntar
- * tills skalningen är klar och ser då STRIPPED, se `closeUnderLock`.
+ * Skalningens första sats låser omröstningens rad, så en annan stängnings
+ * övergång till VALIDATED, och därmed dess städning, väntar tills låsets
+ * transaktion är klar och ser då STRIPPED.
  */
-type ClosingLock = { stillHeld: () => Promise<boolean> }
+type ClosingLock = {
+  stillHeld: () => Promise<boolean>
+  /**
+   * Kör skalningens satser i låsets transaktion, efter sparpunkten
+   * `stripping`. Satserna blir beständiga när låsets transaktion gör COMMIT,
+   * och det gör den bara om stängningen svarat med skalningen, se
+   * `withClosingLock`.
+   */
+  strip: <R>(work: (tx: VotersTransaction) => Promise<R>) => Promise<Stripping<R>>
+}
+
+/** En transaktion i röstlängden, som låsets. */
+type VotersTransaction = VotersPrisma.TransactionClient
+
+/**
+ * Hur skalningens satser gick.
+ *
+ * `done`        satserna gick igenom, och transaktionen håller. De blir
+ *               beständiga när låsets transaktion gör COMMIT.
+ * `rolledBack`  satserna kastade, eller transaktionen hade avbrutits av ett
+ *               fel som svalts. Allt efter sparpunkten är ångrat, och låset
+ *               hålls fortfarande.
+ * `lost`        transaktionen gick inte att föra tillbaka till sparpunkten,
+ *               oftast för att anslutningen är borta. Den gör aldrig COMMIT,
+ *               och låset hålls inte längre.
+ */
+type Stripping<R> = { outcome: 'done'; value: R } | { outcome: 'rolledBack' | 'lost'; error: unknown }
+
+/** Låsets transaktion kunde inte föras tillbaka till sparpunkten, och får inte göra COMMIT. */
+class StrippingNotCommitted extends Error {
+  constructor() {
+    super('Låsets transaktion kunde inte föras tillbaka till sparpunkten före skalningen och rullas tillbaka.')
+    this.name = 'StrippingNotCommitted'
+  }
+}
 
 /**
  * Tidsgränsen för låsets transaktion. Valideringen hashar ett personnummer per
@@ -416,6 +470,8 @@ async function withClosingLock<T>(
   run: (lock: ClosingLock) => Promise<T>,
 ): Promise<LockedRun<T>> {
   const holder: { result?: { value: T } | { error: unknown } } = {}
+  /** Skalningens satser står i låsets transaktion och görs beständiga av dess COMMIT. */
+  let carriesStripping = false
 
   try {
     await votersDb.$transaction(
@@ -436,6 +492,9 @@ async function withClosingLock<T>(
          */
         await tx.$queryRaw`SELECT set_config('idle_in_transaction_session_timeout', '0', true)`
 
+        /** En transaktion som inte går att föra tillbaka till sparpunkten får aldrig göra COMMIT. */
+        let unusable = false
+
         const lock: ClosingLock = {
           stillHeld: async () => {
             try {
@@ -445,23 +504,55 @@ async function withClosingLock<T>(
               return false
             }
           },
+          strip: async (work) => {
+            try {
+              await tx.$queryRaw`SAVEPOINT stripping`
+              const value = await work(tx)
+              /**
+               * EN AVBRUTEN TRANSAKTION MÄRKS HÄR, MEDAN LÅSET HÅLLS. Ett fel
+               * som svalts inne i satserna lämnar transaktionen avbruten, och
+               * dess COMMIT blir då en ROLLBACK, utan fel (fixrunda 2 av
+               * uppgift 11). En enkel sats kastar i det läget, och
+               * transaktionen förs tillbaka till sparpunkten i stället.
+               */
+              await tx.$queryRaw`SELECT 1`
+              carriesStripping = true
+              return { outcome: 'done', value }
+            } catch (error) {
+              try {
+                await tx.$queryRaw`ROLLBACK TO SAVEPOINT stripping`
+                return { outcome: 'rolledBack', error }
+              } catch {
+                unusable = true
+                return { outcome: 'lost', error }
+              }
+            }
+          },
         }
 
         try {
           holder.result = { value: await run(lock) }
         } catch (error) {
           holder.result = { error }
+          /**
+           * En skalning görs bara beständig när stängningen svarat med den.
+           * Kastade stängningen efter skalningen ångras den här.
+           */
+          if (carriesStripping) {
+            carriesStripping = false
+            try {
+              await tx.$queryRaw`ROLLBACK TO SAVEPOINT stripping`
+            } catch {
+              unusable = true
+            }
+          }
         }
+
+        if (unusable) throw new StrippingNotCommitted()
       },
       { timeout: CLOSING_LOCK_TIMEOUT_MS, maxWait: 20_000 },
     )
   } catch (lockError) {
-    /**
-     * Låsets egen transaktion skriver ingenting. Föll den innan stängningen
-     * kört vet vi bara att ingenting gjordes här, inte om en annan stängning
-     * pågår. Föll den efteråt, när den skulle avslutas, har stängningen redan
-     * svarat med ett utfall den själv kontrollerat, och det gäller.
-     */
     if (holder.result === undefined) {
       throw new CloseAbortedError(
         'unknown',
@@ -470,9 +561,26 @@ async function withClosingLock<T>(
         { cause: lockError },
       )
     }
-    logger.warn('Stängningens lås släpptes inte som vanligt efter stängningen', {
-      reason: lockError instanceof Error ? lockError.message : String(lockError),
-    })
+    /**
+     * Bär transaktionen skalningen kan COMMIT ha gått igenom eller inte, och
+     * felet säger inte vilket. Då är det försiktiga beskedet det enda ärliga.
+     * Bär den ingen skalning skrev den ingenting, och stängningens eget utfall
+     * gäller.
+     */
+    if (carriesStripping) {
+      throw new CloseAbortedError(
+        'unknown',
+        'Stängningen kunde inte bekräftas: låsets transaktion, som bär skalningen, avbröts vid ' +
+          'COMMIT utan besked om den hann genomföras. Kontrollera omröstningens fas innan ' +
+          'stängningen körs om.',
+        { cause: lockError },
+      )
+    }
+    if (!(lockError instanceof StrippingNotCommitted)) {
+      logger.warn('Stängningens lås släpptes inte som vanligt efter stängningen', {
+        reason: lockError instanceof Error ? lockError.message : String(lockError),
+      })
+    }
   }
 
   if (holder.result === undefined) return { taken: false }
@@ -505,11 +613,11 @@ async function withClosingLock<T>(
  * stängningen skriver CLOSED först och läggningen prövar fasen i samma
  * transaktion som den skriver.
  *
- * KASTAS INIFRÅN TRANSAKTIONEN, FÖRE COMMIT. Prisma skickar då ingen COMMIT
- * utan rullar tillbaka och lämnar vidare just det här felet, så raderingen
- * försvinner tillsammans med roten, fasen, markeringarna och revisionsposten.
- * Att det är en egen klass gör att `closeElection` kan skilja det från ett fel
- * vid COMMIT, där ingen vet om transaktionen gick igenom.
+ * KASTAS INIFRÅN SKALNINGEN, FÖRE COMMIT. Låsets transaktion förs då tillbaka
+ * till sparpunkten före skalningen, så raderingen försvinner tillsammans med
+ * roten, fasen, markeringarna och revisionsposten, och låset hålls kvar (se
+ * `withClosingLock`). Att det är en egen klass gör att `closeUnderLock` kan ge
+ * dess egen text, som säger vad som ändrats.
  */
 class EnvelopesChangedError extends Error {
   readonly moved: number
@@ -642,7 +750,7 @@ function afterChangedEnvelopes(change: EnvelopesChangedError | PhaseMovedError):
  */
 type Verdict =
   | { kind: 'cleared' }
-  | { kind: 'intact'; statement: string; cause?: unknown }
+  | { kind: 'intact'; statement: string }
   | { kind: 'uncertain'; statement: string; cause?: unknown }
 
 function verdictFor(state: CloseState | null, lockHeld: boolean): Verdict {
@@ -671,29 +779,22 @@ function verdictFor(state: CloseState | null, lockHeld: boolean): Verdict {
 /**
  * Läser fasen, frågar sedan låset och fattar beslutet i `verdictFor`.
  *
- * Går fasen inte att läsa avgör låset ensamt. Hålls det kan ingen annan
- * stängning ha raderat kopplingen, och den här har inte gjort det. Har det
- * gått förlorat vet vi inte.
+ * GÅR FASEN INTE ATT LÄSA ÄR BESKEDET DET FÖRSIKTIGA, OAVSETT LÅS (fixrunda 2
+ * av 11d, nytt fel 1). Fram till rundan avgjorde låset ensamt i det läget:
+ * hölls det sades kopplingen vara orörd. Men låset utesluter bara en
+ * stängning som tar det senare. Omgranskningens prob Z1 lät en stängning vars
+ * lås gått förlorat skala medan en annan höll låset, och den andra svarade
+ * ORÖRD fast kopplingen var raderad. Sedan ruling 128 kan en stängning utan
+ * lås inte skala, men "orörd" ska ändå vila på en läst fas.
  */
 async function verdictWithoutDeletion(electionId: string, lock: ClosingLock): Promise<Verdict> {
   let state: CloseState | null
   try {
     state = await closeStateOf(electionId)
   } catch (error) {
-    if (await lock.stillHeld()) {
-      return {
-        kind: 'intact',
-        statement:
-          'Fasen gick inte att läsa, men stängningens lås hålls fortfarande, så ingen annan ' +
-          'stängning kan ha raderat kopplingen. Kopplingen är orörd.',
-        cause: error,
-      }
-    }
     return {
       kind: 'uncertain',
-      statement:
-        'Varken fasen eller stängningens lås gick att läsa, så det går inte att säga om en annan ' +
-        'stängning raderat kopplingen.',
+      statement: 'Fasen gick inte att läsa, så det går inte att säga om kopplingen raderats.',
       cause: error,
     }
   }
@@ -723,7 +824,7 @@ async function abortWithoutDeletion(
   const verdict = await verdictWithoutDeletion(electionId, lock)
   if (verdict.kind === 'cleared') return { status: 'already_closed' }
 
-  const cause = options.cause ?? verdict.cause
+  const cause = options.cause ?? (verdict.kind === 'uncertain' ? verdict.cause : undefined)
   const errorOptions = cause === undefined ? undefined : { cause }
 
   if (verdict.kind === 'intact') {
@@ -989,7 +1090,8 @@ async function findUrnDeviations(ballotIds: string[], envelopes: readonly Envelo
 }
 
 /**
- * Tar bort det `findUrnDeviations` hittat, under stängningens lås.
+ * Tar bort det `findUrnDeviations` hittat, under stängningens lås, och skriver
+ * i `urn` vad som tagits bort, först när det bevisligen är borta.
  *
  * NÄR. Direkt efter att fasen satts till VALIDATED med jämför-och-sätt från
  * CLOSED eller VALIDATED med oskriven rot, och direkt efter en fråga till
@@ -1014,7 +1116,8 @@ async function removeFromUrn(
   electionId: string,
   lock: ClosingLock,
   ballotIds: string[],
-  { residue, forgedRowIds }: UrnDeviations,
+  { residue, forged, forgedRowIds }: UrnDeviations,
+  urn: UrnChanges,
 ): Promise<void> {
   let residueRemoved = 0
   for (let start = 0; start < residue.length; start += URN_DELETE_BATCH_SIZE) {
@@ -1026,6 +1129,7 @@ async function removeFromUrn(
     })
     residueRemoved += result.count
   }
+  urn.residueRemoved = residue
 
   let forgedRemoved = 0
   for (let start = 0; start < forgedRowIds.length; start += URN_DELETE_BATCH_SIZE) {
@@ -1034,6 +1138,14 @@ async function removeFromUrn(
     })
     forgedRemoved += result.count
   }
+  /**
+   * FÖRST NU ÄR RADERNA BEVISLIGEN BORTTAGNA (fixrunda 2 av 11d, nytt fel 6).
+   * Hasharna sattes förut innan något raderats, och kastade raderingen av
+   * resterna bar felet ändå hasharna, med texten att raderna tagits bort. En
+   * rad som redan var borta när raderingen kom räknas också som borttagen:
+   * ingen av dem finns kvar.
+   */
+  urn.urnRowsReplaced = forged
 
   if (residue.length > 0) {
     logger.warn('Stängningen tog bort rester i röstdatabasen: chiffer utan något validerat kuvert', {
@@ -1208,14 +1320,26 @@ async function reportFinding(
   lock: ClosingLock,
   finding: Extract<CloseOutcome, { status: 'validation_failed' | 'invalid_ballot' }>,
 ): Promise<Preparation> {
-  const verdict = await verdictWithoutDeletion(electionId, lock)
-  if (verdict.kind === 'intact') return { kind: 'settled', outcome: finding }
-  if (verdict.kind === 'cleared') return { kind: 'settled', outcome: { status: 'already_closed' } }
-
   const found =
     finding.status === 'validation_failed'
       ? 'Valideringen hittade avvikelser'
       : 'Omverifieringen hittade en valsedel som inte verifierar'
+
+  /**
+   * AVVIKELSEN LOGGAS ALLTID, MED SIN SAMMANFATTNING (fixrunda 2 av 11d, nytt
+   * fel 5). Svaret kan bli `already_closed` eller det försiktiga beskedet, och
+   * då står avvikelsen ingen annanstans. Sammanfattningen bär antal och
+   * kategorier men ingen väljare, och chifferhashen står inte med, eftersom
+   * loggen maskerar den.
+   */
+  logger.warn(`${found}, och skalningen avbröts`, {
+    ...(finding.status === 'validation_failed' ? { summary: finding.summary } : {}),
+  })
+
+  const verdict = await verdictWithoutDeletion(electionId, lock)
+  if (verdict.kind === 'intact') return { kind: 'settled', outcome: finding }
+  if (verdict.kind === 'cleared') return { kind: 'settled', outcome: { status: 'already_closed' } }
+
   throw new CloseAbortedError(
     'unknown',
     `${found}, och skalningen avbröts, men det går inte att bekräfta att kopplingen finns kvar. ` +
@@ -1431,9 +1555,7 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
     const lostBeforeDeletion = await lockStillHeldOrSettle(electionId, lock, 'raderingen i röstdatabasen')
     if (lostBeforeDeletion) return lostBeforeDeletion
 
-    urn.residueRemoved = deviations.residue
-    urn.urnRowsReplaced = deviations.forged
-    await removeFromUrn(electionId, lock, ballotIds, deviations)
+    await removeFromUrn(electionId, lock, ballotIds, deviations, urn)
   }
 
   /**
@@ -1506,15 +1628,17 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
  * Bara en stängning av samma omröstning kör åt gången. En andra svarar
  * `in_progress` utan att röra något, se `withClosingLock`.
  *
- * ERSÄTTNINGARNA FÖLJER MED ETT AVBROTT (fixrunda 1 av 11d, ruling 126). En
- * rad i röstdatabasen som ersatts med det validerade innehållet tyder på ett
- * angrepp, och chifferhashen pekar ut vilket kuvert det gällde medan
- * kopplingen finns kvar. Avbryts körningen efter ersättningen hittar en
- * omkörning ingenting att ersätta, så chifferhasharna läggs på felet här, där
- * hela körningen syns, och rutten sätter dem i svaret. Ett fall återstår: går
- * låset förlorat efter kontrollen som följer på raderingen, och en annan
- * stängning hinner skala, svarar körningen `already_closed`, och ersättningen
- * står då bara i loggen, med antal.
+ * ERSÄTTNINGARNA FÖLJER MED BESKEDET (fixrunda 1 och 2 av 11d, ruling 126).
+ * En rad i röstdatabasen som ersatts med det validerade innehållet tyder på
+ * ett angrepp, och chifferhashen pekar ut vilket kuvert det gällde medan
+ * kopplingen finns kvar. Avbryts körningen efter ersättningen, eller svarar
+ * den `already_closed` för att en annan stängning hunnit skala, hittar ingen
+ * omkörning raden igen. Chifferhasharna läggs därför på svaret här, där hela
+ * körningen syns: i `closed`, i `already_closed` och på felet.
+ *
+ * SKALNINGEN GÖRS BESTÄNDIG AV LÅSETS COMMIT (fixrunda 2 av 11d, ruling 128),
+ * och kontrolleras därför här, när låsets transaktion är avslutad, se
+ * `confirmStripped`.
  */
 export async function closeElection(electionId: string): Promise<CloseOutcome> {
   const urn: UrnChanges = { residueRemoved: [], urnRowsReplaced: [] }
@@ -1522,14 +1646,36 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
   try {
     const locked = await withClosingLock(electionId, (lock) => closeUnderLock(electionId, lock, urn))
     if (!locked.taken) return { status: 'in_progress' }
-    return locked.value
+    if (locked.value.kind === 'stripped') return await confirmStripped(electionId, locked.value, urn)
+    return withReplacements(locked.value.outcome, urn)
   } catch (error) {
     if (error instanceof CloseAbortedError) error.urnRowsReplaced = [...urn.urnRowsReplaced]
     throw error
   }
 }
 
-async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnChanges): Promise<CloseOutcome> {
+/**
+ * `already_closed` bär ersättningarna när körningen gjort några (fixrunda 2 av
+ * 11d, omgranskningens AC1). Annars svarar körningen med det den kom fram till.
+ */
+function withReplacements(outcome: CloseOutcome, urn: UrnChanges): CloseOutcome {
+  if (outcome.status !== 'already_closed' || urn.urnRowsReplaced.length === 0) return outcome
+  return { status: 'already_closed', urnRowsReplaced: [...urn.urnRowsReplaced] }
+}
+
+/**
+ * Vad stängningen kom fram till under låset.
+ *
+ * `outcome`   ett utfall som redan är kontrollerat
+ * `stripped`  skalningens satser gick igenom i låsets transaktion. De blir
+ *             beständiga när transaktionen gör COMMIT, och utfallet
+ *             kontrolleras efteråt, i `confirmStripped`.
+ */
+type UnderLock =
+  | { kind: 'outcome'; outcome: CloseOutcome }
+  | { kind: 'stripped'; moved: number; cleared: number; envelopeRoot: string }
+
+async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnChanges): Promise<UnderLock> {
   /**
    * INGET SOM KASTAR INUTI `prepareClose` HAR RADERAT KOPPLINGEN, MEN "ORÖRD"
    * SÄGS FÖRST NÄR FASEN OCH LÅSET BEKRÄFTAR DET.
@@ -1552,9 +1698,10 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
    * oförändrade. De har antingen gått genom samma beslut, eller gäller ett
    * tillstånd där fasen och roten inte stämmer med varandra, eller en radering
    * i röstdatabasen som låset inte täckte hela vägen, se `removeFromUrn`.
-   * GRÄNSEN ÄR `prepareClose`, INTE TRANSAKTIONEN. Det är anropet nedan som
-   * drar den. En framtida rad som hamnar mellan det här catch-blocket och
-   * `$transaction` ligger utanför skyddet: kastar den blir felet inte en
+   *
+   * GRÄNSEN ÄR `prepareClose`, INTE SKALNINGEN. Det är anropet nedan som drar
+   * den. En framtida rad som hamnar mellan det här catch-blocket och
+   * skalningen ligger utanför skyddet: kastar den blir felet inte en
    * `CloseAbortedError`, och `linkStateOf` räknar det som `unknown`. Det felar
    * åt det försiktiga hållet och gör ingen skada — men ska en sådan rad få
    * säga "orörd" hör den hemma inuti `prepareClose`.
@@ -1571,12 +1718,15 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
   } catch (error) {
     if (error instanceof CloseAbortedError) throw error
 
-    return abortWithoutDeletion(electionId, lock, 'Stängningen avbröts innan transaktionen inleddes.', {
-      cause: error,
-    })
+    return {
+      kind: 'outcome',
+      outcome: await abortWithoutDeletion(electionId, lock, 'Stängningen avbröts innan skalningen inleddes.', {
+        cause: error,
+      }),
+    }
   }
 
-  if (preparation.kind === 'settled') return preparation.outcome
+  if (preparation.kind === 'settled') return { kind: 'outcome', outcome: preparation.outcome }
 
   const { envelopeRoot, moved, ballotIds, movedByBallot, envelopes } = preparation
 
@@ -1592,17 +1742,23 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
    * skilja från "ingen har röstat", och som utan roten skriven här hade fått
    * omkörningen att publicera roten över en tom mängd.
    *
+   * SKALNINGEN KÖRS I LÅSETS TRANSAKTION (fixrunda 2 av 11d, ruling 128).
+   * Satserna går på låsets anslutning, efter en sparpunkt, och blir beständiga
+   * först när låsets transaktion gör COMMIT, tillsammans. En stängning vars lås
+   * gått förlorat kan alltså inte heller skala: dess satser kastar eller når
+   * aldrig någon COMMIT. Före rundan hade skalningen en egen transaktion, och
+   * omgranskningens prob Z1 lät en sådan stängning skala medan en annan höll
+   * låset. Se `withClosingLock`.
+   *
    * STRIPPED SKRIVS MED JÄMFÖR-OCH-SÄTT, SOM FÖRSTA SATS (uppgift 11d). Från
    * VALIDATED och bara med oskriven rot, så att två stängningar inte båda kan
    * skala och ingen fas går baklänges. Villkoret på roten är samtidigt
    * skriv-en-gång: en redan publicerad rot får aldrig ersättas. Satsen kommer
    * först, eftersom den låser omröstningens rad för resten av transaktionen.
-   * Har stängningens lås gått förlorat efter den sista frågan om det, och en
-   * annan stängning tagit över, väntar den andras övergång till VALIDATED, och
-   * därmed dess städning av rester, tills den här transaktionen är klar, och
-   * ser sedan STRIPPED. Att STRIPPED står före raderingen i texten spelar ingen
-   * roll för utfallet: transaktionen blir synlig som en helhet vid COMMIT, eller
-   * inte alls.
+   * En annan stängnings övergång till VALIDATED, och därmed dess städning,
+   * väntar då tills låsets transaktion är klar, och ser sedan STRIPPED. Att
+   * STRIPPED står före raderingen i texten spelar ingen roll för utfallet:
+   * transaktionen blir synlig som en helhet vid COMMIT, eller inte alls.
    *
    * MARKERINGEN "HAR RÖSTAT" SKRIVS UR DE KUVERT SOM RADERAS, FÖRE RADERINGEN
    * (spec 3.1 punkt 6). Se `markEnvelopesAsVoted`.
@@ -1611,133 +1767,133 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
    * (granskningen av uppgift 14f, K1, och uppgift 11d). Kuverten raderas efter
    * id och chifferhash, och antalet raderade ska vara antalet flyttade, med
    * ingenting kvar på omröstningens valsedlar. Antalet markeringar ska vara
-   * antalet flyttade, totalt och per valsedel. Varje avvikelse kastar inifrån
-   * transaktionen, och då följer raderingen och markeringarna med i
-   * rollbacken. Se `EnvelopesChangedError`.
+   * antalet flyttade, totalt och per valsedel. Varje avvikelse kastar, och då
+   * förs transaktionen tillbaka till sparpunkten, med raderingen och
+   * markeringarna. Se `EnvelopesChangedError`.
    *
    * Revisionsposten ligger med inuti, sist. En rollback tar då posten med sig
    * — en logg som påstår att kopplingen raderats när den ligger kvar vore
    * värre än ingen logg alls.
+   *
+   * TIDSGRÄNSEN är låsets, sex timmar. Före ruling 128 hade skalningen egna två
+   * minuter, valda för att rymma en radering av hundratusentals kuvert. Låsets
+   * gräns är längre än så, och ett lås som går ut tar skalningen med sig.
    */
-  let cleared: number
+  const stripping = await lock.strip(async (tx) => {
+    const stripped = await tx.election.updateMany({
+      where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },
+      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },
+    })
+    if (stripped.count !== 1) throw new PhaseMovedError()
 
-  try {
-    cleared = await votersDb.$transaction(
-      async (tx) => {
-        const stripped = await tx.election.updateMany({
-          where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },
-          data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },
-        })
-        if (stripped.count !== 1) throw new PhaseMovedError()
+    // Markeringarna, ur exakt de kuvert som raderas, före raderingen.
+    const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)
 
-        // Markeringarna, ur exakt de kuvert som raderas, före raderingen.
-        const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)
+    // Exakt de kuvert som validerades och flyttades, och inga andra.
+    const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)
 
-        // Exakt de kuvert som validerades och flyttades, och inga andra.
-        const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)
+    const markersMatch =
+      markersByBallot.every(({ ballotId, markers }) => markers === (movedByBallot.get(ballotId) ?? 0)) &&
+      ballotIds.every((ballotId) => markersByBallot.some((entry) => entry.ballotId === ballotId))
 
-        const markersMatch =
-          markersByBallot.every(({ ballotId, markers }) => markers === (movedByBallot.get(ballotId) ?? 0)) &&
-          ballotIds.every((ballotId) => markersByBallot.some((entry) => entry.ballotId === ballotId))
-
-        if (removed !== moved || left !== 0 || marked !== moved || !markersMatch) {
-          throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })
-        }
-
-        await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
-
-        return removed
-      },
-      /**
-       * TIDSGRÄNSEN ÄR VALD, INTE ÄRVD (fixrunda 2, uppgift 11).
-       *
-       * Prismas standard är 5 sekunder, och `db.ts` sätter ingen
-       * `transactionOptions`. Raderingen går över samtliga kuvert i
-       * omröstningen, i omgångar om tusen — i ett riktigt val hundratusentals
-       * rader — och den kan mycket väl ta längre tid än så. En P2028 hade
-       * rullat tillbaka allt, men det är en felväg som inte fanns när
-       * raderingen låg utanför en transaktion, och den ska inte uppstå av att
-       * ingen valde något.
-       *
-       * Två minuter är tilltaget för att rymma en radering i den storleken
-       * utan att vara obegränsat: en transaktion som hänger håller lås på
-       * `pending_vote` och `election`, så den får inte tillåtas leva hur länge
-       * som helst. `maxWait` är tiden att få en anslutning ur poolen, inte tid
-       * i transaktionen.
-       */
-      { timeout: 120_000, maxWait: 20_000 },
-    )
-  } catch (error) {
-    /**
-     * TRANSAKTIONEN ÄR DÄR KUNSKAPEN TAR SLUT — MED ETT UNDANTAG.
-     *
-     * Ett kast här betyder oftast en rollback, alltså att ingenting raderats —
-     * men inte alltid. En tappad anslutning i samma ögonblick som COMMIT
-     * skickas ger samma undantag oavsett om servern hann genomföra den eller
-     * inte, och den skillnaden går inte att läsa ur felet. Då är `unknown` det
-     * enda ärliga svaret, även om det oftare är försiktigt än nödvändigt.
-     *
-     * Undantaget är `EnvelopesChangedError` och `PhaseMovedError`. Dem kastar
-     * transaktionen själv, inifrån, och då skickar Prisma aldrig någon COMMIT
-     * utan rullar tillbaka och lämnar vidare just det felet. Att den här
-     * körningen inte raderat något är alltså känt. Vad det betyder för
-     * kopplingen avgör fasen, se `settleRolledBack`.
-     */
-    if (error instanceof EnvelopesChangedError || error instanceof PhaseMovedError) {
-      return settleRolledBack(electionId, lock, error)
+    if (removed !== moved || left !== 0 || marked !== moved || !markersMatch) {
+      throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })
     }
 
-    throw new CloseAbortedError(
-      'unknown',
-      'Stängningen kunde inte bekräftas: transaktionen avbröts utan besked om den hann ' +
-        'genomföras. Kontrollera omröstningens fas innan stängningen körs om.',
-      { cause: error },
-    )
+    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
+
+    return removed
+  })
+
+  if (stripping.outcome === 'done') {
+    return { kind: 'stripped', moved, cleared: stripping.value, envelopeRoot }
   }
 
   /**
-   * --- 7. STÄNGNINGEN KONTROLLERAR SITT EGET UTFALL ----------------------
+   * SKALNINGEN GICK INTE IGENOM, OCH DEN HÄR KÖRNINGEN HAR INTE RADERAT NÅGOT.
    *
-   * ATT SÄGA ATT KOPPLINGEN ÄR RADERAD ÄR DET MEST KONSEKVENSRIKA BESKED
-   * SYSTEMET KAN GE. Det måste vara kontrollerat, aldrig antaget.
-   *
-   * Bakgrunden är konkret (fixrunda 2): en revisionsskrivning som fallerade
-   * inuti transaktionen sveptes undan av `recordAuditEvent`s svälj-gren.
-   * Callbacken returnerade normalt, PostgreSQL gjorde om COMMIT till ROLLBACK
-   * utan att fela, och `$transaction` RESOLVADE — varpå den här funktionen
-   * svarade `closed` medan kuverten låg kvar, roten var oskriven och fasen
-   * stod kvar. Administratören fick veta att valhemligheten uppstått när den
-   * inte hade det.
-   *
-   * `recordAuditEvent` kastar numera i det läget, men det rättar bara den
-   * kända vägen. Den här kontrollen stänger hela klassen: vilken framtida väg
-   * som helst som får transaktionen att tyst rulla tillbaka fångas här, av att
-   * det påstådda tillståndet inte finns i databasen.
-   *
-   * KASTAR I STÄLLET FÖR EN NY `CloseOutcome`-GREN. Varje gren i `CloseOutcome`
-   * beskriver ett begripligt tillstånd hos omröstningen — för tidigt, redan
-   * stängd, en avvikelse att utreda. "Skrivningen försvann utan att någon
-   * felade" är inget sådant tillstånd; det är ett brutet antagande, samma sort
-   * som återläsningen i steg 5 redan kastar på, och rutten har en gren som
-   * svarar 409 med beskedet att kopplingen ligger kvar.
+   * Satserna körs i låsets transaktion, som inte har gjort COMMIT. Är den förd
+   * tillbaka till sparpunkten hålls låset fortfarande, och beskedet kommer ur
+   * fasen, som för ett avbrott i förberedelsen. `EnvelopesChangedError` och
+   * `PhaseMovedError` kastar satserna själva, och deras text säger vad som
+   * ändrats, se `settleRolledBack`. Är transaktionen förlorad hålls inte låset
+   * heller, och en annan stängning kan ha tagit över. Då är beskedet det
+   * försiktiga, också om den här körningen bevisligen inte raderat något.
    */
-  /**
-   * LÄSNINGEN LIGGER EFTER COMMITEN, OCH DESS EGET FEL BETYDER NÅGOT HELT
-   * ANNAT ÄN DESS SVAR (fixrunda 3).
-   *
-   * Fallerar den här läsningen — tappad anslutning, pool-timeout, en
-   * omstart mellan COMMIT och SELECT — har transaktionen redan gått igenom
-   * eller inte, och vi kan inte veta vilket. Att låta det felet falla i samma
-   * gren som "kontrollen visade rollback" hade fått stängningen att påstå att
-   * kopplingen är ORÖRD i ett läge där den mycket väl kan vara raderad. Det är
-   * samma överdrivna löfte som resten av den här uppgiften handlat om, fast i
-   * ett körtidsmeddelande i stället för i dokumentationen — och det visas för
-   * en administratör i precis det ögonblick beskedet betyder som mest.
-   *
-   * Ingen dataförlust sker i något av fallen, och en omkörning är ofarlig: har
-   * stängningen gått igenom står fasen i STRIPPED och nästa körning svarar
-   * `already_closed`.
-   */
+  if (stripping.outcome === 'lost') {
+    throw new CloseAbortedError(
+      'unknown',
+      'Stängningen avbröts i skalningen: låsets transaktion, som skalningen körs i, gick ' +
+        'förlorad innan den gjorde COMMIT. Den här körningen har alltså inte raderat något, men ' +
+        'låset hålls inte längre, och en annan stängning kan ha tagit över.',
+      { cause: stripping.error },
+    )
+  }
+  if (stripping.error instanceof EnvelopesChangedError || stripping.error instanceof PhaseMovedError) {
+    return { kind: 'outcome', outcome: await settleRolledBack(electionId, lock, stripping.error) }
+  }
+  return {
+    kind: 'outcome',
+    outcome: await abortWithoutDeletion(
+      electionId,
+      lock,
+      'Stängningen avbröts i skalningen, och satserna fördes tillbaka till sparpunkten i låsets ' +
+        'transaktion, så den här körningen har inte raderat något.',
+      { cause: stripping.error },
+    ),
+  }
+}
+
+/**
+ * --- 7. STÄNGNINGEN KONTROLLERAR SITT EGET UTFALL ----------------------
+ *
+ * ATT SÄGA ATT KOPPLINGEN ÄR RADERAD ÄR DET MEST KONSEKVENSRIKA BESKED
+ * SYSTEMET KAN GE. Det måste vara kontrollerat, aldrig antaget.
+ *
+ * Bakgrunden är konkret (fixrunda 2 av uppgift 11): en revisionsskrivning som
+ * fallerade inuti transaktionen sveptes undan av `recordAuditEvent`s
+ * svälj-gren. Callbacken returnerade normalt, PostgreSQL gjorde om COMMIT till
+ * ROLLBACK utan att fela, och `$transaction` RESOLVADE — varpå stängningen
+ * svarade `closed` medan kuverten låg kvar, roten var oskriven och fasen stod
+ * kvar. Administratören fick veta att valhemligheten uppstått när den inte
+ * hade det.
+ *
+ * `recordAuditEvent` kastar numera i det läget, och sedan ruling 128 prövar
+ * `withClosingLock` transaktionen innan COMMIT. Den här kontrollen stänger
+ * ändå hela klassen: vilken framtida väg som helst som får transaktionen att
+ * tyst rulla tillbaka fångas här, av att det påstådda tillståndet inte finns
+ * i databasen.
+ *
+ * EFTER LÅSETS COMMIT (fixrunda 2 av 11d, ruling 128). Skalningen görs
+ * beständig av låsets COMMIT, så kontrollen görs när låset redan är släppt.
+ * Står skrivningarna inte där är beskedet därför det försiktiga: utan lås kan
+ * en annan stängning ha börjat. Före rundan kunde den här grenen säga "orörd",
+ * eftersom låset fortfarande hölls när kontrollen gjordes.
+ *
+ * KASTAR I STÄLLET FÖR EN NY `CloseOutcome`-GREN. Varje gren i `CloseOutcome`
+ * beskriver ett begripligt tillstånd hos omröstningen — för tidigt, redan
+ * stängd, en avvikelse att utreda. "Skrivningen försvann utan att någon
+ * felade" är inget sådant tillstånd; det är ett brutet antagande, samma sort
+ * som återläsningen i steg 5 redan kastar på.
+ *
+ * LÄSNINGEN LIGGER EFTER COMMITEN, OCH DESS EGET FEL BETYDER NÅGOT HELT
+ * ANNAT ÄN DESS SVAR (fixrunda 3 av uppgift 11).
+ *
+ * Fallerar den här läsningen — tappad anslutning, pool-timeout, en omstart
+ * mellan COMMIT och SELECT — har transaktionen redan gått igenom eller inte,
+ * och vi kan inte veta vilket. Att låta det felet falla i samma gren som
+ * "kontrollen visade rollback" hade fått stängningen att påstå att kopplingen
+ * är ORÖRD i ett läge där den mycket väl kan vara raderad.
+ *
+ * Ingen dataförlust sker i något av fallen, och en omkörning är ofarlig: har
+ * stängningen gått igenom står fasen i STRIPPED och nästa körning svarar
+ * `already_closed`.
+ */
+async function confirmStripped(
+  electionId: string,
+  stripped: { moved: number; cleared: number; envelopeRoot: string },
+  urn: UrnChanges,
+): Promise<CloseOutcome> {
   let after
   try {
     after = await closeStateOf(electionId)
@@ -1765,33 +1921,19 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
   if (after.phase === 'STRIPPED' && after.envelopeRoot !== null) {
     return {
       status: 'closed',
-      moved,
-      cleared,
-      envelopeRoot,
+      moved: stripped.moved,
+      cleared: stripped.cleared,
+      envelopeRoot: stripped.envelopeRoot,
       residueRemoved: urn.residueRemoved,
       urnRowsReplaced: urn.urnRowsReplaced,
     }
   }
 
-  /**
-   * Skrivningarna finns inte kvar. Vad det betyder avgörs som för ett avbrott,
-   * se `verdictFor`: "orörd" bara när låset hålls, eftersom en stängning som
-   * tagit över annars kan radera kopplingen efter läsningen.
-   */
-  const verdict = verdictFor(after, await lock.stillHeld())
-
-  if (verdict.kind === 'intact') {
-    throw new CloseAbortedError(
-      'untouched',
-      'Stängningen gick inte igenom: skrivningarna i röstlängden finns inte kvar efter ' +
-        `transaktionen (fas ${after.phase}, rot oskriven). Kopplingen mellan väljare och röst ` +
-        'ligger kvar och stängningen kan köras om.',
-    )
-  }
-
+  const verdict = verdictFor(after, false)
   throw new CloseAbortedError(
     'unknown',
-    'Stängningen kunde inte bekräftas efter transaktionen. ' +
+    'Stängningen kunde inte bekräftas: låsets transaktion gjorde COMMIT, men skalningens ' +
+      'skrivningar finns inte i röstlängden. ' +
       (verdict.kind === 'uncertain' ? verdict.statement : describeUnexpectedState(after)),
   )
 }

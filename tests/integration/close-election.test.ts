@@ -761,7 +761,19 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     auditControl.poisonTransaction = true
 
-    await expect(closeElection(electionId)).rejects.toThrow()
+    const error = await closeElection(electionId).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    )
+    expect(error).toBeInstanceOf(CloseAbortedError)
+
+    /**
+     * Sedan fixrunda 2 av 11d körs skalningen i låsets transaktion, och
+     * stängningen prövar transaktionen innan COMMIT. En transaktion som ett
+     * svalt fel har avbrutit rullas tillbaka till sparpunkten före skalningen,
+     * låset hålls kvar, och beskedet är att kopplingen är orörd.
+     */
+    expect(linkStateOf(error)).toBe('untouched')
 
     const election = await votersDb.election.findUniqueOrThrow({
       where: { id: electionId },

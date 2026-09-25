@@ -88,7 +88,66 @@ const hooks = vi.hoisted(() => ({
   castTxGateAt: 'write' as 'write' | 'create',
   /** Väljarna i den ordning skalningen skickar markeringarna till `createMany`. */
   markerInsertOrder: [] as string[],
+  /**
+   * Före skalningens första sats, jämför-och-sätt till STRIPPED, i varje
+   * stängning, med ordningsnumret 1, 2 och så vidare. Nollställs inte.
+   */
+  beforeStrip: null as null | ((n: number) => Promise<void>),
+  stripCalls: 0,
+  /** Direkt efter skalningens första sats, alltså mitt i skalningen. Körs en gång. */
+  afterStripWrite: null as null | (() => Promise<void>),
+  /** Så många av de närmaste läsningarna av fasen och roten, `closeStateOf`, kastar. */
+  failCloseStateReads: 0,
+  /**
+   * Sessionens `idle_in_transaction_session_timeout` på låsets anslutning,
+   * satt före låset, som på en server med gränsen påslagen.
+   */
+  lockSessionIdleTimeoutMs: null as null | number,
+  /** Stängningens egen `set_config` för gränsen körs inte (motprovet till S1). */
+  skipCodeSetConfig: false,
+  /** Svaret på låsets COMMIT går förlorat, efter att COMMIT gått igenom. */
+  failAfterLockCommit: false,
+  /** Vid valideringens första hashning av ett personnummer. Körs en gång. */
+  onValidationHash: null as null | (() => Promise<void>),
+  /** Slumptalen i krypteringen: spelas in och spelas upp, så att två chiffer blir lika. */
+  rng: { mode: 'off' as 'off' | 'record' | 'replay', tape: [] as bigint[], position: 0 },
 }))
+
+/** Låsets transaktion känns igen på sin tidsgräns, sex timmar. */
+const LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000
+
+vi.mock('@/lib/crypto/group', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/crypto/group')>()
+  return {
+    ...actual,
+    randomScalar: () => {
+      const rng = hooks.rng
+      if (rng.mode === 'replay') {
+        const value = rng.tape[rng.position]
+        rng.position += 1
+        if (value === undefined) throw new Error('Inspelningen av slumptalen tog slut.')
+        return value
+      }
+      const value = actual.randomScalar()
+      if (rng.mode === 'record') rng.tape.push(value)
+      return value
+    },
+  }
+})
+
+vi.mock('@/modules/eligibility/election.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/modules/eligibility/election.service')>()
+  return {
+    ...actual,
+    closeStateOf: async (electionId: string) => {
+      if (hooks.failCloseStateReads > 0) {
+        hooks.failCloseStateReads -= 1
+        throw new Error('fasen gick inte att läsa (simulerad pool-timeout)')
+      }
+      return actual.closeStateOf(electionId)
+    },
+  }
+})
 
 vi.mock('@/modules/eligibility/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/modules/eligibility/db')>()
@@ -162,14 +221,63 @@ vi.mock('@/modules/eligibility/db', async (importOriginal) => {
       },
     })
 
-    return bind(tx, { pendingVote: txPendingVote, votedMarker: txVotedMarker })
+    /**
+     * Skalningens första sats är jämför-och-sätt till STRIPPED. Krokarna före
+     * och efter den sitter här, i vilken interaktiv transaktion det än är,
+     * så att de når skalningen var den än körs.
+     */
+    const txElection = bind(tx.election, {
+      updateMany: async (args: Parameters<typeof tx.election.updateMany>[0]) => {
+        const stripping = (args?.data as { phase?: unknown } | undefined)?.phase === 'STRIPPED'
+        if (stripping) {
+          hooks.stripCalls += 1
+          if (hooks.beforeStrip) await hooks.beforeStrip(hooks.stripCalls)
+        }
+        const result = await tx.election.updateMany(args)
+        const after = hooks.afterStripWrite
+        if (stripping && after) {
+          hooks.afterStripWrite = null
+          await after()
+        }
+        return result
+      },
+    })
+
+    /**
+     * Låsets satser går genom `$queryRaw`. Med `lockSessionIdleTimeoutMs` får
+     * låsets transaktion en gräns för tomgång innan låset tas, som på en
+     * server där gränsen är påslagen, och med `skipCodeSetConfig` körs inte
+     * stängningens egen `set_config`. Gränsen sätts för transaktionen och inte
+     * för sessionen, så att anslutningen inte bär den vidare i poolen när
+     * transaktionen är slut. Stängningens egen `set_config` skriver över den
+     * på samma sätt som en gräns satt för servern.
+     */
+    const $queryRaw = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?')
+      if (sql.includes('pg_try_advisory_xact_lock') && hooks.lockSessionIdleTimeoutMs !== null) {
+        await tx.$queryRawUnsafe(
+          `SELECT set_config('idle_in_transaction_session_timeout', '${hooks.lockSessionIdleTimeoutMs}', true)`,
+        )
+      }
+      if (sql.includes("set_config('idle_in_transaction_session_timeout', '0', true)") && hooks.skipCodeSetConfig) {
+        return [{ set_config: '0' }]
+      }
+      return tx.$queryRaw(strings, ...values)
+    }
+
+    return bind(tx, { pendingVote: txPendingVote, votedMarker: txVotedMarker, election: txElection, $queryRaw })
   }
 
-  const $transaction = (arg: unknown, options?: unknown) => {
+  const $transaction = async (arg: unknown, options?: unknown) => {
     const transaction = real.$transaction.bind(real) as (a: unknown, o?: unknown) => Promise<unknown>
     if (typeof arg !== 'function') return transaction(arg, options)
     const fn = arg as (tx: Prisma.TransactionClient) => Promise<unknown>
-    return transaction((tx: Prisma.TransactionClient) => fn(withTxHooks(tx)), options)
+    const result = await transaction((tx: Prisma.TransactionClient) => fn(withTxHooks(tx)), options)
+    if ((options as { timeout?: number } | undefined)?.timeout === LOCK_TIMEOUT_MS && hooks.failAfterLockCommit) {
+      hooks.failAfterLockCommit = false
+      throw new Error('svaret på låsets COMMIT gick förlorat (simulerat)')
+    }
+    return result
   }
 
   return { ...actual, votersDb: bind(real, { electionBallot, pendingVote, $transaction }) }
@@ -223,6 +331,11 @@ vi.mock('@/modules/eligibility/identity', async (importOriginal) => {
       if (gate) {
         gate.reached()
         await gate.opened
+      }
+      const onHash = hooks.onValidationHash
+      if (onHash) {
+        hooks.onValidationHash = null
+        await onHash()
       }
       return actual.hashPersonalNumber(personalNumber)
     },
@@ -282,6 +395,15 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     hooks.castTxGates = []
     hooks.castTxGateAt = 'write'
     hooks.markerInsertOrder = []
+    hooks.beforeStrip = null
+    hooks.stripCalls = 0
+    hooks.afterStripWrite = null
+    hooks.failCloseStateReads = 0
+    hooks.lockSessionIdleTimeoutMs = null
+    hooks.skipCodeSetConfig = false
+    hooks.failAfterLockCommit = false
+    hooks.onValidationHash = null
+    hooks.rng = { mode: 'off', tape: [], position: 0 }
     vi.restoreAllMocks()
     await resetElectionData()
 
@@ -356,7 +478,12 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     })
   }
 
-  type PreparedCast = { ballot: EncryptedBallot; envelope: SignedEnvelope; shape: EncryptedBallotShape | null }
+  type PreparedCast = {
+    ballot: EncryptedBallot
+    envelope: SignedEnvelope
+    shape: EncryptedBallotShape | null
+    target: { electionId: string; ballotId: string }
+  }
 
   /**
    * Krypterar och skriver under med attrappen, men lägger inte rösten. Utan
@@ -367,16 +494,25 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     party: 'bp-s' | 'bp-m',
     castSequence?: number,
   ): Promise<PreparedCast> {
-    const ballot = buildBallot(party)
+    return prepareCastOf(voterStatusId, buildBallot(party), castSequence)
+  }
+
+  /** Skriver under en given valsedel, på omröstningens valsedel eller på en annan. */
+  async function prepareCastOf(
+    voterStatusId: string,
+    ballot: EncryptedBallot,
+    castSequence?: number,
+    target = { electionId, ballotId },
+  ): Promise<PreparedCast> {
     const service = new MockBankIdService()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
       userNonVisibleData: envelopePayload({
-        electionId,
-        ballotId,
+        electionId: target.electionId,
+        ballotId: target.ballotId,
         ciphertextHash: ballot.ciphertextHash,
-        castSequence: castSequence ?? (await nextCastSequence(voterStatusId, ballotId)),
+        castSequence: castSequence ?? (await nextCastSequence(voterStatusId, target.ballotId)),
       }),
     })
     selectDemoIdentity(order.orderRef, personalNumberByVoter.get(voterStatusId)!)
@@ -391,19 +527,30 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         certificateChain: result.completionData.certificateChain,
         signedData: result.completionData.signedData,
       },
-      shape: await getEncryptedBallotShape(ballotId),
+      shape: await getEncryptedBallotShape(target.ballotId),
+      target,
     }
   }
 
   function castPrepared(voterStatusId: string, prepared: PreparedCast): Promise<CastOutcome> {
     return castEncryptedBallot(
       voterStatusId,
-      electionId,
-      ballotId,
+      prepared.target.electionId,
+      prepared.target.ballotId,
       prepared.ballot,
       prepared.envelope,
       prepared.shape,
     )
+  }
+
+  /** Lägger en förberedd röst medan omröstningens klocka står öppen. */
+  async function castOpen(voterStatusId: string, prepared: PreparedCast): Promise<CastOutcome> {
+    await setClosesAt(inTheFuture())
+    try {
+      return await castPrepared(voterStatusId, prepared)
+    } finally {
+      await setClosesAt(inThePast())
+    }
   }
 
   /** En ärlig röstläggning medan klockan står öppen. Svarar med utfallet och chifferhashen. */
@@ -1083,6 +1230,209 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     })
   })
 
+  describe('skalningen körs i låsets transaktion (fixrunda 2, ruling 128)', () => {
+    /**
+     * Omgranskningen av fixrunda 1 (Z1 och Z2). Skalningen hade en egen
+     * transaktion, på en annan anslutning än låset. En stängning vars lås
+     * gått förlorat efter den sista frågan kunde därför ändå skala, medan en
+     * annan stängning tog låset. Nu körs skalningens satser i låsets egen
+     * transaktion, och ett förlorat lås tar skalningen med sig.
+     */
+    function deferred(): { promise: Promise<void>; resolve: () => void } {
+      let resolve!: () => void
+      const promise = new Promise<void>((settle) => {
+        resolve = settle
+      })
+      return { promise, resolve }
+    }
+
+    it('Z1: en stängning vars lås tappas före skalningen kan inte skala, och den som tog låset stänger', async () => {
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+
+      const secondAtStrip = deferred()
+      const openSecond = deferred()
+      let second: Promise<Attempt> | null = null
+      hooks.beforeStrip = async (n) => {
+        if (n === 1) {
+          // Den första har frågat låset före skalningen. Låset tappas, och en
+          // andra stängning tar det och går fram till sin egen skalning.
+          await dropClosingLock()
+          second = attempt()
+          await secondAtStrip.promise
+        } else if (n === 2) {
+          secondAtStrip.resolve()
+          await openSecond.promise
+        }
+      }
+
+      const first = await attempt()
+      openSecond.resolve()
+      const secondResult = await second!
+
+      /**
+       * Före rättelsen skalade den första, eftersom dess skalning inte hängde
+       * på låset. Den andra fick sedan ett misslyckat jämför-och-sätt, och
+       * gick fasen inte att läsa svarade den ORÖRD.
+       */
+      expect(first.outcome).toBeNull()
+      expect(linkStateOf(first.error)).toBe('unknown')
+      expect(abortedMessageFor(first.error)).not.toContain('ORÖRD')
+      expect(secondResult).toMatchObject({ outcome: { status: 'closed', moved: 2 }, error: null })
+      expect(await phase()).toBe('STRIPPED')
+      expect(await votersDb.pendingVote.count()).toBe(0)
+      expect(await linkClearedEvents()).toBe(1)
+    })
+
+    it('Z2: en stängning vars låsanslutning avslutas mitt i skalningen raderar ingenting, och den andra stänger', async () => {
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+
+      let second: Promise<Attempt> | null = null
+      hooks.afterStripWrite = async () => {
+        // Den första har skrivit STRIPPED i sin skalning och håller omröstningens rad.
+        await dropClosingLock()
+        second = attempt()
+        // Den andra stänger, eller fastnar på radlåset om skalningen lever vidare utan låset.
+        await Promise.race([second, waitUntil(async () => (await waitingElectionUpdates()) > 0, 20_000)])
+      }
+
+      const first = await attempt()
+      const secondResult = await second!
+
+      expect(first.outcome).toBeNull()
+      expect(linkStateOf(first.error)).toBe('unknown')
+      expect(abortedMessageFor(first.error)).not.toContain('ORÖRD')
+      expect(secondResult).toMatchObject({ outcome: { status: 'closed', moved: 2 }, error: null })
+      expect(await linkClearedEvents()).toBe(1)
+      expect(await votersDb.votedMarker.count()).toBe(2)
+    })
+
+    it('en stängning vars låsanslutning avslutas mitt i skalningen raderar ingenting, och en omkörning stänger', async () => {
+      /**
+       * Beviset som ruling 128 begär. Anslutningen avslutas efter skalningens
+       * första sats, när STRIPPED redan är skriven i transaktionen. Ingenting
+       * av skalningen får finnas kvar: fasen, roten, kuverten, markeringarna
+       * och revisionsposten är som före skalningen.
+       */
+      const annas = await castFor(anna, 'bp-s')
+      const kims = await castFor(kim, 'bp-m')
+      hooks.afterStripWrite = async () => {
+        await dropClosingLock()
+      }
+
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
+      expect(await state()).toEqual({ phase: 'VALIDATED', envelopeRoot: null, linkClearedAt: null })
+      expect(await votersDb.pendingVote.count()).toBe(2)
+      expect(await votersDb.votedMarker.count()).toBe(0)
+      expect(await linkClearedEvents()).toBe(0)
+      // Chiffren infogades före skalningen och ligger kvar, som efter varje avbrott.
+      expect(await urn()).toEqual([annas, kims].sort())
+
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
+    })
+
+    it('svaret på låsets COMMIT går förlorat: beskedet är det försiktiga, och kopplingen är raderad', async () => {
+      /**
+       * Skalningen görs nu av låsets COMMIT. Går svaret på den förlorat vet
+       * stängningen inte om skalningen gick igenom. Före rättelsen hade låsets
+       * transaktion inget eget att skriva, och ett fel vid dess COMMIT loggades
+       * bara.
+       */
+      await castFor(anna, 'bp-s')
+      hooks.failAfterLockCommit = true
+
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
+      expect(abortedMessageFor(error)).not.toContain('ORÖRD')
+      expect((await state()).phase).toBe('STRIPPED')
+      expect(await votersDb.pendingVote.count()).toBe(0)
+      expect(await closeElection(electionId)).toEqual({ status: 'already_closed' })
+    })
+  })
+
+  describe('en fas som inte går att läsa ger det försiktiga beskedet (fixrunda 2)', () => {
+    /**
+     * Omgranskningen av fixrunda 1, nytt fel 1. Gick fasen inte att läsa men
+     * låset höll, sade stängningen att kopplingen var orörd. Låset utesluter
+     * bara en stängning som tar det senare, och "orörd" kräver därför en läst
+     * fas, oavsett lås.
+     */
+    it.each([
+      ['efter att skalningens jämför-och-sätt inte träffat', 'strip'],
+      ['efter en övergång till VALIDATED som inte ändrade något', 'validated'],
+      ['efter ett kast i förberedelsen', 'throw'],
+    ] as const)('%s', async (_label, where) => {
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+
+      if (where === 'strip') {
+        hooks.beforeInsert = async () => {
+          await setPhase('CLOSED')
+          hooks.failCloseStateReads = 1
+        }
+      } else if (where === 'validated') {
+        hooks.beforeEnvelopeRead = async () => {
+          await setPhase('STRIPPED')
+          hooks.failCloseStateReads = 1
+        }
+      } else {
+        hooks.beforeUrnRead = async () => {
+          hooks.failCloseStateReads = 1
+          throw new Error('simulerat databasfel')
+        }
+      }
+
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(error).toBeInstanceOf(CloseAbortedError)
+      expect(linkStateOf(error)).toBe('unknown')
+      expect(abortedMessageFor(error)).not.toContain('ORÖRD')
+      expect((error as Error).message).toContain('Fasen gick inte att läsa')
+      expect(await votersDb.pendingVote.count()).toBe(2)
+    })
+  })
+
+  describe('gränsen för tomgång i låsets transaktion (fixrunda 2)', () => {
+    /**
+     * Omgranskningens S1 och S1m. Låsets transaktion står stilla medan
+     * stängningen arbetar i andra anslutningar. Här får den en gräns på en
+     * sekund innan låset tas, och stängningen står stilla i två och en halv.
+     */
+    async function stallTheClosing(): Promise<void> {
+      await new Promise((resolve) => setTimeout(resolve, 2_500))
+    }
+
+    it('S1: stängningens set_config håller låset över gränsen', async () => {
+      await castFor(anna, 'bp-s')
+      hooks.lockSessionIdleTimeoutMs = 1_000
+      hooks.beforeEnvelopeRead = stallTheClosing
+
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1 })
+    })
+
+    it('S1m: utan stängningens set_config avslutar servern låsets anslutning, och stängningen avbryts', async () => {
+      // Motprovet: gränsen i testet slår faktiskt till, så S1 prövar något.
+      await castFor(anna, 'bp-s')
+      hooks.lockSessionIdleTimeoutMs = 1_000
+      hooks.skipCodeSetConfig = true
+      hooks.beforeEnvelopeRead = stallTheClosing
+
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
+      expect((error as Error).message).toContain('lås har gått förlorat')
+      expect(await votersDb.pendingVote.count()).toBe(1)
+    })
+  })
+
   describe('en röst i sista stund', () => {
     it('en röst vars fas prövades före stängningen men som skrivs efter den läggs inte, och väljaren får ett fel', async () => {
       const annas = await castFor(anna, 'bp-s')
@@ -1266,6 +1616,128 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
 
       const row = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
       expect(row).toMatchObject({ castSequence: 2, ciphertextHash: higher.ballot.ciphertextHash })
+    })
+  })
+
+  describe('två kuvert får aldrig ha samma chifferhash (fixrunda 2, ruling 129)', () => {
+    /**
+     * Omgranskningen av fixrunda 1 (D1 och D2). Chifferhashen är unik i urnan,
+     * så två kuvert med samma chiffer kan aldrig båda infogas, och återläsningen
+     * avbröt då varje stängning. Den som lade samma chiffer två gånger kunde
+     * alltså hindra valet från att stängas. Nu tar läggningen inte emot ett
+     * chiffer som redan ligger på ett annat kuvert.
+     */
+    async function alarms(spy: ReturnType<typeof vi.spyOn>): Promise<number> {
+      return spy.mock.calls.filter(([message]) => String(message).includes('LARM')).length
+    }
+
+    it('D1: samma chiffer på två valsedlar tas emot bara på den första, och stängningen går igenom utan larm', async () => {
+      const s = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'S' } })
+      const m = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'M' } })
+      const created = await createElection({
+        name: 'Samma chiffer på två valsedlar',
+        kind: 'RIKSDAGSVAL',
+        opensAt: new Date(Date.now() - 60_000),
+        closesAt: inTheFuture(),
+        ballots: [
+          { kind: 'RIKSDAG', label: 'Riksdagen', allowsCandidateVote: false, parties: [{ partyId: s.id }, { partyId: m.id }] },
+          { kind: 'RIKSDAG', label: 'Riksdagen, en gång till', allowsCandidateVote: false, parties: [{ partyId: s.id }, { partyId: m.id }] },
+        ],
+        trusteePassphrases: ['test-fras-ett', 'test-fras-tva', 'test-fras-tre'],
+      })
+      if (created.status !== 'created') throw new Error('Kunde inte skapa omröstningen.')
+      const twoBallotElection = created.election.id
+      const [first, second] = created.election.ballotIds.map((ballot) => ballot.id)
+      const key = await votesDb.election.findUniqueOrThrow({
+        where: { id: twoBallotElection },
+        select: { encryptionPublicKey: true },
+      })
+
+      // Samma slumptal i båda krypteringarna ger samma chiffer, med bevis för var sin valsedel.
+      const encryptFor = async (target: string) => {
+        const parties = await votesDb.ballotParty.findMany({ where: { ballotId: target }, orderBy: { displayOrder: 'asc' } })
+        const targetOptions = canonicalOptions({
+          allowsCandidateVote: false,
+          parties: parties.map((party, index) => ({ id: party.id, displayOrder: index, candidates: [] })),
+        })
+        return encryptBallot(key.encryptionPublicKey!, twoBallotElection, target, targetOptions, {
+          kind: 'PARTY',
+          ballotPartyId: parties[0]!.id,
+        })
+      }
+      hooks.rng = { mode: 'record', tape: [], position: 0 }
+      const onFirst = await encryptFor(first!)
+      hooks.rng = { mode: 'replay', tape: hooks.rng.tape, position: 0 }
+      const onSecond = await encryptFor(second!)
+      hooks.rng = { mode: 'off', tape: [], position: 0 }
+      expect(onSecond.ciphertextHash).toBe(onFirst.ciphertextHash)
+
+      const castOn = async (target: string, ballot: EncryptedBallot) =>
+        castPrepared(anna, await prepareCastOf(anna, ballot, undefined, { electionId: twoBallotElection, ballotId: target }))
+
+      expect(await castOn(first!, onFirst)).toMatchObject({ status: 'recorded' })
+      expect(await castOn(second!, onSecond)).toEqual({ status: 'duplicate_ciphertext' })
+      expect(await votersDb.pendingVote.count({ where: { ballotId: { in: [first!, second!] } } })).toBe(1)
+
+      // Stängningen flyttar det enda kuvertet, utan larm om en förfalskad rad.
+      const errors = vi.spyOn(logger, 'error')
+      await votersDb.election.update({ where: { id: twoBallotElection }, data: { closesAt: inThePast() } })
+      await votesDb.election.update({ where: { id: twoBallotElection }, data: { closesAt: inThePast() } })
+      expect(await closeElection(twoBallotElection)).toMatchObject({ status: 'closed', moved: 1, urnRowsReplaced: [] })
+      expect(await alarms(errors)).toBe(0)
+    })
+
+    it('D2: två väljare med exakt samma chiffer: bara den första tas emot, och stängningen går igenom', async () => {
+      const copied = buildBallot('bp-s')
+      expect(await castOpen(anna, await prepareCastOf(anna, copied))).toMatchObject({ status: 'recorded' })
+      expect(await castOpen(kim, await prepareCastOf(kim, copied))).toEqual({ status: 'duplicate_ciphertext' })
+      expect(await votersDb.pendingVote.count()).toBe(1)
+
+      const errors = vi.spyOn(logger, 'error')
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1 })
+      expect(await urn()).toEqual([copied.ciphertextHash])
+      expect(await alarms(errors)).toBe(0)
+    })
+
+    it('samma väljare som lägger om samma chiffer på samma valsedel byter som förut', async () => {
+      const ballot = buildBallot('bp-s')
+      expect(await castOpen(anna, await prepareCastOf(anna, ballot))).toMatchObject({ status: 'recorded', replaced: false })
+      expect(await castOpen(anna, await prepareCastOf(anna, ballot))).toMatchObject({ status: 'recorded', replaced: true })
+
+      const row = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
+      expect(row).toMatchObject({ castSequence: 2, ciphertextHash: ballot.ciphertextHash })
+    })
+
+    it('två väljare som lägger samma chiffer samtidigt: den ena tas emot, den andra får ett tydligt fel', async () => {
+      /**
+       * Båda läggningarna står vid `create` i sina transaktioner. Den andra
+       * stoppas av det unika indexet på chifferhashen, och det är inte samma
+       * sak som att två läggningar för samma väljare möts. Den ska inte göra om
+       * sin transaktion, utan svara att chiffret redan finns.
+       */
+      const copied = buildBallot('bp-s')
+      const annas = await prepareCastOf(anna, copied)
+      const kims = await prepareCastOf(kim, copied)
+      hooks.castTxGateAt = 'create'
+
+      await setClosesAt(inTheFuture())
+      try {
+        const annaGate = armCastTxGate()
+        const annaCast = castPrepared(anna, annas)
+        await annaGate.reached
+        const kimGate = armCastTxGate()
+        const kimCast = castPrepared(kim, kims)
+        await kimGate.reached
+
+        annaGate.open()
+        expect(await annaCast).toMatchObject({ status: 'recorded', replaced: false })
+        kimGate.open()
+        expect(await kimCast).toEqual({ status: 'duplicate_ciphertext' })
+      } finally {
+        await setClosesAt(inThePast())
+      }
+
+      expect(await votersDb.pendingVote.count()).toBe(1)
     })
   })
 
@@ -1472,6 +1944,88 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       expect(urnRowsReplacedOf(error)).toEqual([annas])
 
       expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1, urnRowsReplaced: [] })
+    })
+  })
+
+  describe('ersättningar och avvikelser når beskedet och loggen (fixrunda 2)', () => {
+    it('AC1: en ersättning följs av ett tappat lås och en annan stängning, och already_closed bär hashen', async () => {
+      /**
+       * Omgranskningen av fixrunda 1, nytt fel 4. Den första stängningen ersätter
+       * en förfalskad rad och tappar sedan låset. Den andra stänger och hittar
+       * ingenting att ersätta. Före rättelsen svarade den första
+       * `already_closed` utan hashen, och ersättningen stod bara i loggen.
+       */
+      const annas = await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+      const forged = buildBallot('bp-m')
+      await plantUrnRow({ ciphertextHash: annas, ciphertext: forged.ciphertext, proofs: forged.proofs })
+
+      let second: Attempt | null = null
+      hooks.beforeInsert = async () => {
+        await dropClosingLock()
+        second = await attempt()
+      }
+      const first = await attempt()
+
+      expect(second).toMatchObject({ outcome: { status: 'closed', moved: 2, urnRowsReplaced: [] }, error: null })
+      expect(first).toEqual({ outcome: { status: 'already_closed', urnRowsReplaced: [annas] }, error: null })
+    })
+
+    it('avvikelser som valideringen hittat loggas med sin sammanfattning, också när svaret blir already_closed', async () => {
+      /**
+       * Nytt fel 5. Valideringen hittar en avvikelse medan en annan stängning
+       * skalar, och svaret blir `already_closed`. Före rättelsen syntes
+       * avvikelsen då ingenstans.
+       */
+      await castFor(anna, 'bp-s')
+      await plantUnsignedVote(kim, 'bp-m')
+      const warn = vi.spyOn(logger, 'warn')
+
+      let second: Attempt | null = null
+      hooks.onValidationHash = async () => {
+        // Den första har läst kuverten och validerar. Låset tappas, den
+        // förfalskade raden tas bort, och en andra stängning skalar.
+        await dropClosingLock()
+        await votersDb.pendingVote.deleteMany({ where: { voterStatusId: kim } })
+        second = await attempt()
+      }
+      const first = await attempt()
+
+      expect(second).toMatchObject({ outcome: { status: 'closed', moved: 1 }, error: null })
+      expect(first).toEqual({ outcome: { status: 'already_closed' }, error: null })
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Valideringen hittade avvikelser'),
+        expect.objectContaining({ summary: expect.objectContaining({ passed: false, votes: 2 }) }),
+      )
+    })
+
+    it('ett avbrott innan de förfalskade raderna tagits bort bär inga ersättningar', async () => {
+      /**
+       * Nytt fel 6. Hasharna sattes innan något raderats. Kastade raderingen
+       * av resterna innan de förfalskade raderna nåddes bar felet ändå
+       * hasharna, och svaret sade att raderna tagits bort.
+       */
+      const annas = await castFor(anna, 'bp-s')
+      const forged = buildBallot('bp-m')
+      await plantUrnRow({ ciphertextHash: annas, ciphertext: forged.ciphertext, proofs: forged.proofs })
+      await plantForeignResidue()
+      hooks.beforeUrnDelete = async () => {
+        throw new Error('simulerat fel i röstdatabasen')
+      }
+
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('untouched')
+      expect(urnRowsReplacedOf(error)).toEqual([])
+      // Den förfalskade raden ligger kvar, och en omkörning ersätter den.
+      const stored = await votesDb.encryptedVote.findUniqueOrThrow({ where: { ciphertextHash: annas } })
+      expect(stored.ciphertext).toEqual(forged.ciphertext)
+      expect(await closeElection(electionId)).toMatchObject({
+        status: 'closed',
+        urnRowsReplaced: [annas],
+        residueRemoved: ['en-hash-som-inte-hor-till-nagot-kuvert'],
+      })
     })
   })
 

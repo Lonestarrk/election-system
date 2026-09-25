@@ -412,7 +412,14 @@ model PendingVote {
   proofs Json
 
   /// SHA-256 över den kanoniska serialiseringen. Väljarens inklusionshandtag.
-  ciphertextHash String @map("ciphertext_hash")
+  ///
+  /// UNIK (fixrunda 2 av uppgift 11d, ruling 129). Chifferhashen är unik i
+  /// urnan, så två kuvert med samma chiffer kan aldrig båda flyttas. Utan
+  /// indexet här tog läggningen emot samma chiffer två gånger, på två
+  /// valsedlar eller från två väljare, och återläsningen avbröt sedan varje
+  /// stängning. Läggningen svarar `duplicate_ciphertext`, och samma väljare
+  /// som lägger om på samma valsedel byter sin egen rad som förut.
+  ciphertextHash String @unique @map("ciphertext_hash")
 
   /// Ökar vid varje läggning och ligger INUTI det signerade.
   ///

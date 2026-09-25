@@ -174,9 +174,13 @@ export async function POST(request: Request) {
   if (outcome.status === 'already_closed') {
     // Inte ett fel. En omkörning ska vara ofarlig — det är hela poängen med
     // att idempotensen bärs av databasen och inte av en transaktion.
+    // Den här körningen kan ha ersatt rader innan den fann omröstningen
+    // stängd, och en omkörning hittar dem inte igen (fixrunda 2 av 11d).
+    const urnRowsReplaced = outcome.urnRowsReplaced ?? []
     return jsonResponse({
       status: 'already_closed',
-      message: 'Omröstningen är redan stängd och kopplingen raderad.',
+      message: `Omröstningen är redan stängd och kopplingen raderad.${replacedNote(urnRowsReplaced)}`,
+      ...(urnRowsReplaced.length === 0 ? {} : { urnRowsReplaced }),
     })
   }
 
@@ -276,9 +280,12 @@ export async function POST(request: Request) {
  * Stängningen tar bort en rad i röstdatabasen som tagit ett validerat kuverts
  * plats med ett annat innehåll, och infogar det validerade i stället. Ingen
  * legitim väg skriver en sådan rad, så det tyder på ett angrepp. Svaret säger
- * det och pekar ut kuverten, också när stängningen sedan avbröts, eftersom en
- * omkörning inte hittar raderna igen. Loggen får bara antalet, som för
- * resterna.
+ * det och pekar ut kuverten, också när stängningen sedan avbröts eller fann
+ * omröstningen redan stängd, eftersom en omkörning inte hittar raderna igen.
+ * Loggen får bara antalet, som för resterna.
+ *
+ * "TOG BORT" ÄR SANT NÄR TEXTEN VISAS (fixrunda 2 av 11d). Stängningen anger
+ * hasharna först när raderna bevisligen är borttagna, se `removeFromUrn`.
  */
 function replacedNote(urnRowsReplaced: readonly string[]): string {
   if (urnRowsReplaced.length === 0) return ''

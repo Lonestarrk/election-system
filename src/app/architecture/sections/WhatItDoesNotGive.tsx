@@ -33,9 +33,11 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
           som kan skriva i röstlängden, voters_db, kan inte lägga in en röst för någon som inte
           skrivit under. Det gäller inte röstdatabasen, votes_db, där den som kan skriva än så länge
           kan byta ut ett chiffer efter stängningen (spec 4.6, förbehåll 4); det ska uppgift 12b
-          stänga. Ett byte före infogningen räknas inte. En rad som redan ligger på ett äkta kuverts
-          plats ersätts med det validerade kuvertet, och stängningen larmar. En rad som skrivs medan
-          stängningen pågår stoppar den, och omkörningen ersätter raden.{' '}
+          stänga. En rad som redan ligger på ett äkta kuverts plats när stängningen börjar ersätts
+          med det validerade kuvertet, och stängningen larmar. Ett byte efter stängningens städning
+          och före dess återläsning stoppar stängningen, och omkörningen ersätter raden. Ett byte
+          efter återläsningen och före COMMIT räknas däremot, tills uppgift 12b publicerar en
+          urnrot.{' '}
           <LimitationReference entry={swapCiphertext} /> En
           granskare med åtkomst under valideringen kan pröva varje underskrift mot roten, men bara
           med pepparn, som i Azure ligger i valvet:

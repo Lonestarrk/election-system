@@ -193,6 +193,7 @@ function httpStatusFor(status: CastOutcome['status']): number {
       return 200
     case 'closed':
     case 'stale_sequence':
+    case 'duplicate_ciphertext':
       return 409
     case 'invalid_proof':
       return 400

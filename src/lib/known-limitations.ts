@@ -167,6 +167,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * som tagit ett validerat kuverts plats, så ett byte före stängningen stoppar
    * den inte längre. Kvar är fönstret mellan städningen och infogningen, där
    * ett byte stoppar en enskild körning, och bytet efter stängningen.
+   *
+   * RÄTTAD I FIXRUNDA 2 AV 11D (omgranskningens W2). Fönstret som stoppar
+   * stängningen räcker till återläsningen, och ett byte efter den, före
+   * skalningens COMMIT, räknas. Posten sa inget om det senare fönstret, och
+   * sidtexten sa att varje byte under stängningen stoppade den.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
@@ -180,11 +185,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'stängningen. Före stängningen kan samma person lägga en rad med ett äkta kuverts ' +
       'chifferhash eller id men ett annat innehåll, så att infogningen hoppar över det äkta ' +
       'kuvertet. Stängningen tar då bort raden och infogar det validerade kuvertet i stället, ' +
-      'larmar i serverloggen och anger kuvertets chifferhash i svaret till administratören. En ' +
-      'rad som skrivs efter städningen men före infogningen fångas av återläsningen, som avbryter ' +
-      'stängningen med kopplingen orörd, och omkörningen ersätter raden. Bytet räknas alltså ' +
-      'inte, och den som vill hålla ett val från att stängas måste skriva i det fönstret vid ' +
-      'varje körning.',
+      'larmar i serverloggen och anger kuvertets chifferhash i svaret till administratören. Ett ' +
+      'byte efter städningen men före återläsningen fångas av återläsningen, som avbryter ' +
+      'stängningen med kopplingen orörd, och omkörningen ersätter raden. Den som vill hålla ett ' +
+      'val från att stängas måste alltså skriva i det fönstret vid varje körning. Ett byte efter ' +
+      'återläsningen och före skalningens COMMIT märks däremot inte: stängningen svarar att den ' +
+      'är klar, och det förfalskade chiffret räknas, tills uppgift 12b publicerar en urnrot.',
     stillTrueIf: [
       // Infogningen hoppar över rader som redan finns, så en rad som skrivs
       // efter städningen stoppar stängningen i stället för att ersättas ...

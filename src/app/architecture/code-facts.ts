@@ -245,35 +245,58 @@ const STRIPPING_DELETES_ENVELOPES: Marker = {
  * kommentar fäller det också, i onödan, och det är priset för att ingen
  * skrivning kan glida förbi. Exporteras för testet som visar att markören
  * faktiskt slår fel.
+ *
+ * Sedan fixrunda 2 av 11d (ruling 128) är transaktionen stängningens egen
+ * låstransaktion: satserna körs genom `lock.strip`, efter en sparpunkt, och
+ * blir beständiga när låsets transaktion gör COMMIT. Markören börjar därför på
+ * anropet, och STRIP_IN_LOCK_TRANSACTION låser att `lock.strip` ger satserna
+ * låsets transaktion.
  */
 export const STRIPPING_TRANSACTION: Marker = {
   file: 'src/orchestration/close-election.usecase.ts',
   contains: [
-    '      async (tx) => {',
-    '        const stripped = await tx.election.updateMany({',
-    "          where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
-    "          data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
-    '        })',
-    '        if (stripped.count !== 1) throw new PhaseMovedError()',
+    '  const stripping = await lock.strip(async (tx) => {',
+    '    const stripped = await tx.election.updateMany({',
+    "      where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
+    "      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
+    '    })',
+    '    if (stripped.count !== 1) throw new PhaseMovedError()',
     '',
-    '        // Markeringarna, ur exakt de kuvert som raderas, före raderingen.',
-    '        const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)',
+    '    // Markeringarna, ur exakt de kuvert som raderas, före raderingen.',
+    '    const { marked, markersByBallot } = await markEnvelopesAsVoted(electionId, envelopes, tx)',
     '',
-    '        // Exakt de kuvert som validerades och flyttades, och inga andra.',
-    '        const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)',
+    '    // Exakt de kuvert som validerades och flyttades, och inga andra.',
+    '    const { removed, left } = await clearPendingVotes(electionId, envelopes, tx)',
     '',
-    '        const markersMatch =',
-    '          markersByBallot.every(({ ballotId, markers }) => markers === (movedByBallot.get(ballotId) ?? 0)) &&',
-    '          ballotIds.every((ballotId) => markersByBallot.some((entry) => entry.ballotId === ballotId))',
+    '    const markersMatch =',
+    '      markersByBallot.every(({ ballotId, markers }) => markers === (movedByBallot.get(ballotId) ?? 0)) &&',
+    '      ballotIds.every((ballotId) => markersByBallot.some((entry) => entry.ballotId === ballotId))',
     '',
-    '        if (removed !== moved || left !== 0 || marked !== moved || !markersMatch) {',
-    '          throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })',
-    '        }',
+    '    if (removed !== moved || left !== 0 || marked !== moved || !markersMatch) {',
+    '      throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })',
+    '    }',
     '',
-    '        await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)',
+    '    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)',
     '',
-    '        return removed',
-    '      },',
+    '    return removed',
+    '  })',
+  ].join('\n'),
+}
+
+/**
+ * Skalningens satser får låsets egen transaktion (fixrunda 2 av 11d, ruling
+ * 128). `tx` här är transaktionen som håller stängningens lås, och satserna
+ * körs efter en sparpunkt i den. Fick skalningen en egen transaktion igen,
+ * på en annan anslutning, kunde en stängning vars lås gått förlorat skala
+ * ändå, och raderna nedan ändrades. Exporteras för testet.
+ */
+export const STRIP_IN_LOCK_TRANSACTION: Marker = {
+  file: 'src/orchestration/close-election.usecase.ts',
+  contains: [
+    '          strip: async (work) => {',
+    '            try {',
+    '              await tx.$queryRaw`SAVEPOINT stripping`',
+    '              const value = await work(tx)',
   ].join('\n'),
 }
 
@@ -1611,9 +1634,10 @@ export const PHASES: PhaseRow[] = [
     next: 'partiella dekrypteringar',
     today: {
       text:
-        'Skrivs av stängningen, med jämför-och-sätt från VALIDATED, i samma transaktion som raderar ' +
-        'kopplingen, skriver markeringarna och skriver kuvertroten. En stängning i den här fasen ' +
-        'eller en senare svarar att omröstningen redan är stängd, och rör ingenting.',
+        'Skrivs av stängningen, med jämför-och-sätt från VALIDATED, i transaktionen som håller ' +
+        'stängningens lås, tillsammans med raderingen av kopplingen, markeringarna och kuvertroten. ' +
+        'En stängning i den här fasen eller en senare, med kuvertroten skriven, svarar att ' +
+        'omröstningen redan är stängd, och rör ingenting.',
       holdsWhile: [
         {
           file: 'src/orchestration/close-election.usecase.ts',
@@ -1627,7 +1651,14 @@ export const PHASES: PhaseRow[] = [
           file: 'src/orchestration/close-election.usecase.ts',
           contains: "const CLEARED_PHASES: readonly string[] = ['STRIPPED', 'TALLIED', 'CERTIFIED']",
         },
+        // Redan stängd kräver en skriven rot (fixrunda 1 av 11d, M3).
+        {
+          file: 'src/orchestration/close-election.usecase.ts',
+          contains: 'return CLEARED_PHASES.includes(state.phase) && state.envelopeRoot !== null',
+        },
         STRIPPING_TRANSACTION,
+        // Skalningen körs i låsets transaktion (fixrunda 2 av 11d, ruling 128).
+        STRIP_IN_LOCK_TRANSACTION,
       ],
       status: STATUS_DONE,
     },
