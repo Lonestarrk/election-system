@@ -705,9 +705,10 @@ async function phaseOf(electionId: string): Promise<{ phase: string; envelopeRoo
  * räkneverken och tidpunkten kvar, och nästa räkning av en av valsedlarna
  * skriver fasen.
  *
- * Returnerar fasen efteråt. Står den i något annat än STRIPPED, TALLIED eller
- * CERTIFIED med roten skriven har någon skrivit i röstlängden förbi räkningen,
- * och då avbryts den med ett besked. Ingen fas skrivs över.
+ * Returnerar fasen efteråt. Är varje valsedel räknad, och står fasen ändå i
+ * något annat än STRIPPED, TALLIED eller CERTIFIED med roten skriven, har någon
+ * skrivit i röstlängden förbi räkningen, och då avbryts den med ett besked.
+ * Återstår en valsedel ges fasen tillbaka som den står. Ingen fas skrivs över.
  */
 async function settleElectionPhase(electionId: string): Promise<string> {
   const ballots = await votesDb.electionBallot.findMany({ where: { electionId }, select: { id: true } })
@@ -717,7 +718,8 @@ async function settleElectionPhase(electionId: string): Promise<string> {
     const tallied = shape ? await votesDb.ballotTally.count({ where: { ballotId: ballot.id } }) : -1
     if (!shape || tallied !== shape.optionCount) {
       const current = await phaseOf(electionId)
-      return current?.phase ?? 'STRIPPED'
+      if (!current) abort('omröstningen finns inte längre i röstlängden. Räkneverken är sparade.')
+      return current.phase
     }
   }
 
