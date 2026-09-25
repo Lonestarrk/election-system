@@ -284,7 +284,12 @@ fälten nedan efter varandra.
   lagras, utan Unicode-normalisering.
 - **U32** är fyra byte, big-endian.
 - **E(x)** är x big-endian, vänsterutfyllt med nollbyte till exakt 256 byte, för 0 ≤ x < p.
-- **H** är SHA-256 över valsedelns kanoniska chifferlista. Servern räknar alltid om den själv.
+- **H** är SHA-256 över valsedelns kanoniska chifferlista. Den kanoniska listan är UTF-8 av
+  `valsystem/chiffer/v1`, följt av en nollbyte, c1, en nollbyte och c2 för varje alternativ i
+  ordning. c1 och c2 står som kanoniska decimalsträngar, utan inledande nollor och utan
+  tecken, så som `parseElement` godtar dem. Som chifferhash skrivs H som 64 gemena hextecken.
+  Servern räknar alltid om den själv. jsonb tar inte emot en nollbyte, så avgränsaren kan
+  inte smygas in i ett tal.
 
 Med id:n som UUID är ett 0-eller-1-transkript 1 942 byte och ett summatranskript 1 417
 byte. Varje fält har fast längd eller längdprefix, så samma transkript kan bara komma från
@@ -796,6 +801,46 @@ det ska inte heller stämma: ingen inklusionsväg lagras, signaturerna raderas, 
 bevis som väljaren kan visa upp efter stängningen är samma handtag som 3.1 tar bort. Valhemligheten blir samtidigt
 lika stark som vid full radering: efter skalningen krävs bara k av n andelar för att
 bryta den, och roten hjälper ingen angripare.
+
+**Urnroten binder urnan från stängningen till fastställandet (uppgift 12b, ruling 134).**
+Kuvertroten går inte att räkna om efter skalningen, eftersom signaturerna är raderade. Den
+som kan skriva i `votes_db` kunde därför byta, ta bort eller flytta rader i urnan, och
+räkningen hade litat på dem. Stängningen räknar därför också en urnrot över exakt de rader
+den infogar. Roten skrivs i röstlängden i samma sats som `STRIPPED` och kuvertroten, och i
+posten `LINK_CLEARED`. Räkningen prövar den i alla tre ingångar, före frasen och före det
+första bidraget, och före kombinationen. Summan och roten räknas ur samma läsning.
+Slutkontrollen prövar roten igen, mot omröstningens rad och mot posten.
+
+**Så räknas urnroten:**
+1. **Blad:** ett per rad i urnan, på röstlängdens valsedlar för omröstningen. Bladet är
+   SHA-256 över byten 0x00 och UTF-8 av `valsystem/urnrot/v1|<valsedelns id>|<H>`.
+   Valsedelns id är en gemen UUID, som den lagras. H är chifferhashen i 4.4, räknad ur
+   chiffret och inte läst ur kolumnen.
+2. **Ordning:** bladen sorteras stigande som gemen hex. Varje rad ger ett blad, också två med
+   samma valsedel och chifferhash (ruling 130).
+3. **Träd:** bladen hashas parvis från vänster, SHA-256 över 0x01, vänster och höger, 32 byte
+   vardera. En udda sista nod lyfts upp oförändrad.
+4. **Rot:** SHA-256 över 0x02, antalet blad som 8 byte big-endian och den översta noden,
+   skriven som 64 gemena hextecken. En tom urna har SHA-256 över bara 0x00 som översta nod.
+
+Valsedeln står i bladet, eftersom en rad annars kunde flyttas mellan två valsedlar med lika
+många alternativ utan att roten ändrades. Den som flyttade alla rader utom en från en
+valsedel hade då fått den radens röst öppnad.
+
+**Testvektorer**, med A = `11111111-1111-4111-8111-111111111111` och
+B = `22222222-2222-4222-8222-222222222222`:
+- tom urna: `c0e50f0d90d6e2fea1e6f53d4f758ed5fc9035a399a8eb215c29c6ff3ea05425`
+- en rad (A, 64 × "a"): `061969ebc6f670169b057b152712a6cf68daba128ba89e6eadb7e74f02744852`
+- raderna (A, a), (A, a) och (B, b):
+  `44d68de36627c429478a66f69098027cf4b0ab5c60e856cf90f200a870278410`
+
+**Vad roten inte skyddar mot:**
+- **Den som kan skriva i båda databaserna** kan skriva om roten i omröstningens rad. Då
+  öppnar dekrypteringen den urna som lagts dit. Slutkontrollen märker det efteråt, om inte
+  revisionskedjan också räknas om.
+- **Uppgift 13 publicerar roten**, så att den som sparar den vid stängningen kan jämföra
+  efteråt.
+- **Roten binder chiffret men inte bevisen.** Bevisen prövas av slutkontrollen, rad för rad.
 
 ### 7.4 Beslut: en struken väljares röst räknas ändå
 

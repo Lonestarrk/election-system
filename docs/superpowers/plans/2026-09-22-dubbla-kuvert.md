@@ -4373,6 +4373,10 @@ Uppgift 13 lägger sedan publiceringen sist i samma flöde.
    bekräftelse.
 7. **Den gamla modellens knapp "Publicera åtagande" tas bort från sidan.** Rutten tas bort
    i uppgift 15.
+7d. **Slutkontrollen körs i bakgrunden.** Sedan 12b verifierar den varje rad, omkring 0,4 s per
+   rad. Tusen rader tar omkring sju minuter, och ett stort val tar timmar. Sidan startar
+   kontrollen, visar att den pågår och läser resultatet när det är klart, i stället för att
+   vänta i en HTTP-begäran.
 7c. **Resultatet går att läsa efter TALLIED.** Räkningsrutten från uppgift 12 vägrar efter
    TALLIED, och ingen rutt lämnar ut räkneverken igen. Sidan behöver en läsrutt bakom
    adminsessionen för att visa resultatet per valsedel, också efter en omladdning.
@@ -4410,6 +4414,14 @@ Uppgift 13 lägger sedan publiceringen sist i samma flöde.
 ---
 
 ## Task 13: Publicering av summorna och oberoende verifiering
+
+**Från uppgift 12b:**
+- **Urnroten publiceras (ruling 135),** tillsammans med kuvertroten, i den offentliga API:n och på
+  verifieringssidan. Posten `votes-db-writer-can-swap-ciphertext` flyttas då från Kommer till
+  Klart i den del som roten stänger.
+- **Talen räknas om före publiceringen.** Publiceringen räknar om dem ur urnan och de sparade
+  bidragen, och läser inte bara `ballot_tally`. Granskaren av 12b ändrade ett räkneverk efter
+  CERTIFIED. Slutkontrollen såg det, men `certifyElection` svarade `already_certified`.
 
 **Från uppgift 12:** demons livevy (`/api/demo/database-state`) visar `ballot_tally` utan
 inloggning i demoläget, alltså innan resultatet publiceras. Livevyn ska visa resultatet först
