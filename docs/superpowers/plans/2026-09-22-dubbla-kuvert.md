@@ -4262,6 +4262,20 @@ Kontroller som ska finnas efteråt, och som var och en ska kunna fallera:
    Roten är en hash och publicerar ingenting per röst, så den följer spec 3.1.
    Sedan ruling 130 kan två rader ha samma chifferhash. Roten tas då över den sorterade
    listan med alla rader, dubbletter inräknade, så att en borttagen kopia också ändrar roten.
+   **Urnroten prövas redan i dekrypteringens spärr (ruling 134).** Implementeraren av
+   uppgift 12 visade att räkningen litar på urnans innehåll. Den som kan skriva i votes_db
+   efter stängningen kan flytta röster: en prob gav [2,1,1] i stället för [0,2,1] utan
+   avbrott. Samma person kan också byta ut alla rader utom en mot rader med känt innehåll,
+   och sedan räkna fram den sista väljarens röst ur summan. En kontroll först i
+   slutkontrollen kommer för sent för det andra angreppet, eftersom dekrypteringen då redan
+   har avslöjat rösten.
+   - `submitPartialDecryption` räknar om urnroten ur `encrypted_vote` före det första
+     bidraget, och vägrar om den skiljer sig från roten som stängningen skrev.
+   - `completeTally` prövar den igen före kombinationen.
+   - Roten ligger i röstlängden, alltså i den andra databasen, och i revisionskedjan, så att
+     den som bara kan skriva i votes_db inte kan skriva om den.
+   - Ett test byter ut en rad efter stängningen, och kräver att dekrypteringen vägrar innan
+     något bidrag sparas.
 6. **Fasen är `TALLIED`** innan fastställandet tillåts, och fastställandet sätter
    fasen `CERTIFIED` med jämför-och-sätt, som övergångarna i uppgift 11d.
 7. **Revisionskedjan är obruten** (`audit_chain_intact`, finns redan).
@@ -4393,6 +4407,10 @@ Uppgift 13 lägger sedan publiceringen sist i samma flöde.
 ---
 
 ## Task 13: Publicering av summorna och oberoende verifiering
+
+**Från uppgift 12:** demons livevy (`/api/demo/database-state`) visar `ballot_tally` utan
+inloggning i demoläget, alltså innan resultatet publiceras. Livevyn ska visa resultatet först
+när det är publicerat, som resten av appen.
 
 **Files:**
 - Modify: `src/app/api/observer/votes/route.ts`, `src/app/api/observer/election/route.ts`, `tools/verify-election.mjs`
