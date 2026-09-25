@@ -366,6 +366,8 @@ förtroendepersonen på sin egen enhet.
 - Y ligger i undergruppen
 - C1 och C2 är 1 eller ligger i undergruppen
 - v är 1 när C1 är 1, och ligger annars i undergruppen
+- 1 ≤ a, b < p och 0 ≤ challenge, response < q. Utan intervallen godtar en verifierare till
+  exempel response + q, som ger samma ekvationer.
 
 Summan av inga röster är C1 = C2 = 1. Med id:n som UUID är T 1 665 byte. Beviset lagras som
 JSON `{ "format": 2, "a", "b", "challenge", "response" }` med kanoniska decimalsträngar, och
