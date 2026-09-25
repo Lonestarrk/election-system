@@ -592,6 +592,25 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
     expect(checkOf(result, 'every_vote_verifies').severity).toBe('CRITICAL')
   })
 
+  it('ett chiffer som inte ens går att läsa blir avvikelser i rapporten, inte en krasch (ruling 37)', async () => {
+    // Raden har ett chiffer som inte är en lista av tal. Urnroten, varje röst,
+    // bidragen och räkningen läser samma rad, och ingen av dem får kasta.
+    const cast = await tallied()
+    const updated = await votesDb.encryptedVote.updateMany({
+      where: { ciphertextHash: cast.anna.ballot.ciphertextHash },
+      data: { ciphertext: 'skräp' },
+    })
+    expect(updated.count).toBe(1)
+
+    const result = await report()
+    for (const id of ['urn_root_matches', 'every_vote_verifies', 'partial_decryptions_verify', 'tally_matches']) {
+      expect(checkOf(result, id).passed, id).toBe(false)
+      expect(checkOf(result, id).severity, id).toBe('CRITICAL')
+    }
+    expect(checkOf(result, 'urn_root_matches').detail).toMatch(/går att hasha/)
+    expect(result.urnRoot).toBeNull()
+  })
+
   // -------------------------------------------------------------------------
   // Bidragen och räkningen
   // -------------------------------------------------------------------------
