@@ -404,9 +404,27 @@ PendingVote
                                     krypterad med AES-256-GCM, se 4.6
   updatedAt         timestamptz     dygnsupplöst, som övrig tidsdata
   @@unique([voterStatusId, ballotId])
+  @@unique([ciphertextHash])
+
+VotedMarker
+  voterStatusId     -> VoterStatus (restrict)
+  ballotId          -> ElectionBallot
+  @@unique([voterStatusId, ballotId])
 ```
 
 Raden **ersätts** vid omröstning och **raderas** vid stängning.
+
+**Chifferhashen är unik bland kuverten.** Urnans rader nycklas på hashen, så av två kuvert
+med samma chiffer går bara det ena att flytta, och då stoppas varje stängning. Utan
+indexet kunde en enda väljare stoppa valet genom att lägga samma chiffer på två valsedlar,
+och två väljare kunde göra det genom att lägga samma chiffer. Läggningen svarar därför
+`duplicate_ciphertext`. Valideringen flaggar dessutom dubbletter som en avvikelse, för det
+fall att en rad skrivits förbi läggningen.
+
+**`VotedMarker` är markeringen "har röstat" (3.1 punkt 6).** Skalningens transaktion skriver
+en markering per flyttat kuvert, före raderingen. Tabellen har ingen tidskolumn och inget
+id som går att ordna efter läggningen, så markeringen säger att väljaren röstade men inte
+när.
 
 `Election` får `linkClearedAt timestamptz?` och `phase` enligt avsnitt 6.1.
 
@@ -498,6 +516,17 @@ Två saker blir explicita av att `CLOSED` och `STRIPPED` är skilda tillstånd. 
 där kopplingen finns men röstningen är stängd är **valideringsfönstret**, och det syns i
 databasen att man befinner sig i det. Och en dekryptering kan inte beställas förrän
 kopplingen bevisligen är borta, eftersom övergången till `STRIPPED` är villkoret.
+
+**Övergångarna är jämför-och-sätt, och bara en stängning kör åt gången.**
+- Varje övergång är en uppdatering med villkor på nuvarande fas, så ingen fas går baklänges.
+- En stängning tar ett advisory lock i en egen transaktion och håller det under hela
+  stängningen. En andra stängning svarar `in_progress` utan att göra något.
+- Skalningen körs i låsets egen transaktion. Den omfattar `STRIPPED`, kuvertroten,
+  markeringarna och raderingen. En stängning vars lås har gått förlorat kan därför inte
+  heller göra COMMIT på en skalning.
+- Läggningen prövar fasen och räknaren i sin egen transaktion, mot en rad som stängningen
+  måste vänta på. En röst som tas emot räknas alltså alltid, och annars får väljaren ett
+  fel.
 
 Rösten avvisas i varje fas utom `OPEN`. Att den fasen är ett fält och inte en jämförelse
 mot klockan spelar roll: en klocka som går fel eller en tidszon som tolkas om ändrar
