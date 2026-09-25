@@ -210,15 +210,27 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * inte dess hash, eftersom två kuvert får ha samma chiffer. En rad med ett
    * äkta kuverts hash men ett annat id tar ingen plats. Den är en rest och tas
    * bort.
+   *
+   * UTÖKAD I UPPGIFT 12. Räkningen finns nu, och den prövar talens form men inte
+   * rösternas bevis. En prob mot testdatabasen gav räkneverken [2, 1, 1] i
+   * stället för [0, 2, 1], utan avbrott, för en tillagd rad med +2 på blankt
+   * och −1 på S. Posten säger nu det, och att den som byter ut raderna
+   * bestämmer vilken summa som öppnas.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
     title: 'Den som kan skriva i röstdatabasen kan byta ut ett chiffer',
     why:
       'Underskriften och kedjan skyddar det yttre kuvertet i röstlängden, inte chiffret i ' +
-      'röstdatabasen. Efter stängningen kontrollerar ingenting urnan, och kuvertroten går inte att ' +
-      'räkna om när signaturerna är raderade. Den som kan skriva i votes_db kan då byta ut ett ' +
-      'chiffer och dess hash mot en ny rad med giltiga bevis, utan att något märker det. Uppgift ' +
+      'röstdatabasen. Efter stängningen prövar ingenting att urnan är de flyttade kuverten, och ' +
+      'kuvertroten går inte att räkna om när signaturerna är raderade. Den som kan skriva i ' +
+      'votes_db kan då byta ut ett chiffer och dess hash mot en ny rad med giltiga bevis, utan att ' +
+      'något märker det. Räkningen prövar inte heller rösternas bevis. Den prövar urnans form, att ' +
+      'talen är gruppelement, att räkneverken ligger inom taket och summerar till antalet rader och ' +
+      'att summan inte ändrats sedan ett bidrag sparades. Också en rad utan giltiga bevis räknas ' +
+      'alltså, och den kan flytta röster mellan alternativ. Byter samma person ut alla rader utom en ' +
+      'mot rader med känt innehåll innan förtroendepersonerna bidrar, går den kvarvarande radens ' +
+      'röst att räkna fram ur resultatet. Uppgift ' +
       '12b ska räkna om en urnrot, en Merklerot över de flyttade chifferhasharna, som skrivs vid ' +
       'stängningen. Före stängningen kan samma person lägga en rad på ett äkta kuverts plats i ' +
       'urnan, dess id, men med ett annat innehåll, så att infogningen hoppar över det äkta ' +
@@ -252,6 +264,13 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
+      },
+      // Räkningen läser urnans chiffer men inte bevisen, så den prövar inte
+      // rösternas bevis. Läser den bevisen ändras raden, och texten ovan ska
+      // ses över.
+      {
+        file: 'src/orchestration/tally.usecase.ts',
+        contains: 'select: { id: true, ciphertext: true, ciphertextHash: true },',
       },
     ],
   },

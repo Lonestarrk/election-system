@@ -64,14 +64,28 @@ import { votersDb } from '@/modules/eligibility/db'
  * VAD RÄKNINGEN INTE PRÖVAR. Den räknar exakt det som ligger i urnan, och den
  * prövar inte varje rösts bevis igen. Att urnan är de validerade kuverten
  * prövar stängningen före skalningen, och efter skalningen ska slutkontrollen
- * i uppgift 12b göra det, med varje rösts bevis och en urnrot. En rad som
- * skrivits i urnan efter stängningen, och som krypterar exakt en röst, räknas
- * här som en röst (se posten `votes-db-writer-can-swap-ciphertext` i
- * src/lib/known-limitations.ts).
+ * i uppgift 12b göra det, med varje rösts bevis och en urnrot. Till dess räknas
+ * en rad som skrivits eller ändrats i urnan efter stängningen som den är, om
+ * den har valsedelns form, dess tal är gruppelement och räkneverken ligger inom
+ * taket och summerar till antalet rader. En sådan rad kan lägga till en röst,
+ * men också flytta röster mellan alternativ: ett chiffer för +2 på ett
+ * alternativ och −1 på ett annat klarar kraven, fast valsedelns bevis hade
+ * underkänt det. Ändras summan efter att ett bidrag sparats avbryts räkningen,
+ * eftersom bidraget då inte håller mot den nya summan. Se posten
+ * `votes-db-writer-can-swap-ciphertext` i src/lib/known-limitations.ts.
+ *
+ * DETSAMMA GÄLLER VALHEMLIGHETEN. Det som öppnas är summan av det som ligger
+ * i urnan när bidragen räknas. Den som kan skriva i röstdatabasen kan byta ut
+ * alla rader utom en mot rader med känt innehåll innan förtroendepersonerna
+ * bidrar, och då går den kvarvarande radens röst att räkna fram ur
+ * resultatet. Räkningen kan inte skilja en sådan urna från en ärlig förrän
+ * det finns en urnrot att pröva urnan mot, och den behöver prövas innan något
+ * dekrypteras, inte först i slutkontrollen.
  *
  * FRASEN LAGRAS ALDRIG OCH LOGGAS ALDRIG. Den låser upp andelen i minnet, i
- * `submitPartialDecryption`, och ingenting mer. Andelen sparas inte och ges
- * inte tillbaka, och ingen av dem står i något svar, i något fel eller i loggen.
+ * `submitPartialDecryption`, och ingenting mer. Den upplåsta andelen sparas
+ * inte och ges inte tillbaka, och ingen av dem står i något svar, i något fel
+ * eller i loggen. Andelen finns sparad låst, sedan valet skapades.
  * Att servern ser andelen medan den räknar står som en känd begränsning, se
  * posten `server-sees-trustee-share`.
  */
@@ -521,8 +535,8 @@ export async function submitComputedPartialDecryption(
  *
  * Så går det till i demon (spec 4.5). Frasen låser upp andelen i minnet, och
  * servern räknar bidraget för varje alternativ och prövar det som vilket
- * bidrag som helst innan det sparas. Frasen och andelen sparas inte och ges
- * inte tillbaka.
+ * bidrag som helst innan det sparas. Frasen och den upplåsta andelen sparas
+ * inte och ges inte tillbaka.
  *
  * ORDNINGEN ÄR VALD. Spärren först, så att andelen aldrig låses upp i en fas
  * där den inte får användas. Ett tidigare bidrag från samma förtroendeperson
