@@ -4178,6 +4178,10 @@ anroparen, och far därför inte arva den tilliten:
    Lagg den i `combine` i `src/lib/crypto/threshold.ts` som en del av den har
    uppgiften, och tacka den med ett test.
 
+1b. **Urnan kan ha flera rader med samma chifferhash** sedan ruling 130 i 11d. En kopia av
+   någon annans valsedel räknas som en egen röst. Aggregeringen tar varje rad, och ingenting
+   i räkningen får slå ihop rader per hash.
+
 2. **Validera gruppelement fran databasen innan de anvands.** Chiffren
    kontrollerades med `isInSubgroup` nar rosten lades, men aggregeringen laser dem
    fran `votes_db` och ska inte forutsatta att ingen rort dem däremellan. Anropa
@@ -4248,6 +4252,8 @@ Kontroller som ska finnas efteråt, och som var och en ska kunna fallera:
    de flyttade chifferhasharna sorterade, i samma transaktion som kuvertroten.
    Slutkontrollen räknar om den ur `encrypted_vote` och kräver att den är densamma.
    Roten är en hash och publicerar ingenting per röst, så den följer spec 3.1.
+   Sedan ruling 130 kan två rader ha samma chifferhash. Roten tas då över den sorterade
+   listan med alla rader, dubbletter inräknade, så att en borttagen kopia också ändrar roten.
 6. **Fasen är `TALLIED`** innan fastställandet tillåts, och fastställandet sätter
    fasen `CERTIFIED` med jämför-och-sätt, som övergångarna i uppgift 11d.
 7. **Revisionskedjan är obruten** (`audit_chain_intact`, finns redan).
