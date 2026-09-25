@@ -82,6 +82,51 @@ vi.mock('@/modules/ballot-box', async (importOriginal) => {
   }
 })
 
+/**
+ * Ett fel i en viss revisionspost, som när posten inte går att skriva eller
+ * processen dör just där (fixrunda 1, granskningens prober p2 B och p2 C).
+ * Felet kastas vid varje försök så länge det är satt.
+ *
+ * `meetOn` låter två poster av samma sort mötas innan de skrivs: den första
+ * väntar på den andra, högst en halv sekund, så att båda skrivs samtidigt om
+ * ingenting håller dem isär. Alla andra anrop går till den äkta funktionen.
+ */
+const auditFault = vi.hoisted(() => ({
+  failOn: null as null | string,
+  meetOn: null as null | string,
+  waiting: [] as Array<() => void>,
+}))
+
+function meetAnother(): Promise<void> {
+  return new Promise((resolve) => {
+    const others = auditFault.waiting.splice(0)
+    if (others.length > 0) {
+      for (const release of others) release()
+      resolve()
+      return
+    }
+    auditFault.waiting.push(resolve)
+    setTimeout(() => {
+      auditFault.waiting = auditFault.waiting.filter((release) => release !== resolve)
+      resolve()
+    }, 500)
+  })
+}
+
+vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/modules/eligibility/audit.service')>()
+  return {
+    ...actual,
+    recordAuditEvent: async (...args: Parameters<typeof actual.recordAuditEvent>) => {
+      if (auditFault.failOn !== null && args[0] === auditFault.failOn) {
+        throw new Error(`Testet: revisionsposten ${args[0]} gick inte att skriva.`)
+      }
+      if (auditFault.meetOn !== null && args[0] === auditFault.meetOn) await meetAnother()
+      return actual.recordAuditEvent(...args)
+    },
+  }
+})
+
 const databaseAvailable = await isDatabaseAvailable()
 
 if (!databaseAvailable) {
@@ -187,6 +232,9 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
 
   beforeEach(async () => {
     shapeHook.once = null
+    auditFault.failOn = null
+    auditFault.meetOn = null
+    auditFault.waiting = []
     cookieJar.admin = undefined
     resetRateLimits()
     await resetElectionData()
@@ -457,6 +505,24 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     expect(await auditEvents(AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED)).toBe(0)
   })
 
+  it('urnan läses innan andelen låses upp: en urna som inte går att räkna stoppar bidraget före frasen', async () => {
+    /**
+     * Fixrunda 1, Mindre 4. Andelen låstes förut upp först och låg i klartext i
+     * minnet medan urnan lästes, också när urnan sedan avbröt bidraget. Nu läses
+     * urnan först, och frasen prövas inte för en urna som inte går att räkna.
+     */
+    await castFor(anna, 'bp-s')
+    await closed(electionId)
+    await tamperUrn(ballotId, (pairs) => {
+      pairs[0]!.c1 = (P - 4n).toString()
+      return pairs
+    })
+
+    await expect(submitPartialDecryption(ballotId, 1, 'fel')).rejects.toThrow(TallyAbortedError)
+    expect(await auditEvents(AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED)).toBe(0)
+    expect(await votesDb.partialDecryption.count()).toBe(0)
+  })
+
   it('två samtidiga bidrag från samma förtroendeperson ger ett godkänt och en dubblett', async () => {
     await castFor(anna, 'bp-s')
     await closed(electionId)
@@ -673,6 +739,34 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     expect(await votesDb.partialDecryption.count()).toBe(0)
   })
 
+  it('spärren prövar valsedeln mot röstlängdens lista: en valsedel som pekats om i röstdatabasen tas inte emot', async () => {
+    /**
+     * Fixrunda 1, Mindre 1 (granskningens prob p2 F). Spärren tog valsedelns
+     * omröstning ur röstdatabasen. En valsedel i en omröstning där röstlängden
+     * säger att kopplingen finns kvar pekades där om till en skalad omröstning,
+     * och två bidrag togs emot.
+     */
+    await closed(emptyElectionId)
+    await castFor(anna, 'bp-s')
+    await closed(electionId)
+
+    // Röstlängden säger att kopplingen finns kvar ...
+    await votersDb.election.update({ where: { id: electionId }, data: { phase: 'VALIDATED' } })
+    expect(await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).toMatchObject({
+      status: 'wrong_phase',
+      phase: 'VALIDATED',
+    })
+
+    // ... och röstdatabasen pekar valsedeln mot den skalade omröstningen.
+    await votesDb.electionBallot.update({ where: { id: ballotId }, data: { electionId: emptyElectionId } })
+
+    await expect(submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).rejects.toThrow(/röstlängden/)
+    await expect(submitRaw(ballotId, { trusteeIndex: 2, partials: [] })).rejects.toThrow(TallyAbortedError)
+    await expect(completeTally(ballotId)).rejects.toThrow(TallyAbortedError)
+    expect(await votesDb.partialDecryption.count()).toBe(0)
+    expect(await auditEvents(AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED)).toBe(0)
+  })
+
   // -------------------------------------------------------------------------
   // TALLIED
   // -------------------------------------------------------------------------
@@ -710,6 +804,108 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
       phase: 'TALLIED',
     })
     expect(await completeTally(counted.first.id)).toMatchObject({ status: 'wrong_phase', phase: 'TALLIED' })
+  })
+
+  it('TALLIED väntar på varje valsedel i röstlängdens lista, också på en som flyttats i röstdatabasen', async () => {
+    /**
+     * Fixrunda 1, Mindre 1 (granskningens prob p2 E). Övergången läste
+     * omröstningens valsedlar ur röstdatabasen. Flyttades den andra valsedeln
+     * där till en annan omröstning, skrevs TALLIED när bara den första var
+     * räknad.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m', counted.second)
+    await closed(electionId)
+    await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])
+    await submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1])
+    await votesDb.electionBallot.update({ where: { id: counted.second.id }, data: { electionId: emptyElectionId } })
+
+    expect(await completeTally(ballotId)).toMatchObject({ status: 'tallied', counts: [0, 1, 0], phase: 'STRIPPED' })
+    expect(await phaseOf(electionId)).toBe('STRIPPED')
+    expect(await auditEvents(AUDIT_EVENTS.ELECTION_TALLIED)).toBe(0)
+
+    // Den flyttade valsedeln räknas inte heller under den andra omröstningen.
+    await expect(completeTally(counted.second.id)).rejects.toThrow(/röstlängden/)
+    expect(await phaseOf(electionId)).toBe('STRIPPED')
+  })
+
+  it('de två sista valsedlarna räknade samtidigt ger var sin post, en TALLIED och en ELECTION_TALLIED', async () => {
+    /**
+     * Granskningens prob p2 A, som ett test. Sedan fixrunda 1 skrivs posterna
+     * inuti transaktioner, och där kan en post som tar samma löpnummer som en
+     * annan inte pröva igen. Räkningens poster skrivs därför under ett
+     * gemensamt lås. Här möts de två posterna BALLOT_TALLIED innan de skrivs,
+     * så att de skrivs samtidigt om inte låset håller isär dem.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m', counted.second)
+    await closed(electionId)
+    await bothBallotsContributed()
+
+    auditFault.meetOn = AUDIT_EVENTS.BALLOT_TALLIED
+    const outcomes = await Promise.all([completeTally(counted.first.id), completeTally(counted.second.id)])
+    auditFault.meetOn = null
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(['tallied', 'tallied'])
+    expect(await phaseOf(electionId)).toBe('TALLIED')
+    expect(await auditEvents(AUDIT_EVENTS.BALLOT_TALLIED)).toBe(2)
+    expect(await auditEvents(AUDIT_EVENTS.ELECTION_TALLIED)).toBe(1)
+  })
+
+  it('räkneverken och posten BALLOT_TALLIED hör ihop: går posten inte att skriva sparas inga räkneverk, och nästa räkning skriver båda', async () => {
+    /**
+     * Fixrunda 1, Mindre 2 (granskningens prob p2 B). Räkneverken sparades
+     * förut före posten. Gick posten inte att skriva, eller dog processen där,
+     * fanns räkneverken utan post, och omräkningen som gjorde klart valsedeln
+     * skrev ingen. Två räknade valsedlar fick en enda post.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m', counted.second)
+    await closed(electionId)
+    for (const ballot of [counted.first.id, counted.second.id]) {
+      await submitPartialDecryption(ballot, 1, TRUSTEE_PASSPHRASES[0])
+      await submitPartialDecryption(ballot, 3, TRUSTEE_PASSPHRASES[2])
+    }
+    expect(await completeTally(counted.first.id)).toMatchObject({ status: 'tallied', phase: 'STRIPPED' })
+
+    auditFault.failOn = AUDIT_EVENTS.BALLOT_TALLIED
+    await expect(completeTally(counted.second.id)).rejects.toThrow(/BALLOT_TALLIED/)
+    auditFault.failOn = null
+    expect(await votesDb.ballotTally.count({ where: { ballotId: counted.second.id } })).toBe(0)
+    expect(await phaseOf(electionId)).toBe('STRIPPED')
+
+    expect(await completeTally(counted.second.id)).toMatchObject({
+      status: 'tallied',
+      counts: [0, 0, 1],
+      phase: 'TALLIED',
+    })
+    expect(await auditEvents(AUDIT_EVENTS.BALLOT_TALLIED)).toBe(2)
+    expect(await auditEvents(AUDIT_EVENTS.ELECTION_TALLIED)).toBe(1)
+  })
+
+  it('TALLIED och posten ELECTION_TALLIED hör ihop: går posten inte att skriva står fasen kvar, och nästa räkning gör klart', async () => {
+    /**
+     * Fixrunda 1, Mindre 2 (granskningens prob p2 C). Fasen skrevs förut före
+     * posten. Gick posten inte att skriva, eller dog processen där, stod fasen i
+     * TALLIED utan post, och eftersom en räkning vägras efter TALLIED kom
+     * posten aldrig.
+     */
+    await castFor(anna, 'bp-s')
+    await closed(electionId)
+    await bothBallotsContributed()
+    expect(await completeTally(counted.second.id)).toMatchObject({ status: 'tallied', phase: 'STRIPPED' })
+
+    auditFault.failOn = AUDIT_EVENTS.ELECTION_TALLIED
+    await expect(completeTally(ballotId)).rejects.toThrow(/ELECTION_TALLIED/)
+    auditFault.failOn = null
+    expect(await phaseOf(electionId)).toBe('STRIPPED')
+    expect(await auditEvents(AUDIT_EVENTS.ELECTION_TALLIED)).toBe(0)
+    // Valsedelns räkneverk och post står kvar. Det var fasen som inte gick igenom.
+    expect(await votesDb.ballotTally.count({ where: { ballotId } })).toBe(3)
+
+    expect(await completeTally(ballotId)).toMatchObject({ status: 'tallied', counts: [0, 1, 0], phase: 'TALLIED' })
+    expect(await phaseOf(electionId)).toBe('TALLIED')
+    expect(await auditEvents(AUDIT_EVENTS.ELECTION_TALLIED)).toBe(1)
+    expect(await auditEvents(AUDIT_EVENTS.BALLOT_TALLIED)).toBe(2)
   })
 
   it('en omräkning av en redan räknad valsedel ger samma resultat och inga nya rader', async () => {

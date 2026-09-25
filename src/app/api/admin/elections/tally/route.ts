@@ -21,8 +21,10 @@ export const dynamic = 'force-dynamic'
  * EGEN RUTT OCH INTE ETT STEG I BIDRAGET. Räkningen är ett eget steg i
  * ceremonin, "Räkna" på adminsidan, och den tar ingen fras: den öppnar bara det
  * två förtroendepersoner redan har bidragit till. Ett bidrag räknar aldrig, så
- * summan öppnas först när administratören ber om det, och det syns i
- * revisionsloggen.
+ * appen öppnar summan först när administratören ber om det, och det syns i
+ * revisionsloggen. Men två sparade bidrag bestämmer redan summan: den som kan
+ * läsa röstdatabasen kan kombinera dem själv, och enligt spec 6.2 publiceras
+ * varje bidrag när det kommer in.
  *
  * RESULTATET PUBLICERAS INTE HÄR. Räkneverken sparas i röstdatabasen, och
  * svaret går till den inloggade administratören. Publiceringen, med bevis, är

@@ -138,11 +138,18 @@ const ONLY_SUMS_DECRYPTED: Marker[] = [
     under: 'src',
     matches: /\bpartiallyDecrypt\(/,
   },
+  // Summan räknas ur urnan innan andelen låses upp (fixrunda 1 av uppgift 12),
+  // och det är den som dekrypteras, alternativ för alternativ.
   {
     file: 'src/orchestration/tally.usecase.ts',
     contains: [
       '  const { sums } = await sumOfUrn(ballotId, gate.optionCount)',
-      '',
+      '  const unlocked = unlockShare(trustee.encryptedShare, passphrase, gate.electionId, trusteeIndex)',
+    ].join('\n'),
+  },
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: [
       '  const partials: PartialDecryption[] = []',
       '  for (const [optionIndex, sum] of sums.entries()) {',
       '    partials.push(partiallyDecrypt(share, sum, bindingFor(gate, optionIndex)))',
@@ -194,9 +201,12 @@ const PARTIAL_DECRYPTION_BINDS_CONTEXT: Marker = {
 
 /**
  * Spärren (spec 6.1): fasen STRIPPED, kuvertroten skriven och inget kuvert
- * kvar, prövad först i varje ingång till räkningen, före frasen.
+ * kvar, prövad först i varje ingång till räkningen, före frasen. Och valsedeln
+ * står i röstlängdens lista för omröstningen, eftersom omröstningen läses ur
+ * röstdatabasen (fixrunda 1 av uppgift 12).
  */
 const DECRYPTION_GATE: Marker[] = [
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'if (!election.ballots.some((entry) => entry.id === ballotId)) {' },
   {
     file: 'src/orchestration/tally.usecase.ts',
     contains: "if (election.phase !== 'STRIPPED') return closedGate(election.phase, messageForPhase(election.phase))",
@@ -216,16 +226,22 @@ const DECRYPTION_GATE: Marker[] = [
 ]
 
 /**
- * TALLIED skrivs med jämför-och-sätt från STRIPPED, och bara av räkningen.
+ * TALLIED skrivs med jämför-och-sätt från STRIPPED, i samma transaktion som
+ * revisionsposten, och bara av räkningen. Villkoret är att varje valsedel i
+ * röstlängdens lista för omröstningen är räknad (fixrunda 1 av uppgift 12).
  */
 const TALLIED_WRITTEN_BY_TALLY: Marker[] = [
   {
     file: 'src/orchestration/tally.usecase.ts',
     contains: [
-      "    where: { id: electionId, phase: 'STRIPPED', envelopeRoot: { not: null } },",
-      "    data: { phase: 'TALLIED' },",
+      '    const cas = await tx.election.updateMany({',
+      "      where: { id: electionId, phase: 'STRIPPED', envelopeRoot: { not: null } },",
+      "      data: { phase: 'TALLIED' },",
+      '    })',
+      '    if (cas.count === 1) await recordAuditEvent(AUDIT_EVENTS.ELECTION_TALLIED, tx)',
     ].join('\n'),
   },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'for (const ballot of election.ballots) {' },
   { file: 'src/orchestration/tally.usecase.ts', contains: 'if (!shape || tallied !== shape.optionCount) {' },
   { onlyIn: ['src/orchestration/tally.usecase.ts'], under: 'src', matches: /\bphase:\s*['"`]TALLIED['"`]/ },
 ]
@@ -564,10 +580,12 @@ export const VOTER_MODEL_FIELDS_TODAY: Marker[] = [
 /**
  * Det gamla flödets markering nämns bara i det gamla flödets tre filer.
  *
- * Markeringen i voter_ballot_status skrivs i dag av röstintygen och av
- * `markBallotAsVoted`, och läses när valsedlarna listas. Nämns tabellen i någon
- * annan fil under src, en ny tjänst, en rutt eller något i src/orchestration,
- * fäller det påståendet, oavsett om det är en läsning eller en skrivning.
+ * Markeringen i voter_ballot_status skrivs i dag bara när röstintyget utfärdas.
+ * Den läses när valsedlarna listas, i statistiken och, sedan uppgift 12, när
+ * ett kuvert läggs: läggningen vägrar ett kuvert från en väljare som har röstat
+ * i det gamla flödet (`votedInOldFlow`). Nämns tabellen i någon annan fil under
+ * src, en ny tjänst, en rutt eller något i src/orchestration, fäller det
+ * påståendet, oavsett om det är en läsning eller en skrivning.
  */
 export const MARKING_ONLY_IN_OLD_FLOW: Marker = {
   under: 'src',
@@ -576,24 +594,27 @@ export const MARKING_ONLY_IN_OLD_FLOW: Marker = {
     'src/modules/eligibility/election.service.ts',
     'src/modules/eligibility/voter-status.service.ts',
   ],
-  matches: /voterBallotStatus|VoterBallotStatus|voter_ballot_status|markBallotAsVoted/,
+  matches: /voterBallotStatus|VoterBallotStatus|voter_ballot_status/,
 }
 
 /**
- * ... och där skrivs den en gång per fil. En ny funktion i en av filerna som
- * skriver markeringen, och som anropas från ett nytt ställe under ett annat
- * namn, hade annars gått förbi mönstret ovan. Mönstret matchar en andra
- * skrivning i samma fil.
+ * ... och där skrivs den bara när röstintyget utfärdas, en gång. En ny funktion
+ * i en av filerna som skriver markeringen, och som anropas från ett nytt ställe
+ * under ett annat namn, hade annars gått förbi mönstret ovan. Mönstret matchar
+ * en andra skrivning i röstintygens fil och en första i voter-status.service.ts.
+ * Den läser markeringen men skriver den inte sedan fixrunda 1 av uppgift 12,
+ * som tog bort den oanvända `markBallotAsVoted`: den skrev markeringen utan
+ * spärren mellan böckerna.
  */
 const MARKING_WRITE = /voterBallotStatus\.(?:create|createMany|upsert|update|updateMany)\(/.source
 
-export const ONE_MARKING_WRITE_EACH: Marker[] = [
-  'src/modules/eligibility/credential.service.ts',
-  'src/modules/eligibility/voter-status.service.ts',
-].map((file) => ({
-  nowhereIn: file,
-  matches: new RegExp(`${MARKING_WRITE}[\\s\\S]*${MARKING_WRITE}`),
-}))
+export const NO_NEW_MARKING_WRITE: Marker[] = [
+  {
+    nowhereIn: 'src/modules/eligibility/credential.service.ts',
+    matches: new RegExp(`${MARKING_WRITE}[\\s\\S]*${MARKING_WRITE}`),
+  },
+  { nowhereIn: 'src/modules/eligibility/voter-status.service.ts', matches: new RegExp(MARKING_WRITE) },
+]
 
 /**
  * Och ingenting skrivs förbi koden: ingen trigger i någon migrering eller
@@ -775,8 +796,9 @@ export const CURRENTLY = {
   decryptionGate: {
     text:
       'Byggt: ingen förtroendeperson kan lämna ett bidrag, och ingenting räknas, förrän fasen är ' +
-      'STRIPPED, kuvertroten skriven och inget kuvert ligger kvar i pending_vote. Spärren prövas före ' +
-      'frasen, så andelen låses inte upp i en fas där den inte får användas.',
+      'STRIPPED, kuvertroten skriven och inget kuvert ligger kvar i pending_vote. Valsedeln ska stå i ' +
+      'röstlängdens lista för omröstningen. Spärren prövas före frasen, så andelen låses inte upp i en ' +
+      'fas där den inte får användas.',
     holdsWhile: DECRYPTION_GATE,
     status: STATUS_DONE,
   },
@@ -870,10 +892,10 @@ export const CURRENTLY = {
       VOTERS_MODELS_TODAY,
       ...VOTER_MODEL_FIELDS_TODAY,
       // Det gamla flödets markering nämns bara i det gamla flödet, också i
-      // src/orchestration, och skrivs där en gång per fil. Kuvertmodellens
-      // markering hamnar alltså inte där.
+      // src/orchestration, och skrivs där bara när röstintyget utfärdas.
+      // Kuvertmodellens markering hamnar alltså inte där.
       MARKING_ONLY_IN_OLD_FLOW,
-      ...ONE_MARKING_WRITE_EACH,
+      ...NO_NEW_MARKING_WRITE,
       // Och ingen trigger eller rå SQL skriver förbi allt det här.
       ...NO_WRITES_BESIDE_THE_CODE,
       STRIPPING_DELETES_ENVELOPES,
@@ -1815,8 +1837,10 @@ export const PHASES: PhaseRow[] = [
     today: {
       text:
         'Skrivs av räkningen när den sista valsedeln i omröstningen är räknad, med jämför-och-sätt från ' +
-        'STRIPPED och bara med kuvertroten skriven. Står fasen då i en tidigare fas, eller i en som inte ' +
-        'finns i specen, avbryts räkningen med ett besked, och ingen fas skrivs över.',
+        'STRIPPED och bara med kuvertroten skriven. Vilka valsedlar som ska vara räknade läses ur ' +
+        'röstlängden, och fasen skrivs i samma transaktion som revisionsposten. Står fasen då i en ' +
+        'tidigare fas, eller i en som inte finns i specen, avbryts räkningen med ett besked, och ingen ' +
+        'fas skrivs över.',
       holdsWhile: TALLIED_WRITTEN_BY_TALLY,
       status: STATUS_DONE,
     },

@@ -20,7 +20,7 @@ import {
   VOTERS_MODELS_TODAY,
   VOTER_MODEL_FIELDS_TODAY,
   MARKING_ONLY_IN_OLD_FLOW,
-  ONE_MARKING_WRITE_EACH,
+  NO_NEW_MARKING_WRITE,
   NO_WRITES_BESIDE_THE_CODE,
   MARKER_WRITTEN_ONLY_IN_STRIPPING,
   VOTED_MARKER_HAS_NO_TIME,
@@ -510,7 +510,7 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
       ...STRIPPING_HELPERS,
       ...MARKER_WRITTEN_ONLY_IN_STRIPPING,
       ...VOTER_MODEL_FIELDS_TODAY,
-      ...ONE_MARKING_WRITE_EACH,
+      ...NO_NEW_MARKING_WRITE,
       ...NO_WRITES_BESIDE_THE_CODE,
     ]) {
       expect(markers).toContain(marker)
@@ -711,8 +711,9 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
     )
   })
 
-  it('en andra skrivning av det gamla flödets markering i dess filer fäller påståendet', () => {
-    for (const marker of ONE_MARKING_WRITE_EACH) {
+  it('en ny skrivning av det gamla flödets markering i dess filer fäller påståendet', () => {
+    // En andra i röstintygens fil, och en första i voter-status.service.ts.
+    for (const marker of NO_NEW_MARKING_WRITE) {
       if (!('nowhereIn' in marker)) throw new Error('Väntade ett mönster.')
       const content = read(marker.nowhereIn)
 

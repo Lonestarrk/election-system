@@ -1,4 +1,5 @@
 import type { Prisma } from '.prisma/votes'
+import type { Prisma as VotersPrisma } from '.prisma/voters'
 import { multiply, type Ciphertext } from '@/lib/crypto/elgamal'
 import { parseElement } from '@/lib/crypto/group'
 // Ur serverns ingång och inte ur de delade modulerna: förtroendepersonens
@@ -24,7 +25,7 @@ import { logger } from '@/lib/logger'
 import { truncateToHour } from '@/lib/time'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, type AuditEventType } from '@/modules/eligibility/audit.service'
 import { votersDb } from '@/modules/eligibility/db'
 
 /**
@@ -63,24 +64,27 @@ import { votersDb } from '@/modules/eligibility/db'
  *
  * VAD RÄKNINGEN INTE PRÖVAR. Den räknar exakt det som ligger i urnan, och den
  * prövar inte varje rösts bevis igen. Att urnan är de validerade kuverten
- * prövar stängningen före skalningen, och efter skalningen ska slutkontrollen
- * i uppgift 12b göra det, med varje rösts bevis och en urnrot. Till dess räknas
- * en rad som skrivits eller ändrats i urnan efter stängningen som den är, om
- * den har valsedelns form, dess tal är gruppelement och räkneverken ligger inom
- * taket och summerar till antalet rader. En sådan rad kan lägga till en röst,
- * men också flytta röster mellan alternativ: ett chiffer för +2 på ett
- * alternativ och −1 på ett annat klarar kraven, fast valsedelns bevis hade
- * underkänt det. Ändras summan efter att ett bidrag sparats avbryts räkningen,
- * eftersom bidraget då inte håller mot den nya summan. Se posten
+ * prövar stängningen före skalningen. Efter skalningen prövar ingenting det
+ * ännu. Uppgift 12b prövar en urnrot i spärren, innan något dekrypteras
+ * (ruling 134). Till dess räknas urnan som den är:
+ *   – en rad som lagts till eller ändrats efter stängningen räknas, om den har
+ *     valsedelns form, dess tal är gruppelement och räkneverken ligger inom
+ *     taket och summerar till antalet rader. Båda kraven räknas ur samma urna.
+ *     En sådan rad kan lägga till en röst, men också flytta röster mellan
+ *     alternativ: ett chiffer för +2 på ett alternativ och −1 på ett annat
+ *     klarar kraven, fast valsedelns bevis hade underkänt det
+ *   – en rad som tagits bort tar bort en röst, utan att något märks.
+ *     Granskningens prob p2 G tog bort två av tre rader och fick [0, 1, 0]
+ * Ändras summan efter att ett bidrag sparats avbryts räkningen, eftersom
+ * bidraget då inte håller mot den nya summan. Se posten
  * `votes-db-writer-can-swap-ciphertext` i src/lib/known-limitations.ts.
  *
  * DETSAMMA GÄLLER VALHEMLIGHETEN. Det som öppnas är summan av det som ligger
- * i urnan när bidragen räknas. Den som kan skriva i röstdatabasen kan byta ut
- * alla rader utom en mot rader med känt innehåll innan förtroendepersonerna
- * bidrar, och då går den kvarvarande radens röst att räkna fram ur
- * resultatet. Räkningen kan inte skilja en sådan urna från en ärlig förrän
- * det finns en urnrot att pröva urnan mot, och den behöver prövas innan något
- * dekrypteras, inte först i slutkontrollen.
+ * i urnan när bidragen räknas. Den som tar bort alla rader utom en innan
+ * förtroendepersonerna bidrar får den radens röst öppnad, och den som byter ut
+ * dem mot rader med känt innehåll kan räkna fram den ur resultatet. Räkningen
+ * kan inte skilja en sådan urna från en ärlig förrän urnroten prövas i
+ * spärren.
  *
  * FRASEN LAGRAS ALDRIG OCH LOGGAS ALDRIG. Den låser upp andelen i minnet, i
  * `submitPartialDecryption`, och ingenting mer. Den upplåsta andelen sparas
@@ -190,7 +194,11 @@ function messageForPhase(phase: string): string {
  * enda väljares kuvert (spec 6.1 och 6.2). Spärren prövas därför först, före
  * allt annat, och innan någon andel låses upp.
  *
- * Tre villkor, och alla tre krävs:
+ * Fyra villkor, och alla fyra krävs:
+ *   – valsedeln står i röstlängdens lista för omröstningen. Vilken omröstning
+ *     valsedeln hör till läses ur röstdatabasen, och den som kan skriva där
+ *     kunde annars peka valsedeln mot en skalad omröstning (fixrunda 1,
+ *     granskningens prob p2 F)
  *   – fasen står i STRIPPED, som bara skalningens transaktion skriver
  *   – kuvertroten är skriven, eftersom STRIPPED bara skrivs tillsammans med
  *     roten. Utan rot har någon skrivit fasen förbi stängningen
@@ -220,6 +228,15 @@ async function tallyGate(ballotId: string): Promise<Gate> {
       null,
       'Omröstningen finns inte i röstlängden, så det går inte att se om kopplingen mellan väljare ' +
         'och röst är raderad. Ingenting dekrypteras.',
+    )
+  }
+
+  if (!election.ballots.some((entry) => entry.id === ballotId)) {
+    abort(
+      `valsedeln hör i röstdatabasen till omröstningen ${ballot.electionId}, men röstlängden har den ` +
+        'inte bland omröstningens valsedlar. Omröstningen speglas till röstlängden med samma valsedlar ' +
+        'när den skapas, så en av databaserna har ändrats sedan dess, och det går inte att säga vilken ' +
+        'omröstnings fas som gäller. Ingenting dekrypteras.',
     )
   }
 
@@ -540,8 +557,13 @@ export async function submitComputedPartialDecryption(
  *
  * ORDNINGEN ÄR VALD. Spärren först, så att andelen aldrig låses upp i en fas
  * där den inte får användas. Ett tidigare bidrag från samma förtroendeperson
- * därefter, så att inte heller en omsändning låser upp något. Först sedan
- * frasen, som kostar en scrypt-härledning.
+ * därefter, så att inte heller en omsändning låser upp något. Sedan summan, så
+ * att andelen ligger i klartext i minnet så kort stund som möjligt, och så att
+ * en urna som inte går att räkna stoppar bidraget innan frasen prövas
+ * (fixrunda 1, Mindre 4). Att läsa urnan tar omkring 73 ms per rad för en
+ * riksdagsvalsedel. Sist frasen, som kostar en scrypt-härledning. En fel fras
+ * kostar alltså också summan, och gränsen per förtroendeperson i rutten
+ * begränsar hur ofta det kan ske.
  */
 export async function submitPartialDecryption(
   ballotId: string,
@@ -557,6 +579,7 @@ export async function submitPartialDecryption(
 
   if (await hasContributed(ballotId, trusteeIndex)) return { status: 'duplicate' }
 
+  const { sums } = await sumOfUrn(ballotId, gate.optionCount)
   const unlocked = unlockShare(trustee.encryptedShare, passphrase, gate.electionId, trusteeIndex)
   if (unlocked.status === 'wrong_passphrase') {
     // En angreppssignal, som syns i revisionsloggen (ruling 64). Posten säger
@@ -585,8 +608,6 @@ export async function submitPartialDecryption(
         'räknat eller sparat.',
     )
   }
-
-  const { sums } = await sumOfUrn(ballotId, gate.optionCount)
 
   const partials: PartialDecryption[] = []
   for (const [optionIndex, sum] of sums.entries()) {
@@ -657,8 +678,12 @@ async function storedContributions(
 type StoredTally = { kind: 'none' } | { kind: 'complete'; counts: number[] }
 
 /** Valsedelns sparade räkneverk. Räkneverken sparas alltid hela, som bidragen. */
-async function storedTally(ballotId: string, optionCount: number): Promise<StoredTally> {
-  const rows = await votesDb.ballotTally.findMany({
+async function storedTally(
+  ballotId: string,
+  optionCount: number,
+  client: Pick<typeof votesDb, 'ballotTally'> = votesDb,
+): Promise<StoredTally> {
+  const rows = await client.ballotTally.findMany({
     where: { ballotId },
     select: { optionIndex: true, count: true },
     orderBy: { optionIndex: 'asc' },
@@ -708,11 +733,20 @@ async function phaseOf(electionId: string): Promise<{ phase: string; envelopeRoo
  * STRIPPED (spec 6.1, som övergångarna i uppgift 11d).
  *
  * Villkoret är att varje valsedel i omröstningen har sina räkneverk, ett per
- * alternativ. Räkneverken skrivs innan villkoret prövas, så av två räkningar
- * som slutar samtidigt ser åtminstone den senare att båda är klara. Ingen fas
- * hoppar: övergången sker bara från STRIPPED, med kuvertroten skriven, och
- * ingen fas går baklänges. Av flera samtidiga räkningar skriver en TALLIED, och
- * de andra finner fasen redan där.
+ * alternativ. VALSEDLARNA LÄSES UR RÖSTLÄNGDEN (fixrunda 1, Mindre 1). Den som
+ * kan skriva i röstdatabasen kunde annars flytta en valsedel därifrån, och
+ * TALLIED hade skrivits utan att den var räknad (granskningens prob p2 E).
+ * Räkneverken skrivs innan villkoret prövas, så av två räkningar som slutar
+ * samtidigt ser åtminstone den senare att båda är klara. Ingen fas hoppar:
+ * övergången sker bara från STRIPPED, med kuvertroten skriven, och ingen fas
+ * går baklänges. Av flera samtidiga räkningar skriver en TALLIED, och de andra
+ * finner fasen redan där.
+ *
+ * FASEN OCH POSTEN ELECTION_TALLIED SKRIVS I EN TRANSAKTION (fixrunda 1,
+ * Mindre 2). Förut skrevs posten efter fasen. Gick den inte att skriva stod
+ * fasen i TALLIED utan post, för gott, eftersom en räkning vägras efter TALLIED
+ * (granskningens prob p2 C). Nu förs fasen tillbaka om posten inte går att
+ * skriva, och nästa räkning av valsedeln gör klart båda.
  *
  * `tallyCompletedAt` i röstdatabasen skrivs först, en gång, avrundad till hel
  * timme, som all tid i votes_db. Kraschar processen mellan den och fasen står
@@ -725,9 +759,13 @@ async function phaseOf(electionId: string): Promise<{ phase: string; envelopeRoo
  * Återstår en valsedel ges fasen tillbaka som den står. Ingen fas skrivs över.
  */
 async function settleElectionPhase(electionId: string): Promise<string> {
-  const ballots = await votesDb.electionBallot.findMany({ where: { electionId }, select: { id: true } })
+  const election = await votersDb.election.findUnique({
+    where: { id: electionId },
+    select: { ballots: { select: { id: true } } },
+  })
+  if (!election) abort('omröstningen finns inte längre i röstlängden. Räkneverken är sparade.')
 
-  for (const ballot of ballots) {
+  for (const ballot of election.ballots) {
     const shape = await getEncryptedBallotShape(ballot.id)
     const tallied = shape ? await votesDb.ballotTally.count({ where: { ballotId: ballot.id } }) : -1
     if (!shape || tallied !== shape.optionCount) {
@@ -742,14 +780,15 @@ async function settleElectionPhase(electionId: string): Promise<string> {
     data: { tallyCompletedAt: truncateToHour(new Date()) },
   })
 
-  const moved = await votersDb.election.updateMany({
-    where: { id: electionId, phase: 'STRIPPED', envelopeRoot: { not: null } },
-    data: { phase: 'TALLIED' },
+  const moved = await withTallyAuditLock(async (tx) => {
+    const cas = await tx.election.updateMany({
+      where: { id: electionId, phase: 'STRIPPED', envelopeRoot: { not: null } },
+      data: { phase: 'TALLIED' },
+    })
+    if (cas.count === 1) await recordAuditEvent(AUDIT_EVENTS.ELECTION_TALLIED, tx)
+    return cas.count === 1
   })
-  if (moved.count === 1) {
-    await recordAuditEvent(AUDIT_EVENTS.ELECTION_TALLIED)
-    return 'TALLIED'
-  }
+  if (moved) return 'TALLIED'
 
   const after = await phaseOf(electionId)
   if (after && (after.phase === 'TALLIED' || after.phase === 'CERTIFIED') && after.envelopeRoot !== null) {
@@ -817,24 +856,94 @@ export async function completeTally(ballotId: string): Promise<TallyOutcome> {
     return { status: 'tallied', counts, phase: await settleElectionPhase(gate.electionId) }
   }
 
-  try {
-    await votesDb.ballotTally.createMany({
+  await saveTally(gate, counts)
+  return { status: 'tallied', counts, phase: await settleElectionPhase(gate.electionId) }
+}
+
+/**
+ * Tar ett lås som gäller transaktionen `client` kör i och släpps vid dess
+ * COMMIT eller återställning. Nyckeln bildas ur namnet, som stängningens lås.
+ *
+ * Funktionen ger void, som Prisma inte kan läsa, så värdet begärs som text. Det
+ * är en fråga och inte en sats: arkitektursidan räknar Prismas executeRaw som
+ * rå SQL som skriver, och låset skriver ingenting.
+ */
+async function lockForTransaction(
+  client: { $queryRaw: (query: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown> },
+  name: string,
+): Promise<void> {
+  await client.$queryRaw`SELECT pg_advisory_xact_lock(('x' || substr(md5(${name}), 1, 16))::bit(64)::bigint)::text AS locked`
+}
+
+/**
+ * Kör `run` i en transaktion i röstlängden, under räkningens lås för
+ * revisionsposter.
+ *
+ * VARFÖR ETT LÅS. En revisionspost tar nästa löpnummer i kedjan. Utanför en
+ * transaktion prövar `recordAuditEvent` igen när två poster tar samma nummer,
+ * men inuti en transaktion kan den inte det: PostgreSQL har redan avbrutit
+ * transaktionen, och den förs tillbaka. Av två räkningar som skrev sina poster
+ * samtidigt hade då den ena förts tillbaka, och testet med två valsedlar som
+ * räknas samtidigt visar det. Under låset skriver räkningens poster en i taget.
+ * En post från något annat än räkningen kan fortfarande ta numret emellan. Då
+ * kastar anropet, ingenting av det steget skrev står kvar, och en ny räkning
+ * gör klart.
+ */
+function withTallyAuditLock<T>(run: (tx: VotersPrisma.TransactionClient) => Promise<T>): Promise<T> {
+  return votersDb.$transaction(async (tx) => {
+    await lockForTransaction(tx, 'tally-audit')
+    return run(tx)
+  })
+}
+
+/** En av räkningens revisionsposter, i en egen transaktion under räkningens lås. */
+async function recordTallyAuditEvent(eventType: AuditEventType): Promise<void> {
+  await withTallyAuditLock((tx) => recordAuditEvent(eventType, tx))
+}
+
+/**
+ * Sparar valsedelns räkneverk och posten BALLOT_TALLIED som en enhet (fixrunda
+ * 1, Mindre 2).
+ *
+ * TVÅ DATABASER, TVÅ TRANSAKTIONER, DEN ENA INUTI DEN ANDRA. Räkneverken ligger
+ * i röstdatabasen och posten i röstlängden, så de kan inte dela en transaktion.
+ * Röstdatabasens transaktion skriver räkneverken och gör COMMIT först när
+ * röstlängdens transaktion har skrivit posten och gjort sin. Går posten inte att
+ * skriva förs räkneverken tillbaka, och nästa räkning skriver båda. Förut
+ * sparades räkneverken först. En post som inte gick att skriva, eller en process
+ * som dog emellan, lämnade då räkneverken utan post, och omräkningen som gjorde
+ * klart valsedeln skrev ingen (granskningens prob p2 B).
+ *
+ * KVAR ÄR FÖNSTRET MELLAN DE TVÅ COMMIT. Avbryts det just där, till exempel av en
+ * process som dör, finns posten men inte räkneverken, och nästa räkning skriver
+ * räkneverken och en post till. Ordningen är vald så, eftersom en post för
+ * mycket är bättre än räkneverk utan post.
+ *
+ * VALSEDELNS LÅS gör att samtidiga räkningar av samma valsedel sparar en i
+ * taget. Den som kommer efter finner räkneverken sparade och jämför dem med sina
+ * egna, utan någon post: båda räknade ur samma urna och samma bidrag, och
+ * räkneverken ska vara desamma.
+ */
+async function saveTally(gate: { ballotId: string; optionCount: number }, counts: readonly number[]): Promise<void> {
+  const { ballotId, optionCount } = gate
+
+  await votesDb.$transaction(async (tx) => {
+    await lockForTransaction(tx, `tally-ballot:${ballotId}`)
+
+    const theirs = await storedTally(ballotId, optionCount, tx)
+    if (theirs.kind === 'complete') {
+      if (!sameCounts(theirs.counts, counts)) {
+        abort('en annan räkning av valsedeln hann spara andra räkneverk före den här. Ingenting skrevs över.')
+      }
+      logger.info('En annan räkning av valsedeln sparade samma räkneverk först')
+      return
+    }
+
+    await tx.ballotTally.createMany({
       data: counts.map((count, optionIndex) => ({ ballotId, optionIndex, count })),
     })
-    await recordAuditEvent(AUDIT_EVENTS.BALLOT_TALLIED)
-  } catch (error) {
-    if (!isUniqueViolation(error)) throw error
-
-    // En annan räkning av samma valsedel hann spara först. Den räknade ur
-    // samma urna och samma bidrag, och räkneverken ska vara desamma.
-    const theirs = await storedTally(ballotId, gate.optionCount)
-    if (theirs.kind !== 'complete' || !sameCounts(theirs.counts, counts)) {
-      abort('en annan räkning av valsedeln sparade andra räkneverk samtidigt. Ingenting skrevs över.')
-    }
-    logger.info('En annan räkning av valsedeln sparade samma räkneverk först')
-  }
-
-  return { status: 'tallied', counts, phase: await settleElectionPhase(gate.electionId) }
+    await recordTallyAuditEvent(AUDIT_EVENTS.BALLOT_TALLIED)
+  })
 }
 
 function sameCounts(a: readonly number[], b: readonly number[]): boolean {

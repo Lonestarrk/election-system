@@ -216,6 +216,13 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * stället för [0, 2, 1], utan avbrott, för en tillagd rad med +2 på blankt
    * och −1 på S. Posten säger nu det, och att den som byter ut raderna
    * bestämmer vilken summa som öppnas.
+   *
+   * RÄTTAD I FIXRUNDA 1 AV UPPGIFT 12 (granskningens Mindre 3). Posten nämnde
+   * inte att en borttagen rad tar bort en röst, fast det är enklast: prob p2 G
+   * tog bort två av tre rader och fick [0, 1, 0]. Den nämnde "summerar till
+   * antalet rader" bland kontrollerna, fast antalet räknas ur samma urna. Och
+   * urnroten prövas nu i räkningens spärr, inte bara i slutkontrollen
+   * (ruling 134).
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
@@ -226,13 +233,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'kuvertroten går inte att räkna om när signaturerna är raderade. Den som kan skriva i ' +
       'votes_db kan då byta ut ett chiffer och dess hash mot en ny rad med giltiga bevis, utan att ' +
       'något märker det. Räkningen prövar inte heller rösternas bevis. Den prövar urnans form, att ' +
-      'talen är gruppelement, att räkneverken ligger inom taket och summerar till antalet rader och ' +
-      'att summan inte ändrats sedan ett bidrag sparades. Också en rad utan giltiga bevis räknas ' +
-      'alltså, och den kan flytta röster mellan alternativ. Byter samma person ut alla rader utom en ' +
-      'mot rader med känt innehåll innan förtroendepersonerna bidrar, går den kvarvarande radens ' +
-      'röst att räkna fram ur resultatet. Uppgift ' +
-      '12b ska räkna om en urnrot, en Merklerot över de flyttade chifferhasharna, som skrivs vid ' +
-      'stängningen. Före stängningen kan samma person lägga en rad på ett äkta kuverts plats i ' +
+      'talen är gruppelement, att räkneverken ligger inom taket och summerar till antalet rader i ' +
+      'samma urna och att summan inte ändrats sedan ett bidrag sparades. Också en rad utan giltiga ' +
+      'bevis räknas alltså, och den kan flytta röster mellan alternativ. En rad som tas bort tar bort ' +
+      'en röst, utan att något märks. Tar samma person bort alla rader utom en innan ' +
+      'förtroendepersonerna bidrar, öppnas den radens röst, och byter hen ut dem mot rader med känt ' +
+      'innehåll går rösten att räkna fram ur resultatet. Uppgift 12b ska räkna om en urnrot, en ' +
+      'Merklerot över de flyttade chifferhasharna, som skrivs vid stängningen, och pröva den i ' +
+      'räkningens spärr innan något dekrypteras. Före stängningen kan samma person lägga en rad på ' +
+      'ett äkta kuverts plats i ' +
       'urnan, dess id, men med ett annat innehåll, så att infogningen hoppar över det äkta ' +
       'kuvertet. Stängningen tar då bort raden och infogar det validerade kuvertet i stället, ' +
       'larmar i serverloggen och anger kuvertets chifferhash i svaret till administratören. Ett ' +

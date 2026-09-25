@@ -66,8 +66,10 @@ async function main() {
   await votersDb.election.deleteMany({ where: { name: { not: 'Valet 2026' } } })
 
   // Status återställs: en tidigare körning kan ha fastställt eller flaggat
-  // omröstningen, och då vägrar slutkontrollen i nästa körning.
-  await votesDb.election.updateMany({ data: { status: 'OPEN', certifiedAt: null } })
+  // omröstningen, och då vägrar slutkontrollen i nästa körning. Räkningens
+  // tidpunkt nollställs också: räkningen skriver den bara när den saknas, så
+  // en gammal timme hade annars stått kvar efter nästa räkning.
+  await votesDb.election.updateMany({ data: { status: 'OPEN', certifiedAt: null, tallyCompletedAt: null } })
 
   process.stdout.write(
     `Nollställt: ${votes.count} röster, ${commitments.count} åtaganden, ` +

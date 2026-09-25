@@ -1,4 +1,3 @@
-import { truncateToDay } from '@/lib/time'
 import { votersDb } from './db'
 import { hashPersonalNumber } from './identity'
 import { ballotsForVoter, type BallotForVoter } from './election.service'
@@ -96,45 +95,6 @@ export async function identifyAdmin(personalNumber: string): Promise<AdminIdenti
   if (!voter.isAdmin) return { outcome: 'not_admin' }
 
   return { outcome: 'admin', voterStatusId: voter.id }
-}
-
-/**
- * Markerar att personen röstat på en valsedel.
- *
- * DUBBELRÖSTNINGSSPÄRREN LIGGER I DATABASEN, INTE I KODEN.
- *
- * Raden skapas med ett unikt index på (voter_status_id, ballot_id). Två
- * samtidiga begäranden kan därför inte båda lyckas: PostgreSQL avvisar den
- * andra med en unikhetskonflikt, oavsett hur anropen ligger i tid.
- *
- * En kontroll av typen "läs status, testa i JavaScript, skriv sedan" hade haft
- * ett kapplöpningsfönster mellan läsning och skrivning där två parallella
- * begäranden båda ser "har inte röstat". Det unika indexet stänger det
- * fönstret.
- *
- * Returnerar false om personen redan röstat på valsedeln.
- */
-export async function markBallotAsVoted(
-  voterStatusId: string,
-  ballotId: string,
-): Promise<boolean> {
-  try {
-    await votersDb.voterBallotStatus.create({
-      data: {
-        voterStatusId,
-        ballotId,
-        // Dygnsupplösning: se kommentaren om tidskorrelation i lib/time.ts.
-        votedAt: truncateToDay(new Date()),
-      },
-    })
-    return true
-  } catch (error) {
-    const isUniqueViolation =
-      typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
-
-    if (isUniqueViolation) return false
-    throw error
-  }
 }
 
 /**
