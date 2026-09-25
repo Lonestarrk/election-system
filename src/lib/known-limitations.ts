@@ -162,6 +162,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * OMSKRIVEN I UPPGIFT 11D. Återläsningen stängde bytet före infogningen, men
    * bytet efter stängningen står kvar tills uppgift 12b räknar om en urnrot, och
    * ett byte före infogningen kan fortfarande stoppa stängningen.
+   *
+   * OMSKRIVEN I FIXRUNDA 1 AV 11D (ruling 126). Städningen ersätter nu en rad
+   * som tagit ett validerat kuverts plats, så ett byte före stängningen stoppar
+   * den inte längre. Kvar är fönstret mellan städningen och infogningen, där
+   * ett byte stoppar en enskild körning, och bytet efter stängningen.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
@@ -172,22 +177,30 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'räkna om när signaturerna är raderade. Den som kan skriva i votes_db kan då byta ut ett ' +
       'chiffer och dess hash mot en ny rad med giltiga bevis, utan att något märker det. Uppgift ' +
       '12b ska räkna om en urnrot, en Merklerot över de flyttade chifferhasharna, som skrivs vid ' +
-      'stängningen. Före infogningen kan samma person lägga en rad med ett äkta kuverts ' +
-      'chifferhash men ett annat innehåll, och infogningen hoppar då över det äkta kuvertet. ' +
-      'Sedan uppgift 11d läser stängningen tillbaka varje flyttat chiffer och avbryter, med ' +
-      'kopplingen orörd, om urnan inte har samma valsedel, chiffer och bevis som det validerade. ' +
-      'Ett sådant byte räknas alltså inte, men det stoppar stängningen, och varje omkörning, tills ' +
-      'raden tagits bort, så den som kan skriva i votes_db kan hålla ett val från att stängas.',
+      'stängningen. Före stängningen kan samma person lägga en rad med ett äkta kuverts ' +
+      'chifferhash eller id men ett annat innehåll, så att infogningen hoppar över det äkta ' +
+      'kuvertet. Stängningen tar då bort raden och infogar det validerade kuvertet i stället, ' +
+      'larmar i serverloggen och anger kuvertets chifferhash i svaret till administratören. En ' +
+      'rad som skrivs efter städningen men före infogningen fångas av återläsningen, som avbryter ' +
+      'stängningen med kopplingen orörd, och omkörningen ersätter raden. Bytet räknas alltså ' +
+      'inte, och den som vill hålla ett val från att stängas måste skriva i det fönstret vid ' +
+      'varje körning.',
     stillTrueIf: [
-      // Infogningen hoppar över rader som redan finns, så en rad med samma
-      // hash stoppar stängningen i stället för att ersättas ...
+      // Infogningen hoppar över rader som redan finns, så en rad som skrivs
+      // efter städningen stoppar stängningen i stället för att ersättas ...
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'skipDuplicates: true,' },
-      // ... och städningen av rester tar bara bort rader vars hash saknas i
-      // den validerade läsningen, inte en rad med rätt hash och fel innehåll.
+      // ... medan städningen ersätter en rad som redan låg där, med ett
+      // validerat kuverts hash eller id och ett annat innehåll.
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'if (!validated.has(row.ciphertextHash)) residue.push(row.ciphertextHash)',
+        contains: [
+          '      for (const envelope of [byHash.get(row.ciphertextHash), byId.get(row.id)]) {',
+          '        if (envelope && !storedAsValidated(row, envelope)) {',
+          '          forged.add(envelope.ciphertextHash)',
+          '          forgedRowIds.add(row.id)',
+        ].join('\n'),
       },
+      { file: 'src/app/api/admin/elections/close/route.ts', contains: 'urnRowsReplaced: outcome.urnRowsReplaced,' },
       // Efter stängningen: slutkontrollen prövar ännu det gamla flödets röster
       // och läser inte encrypted_vote, och skalningen skriver bara kuvertroten,
       // ingen urnrot. Skriver 12b en urnrot i samma sats ändras raden nedan.

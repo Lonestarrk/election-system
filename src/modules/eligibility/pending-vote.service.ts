@@ -21,8 +21,9 @@ import { sealCertificateChain } from './sealed-chain'
  * till stängningen för att veta vad som faktiskt räknas.
  *
  * DUBBELRÖSTNINGSSPÄRREN ÄR ETT UNIKT INDEX, inte en kontroll i koden. Två
- * samtidiga anrop kan därför inte båda skapa en rad — den andra blir en
- * uppdatering, oavsett hur de ligger i tid.
+ * samtidiga anrop kan därför inte båda skapa en rad, oavsett hur de ligger i
+ * tid. Den andra stoppas av indexet, gör om sin transaktion och prövas då mot
+ * raden som finns, se `castEncryptedBallot`.
  */
 
 export type SignedEnvelope = {
@@ -188,11 +189,11 @@ export async function castEncryptedBallot(
 
   const existing = await votersDb.pendingVote.findUnique({
     where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
-    select: { id: true, castSequence: true },
+    select: { castSequence: true },
   })
 
   /**
-   * RÄKNAREN MÅSTE ÖKA, OCH KONTROLLEN MÅSTE LIGGA HÄR.
+   * RÄKNAREN MÅSTE ÖKA.
    *
    * Den som fångat väljarens första signerade kuvert kan annars skicka in det
    * igen efter att hon ändrat sig, och rösten återgår till den köpta — ett
@@ -201,6 +202,12 @@ export async function castEncryptedBallot(
    * uträkning gjord vid det här anropet — annars kan den avgörande jämförelsen
    * göras mot fel tal utan att någon signatur någonsin behöver förfalskas,
    * exakt det granskningen fångade.
+   *
+   * Prövningen här sparar bara arbete, som fasens prövning överst. Den som
+   * avgör är villkoret i skrivningen, i transaktionen längst ned (fixrunda 1
+   * av 11d, ruling 127). Två läggningar för samma väljare och valsedel kan
+   * båda passera en läsning här, och före rättelsen kunde den med lägre
+   * räknare skriva sist.
    */
   if (existing && signedPayload.castSequence <= existing.castSequence) {
     return { status: 'stale_sequence' }
@@ -319,51 +326,77 @@ export async function castEncryptedBallot(
    * kuverten, och inget kan läggas efter.
    *
    * Rå SQL, eftersom Prisma inte har `FOR SHARE`. Satsen läser bara.
+   *
+   * RÄKNAREN PRÖVAS OCKSÅ HÄR, AV VILLKORET I SKRIVNINGEN (fixrunda 1 av 11d,
+   * ruling 127). Ett liggande kuvert skrivs bara över om dess räknare är lägre
+   * än den som signerats. Står en annan läggning för samma väljare och valsedel
+   * mitt i sin skrivning väntar uppdateringen på den, och prövar sedan
+   * villkoret mot raden som den andra lämnade. Ändrades ingen rad finns
+   * antingen ett kuvert med samma eller högre räknare, och svaret är
+   * `stale_sequence`, eller inget kuvert alls, och då skapas det. Skapar två
+   * läggningar samtidigt stoppas den senare av det unika indexet. Den gör då
+   * om sin transaktion en gång och prövas mot raden som finns.
    */
-  const recorded = await votersDb.$transaction(async (tx) => {
-    const [current] = await tx.$queryRaw<
-      Array<{ phase: string; closes_at: Date; link_cleared_at: Date | null }>
-    >`SELECT phase, closes_at, link_cleared_at FROM election WHERE id = ${electionId} FOR SHARE`
+  const envelopeData = {
+    ciphertext: ballot.ciphertext,
+    proofs: ballot.proofs,
+    ciphertextHash: ballot.ciphertextHash,
+    castSequence: signedPayload.castSequence,
+    bankIdSignature: envelope.signature,
+    bankIdCertificateChain,
+    updatedAt: truncateToDay(new Date()),
+  }
 
-    if (
-      !current ||
-      current.phase !== 'OPEN' ||
-      current.link_cleared_at !== null ||
-      current.closes_at <= new Date()
-    ) {
-      return false
-    }
+  const writeEnvelope = () =>
+    votersDb.$transaction(async (tx): Promise<EnvelopeWrite> => {
+      const [current] = await tx.$queryRaw<
+        Array<{ phase: string; closes_at: Date; link_cleared_at: Date | null }>
+      >`SELECT phase, closes_at, link_cleared_at FROM election WHERE id = ${electionId} FOR SHARE`
 
-    await tx.pendingVote.upsert({
-      where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
-      update: {
-        ciphertext: ballot.ciphertext,
-        proofs: ballot.proofs,
-        ciphertextHash: ballot.ciphertextHash,
-        castSequence: signedPayload.castSequence,
-        bankIdSignature: envelope.signature,
-        bankIdCertificateChain,
-        updatedAt: truncateToDay(new Date()),
-      },
-      create: {
-        voterStatusId,
-        ballotId,
-        ciphertext: ballot.ciphertext,
-        proofs: ballot.proofs,
-        ciphertextHash: ballot.ciphertextHash,
-        castSequence: signedPayload.castSequence,
-        bankIdSignature: envelope.signature,
-        bankIdCertificateChain,
-        updatedAt: truncateToDay(new Date()),
-      },
+      if (
+        !current ||
+        current.phase !== 'OPEN' ||
+        current.link_cleared_at !== null ||
+        current.closes_at <= new Date()
+      ) {
+        return { status: 'closed' }
+      }
+
+      const replaced = await tx.pendingVote.updateMany({
+        where: { voterStatusId, ballotId, castSequence: { lt: signedPayload.castSequence } },
+        data: envelopeData,
+      })
+      if (replaced.count > 0) return { status: 'written', replaced: true }
+
+      const lying = await tx.pendingVote.findUnique({
+        where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
+        select: { castSequence: true },
+      })
+      if (lying) return { status: 'stale_sequence' }
+
+      await tx.pendingVote.create({ data: { voterStatusId, ballotId, ...envelopeData } })
+      return { status: 'written', replaced: false }
     })
 
-    return true
-  })
+  let written: EnvelopeWrite
+  try {
+    written = await writeEnvelope()
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error
+    written = await writeEnvelope()
+  }
 
-  if (!recorded) return { status: 'closed' }
+  if (written.status !== 'written') return written
 
-  return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: existing !== null }
+  return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: written.replaced }
+}
+
+/** Vad skrivningen i läggningens transaktion kom fram till. */
+type EnvelopeWrite = { status: 'closed' } | { status: 'stale_sequence' } | { status: 'written'; replaced: boolean }
+
+/** En unikhetskonflikt, P2002, som när två läggningar skapar samma kuvert samtidigt. */
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
 }
 
 /**
@@ -383,9 +416,10 @@ export async function castEncryptedBallot(
  * Kvar att komma ihåg: startas TVÅ signeringar för samma väljare och valsedel
  * innan någon av dem hunnit slutföras (två flikar, ingen ännu klar) kan båda
  * få samma tal härifrån, eftersom ingen rad finns att räkna från förrän en av
- * dem faktiskt skrivs. Det är ofarligt — `castEncryptedBallot`s
- * `stale_sequence`-kontroll (`<=`, inte `<`) fångar ändå den som kommer in
- * sist, se dess kommentar.
+ * dem faktiskt skrivs. Det är ofarligt — `castEncryptedBallot` skriver bara
+ * över ett kuvert med lägre räknare, i samma transaktion som skrivningen, så
+ * den som kommer in sist med samma tal får `stale_sequence`, se dess
+ * kommentar.
  */
 export async function nextCastSequence(voterStatusId: string, ballotId: string): Promise<number> {
   const existing = await votersDb.pendingVote.findUnique({

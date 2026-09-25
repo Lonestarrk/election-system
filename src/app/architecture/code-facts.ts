@@ -213,7 +213,7 @@ export const DEVICE_VIEW: Marker[] = [
   {
     file: 'src/modules/eligibility/pending-vote.service.ts',
     contains:
-      "return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: existing !== null }",
+      "return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: written.replaced }",
   },
 ]
 
@@ -826,14 +826,18 @@ export const CURRENTLY = {
    * chiffer läses tillbaka och jämförs med det validerade, och antalet på
    * valsedlarna ska vara antalet flyttade. Roten skrivs sedan 11d i samma sats
    * som STRIPPED, med villkor på både fasen och en oskriven rot.
+   *
+   * Fixrunda 1 av 11d lade till id:t i jämförelsen, och flyttade den till en
+   * funktion som städningen delar. Markörerna följer funktionen och anropet i
+   * återläsningen.
    */
   envelopeRootCommitment: {
     text:
       'Byggt: roten räknas ut innan något raderas och skrivs en enda gång. Stängningen läser ' +
       'tillbaka varje flyttat chiffer och avbryter om urnan inte är exakt de validerade kuverten, ' +
-      'med samma valsedel, chiffer och bevis, eller om raderingen inte träffar exakt de kuvert som ' +
-      'flyttats. Ingen inklusionsväg lagras, och efter stängningen är signaturerna raderade, så ' +
-      'ingen utomstående kan räkna om roten.',
+      'med samma id, valsedel, chiffer och bevis, eller om raderingen inte träffar exakt de kuvert ' +
+      'som flyttats. Ingen inklusionsväg lagras, och efter stängningen är signaturerna raderade, ' +
+      'så ingen utomstående kan räkna om roten.',
     holdsWhile: [
       {
         file: 'src/orchestration/close-election.usecase.ts',
@@ -843,14 +847,26 @@ export const CURRENTLY = {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: "where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
       },
-      // Återläsningen: valsedel, chiffer och bevis för varje flyttat kuvert,
-      // och antalet på valsedlarna.
+      // Återläsningen: id, valsedel, chiffer och bevis för varje flyttat
+      // kuvert, och antalet på valsedlarna.
       {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: [
-          '        row.ballotId !== envelope.ballotId ||',
-          '        !sameJson(row.ciphertext, envelope.ciphertext) ||',
-          '        !sameJson(row.proofs, envelope.proofs)',
+          '    row.ciphertextHash === envelope.ciphertextHash &&',
+          '    row.id === idForEnvelope(envelope.ciphertextHash) &&',
+          '    row.ballotId === envelope.ballotId &&',
+          '    sameJson(row.ciphertext, envelope.ciphertext) &&',
+          '    sameJson(row.proofs, envelope.proofs)',
+        ].join('\n'),
+      },
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: [
+          '      if (!row) {',
+          '        missing += 1',
+          '      } else if (!storedAsValidated(row, envelope)) {',
+          '        different += 1',
+          '      }',
         ].join('\n'),
       },
       {

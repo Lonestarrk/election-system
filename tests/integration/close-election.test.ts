@@ -120,7 +120,7 @@ vi.mock('@/modules/eligibility/election.service', async (importOriginal) => {
  * aldrig anropar `validateBeforeClose`. Läsningen skickas vidare orörd, så att
  * testerna här prövar samma väg som i drift.
  */
-const validationControl = vi.hoisted(() => ({ forcePass: false }))
+const validationControl = vi.hoisted(() => ({ forcePass: false, throwError: false }))
 
 vi.mock('@/orchestration/validate-before-close.usecase', async (importOriginal) => {
   const actual =
@@ -129,6 +129,8 @@ vi.mock('@/orchestration/validate-before-close.usecase', async (importOriginal) 
   return {
     ...actual,
     validateEnvelopes: async (snapshot: Parameters<typeof actual.validateEnvelopes>[0]) => {
+      // Ett godtyckligt fel mitt i förberedelsen, som när databasen inte svarar.
+      if (validationControl.throwError) throw new Error('valideringen kunde inte slutföras')
       if (!validationControl.forcePass) return actual.validateEnvelopes(snapshot)
       return { summary: { votes: 0, voters: 0, byKind: {}, passed: true }, anomalies: [] }
     },
@@ -206,6 +208,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     auditControl.poisonTransaction = false
     electionServiceControl.failCloseStateRead = false
     validationControl.forcePass = false
+    validationControl.throwError = false
     await resetElectionData()
 
     // Partiregistret är delad referensdata och tas inte bort av
@@ -646,15 +649,18 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     expect(error).toBeInstanceOf(CloseAbortedError)
 
     /**
-     * ROTEN ÄR SKRIVEN, SÅ KOPPLINGEN HAR RADERATS EN GÅNG (uppgift 11d).
+     * ROTEN ÄR SKRIVEN FAST FASEN STÅR FÖRE STRIPPED (uppgift 11d).
      *
      * Bara skalningens transaktion skriver roten, och den raderar kopplingen i
-     * samma COMMIT. Att fasen här står före STRIPPED kan bara komma av en
-     * skrivning förbi stängningen. Före 11d svarade stängningen att kopplingen
-     * var ORÖRD, fast den var raderad.
+     * samma COMMIT. Här har kopplingen raderats och fasen skrivits om efteråt.
+     * Men en rot som skrivits direkt i databasen, utan radering, ger samma
+     * läge, och beskedet säger därför båda (fixrunda 1, M4). Före 11d svarade
+     * stängningen att kopplingen var ORÖRD, fast den var raderad.
      */
     expect(linkStateOf(error)).toBe('unknown')
     expect(abortedMessageFor(error)).not.toContain('ORÖRD')
+    expect((error as Error).message).toContain('fasen skrivits om')
+    expect((error as Error).message).toContain('roten skrivits förbi stängningen')
 
     const after = await votersDb.election.findUniqueOrThrow({
       where: { id: electionId },
@@ -836,18 +842,24 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
      *
      * De vanligaste verkliga felen bor före transaktionen — databasen nere
      * under valideringen, en läsning som inte går igenom. De lämnar kopplingen
-     * bevisbart orörd, och beskedet ska säga det: ett "kan ha gått igenom" där
-     * hade fått en administratör att tveka i onödan just när systemet är som
-     * mest stressat.
+     * bevisbart orörd så länge stängningens lås hålls, och beskedet ska säga
+     * det: ett "kan ha gått igenom" där hade fått en administratör att tveka i
+     * onödan just när systemet är som mest stressat.
      *
-     * Felet här är inte konstruerat via en mock utan är en äkta kastväg: den
-     * inledande `findUniqueOrThrow` på en omröstning som inte finns. Poängen
-     * är att den INTE är en `CloseAbortedError` från början — påståendet sätts
-     * av var i flödet den uppstod, inte av vem som kastade.
+     * Felet här är inte en `CloseAbortedError` från början: valideringen
+     * kastar ett vanligt fel. Poängen är att påståendet sätts av var i flödet
+     * felet uppstod, inte av vem som kastade.
+     *
+     * FIXRUNDA 1 AV 11D. Testet använde en omröstning som inte finns, och
+     * kastet kom ur den inledande läsningen. Sedan fixrundan läser gränsen
+     * fasen och frågar låset innan den säger "orörd" (V1), och en omröstning
+     * som inte finns ger då det försiktiga beskedet. Rutten svarar 404 för en
+     * sådan innan den anropar stängningen.
      */
     await castFor(anna, 'bp-s')
+    validationControl.throwError = true
 
-    const error = await closeElection('00000000-0000-0000-0000-000000000000').then(
+    const error = await closeElection(electionId).then(
       () => null,
       (thrown: unknown) => thrown,
     )
@@ -858,6 +870,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     // Och orsaken finns kvar i kedjan, inte bara i det yttersta lagret.
     expect(describeErrorChain(error)).toContain('orsakat av')
+    expect(describeErrorChain(error)).toContain('valideringen kunde inte slutföras')
 
     // Kopplingen ligger faktiskt kvar, precis som beskedet påstår.
     expect(await votersDb.pendingVote.count()).toBe(1)
@@ -865,27 +878,20 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
   it('säger däremot rakt ut att kopplingen är orörd när det ÄR kontrollerat', async () => {
     // Motstycket: den kontrollerade vägen ska inte ha blivit försiktigare än
-    // den behöver vara. Återläsningen i steg 5 vet att ingenting raderats.
-    const annas = await castFor(anna, 'bp-s')
+    // den behöver vara. Transaktionen avbröt sig själv före COMMIT.
+    await castFor(anna, 'bp-s')
     /**
-     * En rad med Annas hash men ett annat chiffer ligger redan i
-     * röstdatabasen. Infogningen hoppar över Annas kuvert, och återläsningen
-     * ser att urnans chiffer inte är det validerade.
+     * En markering "har röstat" ligger redan på valsedeln, skriven förbi
+     * stängningen. Antalet markeringar stämmer då inte med antalet flyttade
+     * kuvert, och transaktionen kastar inifrån, före COMMIT. Att ingenting
+     * raderats är alltså känt, och fasen och låset bekräftar resten.
      *
-     * Fram till uppgift 11d användes här ett chiffer med en ANNAN hash, som
-     * fick antalet att inte stämma. Sedan 11d tas ett sådant bort som en rest
-     * före infogningen, och stängningen går igenom.
+     * Fram till uppgift 11d användes här ett chiffer med en annan hash, och i
+     * 11d en rad med Annas hash och ett annat chiffer. Sedan dess tas den
+     * första bort som en rest och den andra ersätts, och stängningen går
+     * igenom (fixrunda 1, ruling 126).
      */
-    const other = await buildBallot('bp-m')
-    await votesDb.encryptedVote.create({
-      data: {
-        id: idForEnvelope(annas),
-        ballotId,
-        ciphertext: other.ciphertext as unknown as Prisma.InputJsonValue,
-        proofs: other.proofs as unknown as Prisma.InputJsonValue,
-        ciphertextHash: annas,
-      },
-    })
+    await votersDb.votedMarker.create({ data: { voterStatusId: kim, ballotId } })
 
     const error = await closeElection(electionId).then(
       () => null,

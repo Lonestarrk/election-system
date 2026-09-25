@@ -15,6 +15,7 @@ import {
   CloseAbortedError,
   idForEnvelope,
   linkStateOf,
+  urnRowsReplacedOf,
   type CloseOutcome,
 } from '@/orchestration/close-election.usecase'
 import { AUDIT_EVENTS } from '@/modules/eligibility/audit.service'
@@ -46,10 +47,11 @@ import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from 
  * varandra.
  *
  * Här prövas också det som hänger på faserna i punkt 5b och 6 i uppgiften: att
- * läggningen prövar fasen i samma transaktion som den skriver, att rester i
- * röstdatabasen städas, att varje flyttat chiffer läses tillbaka, att kuverten
- * läses i omgångar, och att markeringen "har röstat" skrivs i skalningens
- * transaktion.
+ * läggningen prövar fasen och räknaren i samma transaktion som den skriver,
+ * att rester och förfalskade rader i röstdatabasen tas bort, att varje flyttat
+ * chiffer läses tillbaka, att kuverten läses i omgångar, att markeringen "har
+ * röstat" skrivs i skalningens transaktion, och vad stängningen säger när dess
+ * lås går förlorat (fixrunda 1).
  */
 
 /**
@@ -64,17 +66,28 @@ import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from 
 const hooks = vi.hoisted(() => ({
   /** Före stängningens läsning av valsedlarna, alltså efter fasen och före kuverten. */
   beforeEnvelopeRead: null as null | (() => Promise<void>),
-  /** Före infogningen i votes_db, efter valideringen. */
+  /** Före infogningen i votes_db, efter valideringen och städningen. */
   beforeInsert: null as null | (() => Promise<void>),
-  /** Före nästa läsning av encrypted_vote, alltså städningen eller återläsningen. */
+  /** Före nästa läsning av encrypted_vote, alltså städningens första läsning. */
   beforeUrnRead: null as null | (() => Promise<void>),
+  /** Före nästa radering i encrypted_vote, alltså städningens radering. */
+  beforeUrnDelete: null as null | (() => Promise<void>),
   /** Varje läsning av pending_vote genom den delade klienten, med sitt `take`. */
   pendingVoteReads: [] as Array<{ take: number | undefined }>,
   /**
-   * En port i läggningen, efter fasens första prövning och före skrivningen.
-   * `hashPersonalNumber` är det sista läggningen gör innan den skriver.
+   * Portar i läggningen, en per läggning och i den ordning de sätts upp.
+   *
+   * `castGates` sitter efter fasens och räknarens första prövning och före
+   * transaktionen: `hashPersonalNumber` är det sista läggningen gör innan den
+   * öppnar den. `castTxGates` sitter inne i läggningens transaktion, efter
+   * fasens prövning med FOR SHARE: vid den första skrivningen i pending_vote,
+   * eller vid `create` när `castTxGateAt` säger det.
    */
-  castGate: null as null | { reached: () => void; opened: Promise<void> },
+  castGates: [] as Array<{ reached: () => void; opened: Promise<void> }>,
+  castTxGates: [] as Array<{ reached: () => void; opened: Promise<void> }>,
+  castTxGateAt: 'write' as 'write' | 'create',
+  /** Väljarna i den ordning skalningen skickar markeringarna till `createMany`. */
+  markerInsertOrder: [] as string[],
 }))
 
 vi.mock('@/modules/eligibility/db', async (importOriginal) => {
@@ -109,18 +122,74 @@ vi.mock('@/modules/eligibility/db', async (importOriginal) => {
     },
   })
 
-  return { ...actual, votersDb: bind(real, { electionBallot, pendingVote }) }
+  /**
+   * Varje interaktiv transaktion får krokarna. Bara läggningen skriver i
+   * pending_vote med upsert, updateMany eller create i en transaktion, och
+   * bara skalningen skriver markeringar. Varje transaktion tar högst en port.
+   */
+  function withTxHooks(tx: Prisma.TransactionClient): Prisma.TransactionClient {
+    let gated = false
+    const gateHere = async (method: 'upsert' | 'updateMany' | 'create') => {
+      if (gated) return
+      if (hooks.castTxGateAt === 'create' && method !== 'create') return
+      const gate = hooks.castTxGates.shift()
+      if (!gate) return
+      gated = true
+      gate.reached()
+      await gate.opened
+    }
+
+    const txPendingVote = bind(tx.pendingVote, {
+      upsert: async (args: Parameters<typeof tx.pendingVote.upsert>[0]) => {
+        await gateHere('upsert')
+        return tx.pendingVote.upsert(args)
+      },
+      updateMany: async (args: Parameters<typeof tx.pendingVote.updateMany>[0]) => {
+        await gateHere('updateMany')
+        return tx.pendingVote.updateMany(args)
+      },
+      create: async (args: Parameters<typeof tx.pendingVote.create>[0]) => {
+        await gateHere('create')
+        return tx.pendingVote.create(args)
+      },
+    })
+
+    const txVotedMarker = bind(tx.votedMarker, {
+      createMany: async (args: Parameters<typeof tx.votedMarker.createMany>[0]) => {
+        const rows = args ? [args.data].flat() : []
+        hooks.markerInsertOrder.push(...rows.map((row) => row.voterStatusId))
+        return tx.votedMarker.createMany(args)
+      },
+    })
+
+    return bind(tx, { pendingVote: txPendingVote, votedMarker: txVotedMarker })
+  }
+
+  const $transaction = (arg: unknown, options?: unknown) => {
+    const transaction = real.$transaction.bind(real) as (a: unknown, o?: unknown) => Promise<unknown>
+    if (typeof arg !== 'function') return transaction(arg, options)
+    const fn = arg as (tx: Prisma.TransactionClient) => Promise<unknown>
+    return transaction((tx: Prisma.TransactionClient) => fn(withTxHooks(tx)), options)
+  }
+
+  return { ...actual, votersDb: bind(real, { electionBallot, pendingVote, $transaction }) }
 })
 
 vi.mock('@/modules/ballot-box/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/modules/ballot-box/db')>()
   const real = actual.votesDb
 
+  const hookFor: Record<string, 'beforeInsert' | 'beforeUrnRead' | 'beforeUrnDelete'> = {
+    createMany: 'beforeInsert',
+    findMany: 'beforeUrnRead',
+    deleteMany: 'beforeUrnDelete',
+  }
+
   const encryptedVote = new Proxy(real.encryptedVote, {
     get(inner, property) {
       const value = Reflect.get(inner, property)
-      if (property === 'createMany' || property === 'findMany') {
-        const key = property === 'createMany' ? 'beforeInsert' : 'beforeUrnRead'
+      const key = typeof property === 'string' ? hookFor[property] : undefined
+      if (key) {
         return async (...args: unknown[]) => {
           const hook = hooks[key]
           if (hook) {
@@ -150,9 +219,8 @@ vi.mock('@/modules/eligibility/identity', async (importOriginal) => {
   return {
     ...actual,
     hashPersonalNumber: async (personalNumber: string) => {
-      const gate = hooks.castGate
+      const gate = hooks.castGates.shift()
       if (gate) {
-        hooks.castGate = null
         gate.reached()
         await gate.opened
       }
@@ -208,8 +276,12 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     hooks.beforeEnvelopeRead = null
     hooks.beforeInsert = null
     hooks.beforeUrnRead = null
+    hooks.beforeUrnDelete = null
     hooks.pendingVoteReads = []
-    hooks.castGate = null
+    hooks.castGates = []
+    hooks.castTxGates = []
+    hooks.castTxGateAt = 'write'
+    hooks.markerInsertOrder = []
     vi.restoreAllMocks()
     await resetElectionData()
 
@@ -286,8 +358,15 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
 
   type PreparedCast = { ballot: EncryptedBallot; envelope: SignedEnvelope; shape: EncryptedBallotShape | null }
 
-  /** Krypterar och skriver under med attrappen, men lägger inte rösten. */
-  async function prepareCast(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<PreparedCast> {
+  /**
+   * Krypterar och skriver under med attrappen, men lägger inte rösten. Utan
+   * `castSequence` skrivs nästa räknare under, som röstsidan gör.
+   */
+  async function prepareCast(
+    voterStatusId: string,
+    party: 'bp-s' | 'bp-m',
+    castSequence?: number,
+  ): Promise<PreparedCast> {
     const ballot = buildBallot(party)
     const service = new MockBankIdService()
     const order = await service.sign({
@@ -297,7 +376,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         electionId,
         ballotId,
         ciphertextHash: ballot.ciphertextHash,
-        castSequence: await nextCastSequence(voterStatusId, ballotId),
+        castSequence: castSequence ?? (await nextCastSequence(voterStatusId, ballotId)),
       }),
     })
     selectDemoIdentity(order.orderRef, personalNumberByVoter.get(voterStatusId)!)
@@ -347,8 +426,9 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     return ciphertextHash
   }
 
-  /** En port i nästa läggning: den stannar före skrivningen tills porten öppnas. */
-  function armCastGate(): { reached: Promise<void>; open: () => void } {
+  type Gate = { reached: Promise<void>; open: () => void }
+
+  function makeGate(): { gate: Gate; armed: { reached: () => void; opened: Promise<void> } } {
     let reached!: () => void
     let open!: () => void
     const reachedPromise = new Promise<void>((resolve) => {
@@ -357,8 +437,29 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     const opened = new Promise<void>((resolve) => {
       open = resolve
     })
-    hooks.castGate = { reached, opened }
-    return { reached: reachedPromise, open }
+    return { gate: { reached: reachedPromise, open }, armed: { reached, opened } }
+  }
+
+  /** En port i nästa läggning, före dess transaktion: den stannar tills porten öppnas. */
+  function armCastGate(): Gate {
+    const { gate, armed } = makeGate()
+    hooks.castGates.push(armed)
+    return gate
+  }
+
+  /** En port inne i nästa läggnings transaktion, efter fasens prövning med FOR SHARE. */
+  function armCastTxGate(): Gate {
+    const { gate, armed } = makeGate()
+    hooks.castTxGates.push(armed)
+    return gate
+  }
+
+  async function waitUntil(condition: () => boolean | Promise<boolean>, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (!(await condition())) {
+      if (Date.now() > deadline) throw new Error(`Villkoret uppfylldes inte inom ${timeoutMs} ms.`)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
   }
 
   /** Granskarens förfalskning: giltigt chiffer och giltiga bevis, ingen underskrift. */
@@ -378,6 +479,61 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       },
     })
     return ballot.ciphertextHash
+  }
+
+  type PendingRow = Awaited<ReturnType<typeof votersDb.pendingVote.findFirstOrThrow>>
+
+  /** Ett äkta kuvert, lagt och sedan borttaget, för att skrivas direkt i röstlängden senare. */
+  async function saveAndRemoveEnvelope(voterStatusId: string): Promise<PendingRow> {
+    await castFor(voterStatusId, 'bp-s')
+    const row = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId } })
+    await votersDb.pendingVote.delete({ where: { id: row.id } })
+    return row
+  }
+
+  async function insertPendingRow(row: PendingRow): Promise<void> {
+    await votersDb.pendingVote.create({
+      data: {
+        id: row.id,
+        voterStatusId: row.voterStatusId,
+        ballotId: row.ballotId,
+        ciphertext: row.ciphertext as Prisma.InputJsonValue,
+        proofs: row.proofs as Prisma.InputJsonValue,
+        ciphertextHash: row.ciphertextHash,
+        castSequence: row.castSequence,
+        bankIdSignature: row.bankIdSignature,
+        bankIdCertificateChain: row.bankIdCertificateChain,
+        updatedAt: row.updatedAt,
+      },
+    })
+  }
+
+  /** Ett chiffer i röstdatabasen utan något kuvert, som en rest efter en avbruten stängning. */
+  async function plantUrnRow(row: {
+    ciphertextHash: string
+    id?: string
+    ballotId?: string
+    ciphertext: unknown
+    proofs: unknown
+  }): Promise<void> {
+    await votesDb.encryptedVote.create({
+      data: {
+        id: row.id ?? idForEnvelope(row.ciphertextHash),
+        ballotId: row.ballotId ?? ballotId,
+        ciphertext: row.ciphertext as Prisma.InputJsonValue,
+        proofs: row.proofs as Prisma.InputJsonValue,
+        ciphertextHash: row.ciphertextHash,
+      },
+    })
+  }
+
+  async function plantForeignResidue(): Promise<void> {
+    await plantUrnRow({
+      id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+      ciphertextHash: 'en-hash-som-inte-hor-till-nagot-kuvert',
+      ciphertext: [],
+      proofs: {},
+    })
   }
 
   type Attempt = { outcome: CloseOutcome | null; error: unknown }
@@ -400,8 +556,8 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     return (await state()).phase
   }
 
-  async function setPhase(value: string): Promise<void> {
-    await votersDb.election.update({ where: { id: electionId }, data: { phase: value } })
+  async function setPhase(value: string, envelopeRoot: string | null = null): Promise<void> {
+    await votersDb.election.update({ where: { id: electionId }, data: { phase: value, envelopeRoot } })
   }
 
   async function urn(): Promise<string[]> {
@@ -414,6 +570,36 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
 
   async function linkClearedEvents(): Promise<number> {
     return votersDb.auditEvent.count({ where: { eventType: AUDIT_EVENTS.LINK_CLEARED } })
+  }
+
+  /** Anslutningarna som håller ett advisory lock i röstlängden, alltså stängningens lås. */
+  async function closingLockHolders(): Promise<number[]> {
+    const rows = await votersDb.$queryRaw<Array<{ pid: number }>>`
+      SELECT l.pid FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+      WHERE l.locktype = 'advisory' AND l.granted AND d.datname = current_database()`
+    return rows.map((row) => Number(row.pid))
+  }
+
+  /**
+   * Avslutar anslutningen som håller stängningens lås, som när en anslutning
+   * tappas eller låsets tidsgräns går ut. Bara i testdatabasen.
+   */
+  async function dropClosingLock(): Promise<void> {
+    const [database] = await votersDb.$queryRaw<Array<{ name: string }>>`
+      SELECT current_database()::text AS name`
+    expect(database?.name).toBe('voters_test')
+    const holders = await closingLockHolders()
+    expect(holders).toHaveLength(1)
+    await votersDb.$queryRaw`SELECT pg_terminate_backend(${holders[0]!}::int)`
+    await waitUntil(async () => (await closingLockHolders()).length === 0, 5_000)
+  }
+
+  /** Stängningens övergång till CLOSED som väntar på ett radlås på omröstningen. */
+  async function waitingElectionUpdates(): Promise<number> {
+    const [row] = await votersDb.$queryRaw<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE 'UPDATE%election%'`
+    return row?.n ?? 0
   }
 
   describe('varje fas skrivs när den ska', () => {
@@ -482,15 +668,39 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     })
 
     it.each(['STRIPPED', 'TALLIED', 'CERTIFIED'])(
-      'already_closed betyder fas %s, och stängningen rör då ingenting',
+      'already_closed betyder fas %s med skriven kuvertrot, och stängningen rör då ingenting',
       async (from) => {
         await castFor(anna, 'bp-s')
-        await setPhase(from)
+        await setPhase(from, 'f'.repeat(64))
 
         expect(await closeElection(electionId)).toEqual({ status: 'already_closed' })
         expect(await phase()).toBe(from)
         expect(await votersDb.pendingVote.count()).toBe(1)
         expect(await urn()).toEqual([])
+      },
+    )
+
+    it.each(['STRIPPED', 'TALLIED', 'CERTIFIED'])(
+      'fas %s utan kuvertrot ger inget already_closed, eftersom STRIPPED bara skrivs med roten',
+      async (from) => {
+        /**
+         * Fixrunda 1, M3. STRIPPED skrivs i samma sats som roten, så en sådan
+         * fas utan rot kan bara komma av en skrivning förbi stängningen. Före
+         * rättelsen svarade stängningen already_closed, och rutten "kopplingen
+         * raderad", fast kuvertet låg kvar.
+         */
+        await castFor(anna, 'bp-s')
+        await setPhase(from)
+
+        const { outcome, error } = await attempt()
+
+        expect(outcome).toBeNull()
+        expect(error).toBeInstanceOf(CloseAbortedError)
+        expect(linkStateOf(error)).toBe('unknown')
+        expect((error as Error).message).toContain('kuvertroten är oskriven')
+        expect(abortedMessageFor(error)).not.toContain('ORÖRD')
+        expect(await phase()).toBe(from)
+        expect(await votersDb.pendingVote.count()).toBe(1)
       },
     )
 
@@ -522,10 +732,10 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       'ett kast i förberedelsen %s ger untouched, och ingenting av skalningen finns',
       async (_label, hook, phaseAfter) => {
         /**
-         * Allt som kastar i `prepareClose` är `untouched`: förberedelsen rör
-         * aldrig pending_vote, och under låset kan ingen annan stängning ha
-         * raderat kopplingen. Fasen står kvar där förberedelsen hann, och går
-         * inte tillbaka.
+         * Allt som kastar i `prepareClose` är `untouched` så länge stängningens
+         * lås hålls: förberedelsen rör aldrig pending_vote, och ingen annan
+         * stängning kan ha raderat kopplingen. Fasen står kvar där
+         * förberedelsen hann, och går inte tillbaka.
          */
         await castFor(anna, 'bp-s')
         await castFor(kim, 'bp-m')
@@ -552,12 +762,10 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     it('STRIPPED skrivs bara i skalningens transaktion, tillsammans med roten och raderingen', async () => {
       const annas = await castFor(anna, 'bp-s')
 
-      // Före transaktionen, alltså i sista kroken, är fasen VALIDATED.
+      // Före transaktionen, i infogningens krok, är fasen VALIDATED.
       let phaseBeforeTransaction: string | null = null
-      hooks.beforeUrnRead = async () => {
-        hooks.beforeUrnRead = async () => {
-          phaseBeforeTransaction = await phase()
-        }
+      hooks.beforeInsert = async () => {
+        phaseBeforeTransaction = await phase()
       }
 
       expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1 })
@@ -602,25 +810,23 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
        * är raderad tar bort det en annan just flyttat.
        */
       await castFor(anna, 'bp-s')
-      await votesDb.encryptedVote.create({
-        data: {
-          id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
-          ballotId,
-          ciphertext: [],
-          proofs: {},
-          ciphertextHash: 'ett-chiffer-som-en-annan-stangning-flyttat',
-        },
+      await plantUrnRow({
+        id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        ciphertextHash: 'ett-chiffer-som-en-annan-stangning-flyttat',
+        ciphertext: [],
+        proofs: {},
       })
 
       hooks.beforeEnvelopeRead = async () => {
         await setPhase('STRIPPED')
       }
 
-      // Svaret följer fasen, och stängningen rör ingenting, varken chiffret
-      // eller kuvertet. Att ett kuvert ligger kvar fast fasen säger STRIPPED
-      // kan bara komma av en skrivning förbi stängningen, och det är det
-      // slutkontrollens link_cleared larmar om.
-      expect(await closeElection(electionId)).toEqual({ status: 'already_closed' })
+      // STRIPPED utan rot kan bara komma av en skrivning förbi stängningen, och
+      // svaret är det försiktiga (fixrunda 1, M3). Stängningen rör ingenting,
+      // varken chiffret eller kuvertet.
+      const { outcome, error } = await attempt()
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
       expect(await votesDb.encryptedVote.count({ where: { ballotId } })).toBe(1)
       expect(await votersDb.pendingVote.count()).toBe(1)
     })
@@ -716,12 +922,173 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     })
   })
 
+  describe('stängningens lås går förlorat (fixrunda 1)', () => {
+    /**
+     * Låset hålls av en egen transaktion. Här avslutas dess anslutning med
+     * `pg_terminate_backend`, som när en anslutning tappas eller låsets
+     * tidsgräns går ut. Påståendet "orörd" får då inte längre vila på låset.
+     */
+    it('ett lås som går förlorat under läsningen upptäcks före städningen, och ingenting städas', async () => {
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+      await plantForeignResidue()
+
+      hooks.beforeEnvelopeRead = async () => {
+        await dropClosingLock()
+      }
+      const { outcome, error } = await attempt()
+
+      /**
+       * Stängningen frågar låset före städningen och avbryter. Fasen står i
+       * CLOSED med oskriven rot, men utan lås kan en annan stängning ha börjat,
+       * så beskedet är det försiktiga och inte "orörd".
+       */
+      expect(outcome).toBeNull()
+      expect(error).toBeInstanceOf(CloseAbortedError)
+      expect(linkStateOf(error)).toBe('unknown')
+      expect((error as Error).message).toContain('lås har gått förlorat')
+      expect(await votesDb.encryptedVote.count({ where: { ballotId } })).toBe(1)
+      expect(await votersDb.pendingVote.count()).toBe(2)
+      expect(await state()).toEqual({ phase: 'CLOSED', envelopeRoot: null, linkClearedAt: null })
+      expect(await votersDb.votedMarker.count()).toBe(0)
+      expect(await linkClearedEvents()).toBe(0)
+
+      // En omkörning tar ett nytt lås och går hela vägen.
+      expect(await closeElection(electionId)).toMatchObject({
+        status: 'closed',
+        moved: 2,
+        residueRemoved: ['en-hash-som-inte-hor-till-nagot-kuvert'],
+      })
+    })
+
+    it('tappat lås, en annan stängning skalar och sedan ett kast i förberedelsen: svaret följer fasen, inte "orörd"', async () => {
+      /**
+       * Granskningen av 11d (V1, prob L3). Före fixrundan svarade den första
+       * stängningen `untouched` och "Kopplingen … är ORÖRD", fast den andra
+       * redan skalat och kopplingen var raderad.
+       */
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+
+      let second: Attempt | null = null
+      hooks.beforeEnvelopeRead = async () => {
+        await dropClosingLock()
+        second = await attempt()
+        throw new Error('simulerat databasfel efter att den andra skalat')
+      }
+      const first = await attempt()
+
+      expect(second).toMatchObject({ outcome: { status: 'closed', moved: 2 }, error: null })
+      expect(first).toEqual({ outcome: { status: 'already_closed' }, error: null })
+      expect(await phase()).toBe('STRIPPED')
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+
+    it('tappat lås och ett kast i förberedelsen: beskedet är det försiktiga, inte "orörd"', async () => {
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+
+      hooks.beforeEnvelopeRead = async () => {
+        await dropClosingLock()
+        throw new Error('simulerat databasfel')
+      }
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
+      expect(abortedMessageFor(error)).not.toContain('ORÖRD')
+      expect(await votersDb.pendingVote.count()).toBe(2)
+      expect(await phase()).toBe('CLOSED')
+    })
+
+    it('tappat lås och en avvikelse i valideringen: svaret säger inte att kopplingen finns kvar', async () => {
+      /**
+       * `validation_failed` säger att kopplingen är kvar så att avvikelsen går
+       * att utreda. Utan lås kan en annan stängning ha raderat den, så svaret
+       * får inte ges förrän låset bekräftats (V1).
+       */
+      await castFor(anna, 'bp-s')
+      await plantUnsignedVote(kim, 'bp-m')
+
+      hooks.beforeEnvelopeRead = async () => {
+        await dropClosingLock()
+      }
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
+      expect((error as Error).message).toContain('Valideringen hittade avvikelser')
+      expect(await votersDb.pendingVote.count()).toBe(2)
+    })
+
+    it('tappat lås före städningens radering: ett chiffer som en annan stängning flyttat tas inte bort', async () => {
+      /**
+       * Granskningen av 11d (M2, prob L4). Robins äkta kuvert skrivs direkt i
+       * röstlängden efter den första stängningens läsning, låset tappas, och
+       * en andra stängning flyttar tre kuvert. Före fixrundan tog den första
+       * stängningens städning sedan bort Robins chiffer, som inte fanns i dess
+       * egen läsning, och urnan saknade en röst. Nu frågar städningen låset
+       * direkt före raderingen.
+       */
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+      const robins = await saveAndRemoveEnvelope(robin)
+
+      let second: Attempt | null = null
+      hooks.beforeUrnRead = async () => {
+        await insertPendingRow(robins)
+        await dropClosingLock()
+        second = await attempt()
+      }
+      const first = await attempt()
+
+      expect(second).toMatchObject({ outcome: { status: 'closed', moved: 3 }, error: null })
+      expect(first).toEqual({ outcome: { status: 'already_closed' }, error: null })
+      expect(await urn()).toContain(robins.ciphertextHash)
+      expect(await urn()).toHaveLength(3)
+      expect(await votersDb.votedMarker.count()).toBe(3)
+    })
+
+    it('tappat lås mellan frågan och raderingen: stängningen larmar och ger det försiktiga beskedet', async () => {
+      /**
+       * Fönstret som återstår (M2). Robins chiffer ligger kvar i röstdatabasen
+       * från en avbruten stängning, och hans kuvert skrivs tillbaka direkt i
+       * röstlängden först när den första stängningen ska radera resterna. Låset
+       * tappas där, och en andra stängning flyttar Robins kuvert. Den första
+       * tar sedan bort chiffret, eftersom det var en rest när den läste. Efter
+       * raderingen frågar den låset och fasen, larmar i loggen och ger inget
+       * besked om att kopplingen är orörd.
+       */
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+      const robins = await saveAndRemoveEnvelope(robin)
+      await plantUrnRow({ ciphertextHash: robins.ciphertextHash, ciphertext: robins.ciphertext, proofs: robins.proofs })
+      const alarm = vi.spyOn(logger, 'error')
+
+      let second: Attempt | null = null
+      hooks.beforeUrnDelete = async () => {
+        await insertPendingRow(robins)
+        await dropClosingLock()
+        second = await attempt()
+      }
+      const first = await attempt()
+
+      expect(second).toMatchObject({ outcome: { status: 'closed', moved: 3 }, error: null })
+      expect(first.outcome).toBeNull()
+      expect(linkStateOf(first.error)).toBe('unknown')
+      expect(abortedMessageFor(first.error)).not.toContain('ORÖRD')
+      expect(alarm).toHaveBeenCalledWith(expect.stringContaining('LARM'), expect.objectContaining({ removed: 1 }))
+      // Det larmet gäller: den andra stängningens urna saknar nu Robins chiffer.
+      expect(await urn()).not.toContain(robins.ciphertextHash)
+    })
+  })
+
   describe('en röst i sista stund', () => {
     it('en röst vars fas prövades före stängningen men som skrivs efter den läggs inte, och väljaren får ett fel', async () => {
       const annas = await castFor(anna, 'bp-s')
       const kims = await prepareCast(kim, 'bp-m')
 
-      // Kims läggning börjar medan röstningen är öppen och stannar före skrivningen.
+      // Kims läggning börjar medan röstningen är öppen och stannar före sin transaktion.
       await setClosesAt(inTheFuture())
       const gate = armCastGate()
       const kimsCast = castPrepared(kim, kims)
@@ -775,6 +1142,131 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       expect(await urn()).toEqual([annas])
       expect(await votersDb.pendingVote.count()).toBe(0)
     })
+
+    it('en läggning som prövat fasen i sin transaktion skriver klart, och stängningen väntar på den', async () => {
+      /**
+       * Granskningen av 11d (M1, prob C1). Det här är ordningen `FOR SHARE`
+       * finns för: läggningen har prövat fasen i sin transaktion men inte
+       * skrivit än, när stängningen vill skriva CLOSED. Stängningens UPDATE
+       * väntar då på läggningens lås, och kuvertet finns på plats när
+       * kuverten läses. Utan `FOR SHARE` skrivs CLOSED direkt, och kuvertet
+       * hamnar i pending_vote efter läsningen, eller efter skalningen.
+       */
+      const annas = await castFor(anna, 'bp-s')
+      const kims = await prepareCast(kim, 'bp-m')
+
+      // Röstningen står öppen i tre sekunder till, så att läggningen hinner pröva fasen.
+      const closesAt = new Date(Date.now() + 3_000)
+      await setClosesAt(closesAt)
+      const gate = armCastTxGate()
+      const kimsCast = castPrepared(kim, kims)
+      await gate.reached
+
+      // Klockan får passera. Omröstningens rad går inte att ändra medan läggningen håller den.
+      await waitUntil(() => Date.now() > closesAt.getTime() + 50, 10_000)
+      const closing = attempt()
+      await waitUntil(async () => (await waitingElectionUpdates()) > 0, 10_000)
+      expect(await phase()).toBe('OPEN')
+
+      gate.open()
+      expect(await kimsCast).toMatchObject({ status: 'recorded', ciphertextHash: kims.ballot.ciphertextHash })
+
+      const { outcome, error } = await closing
+      expect(error).toBeNull()
+      expect(outcome).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
+      expect(await urn()).toEqual([annas, kims.ballot.ciphertextHash].sort())
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+  })
+
+  describe('räknaren prövas i läggningens transaktion (fixrunda 1, ruling 127)', () => {
+    /**
+     * Två läggningar för samma väljare och valsedel, med olika räknare, som
+     * båda har passerat prövningen före transaktionen. Den med högre räknare
+     * skriver först. Före rättelsen skrev den lägre sedan över den högre, och
+     * ett äldre kuvert blev det som räknades.
+     */
+    it('med ett kuvert som redan ligger: den högre står kvar, och den lägre får stale_sequence', async () => {
+      await castFor(anna, 'bp-s')
+      const lower = await prepareCast(anna, 'bp-m', 2)
+      const higher = await prepareCast(anna, 'bp-s', 3)
+
+      await setClosesAt(inTheFuture())
+      try {
+        const lowerGate = armCastGate()
+        const lowerCast = castPrepared(anna, lower)
+        await lowerGate.reached
+        const higherGate = armCastGate()
+        const higherCast = castPrepared(anna, higher)
+        await higherGate.reached
+
+        higherGate.open()
+        expect(await higherCast).toMatchObject({ status: 'recorded', ciphertextHash: higher.ballot.ciphertextHash })
+        lowerGate.open()
+        expect(await lowerCast).toEqual({ status: 'stale_sequence' })
+      } finally {
+        await setClosesAt(inThePast())
+      }
+
+      const row = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
+      expect(row).toMatchObject({ castSequence: 3, ciphertextHash: higher.ballot.ciphertextHash })
+    })
+
+    it('utan kuvert sedan tidigare: den högre står kvar, och den lägre får stale_sequence', async () => {
+      const lower = await prepareCast(anna, 'bp-m', 1)
+      const higher = await prepareCast(anna, 'bp-s', 2)
+
+      await setClosesAt(inTheFuture())
+      try {
+        const lowerGate = armCastGate()
+        const lowerCast = castPrepared(anna, lower)
+        await lowerGate.reached
+        const higherGate = armCastGate()
+        const higherCast = castPrepared(anna, higher)
+        await higherGate.reached
+
+        higherGate.open()
+        expect(await higherCast).toMatchObject({ status: 'recorded', replaced: false })
+        lowerGate.open()
+        expect(await lowerCast).toEqual({ status: 'stale_sequence' })
+      } finally {
+        await setClosesAt(inThePast())
+      }
+
+      const row = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
+      expect(row).toMatchObject({ castSequence: 2, ciphertextHash: higher.ballot.ciphertextHash })
+    })
+
+    it('två första läggningar som båda ser att inget kuvert finns: den som skriver sist prövas mot den första', async () => {
+      /**
+       * Båda läggningarna står vid `create` i sina transaktioner. Den högre
+       * skapar raden. Den lägre stoppas av det unika indexet, och läggningen
+       * gör om sin transaktion och prövar då räknaren mot raden som finns.
+       */
+      const lower = await prepareCast(anna, 'bp-m', 1)
+      const higher = await prepareCast(anna, 'bp-s', 2)
+      hooks.castTxGateAt = 'create'
+
+      await setClosesAt(inTheFuture())
+      try {
+        const lowerGate = armCastTxGate()
+        const lowerCast = castPrepared(anna, lower)
+        await lowerGate.reached
+        const higherGate = armCastTxGate()
+        const higherCast = castPrepared(anna, higher)
+        await higherGate.reached
+
+        higherGate.open()
+        expect(await higherCast).toMatchObject({ status: 'recorded', replaced: false })
+        lowerGate.open()
+        expect(await lowerCast).toEqual({ status: 'stale_sequence' })
+      } finally {
+        await setClosesAt(inThePast())
+      }
+
+      const row = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
+      expect(row).toMatchObject({ castSequence: 2, ciphertextHash: higher.ballot.ciphertextHash })
+    })
   })
 
   describe('rester i röstdatabasen', () => {
@@ -801,23 +1293,13 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
 
       expect(rerun).toMatchObject({ status: 'closed', moved: 1, cleared: 1, residueRemoved: [annas] })
       expect(await urn()).toEqual([kims])
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('rester'),
-        expect.objectContaining({ removed: 1 }),
-      )
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('rester'), expect.objectContaining({ found: 1 }))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('rester'), expect.objectContaining({ removed: 1 }))
     })
 
     it('ett chiffer med en främmande hash på valsedeln tas bort före infogningen', async () => {
       const annas = await castFor(anna, 'bp-s')
-      await votesDb.encryptedVote.create({
-        data: {
-          id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
-          ballotId,
-          ciphertext: [],
-          proofs: {},
-          ciphertextHash: 'en-hash-som-inte-hor-till-nagot-kuvert',
-        },
-      })
+      await plantForeignResidue()
 
       expect(await closeElection(electionId)).toMatchObject({
         status: 'closed',
@@ -830,22 +1312,43 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     it('städningen rör inte chiffer på en annan omröstnings valsedlar', async () => {
       await castFor(anna, 'bp-s')
       const other = buildBallot('bp-s')
-      await votesDb.encryptedVote.create({
-        data: {
-          id: idForEnvelope(other.ciphertextHash),
-          ballotId: otherBallotId,
-          ciphertext: other.ciphertext as unknown as Prisma.InputJsonValue,
-          proofs: other.proofs as unknown as Prisma.InputJsonValue,
-          ciphertextHash: other.ciphertextHash,
-        },
+      await plantUrnRow({
+        ballotId: otherBallotId,
+        ciphertextHash: other.ciphertextHash,
+        ciphertext: other.ciphertext,
+        proofs: other.proofs,
       })
 
-      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', residueRemoved: [] })
+      expect(await closeElection(electionId)).toMatchObject({
+        status: 'closed',
+        residueRemoved: [],
+        urnRowsReplaced: [],
+      })
       expect(await votesDb.encryptedVote.count({ where: { ballotId: otherBallotId } })).toBe(1)
+    })
+
+    it('resterna loggas innan de raderas, också när raderingen fallerar', async () => {
+      /**
+       * Granskningen av 11d (M8). Beskedet för `untouched` säger att chiffer
+       * kan ha tagits bort och att det står i serverloggen. Loggades antalet
+       * först efter raderingen fanns ingen loggrad om en omgång kastade.
+       */
+      await castFor(anna, 'bp-s')
+      await plantForeignResidue()
+      const warn = vi.spyOn(logger, 'warn')
+
+      hooks.beforeUrnDelete = async () => {
+        throw new Error('simulerat fel i röstdatabasen')
+      }
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('untouched')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('rester'), expect.objectContaining({ found: 1 }))
     })
   })
 
-  describe('varje flyttat chiffer läses tillbaka', () => {
+  describe('förfalskade rader i urnan', () => {
     async function plantBeforeInsert(row: {
       ciphertextHash: string
       ballotId?: string
@@ -853,14 +1356,11 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       proofs?: unknown
     }): Promise<void> {
       hooks.beforeInsert = async () => {
-        await votesDb.encryptedVote.create({
-          data: {
-            id: idForEnvelope(row.ciphertextHash),
-            ballotId: row.ballotId ?? ballotId,
-            ciphertext: row.ciphertext as Prisma.InputJsonValue,
-            proofs: row.proofs as Prisma.InputJsonValue,
-            ciphertextHash: row.ciphertextHash,
-          },
+        await plantUrnRow({
+          ciphertextHash: row.ciphertextHash,
+          ballotId: row.ballotId,
+          ciphertext: row.ciphertext,
+          proofs: row.proofs,
         })
       }
     }
@@ -870,13 +1370,14 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       ['andra bevis', 'proofs'],
       ['en annan valsedel', 'ballot'],
     ] as const)(
-      'en rad med ett äkta kuverts hash men %s, skriven före infogningen, stoppar stängningen',
+      'en rad med ett äkta kuverts hash men %s, skriven efter städningen och före infogningen, stoppar stängningen',
       async (_label, swapped) => {
         /**
          * Granskningen av 14f: infogningen hoppar över en rad som redan finns,
          * och steg 5 räknade bara rader. Den som kunde skriva i votes_db lade
          * en rad med Annas hash och ett annat innehåll, och stängningen svarade
-         * `closed` fast urnans chiffer inte var det validerade.
+         * `closed` fast urnans chiffer inte var det validerade. Återläsningen
+         * fångar en rad som skrivs efter städningen, som här.
          */
         const annas = await castFor(anna, 'bp-s')
         await castFor(kim, 'bp-m')
@@ -903,32 +1404,74 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       },
     )
 
-    it('en utbytt rad stoppar också omkörningen, tills den tagits bort', async () => {
+    it.each([
+      ['ett annat chiffer', 'ciphertext'],
+      ['andra bevis', 'proofs'],
+      ['en annan omröstnings valsedel', 'ballot'],
+      ['ett annat id', 'id'],
+      ['en annan hash, på kuvertets id och en annan omröstnings valsedel', 'squat'],
+    ] as const)(
+      'en rad som redan ligger på ett äkta kuverts plats men med %s ersätts med det validerade, och det står i beskedet',
+      async (_label, swapped) => {
+        /**
+         * Ruling 126. Hashen räknas ur chiffret och id:t ur hashen, så ingen
+         * legitim väg ger en rad med ett validerat kuverts hash eller id och
+         * ett annat innehåll. Före fixrundan stoppade en sådan rad varje
+         * stängning tills någon tog bort den för hand, och den som kunde skriva
+         * i röstdatabasen kunde hålla valet öppet. Nu ersätts raden under
+         * låset, före infogningen, och det larmas. Den sista raden tar
+         * kuvertets id med en annan hash, så att infogningen hade stoppats av
+         * primärnyckeln.
+         */
+        const annas = await castFor(anna, 'bp-s')
+        const annasRow = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
+        const forged = buildBallot('bp-m')
+        await plantUrnRow({
+          ciphertextHash: swapped === 'squat' ? forged.ciphertextHash : annas,
+          id: swapped === 'id' ? 'ffffffff-ffff-ffff-ffff-ffffffffffff' : idForEnvelope(annas),
+          ballotId: swapped === 'ballot' || swapped === 'squat' ? otherBallotId : ballotId,
+          ciphertext: swapped === 'ciphertext' || swapped === 'squat' ? forged.ciphertext : annasRow.ciphertext,
+          proofs: swapped === 'proofs' || swapped === 'squat' ? forged.proofs : annasRow.proofs,
+        })
+        const alarm = vi.spyOn(logger, 'error')
+
+        expect(await closeElection(electionId)).toMatchObject({
+          status: 'closed',
+          moved: 1,
+          urnRowsReplaced: [annas],
+          residueRemoved: [],
+        })
+
+        const stored = await votesDb.encryptedVote.findUniqueOrThrow({ where: { ciphertextHash: annas } })
+        expect(stored).toMatchObject({ id: idForEnvelope(annas), ballotId })
+        expect(stored.ciphertext).toEqual(annasRow.ciphertext)
+        expect(stored.proofs).toEqual(annasRow.proofs)
+        expect(await votesDb.encryptedVote.count({ where: { ballotId: otherBallotId } })).toBe(0)
+        expect(alarm).toHaveBeenCalledWith(expect.stringContaining('LARM'), expect.objectContaining({ found: 1 }))
+      },
+    )
+
+    it('en ersättning som följs av ett avbrott står i felet, eftersom en omkörning inte hittar raden igen', async () => {
+      /**
+       * Beskedet ska ange varje ersättning med chifferhash (ruling 126). Här
+       * ersätts raden, och infogningen fallerar sedan. Omkörningen hittar
+       * ingenting att ersätta, så det enda beskedet om raden är det avbrutna
+       * försökets.
+       */
       const annas = await castFor(anna, 'bp-s')
-      const annasRow = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
       const forged = buildBallot('bp-m')
-      await votesDb.encryptedVote.create({
-        data: {
-          id: idForEnvelope(annas),
-          ballotId,
-          ciphertext: forged.ciphertext as unknown as Prisma.InputJsonValue,
-          proofs: forged.proofs as unknown as Prisma.InputJsonValue,
-          ciphertextHash: annas,
-        },
-      })
+      await plantUrnRow({ ciphertextHash: annas, ciphertext: forged.ciphertext, proofs: forged.proofs })
 
-      // Hashen finns i den validerade läsningen, så raden är ingen rest och
-      // tas inte bort. Varje omkörning stoppas, och kopplingen ligger kvar.
-      expect(linkStateOf((await attempt()).error)).toBe('untouched')
-      expect(linkStateOf((await attempt()).error)).toBe('untouched')
-      expect(await votersDb.pendingVote.count()).toBe(1)
+      hooks.beforeInsert = async () => {
+        throw new Error('simulerat fel i röstdatabasen')
+      }
+      const { outcome, error } = await attempt()
 
-      await votesDb.encryptedVote.deleteMany({ where: { ciphertextHash: annas } })
-      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1 })
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('untouched')
+      expect(urnRowsReplacedOf(error)).toEqual([annas])
 
-      const stored = await votesDb.encryptedVote.findUniqueOrThrow({ where: { ciphertextHash: annas } })
-      expect(stored.ciphertext).toEqual(annasRow.ciphertext)
-      expect(stored.proofs).toEqual(annasRow.proofs)
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1, urnRowsReplaced: [] })
     })
   })
 
@@ -1047,22 +1590,25 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       },
     )
 
-    it('markeringarna skrivs i en ordning som inte följer läggningen', async () => {
+    it('markeringarna skickas till databasen i väljarnas ordning, inte i läggningens', async () => {
       /**
        * Raderna i pending_vote ligger i den ordning väljarna röstade. Skrevs
        * markeringarna i den ordningen skulle tabellens fysiska ordning säga
        * vem som röstade före vem, och markeringen säga något om när. Här
        * röstar väljarna i omvänd ordning mot sina id, så att en markering i
        * läggningsordning inte kan råka se sorterad ut.
+       *
+       * Testet prövar ordningen som skickas till `createMany` och inte
+       * `ORDER BY ctid` (granskningen av 11d, M5): PostgreSQL lägger en rad
+       * där det finns plats, så den fysiska ordningen följer inte alltid
+       * insättningen.
        */
       const voters = [anna, kim, robin, sam, vera].sort().reverse()
       for (const [index, voter] of voters.entries()) await castFor(voter, index % 2 === 0 ? 'bp-s' : 'bp-m')
 
+      hooks.markerInsertOrder = []
       expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 5 })
-
-      const rows = await votersDb.$queryRaw<Array<{ voter_status_id: string }>>`
-        SELECT voter_status_id::text AS voter_status_id FROM voted_marker ORDER BY ctid`
-      expect(rows.map((row) => row.voter_status_id)).toEqual([...voters].sort())
+      expect(hooks.markerInsertOrder).toEqual([...voters].sort())
     })
   })
 })

@@ -439,6 +439,21 @@ async function proofHoldsSafely(
  * läsningen blir kvar och stoppar transaktionen. Sedan 11d kan dessutom ingen
  * väljare lägga ett kuvert medan läsningen pågår, eftersom stängningen
  * skriver CLOSED först.
+ *
+ * TAKET ÄR NU PROCESSENS MINNE (fixrunda 1 av 11d, M6). Hela läsningen hålls
+ * i minnet medan stängningen pågår, med kedjan, utfylld till 32 829 tecken, i
+ * varje kuvert. Granskningen uppskattade ett kuvert till 45–52 kB vid två eller
+ * tre alternativ och till omkring 200 kB vid 26. Med 1 GiB heap, som
+ * granskningen räknade med för containerns 2 GiB i Azure, blir taket omkring
+ * 20 000 kuvert vid tre alternativ och 5 000 vid 26, och det följer heapen i
+ * proportion. Tar minnet slut kraschar processen i stället för att svara.
+ * Kopplingen är då orörd, eftersom inget raderats, och låset släpps med
+ * anslutningen, men administratören får inget besked. Kedjan släpps inte
+ * efter varje validerad omgång. Läsningen blir färdig innan valideringen
+ * börjar, så att släppa kedjan under valideringen sänker inte toppen, och att
+ * validera omgång för omgång kräver att läsningen och valideringen vävs ihop,
+ * vilket inte är en enkel ändring. Låsets tidsgräns sätter ett högre tak, se
+ * `CLOSING_LOCK_TIMEOUT_MS` i close-election.usecase.ts.
  */
 export async function readEnvelopes(electionId: string) {
   const ballots = await votersDb.electionBallot.findMany({

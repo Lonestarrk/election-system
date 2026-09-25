@@ -9,6 +9,7 @@ import {
   abortedMessageFor,
   closeElection,
   linkStateOf,
+  urnRowsReplacedOf,
 } from '@/orchestration/close-election.usecase'
 
 export const runtime = 'nodejs'
@@ -101,7 +102,9 @@ export async function POST(request: Request) {
    * inte av det ensamt. Före uppgift 11d kunde en andra stängning som läste
    * fasen innan den första hann göra COMMIT, men kuverten efteråt, beskriva
    * kopplingen som orörd, fast den första redan raderat den. Sedan 11d kör bara
-   * en stängning åt gången, och fasen läses innan "orörd" sägs.
+   * en stängning åt gången, och fasen läses innan "orörd" sägs. Sedan fixrunda
+   * 1 av 11d frågas också låset efter läsningen, eftersom en stängning som
+   * tagit över ett förlorat lås kan radera kopplingen.
    * En naken 500 hade sagt minst precis där beskedet betyder mest.
    *
    * SVARET PÅSTÅR INGEN ORSAK. Rutten kan inte veta vilken av vägarna som
@@ -141,8 +144,15 @@ export async function POST(request: Request) {
      * OM kopplingen är orörd — och den uppgiften ska inte behöva läsas ut ur
      * en svensk mening.
      */
+    const urnRowsReplaced = urnRowsReplacedOf(error)
+
     return jsonResponse(
-      { status: 'aborted', linkState, message: abortedMessageFor(error) },
+      {
+        status: 'aborted',
+        linkState,
+        message: `${abortedMessageFor(error)}${replacedNote(urnRowsReplaced)}`,
+        ...(urnRowsReplaced.length === 0 ? {} : { urnRowsReplaced }),
+      },
       409,
     )
   }
@@ -249,10 +259,33 @@ export async function POST(request: Request) {
 
   return jsonResponse({
     status: 'closed',
-    message: `Omröstningen är stängd. Kopplingen mellan väljare och röst är raderad.${residue}`,
+    message:
+      'Omröstningen är stängd. Kopplingen mellan väljare och röst är raderad.' +
+      `${residue}${replacedNote(outcome.urnRowsReplaced)}`,
     moved: outcome.moved,
     cleared: outcome.cleared,
     envelopeRoot: outcome.envelopeRoot,
     residueRemoved: outcome.residueRemoved,
+    urnRowsReplaced: outcome.urnRowsReplaced,
   })
+}
+
+/**
+ * ERSÄTTNINGARNA SYNS I SVARET, MED CHIFFERHASH (fixrunda 1 av 11d, ruling 126).
+ *
+ * Stängningen tar bort en rad i röstdatabasen som tagit ett validerat kuverts
+ * plats med ett annat innehåll, och infogar det validerade i stället. Ingen
+ * legitim väg skriver en sådan rad, så det tyder på ett angrepp. Svaret säger
+ * det och pekar ut kuverten, också när stängningen sedan avbröts, eftersom en
+ * omkörning inte hittar raderna igen. Loggen får bara antalet, som för
+ * resterna.
+ */
+function replacedNote(urnRowsReplaced: readonly string[]): string {
+  if (urnRowsReplaced.length === 0) return ''
+  return (
+    ` LARM: ${urnRowsReplaced.length} rader i röstdatabasen hade ett validerat kuverts ` +
+    'chifferhash eller id men ett annat innehåll. Stängningen tog bort dem för att infoga det ' +
+    'validerade i stället. Ingen legitim väg skriver en sådan rad, så någon har skrivit i ' +
+    'röstdatabasen förbi stängningen. Chifferhasharna står i urnRowsReplaced.'
+  )
 }
