@@ -393,7 +393,7 @@ bytas ut.
 ```
 PendingVote
   id                uuid
-  voterStatusId     -> VoterStatus (cascade)
+  voterStatusId     -> VoterStatus (restrict, se 7.4)
   ballotId          uuid            (speglat id, ingen FK över databasgräns)
   ciphertext        jsonb           M par (c1, c2) som decimalsträngar
   proofs            jsonb           M 0/1-bevis + 1 summabevis
