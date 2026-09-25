@@ -306,8 +306,7 @@ Testvektorn är `tests/unit/crypto/fixtures/ballot-26-14d.json`.
 `tests/unit/crypto/transcript.test.ts` räknar om varje utmaning i den ur den här
 beskrivningen.
 
-**Den partiella dekrypteringens bevis** (4.5) binder ännu inte sitt sammanhang. Det rättas i
-uppgift 12 (ruling 133).
+**Den partiella dekrypteringens bevis** binder sitt sammanhang på samma sätt, se 4.5.
 
 ### 4.5 Tröskelnyckel
 
@@ -337,9 +336,44 @@ ovan gäller alltså inte där. Skarpt läge ska vägra kända fraser (uppgift 1
 I demoläge seedas tre kända fraser som skrivs ut av `npm run seed`, så att en person kan
 spela alla tre. I skarpt läge vägrar appen starta om fraserna är de seedade.
 
-Varje förtroendeman bidrar med en partiell dekryptering `c1^{x_i}` plus ett
-Chaum–Pedersen-bevis att samma `x_i` användes som i hens publika andel. Bidragen
-kombineras med Lagrange-koefficienter.
+Varje förtroendeperson bidrar med en partiell dekryptering `v = C1^{x_t}` av summan för ett
+alternativ, plus ett Chaum–Pedersen-bevis att samma `x_t` står i den publika andelen
+`Y = g^{x_t}`. Bidragen kombineras med Lagrange-koefficienter. `combine` vägrar två bidrag
+från samma förtroendeperson, eftersom koefficienterna då blir fel utan att något kastar.
+Dekrypteringen kan inte beställas förrän omröstningen står i `STRIPPED` med kuvertroten
+skriven (6.1). Lösenfrasen låser upp andelen i minnet under räkningen, och den lagras och
+loggas aldrig. Servern ser alltså andelen en kort stund. I ett riktigt val räknar
+förtroendepersonen på sin egen enhet.
+
+**Beviset binder sitt sammanhang (uppgift 12, ruling 133).** Utmaningen är
+`e = int(SHA-256(T)) mod q`, med samma kodningar L(s), U32 och E(x) som i 4.4:
+
+| # | Fält | Kodning |
+|---|---|---|
+| 1 | prefix | ASCII `valsystem/bevis/v2/partiell-dekryptering` och en nollbyte, 41 byte |
+| 2 | electionId | L(s) |
+| 3 | ballotId | L(s) |
+| 4 | i, alternativets index | U32 |
+| 5 | t, förtroendepersonens index, från 1 | U32 |
+| 6 | Y, den publika andelen | E(x) |
+| 7, 8 | C1, C2: produkten mod p av c1 och c2 för alternativ i, över varje rad i urnan | E(x) |
+| 9 | v, det partiella värdet | E(x) |
+| 10, 11 | a = g^w, b = C1^w | E(x) |
+
+**Beviset håller om:**
+- `challenge = e`
+- `g^response ≡ a · Y^challenge` och `C1^response ≡ b · v^challenge (mod p)`
+- Y ligger i undergruppen
+- C1 och C2 är 1 eller ligger i undergruppen
+- v är 1 när C1 är 1, och ligger annars i undergruppen
+
+Summan av inga röster är C1 = C2 = 1. Med id:n som UUID är T 1 665 byte. Beviset lagras som
+JSON `{ "format": 2, "a", "b", "challenge", "response" }` med kanoniska decimalsträngar, och
+ett bevis utan `format: 2` tolkas inte.
+
+**Summan per alternativ** tas som diskret logaritm med antalet rader i urnan för valsedeln
+som tak, eftersom inget alternativ kan få fler röster än så. En summa utanför taket kastar
+och blir inget tal. Varje rad räknas, också två med samma chifferhash (ruling 130).
 
 ### 4.6 Väljarens signatur på det yttre kuvertet
 
