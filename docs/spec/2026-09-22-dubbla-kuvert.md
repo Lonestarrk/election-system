@@ -404,7 +404,6 @@ PendingVote
                                     krypterad med AES-256-GCM, se 4.6
   updatedAt         timestamptz     dygnsupplöst, som övrig tidsdata
   @@unique([voterStatusId, ballotId])
-  @@unique([ciphertextHash])
 
 VotedMarker
   voterStatusId     -> VoterStatus (restrict)
@@ -414,12 +413,12 @@ VotedMarker
 
 Raden **ersätts** vid omröstning och **raderas** vid stängning.
 
-**Chifferhashen är unik bland kuverten.** Urnans rader nycklas på hashen, så av två kuvert
-med samma chiffer går bara det ena att flytta, och då stoppas varje stängning. Utan
-indexet kunde en enda väljare stoppa valet genom att lägga samma chiffer på två valsedlar,
-och två väljare kunde göra det genom att lägga samma chiffer. Läggningen svarar därför
-`duplicate_ciphertext`. Valideringen flaggar dessutom dubbletter som en avvikelse, för det
-fall att en rad skrivits förbi läggningen.
+**Två kuvert kan ha samma chiffer, och båda räknas.** Den som lägger en kopia av någon
+annans valsedel lägger en giltig röst, och läggningen skiljer inte en kopia från en ny
+valsedel. Ett svar som gjorde det vore ett orakel: en köpare som har hela valsedeln kunde
+då fråga fram till stängningen om den fortfarande är väljarens röst (3.1). Urnans rader
+nycklas därför per kuvert och inte per hash. Annars gick bara ett av två likadana kuvert att
+flytta, och varje stängning stoppades. Priset står i 10.
 
 **`VotedMarker` är markeringen "har röstat" (3.1 punkt 6).** Skalningens transaktion skriver
 en markering per flyttat kuvert, före raderingen. Tabellen har ingen tidskolumn och inget
@@ -743,6 +742,10 @@ kontroll mot nuläget skulle förkasta giltiga röster.
 - **En insider med läsrätt i `votes_db` och en enhets sparade chifferhash** kan se om
   den enhetens röst var den som räknades, men inte vad den innehöll. Det kräver både
   intrång i databasen och tillgång till väljarens enhet.
+- **En kopia av någon annans valsedel räknas.** Den som har en annans chiffer och får många
+  väljare att lägga kopior av det förskjuter summan för det alternativet, och kan därmed
+  lära sig något om den väljarens röst. Det kräver chiffret, som aldrig publiceras, och många
+  medverkande. Att avvisa kopior skulle i stället ge en köpare ett orakel (5).
 - **BankID-ordern bär chifferhashen ut ur systemet**, tillsammans med väljarens
   identitet. BankID sparar signaturer, bland annat för tvister, så kopplingen skulle
   finnas kvar hos BankID efter raderingen här. Åtgärdas genom att det signerade bär en
