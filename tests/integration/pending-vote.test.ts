@@ -33,6 +33,9 @@ import {
   voterLeaf,
   type KeyPair,
 } from '../unit/bankid/forged-certificates'
+import { createBlindedCredential } from '@/lib/blind-client'
+import { issueCredential } from '@/modules/eligibility/credential.service'
+import { closeElection as closeAndStrip } from '@/orchestration/close-election.usecase'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
 /**
@@ -614,5 +617,157 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
 
     expect(cleared).toEqual({ removed: 1, left: 1 })
     expect(await votersDb.pendingVote.findMany({ select: { id: true } })).toEqual([{ id: second!.id }])
+  })
+
+  describe('spärren mellan det gamla flödets bok och kuverten (uppgift 12)', () => {
+    /**
+     * Granskaren av uppgift 14 fann att en väljare med direkta anrop kan ha
+     * både en röst i det gamla flödet, med markering i voter_ballot_status,
+     * och ett kuvert på samma valsedel. Röstsidan spärrar det, men inte
+     * servern. Ingen räkning dubblerar i dag, eftersom de två böckerna aldrig
+     * räknas ihop, men kuvertens räkning byggs i uppgift 12, och spärren ska
+     * finnas på servern innan dess. Den tas bort med det gamla flödet i
+     * uppgift 15.
+     */
+    async function issueOldFlowCredential(voterStatusId: string) {
+      const keys = await votersDb.electionBallot.findUniqueOrThrow({
+        where: { id: ballotId },
+        select: { signingPublicKeyPem: true },
+      })
+      const credential = await createBlindedCredential(keys.signingPublicKeyPem)
+      return issueCredential(voterStatusId, electionId, ballotId, credential.blinded)
+    }
+
+    /**
+     * Håller väljarens rad låst i en egen transaktion, som en läggning eller ett
+     * utfärdande mitt i sin skrivning, i samma läge som de tar raden: läggningen
+     * med FOR SHARE och utfärdandet med FOR NO KEY UPDATE.
+     */
+    function holdVoterRow(
+      voterStatusId: string,
+      as: 'envelope' | 'old-flow',
+      write: (tx: typeof votersDb) => Promise<unknown>,
+    ) {
+      let release!: () => void
+      let locked!: () => void
+      const released = new Promise<void>((resolve) => (release = resolve))
+      const lockTaken = new Promise<void>((resolve) => (locked = resolve))
+      const done = votersDb.$transaction(
+        async (tx) => {
+          if (as === 'envelope') {
+            await tx.$queryRaw`SELECT 1 AS locked FROM voter_status WHERE id = ${voterStatusId} FOR SHARE`
+          } else {
+            await tx.$queryRaw`SELECT 1 AS locked FROM voter_status WHERE id = ${voterStatusId} FOR NO KEY UPDATE`
+          }
+          await write(tx as unknown as typeof votersDb)
+          locked()
+          await released
+        },
+        { timeout: 30_000 },
+      )
+      return { lockTaken, release, done }
+    }
+
+    it('ett kuvert tas inte emot från en väljare som röstat i det gamla flödet', async () => {
+      expect(await issueOldFlowCredential(voter)).toMatchObject({ status: 'issued' })
+
+      expect(await cast(voter, 'bp-s')).toEqual({ status: 'voted_in_old_flow' })
+      expect(await pendingVoteFor(voter, ballotId)).toBeNull()
+    })
+
+    it('det gamla flödet utfärdar inget röstintyg till en väljare med ett liggande kuvert', async () => {
+      expect((await cast(voter, 'bp-s')).status).toBe('recorded')
+
+      expect(await issueOldFlowCredential(voter)).toEqual({ status: 'envelope_cast' })
+      expect(await votersDb.voterBallotStatus.count({ where: { voterStatusId: voter } })).toBe(0)
+    })
+
+    it('det gamla flödet utfärdar inget röstintyg till en väljare vars kuvert redan flyttats till urnan', async () => {
+      // Efter stängningen ligger kuvertet inte längre i röstlängden, men
+      // markeringen "har röstat" säger att det räknas.
+      expect((await cast(voter, 'bp-s')).status).toBe('recorded')
+      const past = new Date(Date.now() - 60_000)
+      await votersDb.election.update({ where: { id: electionId }, data: { closesAt: past } })
+      await votesDb.election.update({ where: { id: electionId }, data: { closesAt: past } })
+      expect(await closeAndStrip(electionId)).toMatchObject({ status: 'closed' })
+      expect(await votersDb.votedMarker.count({ where: { voterStatusId: voter } })).toBe(1)
+
+      expect(await issueOldFlowCredential(voter)).toEqual({ status: 'envelope_cast' })
+      expect(await votersDb.voterBallotStatus.count({ where: { voterStatusId: voter } })).toBe(0)
+    })
+
+    it('en annan väljares bok påverkar ingenting', async () => {
+      expect(await issueOldFlowCredential(kim)).toMatchObject({ status: 'issued' })
+      expect((await cast(voter, 'bp-s')).status).toBe('recorded')
+      expect(await issueOldFlowCredential(kim)).toEqual({ status: 'already_issued' })
+    })
+
+    it('ett kuvert som läggs medan det gamla flödet utfärdar väntar, och avvisas sedan', async () => {
+      /**
+       * Utan ett gemensamt lås läser läggningen och utfärdandet var sin tabell
+       * och ser inte varandras oskrivna rader, så båda hade gått igenom.
+       * Utfärdandet härmas här av en transaktion som håller väljarens rad och
+       * har skrivit markeringen men inte gjort COMMIT. Läggningen ska vänta på
+       * raden och sedan se markeringen.
+       */
+      const issuing = holdVoterRow(voter, 'old-flow', (tx) =>
+        tx.voterBallotStatus.create({ data: { voterStatusId: voter, ballotId, votedAt: new Date() } }),
+      )
+      try {
+        await issuing.lockTaken
+
+        let settled = false
+        const casting = cast(voter, 'bp-s').finally(() => {
+          settled = true
+        })
+        await new Promise((resolve) => setTimeout(resolve, 2_500))
+        expect(settled, 'läggningen väntade inte på väljarens rad').toBe(false)
+
+        issuing.release()
+        await issuing.done
+        expect(await casting).toEqual({ status: 'voted_in_old_flow' })
+        expect(await pendingVoteFor(voter, ballotId)).toBeNull()
+      } finally {
+        issuing.release()
+        await issuing.done.catch(() => undefined)
+      }
+    })
+
+    it('ett utfärdande medan ett kuvert läggs väntar, och avvisas sedan', async () => {
+      const ballot = await buildBallot('bp-m')
+      const laying = holdVoterRow(voter, 'envelope', (tx) =>
+        tx.pendingVote.create({
+          data: {
+            voterStatusId: voter,
+            ballotId,
+            ciphertext: ballot.ciphertext,
+            proofs: ballot.proofs,
+            ciphertextHash: ballot.ciphertextHash,
+            castSequence: 1,
+            bankIdSignature: 'x',
+            bankIdCertificateChain: 'x',
+            updatedAt: new Date(),
+          },
+        }),
+      )
+      try {
+        await laying.lockTaken
+
+        let settled = false
+        const issuing = issueOldFlowCredential(voter).finally(() => {
+          settled = true
+        })
+        await new Promise((resolve) => setTimeout(resolve, 1_500))
+        expect(settled, 'utfärdandet väntade inte på väljarens rad').toBe(false)
+
+        laying.release()
+        await laying.done
+        expect(await issuing).toEqual({ status: 'envelope_cast' })
+        expect(await votersDb.voterBallotStatus.count({ where: { voterStatusId: voter } })).toBe(0)
+      } finally {
+        laying.release()
+        await laying.done.catch(() => undefined)
+      }
+    })
   })
 })

@@ -95,6 +95,17 @@ export async function POST(request: Request) {
     return errorResponse('ALREADY_VOTED', 'Du har redan röstat på den här valsedeln.', 409)
   }
 
+  if (outcome.status === 'envelope_cast') {
+    // Spärren mellan böckerna (uppgift 12): väljaren har redan lagt ett kuvert
+    // på valsedeln. Beskedet gäller väljarens egen bok, i hennes egen session.
+    await recordAuditEvent(AUDIT_EVENTS.DOUBLE_VOTE_BLOCKED)
+    return errorResponse(
+      'ALREADY_VOTED',
+      'Du har redan lagt en krypterad röst på den här valsedeln, så det gamla flödet tar inte emot någon.',
+      409,
+    )
+  }
+
   if (outcome.status === 'ballot_not_for_voter' || outcome.status === 'unknown_ballot') {
     // Samma svar i båda fallen. Skilda svar skulle göra rutten till ett
     // uppslagsverk över vilka valsedlar som gäller var.

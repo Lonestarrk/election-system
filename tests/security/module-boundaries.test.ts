@@ -132,6 +132,14 @@ describe('modulgränser', () => {
        * den anonyma sidan inte bär någon information om vem som röstade när.
        */
       'src/orchestration/close-election.usecase.ts',
+      /**
+       * Räkningen (uppgift 12). Den räknar på den anonyma sidan: urnan,
+       * andelarna, förtroendepersonernas bidrag och räkneverken. I röstlängden
+       * läser den bara fasen, kuvertroten och ANTALET kuvert som ligger kvar,
+       * som spärr, och skriver fasen TALLIED och revisionsposterna. Den läser
+       * aldrig en väljare, och när den får börja är kopplingen redan raderad.
+       */
+      'src/orchestration/tally.usecase.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
       'src/app/api/observer/election/route.ts',

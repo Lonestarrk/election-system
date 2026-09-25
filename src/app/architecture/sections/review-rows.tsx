@@ -94,10 +94,10 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       ),
       today: (
         <>
-          {CURRENTLY.decryptionNotBuilt.text} {CURRENTLY.sumsNotPublished.text}
+          {CURRENTLY.decryptionBuilt.text} {CURRENTLY.sumsNotPublished.text}
         </>
       ),
-      statuses: [CURRENTLY.decryptionNotBuilt.status!, CURRENTLY.sumsNotPublished.status!],
+      statuses: [CURRENTLY.decryptionBuilt.status!, CURRENTLY.sumsNotPublished.status!],
     },
     {
       question: 'Har revisionsloggen ändrats?',

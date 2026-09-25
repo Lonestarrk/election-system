@@ -343,7 +343,7 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
             key: `${row.ballotId}.${row.optionIndex}.${row.trusteeIndex}`,
             cells: [row.ballotLabel ?? row.ballotId, row.optionIndex, row.trusteeIndex, row.value],
           }))}
-          emptyNote={CURRENTLY.decryptionNotBuilt.text}
+          emptyNote={CURRENTLY.decryptionGate.text}
         />
 
         <DbTable
@@ -355,7 +355,7 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
             key: `${row.ballotId}.${row.optionIndex}`,
             cells: [row.ballotLabel ?? row.ballotId, row.optionIndex, row.count],
           }))}
-          emptyNote={CURRENTLY.decryptionNotBuilt.text}
+          emptyNote={CURRENTLY.decryptionGate.text}
         />
 
         <DbTable

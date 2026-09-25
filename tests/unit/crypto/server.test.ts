@@ -78,18 +78,19 @@ describe('OpenSSL är registrerat så fort serverns ingång är importerad', () 
   })
 
   it('förtroendemannens andel i den partiella dekrypteringen exponentieras där', () => {
-    // Uppgift 12 bygger på partiallyDecrypt. Den som hämtar funktionen härifrån
-    // får andelen räknad i OpenSSL, i konstant tid, och inte i BigInt.
+    // Räkningen i uppgift 12 hämtar partiallyDecrypt härifrån och får andelen
+    // räknad i OpenSSL, i konstant tid, och inte i BigInt.
     const keys = generateKeyPair()
     const [share] = splitSecret(keys.privateKey, 3, 2)
     const ciphertext = encrypt(keys.publicKey, 1n, 42n)
 
     seen.exponents.length = 0
-    const partial = partiallyDecrypt(share!, ciphertext)
+    const binding = { electionId: 'val', ballotId: 'valsedel', optionIndex: 0 }
+    const partial = partiallyDecrypt(share!, ciphertext, binding)
 
     expect(seen.exponents).toContain(share!.value)
     expect(partial.value).toBe(modPow(ciphertext.c1, share!.value, P))
-    expect(verifyPartialDecryption(publicShare(share!), ciphertext, partial)).toBe(true)
+    expect(verifyPartialDecryption(publicShare(share!), ciphertext, partial, binding)).toBe(true)
   })
 })
 

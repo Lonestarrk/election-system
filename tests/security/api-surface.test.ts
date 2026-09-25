@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
 
 /**
  * Testpunkt 8: en väljaridentitet kan inte användas för att få fram en token.
@@ -50,7 +51,16 @@ describe('API-ytan', () => {
        */
       'src/app/api/admin/elections/close/route.ts',
       'src/app/api/admin/elections/commit/route.ts',
+      /**
+       * Förtroendepersonens bidrag (uppgift 12). Tar emot en fras och låser
+       * upp andelen i serverns minne, se posten `server-sees-trustee-share`
+       * i src/lib/known-limitations.ts och "förtroendepersonernas rutter"
+       * nedan.
+       */
+      'src/app/api/admin/elections/decrypt/route.ts',
       'src/app/api/admin/elections/route.ts',
+      /** Räkningen av en valsedel, när två bidrag finns (uppgift 12). */
+      'src/app/api/admin/elections/tally/route.ts',
       'src/app/api/admin/login/route.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/auth/bankid/collect/route.ts',
@@ -292,6 +302,66 @@ describe('jämförelsen av enhetens röst', () => {
 
   it('sessionsrutten lämnar inte ut någon chifferhash', () => {
     expect(session).not.toMatch(/ciphertextHash|pendingVoteFor/)
+  })
+})
+
+describe('förtroendepersonernas rutter', () => {
+  /**
+   * Räkningen öppnar valets resultat, och bidraget låser upp en andel av
+   * nyckeln. Båda kräver en inloggad administratör och CSRF-token, som
+   * stängningen. Frasen lagras aldrig och loggas aldrig: rutten nämner den på
+   * exakt ett ställe, där den lämnas till räkningen. Kommentarerna tas bort
+   * först, eftersom rutten förklarar just det här i löpande text.
+   */
+  function code(source: string): string {
+    return source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n')
+  }
+
+  const decrypt = code(routes.find((route) => route.path === 'src/app/api/admin/elections/decrypt/route.ts')!.content)
+  const tally = code(routes.find((route) => route.path === 'src/app/api/admin/elections/tally/route.ts')!.content)
+
+  it.each([
+    ['bidraget', decrypt],
+    ['räkningen', tally],
+  ])('%s kräver egen origin, en hastighetsgräns, en adminsession och CSRF-token', (_label, content) => {
+    expect(content).toMatch(/if \(!hasValidOrigin\(request\)\)/)
+    expect(content).toMatch(/checkRateLimit\(/)
+    expect(content).toMatch(/if \(!\(await isAdminAuthenticated\(\)\)\)/)
+    expect(content).toMatch(/if \(!isValidCsrfToken\(request, session\.csrfSecret\)\)/)
+  })
+
+  it('bidragets hastighetsgräns räknas per förtroendeperson (ruling 64)', () => {
+    expect(decrypt).toMatch(
+      /checkRateLimit\([^)]*body\.data\.trusteeIndex[^)]*RATE_LIMITS\.trusteeContribution[,\s]*\)/,
+    )
+  })
+
+  it('frasen nämns bara där den lämnas till räkningen', () => {
+    // Som identifierare. Statusen "wrong_passphrase" är ett beskeds namn, inte frasen.
+    expect(decrypt.match(/\bpassphrase\b/g)).toEqual(['passphrase'])
+    expect(decrypt).toContain('body.data.passphrase)')
+    expect(tally).not.toMatch(/\bpassphrase\b/)
+  })
+
+  it('att servern ser andelen står bland de kända begränsningarna, med en markör i rutten', () => {
+    // I ett riktigt val räknar förtroendepersonen på sin egen enhet. Så länge
+    // rutten tar emot frasen ska listan säga det.
+    const post = KNOWN_LIMITATIONS.find((limitation) => limitation.id === 'server-sees-trustee-share')
+    expect(post, 'posten server-sees-trustee-share saknas').toBeDefined()
+    expect([post!.stillTrueIf].flat().map((marker) => marker?.file)).toContain(
+      'src/app/api/admin/elections/decrypt/route.ts',
+    )
+  })
+
+  it('rutterna ser bara räkningen, inte någon av databaserna', () => {
+    for (const content of [decrypt, tally]) {
+      expect(content).not.toMatch(/@\/modules\/(eligibility|ballot-box)/)
+      expect(content).toMatch(/from '@\/orchestration\/tally\.usecase'/)
+    }
   })
 })
 

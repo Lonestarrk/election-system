@@ -3,6 +3,7 @@ import { describeElectionSeed } from './election-seed-report'
 import { generateElectionKeyPair } from '../src/lib/blind-signature'
 // Serverns ingång, som i createElection: nyckeln exponentieras i OpenSSL.
 import { generateKeyPair, publicShare, splitSecret } from '../src/lib/crypto/server'
+import { TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '../src/lib/crypto/threshold'
 import { encryptShare } from '../src/lib/crypto/share-storage'
 import { PrismaClient as VotersClient } from '.prisma/voters'
 import { PrismaClient as VotesClient } from '.prisma/votes'
@@ -178,7 +179,7 @@ async function main() {
      * aldrig den här funktionen.
      */
     const keys = generateKeyPair()
-    const shares = splitSecret(keys.privateKey, 3, 2)
+    const shares = splitSecret(keys.privateKey, TRUSTEE_COUNT, TRUSTEE_THRESHOLD)
 
     await votesDb.election.update({
       where: { id: election.id },

@@ -50,7 +50,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   /**
    * KUVERTMODELLENS BEGRÄNSNINGAR.
    *
-   * De elva första posterna gäller modellen med dubbla kuvert och är sanna i
+   * De tolv första posterna gäller modellen med dubbla kuvert och är sanna i
    * koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
    * med röstintyg och blinda signaturer, som ingen sida lägger röster i sedan
    * uppgift 14 men vars rutter och tabeller finns kvar, eller gäller oavsett
@@ -105,6 +105,39 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       file: 'src/orchestration/create-election.usecase.ts',
       contains: 'splitSecret(keys.privateKey',
     },
+  },
+  /**
+   * NY I UPPGIFT 12. Förtroendepersonen lämnar sin fras på adminsidan, och
+   * servern räknar hennes bidrag. Spec 4.5 säger samma sak som en
+   * kvarvarande svaghet, och utvecklingsstatus att ett riktigt val låter
+   * förtroendepersonerna räkna på egna enheter.
+   */
+  {
+    id: 'server-sees-trustee-share',
+    title: 'Servern ser förtroendepersonens andel medan den räknar',
+    why:
+      'Förtroendepersonen skriver in sin fras på adminsidan, och servern låser upp hennes andel av ' +
+      'nyckeln och räknar hennes bidrag till summan själv. Frasen sparas aldrig, och andelen ligger ' +
+      'bara låst i databasen, men medan bidraget räknas finns båda i klartext i serverns minne, och ' +
+      'den som har tagit sig in i appen vid ceremonin kan fånga dem. Med två andelar går varje ' +
+      'chiffer i urnan att öppna, inte bara summan. Kopplingen till väljarna är då raderad, men en ' +
+      'säkerhetskopia från före stängningen har kvar kuverten bredvid namnen, och två andelar öppnar ' +
+      'dem också. Utanför demoläget skyddar frasen alltså andelarna i databasen och i ' +
+      'säkerhetskopiorna, men inte mot den som har tagit över servern när andelarna används. I ett ' +
+      'riktigt val räknar varje förtroendeperson på sin egen enhet och skickar bara bidraget med ' +
+      'bevis, så att servern aldrig ser någon andel.',
+    stillTrueIf: [
+      // Servern låser upp andelen med frasen ...
+      {
+        file: 'src/orchestration/tally.usecase.ts',
+        contains: 'const unlocked = unlockShare(trustee.encryptedShare, passphrase, gate.electionId, trusteeIndex)',
+      },
+      // ... som rutten tar emot.
+      {
+        file: 'src/app/api/admin/elections/decrypt/route.ts',
+        contains: 'body.data.passphrase)',
+      },
+    ],
   },
   /**
    * UPPGIFT 14f ERSATTE POSTEN "BankID-certifikatkedjan valideras inte".
@@ -247,12 +280,17 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       { file: 'prisma/votes/schema.prisma', contains: '  ciphertextHash String @map("ciphertext_hash")' },
       { file: 'prisma/votes/schema.prisma', contains: '  @@index([ciphertextHash])' },
       // Läggningen skriver kopian som vilket kuvert som helst, utan någon
-      // prövning av chiffret mellan fasen och skrivningen ...
+      // prövning av chiffret mellan fasen och skrivningen. Det som prövas där
+      // sedan uppgift 12 är väljarens egen bok i det gamla flödet, inte
+      // chiffret ...
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
         contains: [
           "        return { status: 'closed' }",
           '      }',
+          '',
+          '      await holdVoterBooksForEnvelope(tx, voterStatusId)',
+          "      if (await votedInOldFlow(tx, voterStatusId, ballotId)) return { status: 'voted_in_old_flow' }",
           '',
           '      const replaced = await tx.pendingVote.updateMany({',
           '        where: { voterStatusId, ballotId, castSequence: { lt: signedPayload.castSequence } },',

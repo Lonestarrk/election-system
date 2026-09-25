@@ -4,6 +4,8 @@ import type { BallotOption } from '@/lib/crypto/ballot-encoding'
 import { generateKeyPair } from '@/lib/crypto/elgamal'
 import { P, Q } from '@/lib/crypto/group'
 import {
+  partialDecryptionChallenge,
+  partialDecryptionTranscript,
   sumChallenge,
   sumTranscript,
   verifyZeroOrOne,
@@ -12,6 +14,7 @@ import {
   type BallotBinding,
   type ZeroOrOneProof,
 } from '@/lib/crypto/proofs'
+import { partiallyDecrypt, publicShare, splitSecret, verifyPartialDecryption } from '@/lib/crypto/threshold'
 // Serverns ingång registrerar OpenSSL, så att valsedlarna nedan prövas fort.
 import '@/lib/crypto/server'
 import { hashCiphertext, verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -34,6 +37,7 @@ import fixture from './fixtures/ballot-26-14d.json'
 
 const OR_DOMAIN = 'valsystem/bevis/v2/noll-eller-ett'
 const SUM_DOMAIN = 'valsystem/bevis/v2/summa'
+const PARTIAL_DOMAIN = 'valsystem/bevis/v2/partiell-dekryptering'
 
 function u32(value: number): Buffer {
   const bytes = Buffer.alloc(4)
@@ -351,5 +355,126 @@ describe('en riktig valsedel', () => {
     expect(verifyZeroOrOne(keys.publicKey, ciphertext, parsed, { ...binding, electionId: 'val-transkript-a' }, 0)).toBe(
       false,
     )
+  })
+})
+
+/**
+ * DEN PARTIELLA DEKRYPTERINGENS TRANSKRIPT (uppgift 12, ruling 133).
+ *
+ * Samma sak som för valsedelns bevis: transkriptet byggs en gång till ur
+ * beskrivningen i proofs.ts, med node:crypto och Buffer, och ska ge samma
+ * byte och samma utmaning som koden. Uppgift 13 skriver verifieraren av
+ * förtroendepersonernas bidrag ur samma beskrivning.
+ */
+function independentPartialTranscript(
+  electionId: string,
+  ballotId: string,
+  optionIndex: number,
+  trusteeIndex: number,
+  values: bigint[],
+): Buffer {
+  return Buffer.concat([
+    Buffer.from(PARTIAL_DOMAIN + '\u0000', 'ascii'),
+    lengthPrefixed(electionId),
+    lengthPrefixed(ballotId),
+    u32(optionIndex),
+    u32(trusteeIndex),
+    ...values.map(element),
+  ])
+}
+
+type PartialValues = [bigint, bigint, bigint, bigint, bigint, bigint]
+
+describe('den partiella dekrypteringens transkript är det som beskrivningen i proofs.ts säger', () => {
+  it('byte för byte, och utmaningen ur det', () => {
+    for (let round = 0; round < 20; round += 1) {
+      const binding = {
+        electionId: `val-${round}`,
+        ballotId: `valsedel-${round}`,
+        optionIndex: round * 3,
+        trusteeIndex: 1 + (round % 3),
+      }
+      const values = [0, 1, 2, 3, 4, 5].map(randomElement) as PartialValues
+      const expected = independentPartialTranscript(
+        binding.electionId,
+        binding.ballotId,
+        binding.optionIndex,
+        binding.trusteeIndex,
+        values,
+      )
+
+      expect(Buffer.from(partialDecryptionTranscript(binding, values)).equals(expected)).toBe(true)
+      expect(partialDecryptionChallenge(binding, values)).toBe(independentChallenge(expected))
+    }
+  })
+
+  it('med UUID som id är transkriptet 1 665 byte, och prefixet 41', () => {
+    const binding = { electionId: randomUUID(), ballotId: randomUUID(), optionIndex: 0, trusteeIndex: 1 }
+    const transcript = partialDecryptionTranscript(binding, [1n, 2n, 3n, 4n, 5n, 6n])
+    // Prefixet med nollbyte, två id:n med längdprefix, två index och sex tal.
+    expect(transcript).toHaveLength(41 + 2 * (4 + 36) + 2 * 4 + 6 * 256)
+    expect(transcript).toHaveLength(1665)
+    expect(Buffer.from(transcript).subarray(0, 41).toString('latin1')).toBe(PARTIAL_DOMAIN + '\u0000')
+  })
+
+  it('prefixet börjar inget annat transkript, och inget annat börjar det', () => {
+    const prefixes = [
+      PARTIAL_DOMAIN + '\u0000',
+      OR_DOMAIN + '\u0000',
+      SUM_DOMAIN + '\u0000',
+      'valsystem/bevis/v1\u0000',
+      'valsystem/chiffer/v1',
+    ]
+    for (const a of prefixes) {
+      for (const b of prefixes) {
+        if (a !== b) expect(b.startsWith(a), `${JSON.stringify(a)} börjar ${JSON.stringify(b)}`).toBe(false)
+      }
+    }
+  })
+
+  it('alternativets och förtroendepersonens index kan inte byta plats med varandra', () => {
+    const values = [1n, 2n, 3n, 4n, 5n, 6n] as const
+    const first = partialDecryptionTranscript({ electionId: 'v', ballotId: 'b', optionIndex: 1, trusteeIndex: 2 }, values)
+    const second = partialDecryptionTranscript({ electionId: 'v', ballotId: 'b', optionIndex: 2, trusteeIndex: 1 }, values)
+    expect(Buffer.from(first).equals(Buffer.from(second))).toBe(false)
+  })
+
+  it('ett tal utanför [0, p), ett index utanför U32 och ett id som inte är giltig Unicode går inte in', () => {
+    const binding = { electionId: 'v', ballotId: 'b', optionIndex: 0, trusteeIndex: 1 }
+    expect(() => partialDecryptionTranscript(binding, [P, 2n, 3n, 4n, 5n, 6n])).toThrow(RangeError)
+    expect(() => partialDecryptionTranscript(binding, [1n, 2n, 3n, -4n, 5n, 6n])).toThrow(RangeError)
+    expect(() => partialDecryptionTranscript({ ...binding, optionIndex: -1 }, [1n, 2n, 3n, 4n, 5n, 6n])).toThrow(
+      RangeError,
+    )
+    expect(() => partialDecryptionTranscript({ ...binding, trusteeIndex: 2 ** 32 }, [1n, 2n, 3n, 4n, 5n, 6n])).toThrow(
+      RangeError,
+    )
+    expect(() =>
+      partialDecryptionTranscript({ ...binding, ballotId: 'b-\uD800' }, [1n, 2n, 3n, 4n, 5n, 6n]),
+    ).toThrow()
+  })
+
+  it('en riktig partiell dekryptering har den utmaning som beskrivningen ger', () => {
+    const keys = generateKeyPair()
+    const shares = splitSecret(keys.privateKey, 3, 2)
+    const share = shares[1]!
+    // En summa av två röster, som i en riktig räkning.
+    const sum = [
+      { c1: 4n, c2: 16n },
+      { c1: 64n, c2: 256n },
+    ].reduce((acc, pair) => ({ c1: (acc.c1 * pair.c1) % P, c2: (acc.c2 * pair.c2) % P }))
+    const binding = { electionId: randomUUID(), ballotId: randomUUID(), optionIndex: 4 }
+    const partial = partiallyDecrypt(share, sum, binding)
+
+    const transcript = independentPartialTranscript(binding.electionId, binding.ballotId, 4, share.index, [
+      publicShare(share),
+      sum.c1,
+      sum.c2,
+      partial.value,
+      partial.proof.a,
+      partial.proof.b,
+    ])
+    expect(partial.proof.challenge).toBe(independentChallenge(transcript))
+    expect(verifyPartialDecryption(publicShare(share), sum, partial, binding)).toBe(true)
   })
 })

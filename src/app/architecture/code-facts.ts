@@ -113,15 +113,122 @@ export type CodeFact = {
 // ---------------------------------------------------------------------------
 
 /**
- * Ingen kod skriver några partiella dekrypteringar eller räkneverk.
+ * DEKRYPTERINGEN ÄR BYGGD (uppgift 12). Uppgiften ersatte markören
+ * DECRYPTION_NOT_BUILT, som sa att ingen kod skrev partiella dekrypteringar
+ * eller räkneverk. Nu gör räkningen det, och bara den.
  *
  * Mönstret gäller skrivningar, inte läsningar: livevyn läser båda tabellerna
- * med `findMany`, och det ska inte räknas som att dekrypteringen finns.
+ * med `findMany`. En skrivning någon annanstans i src fäller påståendet.
  */
-const DECRYPTION_NOT_BUILT: Marker = {
-  nowhereIn: 'src',
-  matches: /\b(partialDecryption|ballotTally)\.(create|createMany|upsert)\(/,
+const TALLY_WRITES_ONLY_IN_TALLY: Marker = {
+  onlyIn: ['src/orchestration/tally.usecase.ts'],
+  under: 'src',
+  matches: /\b(partialDecryption|ballotTally)\.(create|createMany|upsert|update|updateMany)\(/,
 }
+
+/**
+ * Bara summan dekrypteras. En andel används bara i `partiallyDecrypt`, som
+ * bara räkningen anropar, och där bara på summan av valsedelns rader i urnan.
+ * Ingenting dekrypterar med hela den privata nyckeln: `decryptWithSecret` står
+ * bara där den är definierad, för testerna.
+ */
+const ONLY_SUMS_DECRYPTED: Marker[] = [
+  {
+    onlyIn: ['src/lib/crypto/threshold.ts', 'src/orchestration/tally.usecase.ts'],
+    under: 'src',
+    matches: /\bpartiallyDecrypt\(/,
+  },
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: [
+      '  const { sums } = await sumOfUrn(ballotId, gate.optionCount)',
+      '',
+      '  const partials: PartialDecryption[] = []',
+      '  for (const [optionIndex, sum] of sums.entries()) {',
+      '    partials.push(partiallyDecrypt(share, sum, bindingFor(gate, optionIndex)))',
+    ].join('\n'),
+  },
+  { onlyIn: ['src/lib/crypto/elgamal.ts'], under: 'src', matches: /\bdecryptWithSecret\b/ },
+]
+
+/**
+ * Räkningen: två av tre bidrag, varje bidrag prövat mot summan, taket för den
+ * diskreta logaritmen och att räkneverken summerar till antalet rader. Och
+ * tabellerna har en rad per alternativ och inga andra fält än de har i dag, så
+ * att ingenting per röst kan hamna där.
+ */
+const TALLY_CHECKS: Marker[] = [
+  { file: 'src/lib/crypto/threshold.ts', contains: 'export const TRUSTEE_THRESHOLD = 2' },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'if (contributions.size < TRUSTEE_THRESHOLD) {' },
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains:
+      'if (!verifyPartialDecryption(expectedPublicShare, sums[optionIndex]!, partial, bindingFor(gate, optionIndex))) {',
+  },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'count = discreteLog(opened, rows)' },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'requireSumOfCounts(counts, rows)' },
+  { file: 'prisma/votes/schema.prisma', contains: '@@unique([ballotId, optionIndex, trusteeIndex])' },
+  { file: 'prisma/votes/schema.prisma', contains: '@@unique([ballotId, optionIndex])' },
+  {
+    nowhereIn: 'prisma/votes/schema.prisma',
+    matches:
+      /model (?:PartialDecryption|BallotTally) \{[^}]*\n\s+(?!(?:id|ballotId|ballot|optionIndex|trusteeIndex|value|proof|count)\s)[A-Za-z]\w*\s/,
+  },
+]
+
+/**
+ * Bidragets bevis binder valet, valsedeln, alternativet, förtroendepersonen
+ * och hela summan (ruling 133), fält för fält i transkriptet.
+ */
+const PARTIAL_DECRYPTION_BINDS_CONTEXT: Marker = {
+  file: 'src/lib/crypto/proofs.ts',
+  contains: [
+    '    PARTIAL_DECRYPTION_DOMAIN,',
+    '    lengthPrefixed(binding.electionId),',
+    '    lengthPrefixed(binding.ballotId),',
+    '    uint32(binding.optionIndex),',
+    '    uint32(binding.trusteeIndex),',
+    '    ...values.map(element),',
+  ].join('\n'),
+}
+
+/**
+ * Spärren (spec 6.1): fasen STRIPPED, kuvertroten skriven och inget kuvert
+ * kvar, prövad först i varje ingång till räkningen, före frasen.
+ */
+const DECRYPTION_GATE: Marker[] = [
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: "if (election.phase !== 'STRIPPED') return closedGate(election.phase, messageForPhase(election.phase))",
+  },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'if (election.envelopeRoot === null) {' },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'if (envelopesLeft > 0) {' },
+  // Spärren är det första varje ingång gör: bidraget med fras, bidraget som
+  // räknats utanför servern, och räkningen.
+  ...[
+    ['  passphrase: string,', '): Promise<PartialDecryptionOutcome> {'],
+    ['  partials: readonly SubmittedPartial[],', '): Promise<PartialDecryptionOutcome> {'],
+    ['export async function completeTally(ballotId: string): Promise<TallyOutcome> {'],
+  ].map((head) => ({
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: [...head, '  const gate = await tallyGate(ballotId)', '  if (!gate.open) return gate.outcome'].join('\n'),
+  })),
+]
+
+/**
+ * TALLIED skrivs med jämför-och-sätt från STRIPPED, och bara av räkningen.
+ */
+const TALLIED_WRITTEN_BY_TALLY: Marker[] = [
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: [
+      "    where: { id: electionId, phase: 'STRIPPED', envelopeRoot: { not: null } },",
+      "    data: { phase: 'TALLIED' },",
+    ].join('\n'),
+  },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'if (!shape || tallied !== shape.optionCount) {' },
+  { onlyIn: ['src/orchestration/tally.usecase.ts'], under: 'src', matches: /\bphase:\s*['"`]TALLIED['"`]/ },
+]
 
 /**
  * Det gamla flödets röster och kvitton: adresserna till rutterna som lägger
@@ -639,19 +746,39 @@ export const CURRENTLY = {
     status: STATUS_DONE,
   },
 
-  decryptionNotBuilt: {
+  /**
+   * Uppgift 12 ersatte "Tröskeldekrypteringen är inte byggd, så
+   * partial_decryption och ballot_tally förblir tomma" och "Dekrypteringen är
+   * inte byggd, så spärren finns inte än". Påståendena nedan bär det omvända,
+   * och avgränsar det: bara summan dekrypteras, men en summa av en enda röst
+   * är den rösten.
+   */
+  decryptionBuilt: {
     text:
-      'Tröskeldekrypteringen är inte byggd, så partial_decryption och ballot_tally förblir ' +
-      'tomma.',
-    short: 'steget är inte byggt än',
-    holdsWhile: [DECRYPTION_NOT_BUILT],
-    status: statusPlanned('12'),
+      'Byggt: efter stängningen lämnar två av tre förtroendepersoner var sitt bidrag till varje ' +
+      'valsedels summa, en partiell dekryptering per alternativ med ett bevis som binder den till ' +
+      'valet, valsedeln, alternativet och summan. Räkningen prövar bidragen, öppnar summan och ' +
+      'avbryts om ett alternativ får fler röster än urnan har rader, eller om räkneverken inte ' +
+      'summerar till antalet rader. Bara summan av valsedelns rader i urnan dekrypteras, aldrig en rad ' +
+      'för sig, och partial_decryption och ballot_tally får en rad per alternativ och inte per röst. ' +
+      'Har valsedeln bara en röst är summan den rösten.',
+    short: 'det steget är byggt',
+    holdsWhile: [
+      TALLY_WRITES_ONLY_IN_TALLY,
+      ...ONLY_SUMS_DECRYPTED,
+      ...TALLY_CHECKS,
+      PARTIAL_DECRYPTION_BINDS_CONTEXT,
+    ],
+    status: STATUS_DONE,
   },
 
-  decryptionGateNotBuilt: {
-    text: 'Dekrypteringen är inte byggd, så spärren finns inte än.',
-    holdsWhile: [DECRYPTION_NOT_BUILT],
-    status: statusPlanned('12'),
+  decryptionGate: {
+    text:
+      'Byggt: ingen förtroendeperson kan lämna ett bidrag, och ingenting räknas, förrän fasen är ' +
+      'STRIPPED, kuvertroten skriven och inget kuvert ligger kvar i pending_vote. Spärren prövas före ' +
+      'frasen, så andelen låses inte upp i en fas där den inte får användas.',
+    holdsWhile: DECRYPTION_GATE,
+    status: STATUS_DONE,
   },
 
   sumsNotPublished: {
@@ -1450,7 +1577,8 @@ export const CURRENTLY = {
       },
       {
         file: 'src/lib/crypto/share-storage.ts',
-        contains: 'return scryptSync(passphrase, `trustee-share-${electionId}-${trusteeIndex}`, 32)',
+        contains:
+          'return scryptSync(passphrase, `trustee-share-${electionId}-${trusteeIndex}`, 32, SHARE_SCRYPT_PARAMETERS)',
       },
       { file: 'prisma/votes/schema.prisma', contains: 'encryptedShare String @map("encrypted_share")' },
       ...NO_TRUSTEE_SECRETS_IN_AZURE,
@@ -1685,9 +1813,12 @@ export const PHASES: PhaseRow[] = [
     acceptsVotes: false,
     next: 'slutkontroll och fastställande',
     today: {
-      text: 'Skrivs aldrig, eftersom dekrypteringen inte är byggd.',
-      holdsWhile: [neverWritten('TALLIED'), DECRYPTION_NOT_BUILT],
-      status: statusPlanned('12'),
+      text:
+        'Skrivs av räkningen när den sista valsedeln i omröstningen är räknad, med jämför-och-sätt från ' +
+        'STRIPPED och bara med kuvertroten skriven. Står fasen då i en tidigare fas, eller i en som inte ' +
+        'finns i specen, avbryts räkningen med ett besked, och ingen fas skrivs över.',
+      holdsWhile: TALLIED_WRITTEN_BY_TALLY,
+      status: STATUS_DONE,
     },
   },
   {
@@ -1728,14 +1859,10 @@ export const PHASES: PhaseRow[] = [
  * uppgift körs tidigare.
  *
  * Uppgift 11d strök de två första punkterna, faserna CLOSED och VALIDATED och
- * markeringen "har röstat". De står nu under Klart.
+ * markeringen "har röstat". Uppgift 12 strök tröskeldekrypteringen. De står nu
+ * under Klart.
  */
 export const REMAINING: CodeFact[] = [
-  {
-    text: 'Tröskeldekrypteringen av summorna, med spärren som kräver att fasen är STRIPPED.',
-    holdsWhile: [DECRYPTION_NOT_BUILT, neverWritten('TALLIED')],
-    status: CURRENTLY.decryptionNotBuilt.status,
-  },
   {
     text: 'Slutkontrollen och fastställandet för kuvertmodellen, med fasen CERTIFIED.',
     holdsWhile: [...CURRENTLY.finalCheckOldModel.holdsWhile, neverWritten('CERTIFIED')],
@@ -1810,9 +1937,9 @@ export const BUILT: CodeFact[] = [
   {
     text:
       'Faserna är verkliga tillstånd: stängningen skriver CLOSED innan kuverten läses, VALIDATED när ' +
-      'valideringen passerat och STRIPPED när kopplingen raderas, var och en med jämför-och-sätt, så ' +
-      'att ingen fas går baklänges.',
-    holdsWhile: PHASES.filter((row) => ['CLOSED', 'VALIDATED', 'STRIPPED'].includes(row.phase)).flatMap(
+      'valideringen passerat och STRIPPED när kopplingen raderas, och räkningen skriver TALLIED när den ' +
+      'sista valsedeln är räknad, var och en med jämför-och-sätt, så att ingen fas går baklänges.',
+    holdsWhile: PHASES.filter((row) => ['CLOSED', 'VALIDATED', 'STRIPPED', 'TALLIED'].includes(row.phase)).flatMap(
       (row) => row.today.holdsWhile,
     ),
     status: STATUS_DONE,
@@ -1822,6 +1949,14 @@ export const BUILT: CodeFact[] = [
       'Skalningen skriver markeringen "har röstat" i röstlängden, ur de kuvert som raderas och utan ' +
       'tidsstämpel.',
     holdsWhile: CURRENTLY.votedMarkerWritten.holdsWhile,
+    status: STATUS_DONE,
+  },
+  {
+    // Uppgift 12 flyttade punkten hit från "Kommer att implementeras".
+    text:
+      'Tröskeldekrypteringen: efter stängningen öppnar två av tre förtroendepersoner summan av varje ' +
+      'valsedel, alternativ för alternativ och med bevis, och bara summan av urnans rader dekrypteras.',
+    holdsWhile: [...CURRENTLY.decryptionBuilt.holdsWhile, ...CURRENTLY.decryptionGate.holdsWhile],
     status: STATUS_DONE,
   },
   {

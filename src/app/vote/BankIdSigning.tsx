@@ -111,6 +111,9 @@ const OUTCOMES: Record<string, string> = {
     'Underskriften kom inte från den som är inloggad, så rösten lades inte. Bara du kan skriva ' +
     'under din röst.',
   not_eligible: 'Den här valsedeln kan inte ta emot din röst. Rösten lades inte.',
+  voted_in_old_flow:
+    'Du har redan röstat på den här valsedeln i det tidigare röstflödet, och den rösten går inte att ' +
+    'byta. Den här rösten lades inte.',
 }
 
 export function BankIdSigning({

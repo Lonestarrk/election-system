@@ -117,6 +117,31 @@ export const RATE_LIMITS = {
   createElection: { limit: 10, windowMs: 300_000 },
 
   /**
+   * Förtroendepersonernas bidrag och räkningen (uppgift 12), per adress och
+   * före inloggningen, så att en ström av begäranden inte når databasen.
+   * Generös, eftersom tre förtroendepersoner kan sitta vid samma dator och
+   * lämna ett bidrag per valsedel. Gränsen mot gissade fraser är nästa.
+   */
+  tallyCeremony: { limit: 60, windowMs: 60_000 },
+
+  /**
+   * En förtroendepersons bidrag, PER FÖRTROENDEPERSON OCH INTE PER ADRESS
+   * (ruling 64).
+   *
+   * Det som gissas är en förtroendepersons fras, och den som byter adress för
+   * varje försök ska inte få fler. Varje försök kostar dessutom en
+   * scrypt-härledning. Tio på fem minuter räcker för en förtroendeperson som
+   * lämnar sitt bidrag för var och en av demovalets tre valsedlar och prövar
+   * igen efter en felskriven fras, och ger den som gissar knappt tre tusen
+   * försök om dygnet, vart och ett med en rad i revisionsloggen. Ett val med
+   * hundratals valsedlar behöver ett bidrag per omröstning i stället för per
+   * valsedel, eller en högre gräns. Gränsen gäller förtroendepersonens nummer,
+   * gemensamt för alla omröstningar, och den som når den hindrar ingen med ett
+   * annat nummer. Rutten kräver dessutom en inloggad administratör.
+   */
+  trusteeContribution: { limit: 10, windowMs: 300_000 },
+
+  /**
    * Prenumeration på notiser. En enhet prenumererar en gång och sedan sällan.
    * Gränsen hindrar att tabellen fylls med påhittade endpoints.
    */

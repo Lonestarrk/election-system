@@ -138,6 +138,60 @@ export async function markBallotAsVoted(
 }
 
 /**
+ * SPÄRREN MELLAN DET GAMLA FLÖDETS BOK OCH KUVERTEN (uppgift 12).
+ *
+ * En väljare får ha en röst på en valsedel i en av böckerna, inte i båda:
+ * antingen en markering här, i det gamla flödets voter_ballot_status, eller ett
+ * kuvert i pending_vote, och efter stängningen en markering i voted_marker.
+ * Röstsidan spärrade det redan, men inte servern (granskningen av uppgift
+ * 14). Ingen räkning dubblerar, eftersom böckerna aldrig räknas ihop, men
+ * spärren ska finnas på servern innan kuverten räknas. Den tas bort med det
+ * gamla flödet i uppgift 15.
+ *
+ * VÄLJARENS RAD ÄR LÅSET. Läggningen av ett kuvert och utfärdandet av ett
+ * röstintyg skriver i var sin tabell, och ingen av dem ser den andras oskrivna
+ * rad. Utan ett gemensamt lås hade båda kunnat pröva den andra boken, se
+ * ingenting och skriva. Båda tar därför väljarens rad i röstlängden i sin
+ * transaktion innan de prövar den andra boken: läggningen med `FOR SHARE` och
+ * utfärdandet med `FOR NO KEY UPDATE`. De två lägena stänger ute varandra, så
+ * den som kommer sist väntar tills den första är klar och ser då dess rad.
+ *
+ * TVÅ LÄGGNINGAR STÄNGER INTE UTE VARANDRA. `FOR SHARE` krockar inte med sig
+ * självt, så två läggningar för samma väljare går som förut, och deras
+ * kapplöpning avgörs av det unika indexet och räknaren i skrivningen (ruling
+ * 127). Ett lås som gjorde läggningarna seriella hade dessutom ändrat det
+ * flödet i onödan. Inget av lägena stänger ute främmande nycklar som pekar på
+ * raden, så skalningens markeringar och en ny session väntar inte på dem.
+ *
+ * Läsningen av det gamla flödets bok står här, i det gamla flödets fil, så att
+ * den försvinner med flödet.
+ */
+export type BallotBooksClient = Pick<typeof votersDb, '$queryRaw' | 'voterBallotStatus'>
+
+/** Läggningens del av låset, i läggningens transaktion, innan det gamla flödets bok prövas. */
+export async function holdVoterBooksForEnvelope(client: BallotBooksClient, voterStatusId: string): Promise<void> {
+  await client.$queryRaw`SELECT 1 AS locked FROM voter_status WHERE id = ${voterStatusId} FOR SHARE`
+}
+
+/** Utfärdandets del av låset, i utfärdandets transaktion, innan kuvertens bok prövas. */
+export async function holdVoterBooksForOldFlow(client: BallotBooksClient, voterStatusId: string): Promise<void> {
+  await client.$queryRaw`SELECT 1 AS locked FROM voter_status WHERE id = ${voterStatusId} FOR NO KEY UPDATE`
+}
+
+/** Har väljaren en röst på valsedeln i det gamla flödet? Läses i läggningens transaktion, efter låset. */
+export async function votedInOldFlow(
+  client: BallotBooksClient,
+  voterStatusId: string,
+  ballotId: string,
+): Promise<boolean> {
+  const marking = await client.voterBallotStatus.findUnique({
+    where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
+    select: { id: true },
+  })
+  return marking !== null
+}
+
+/**
  * Det finns medvetet ingen funktion som ÅNGRAR en markering.
  *
  * Det vore frestande: om röstregistreringen misslyckas efter markeringen har

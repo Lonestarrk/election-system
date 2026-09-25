@@ -56,7 +56,7 @@ export function EnvelopeModel() {
         <div className="flow-arrow">↓</div>
         <div className="flow-node anonymous">Två av tre förtroendemän öppnar summan</div>
         <div className="flow-label">
-          enskilda chiffer dekrypteras aldrig · {CURRENTLY.decryptionNotBuilt.short}
+          enskilda chiffer dekrypteras aldrig · {CURRENTLY.decryptionBuilt.short}
         </div>
         <div className="flow-arrow">↓</div>
         <div className="flow-node anonymous">Bara summorna publiceras, med bevis</div>
@@ -69,7 +69,7 @@ export function EnvelopeModel() {
         <strong>En skillnad mot brevrösten är avgörande: innerkuverten öppnas aldrig ett och ett.</strong>
         <div style={{ marginTop: '0.35rem' }}>
           Chiffren multipliceras ihop till ett chiffer av summan, och bara summan dekrypteras. Så
-          är det tänkt; {CURRENTLY.decryptionNotBuilt.short}.
+          är det tänkt, och {CURRENTLY.decryptionBuilt.short}.
         </div>
       </div>
     </section>

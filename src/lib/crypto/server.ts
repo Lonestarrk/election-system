@@ -15,16 +15,18 @@ import { verifyEncryptedBallotInSteps, type EncryptedBallot } from './verify-bal
  * verifierar en valsedel eller räknar med en hemlig exponent hämtar funktionen
  * härifrån i stället för ur den delade modulen, och
  * tests/security/server-crypto.test.ts håller dem till det. Så följer
- * registreringen med också till kod som skrivs senare, som förtroendemännens
- * partiella dekryptering i uppgift 12: den som hämtar `partiallyDecrypt`
- * härifrån får andelen exponentierad i OpenSSL.
+ * registreringen med också till kod som skrivs senare. Räkningen i uppgift 12
+ * hämtar `partiallyDecrypt` härifrån och får andelen exponentierad i OpenSSL,
+ * och undergruppskontrollen av urnans chiffer och den diskreta logaritmen
+ * räknas där också.
  *
  * Röstsidan får aldrig importera modulen, och kan inte: den drar in node:crypto,
  * vilket tests/security/browser-bundle.test.ts stoppar.
  */
 registerGroupExponentiation(nativeModPow)
 
-export { generateKeyPair } from './elgamal'
+export { discreteLog, generateKeyPair } from './elgamal'
+export { isInSubgroup } from './group'
 export { combine, partiallyDecrypt, publicShare, splitSecret, verifyPartialDecryption } from './threshold'
 
 /**

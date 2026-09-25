@@ -55,7 +55,7 @@ export function Metadata({ limitations }: { limitations: PageLimitations }) {
               reveals="Differensen mellan två publicerade summor är rösterna däremellan, och under röstningen vet systemet vem som röstade när. En röst som lämnas ut med sitt innehåll är ett resultat med en enda röst"
             >
               I kuvertmodellens design räknas ingenting under röstningen, och en dekryptering får
-              inte beställas förrän fasen är STRIPPED. {CURRENTLY.decryptionNotBuilt.text}{' '}
+              inte beställas förrän fasen är STRIPPED. {CURRENTLY.decryptionGate.text}{' '}
               {CURRENTLY.oldFlowLiveResults.text} <LimitationReference entry={liveResults} />
             </MetadataRow>
             <MetadataRow

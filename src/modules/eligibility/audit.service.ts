@@ -94,6 +94,25 @@ export const AUDIT_EVENTS = {
    * timmen vore det en tidsmarkör bredvid varje röst som just flyttats.
    */
   LINK_CLEARED: 'LINK_CLEARED',
+  /**
+   * En förtroendepersons fras låste inte upp hennes andel (uppgift 12,
+   * ruling 64).
+   *
+   * En angreppssignal: den som gissar en fras syns här, en rad per försök.
+   * Raden säger inte vilken förtroendeperson eller vilken valsedel det
+   * gällde, och frasen står aldrig någonstans.
+   */
+  TRUSTEE_PASSPHRASE_REJECTED: 'TRUSTEE_PASSPHRASE_REJECTED',
+  /**
+   * En förtroendepersons partiella dekryptering av en valsedels summa
+   * godkändes och sparades (uppgift 12). Att nyckeln används ska synas, som
+   * att kopplingen läses och raderas.
+   */
+  PARTIAL_DECRYPTION_RECORDED: 'PARTIAL_DECRYPTION_RECORDED',
+  /** En valsedels summa öppnades och räkneverken sparades (uppgift 12). */
+  BALLOT_TALLIED: 'BALLOT_TALLIED',
+  /** Den sista valsedeln var räknad, och omröstningen gick till TALLIED (uppgift 12). */
+  ELECTION_TALLIED: 'ELECTION_TALLIED',
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]

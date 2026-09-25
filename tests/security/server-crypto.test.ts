@@ -359,6 +359,9 @@ describe('servern räknar i OpenSSL', () => {
       'src/orchestration/validate-before-close.usecase.ts',
       'src/orchestration/close-election.usecase.ts',
       'src/orchestration/create-election.usecase.ts',
+      // Räkningen exponentierar med förtroendepersonens andel, som ska räknas
+      // i OpenSSL och i konstant tid (uppgift 12).
+      'src/orchestration/tally.usecase.ts',
       'prisma/seed.ts',
     ]) {
       expect(importsServer(path), path).toBe(true)

@@ -2,6 +2,7 @@ import { truncateToDay } from '@/lib/time'
 import { signBlinded } from '@/lib/blind-signature'
 import { votersDb } from './db'
 import { ballotsForVoter } from './election.service'
+import { holdVoterBooksForOldFlow } from './voter-status.service'
 
 /**
  * Utfärdande av röstintyg.
@@ -42,6 +43,12 @@ export type IssueCredentialOutcome =
   | { status: 'already_issued' }
   | { status: 'ballot_not_for_voter' }
   | { status: 'unknown_ballot' }
+  /**
+   * Väljaren har redan lagt ett kuvert på valsedeln, eller fått det flyttat
+   * till urnan vid stängningen. Det gamla flödet tar då inte emot någon röst
+   * till. Se spärren mellan böckerna i voter-status.service.ts.
+   */
+  | { status: 'envelope_cast' }
 
 /**
  * Utfärdar ett röstintyg för en valsedel.
@@ -77,7 +84,24 @@ export async function issueCredential(
     // transaktionen så att ett fel i den rullar tillbaka markeringen — annars
     // vore väljaren markerad som röstande utan att ha fått något intyg, och
     // rösträtten vore bränd.
+    //
+    // INTE I BÅDA BÖCKERNA (uppgift 12). Först tas väljarens rad, som
+    // läggningen av ett kuvert också tar, och sedan prövas kuvertens bok: ett
+    // liggande kuvert i pending_vote, eller efter stängningen markeringen i
+    // voted_marker. Finns något av dem utfärdas inget intyg, och ingenting
+    // skrivs.
     const blindSignature = await votersDb.$transaction(async (tx) => {
+      await holdVoterBooksForOldFlow(tx, voterStatusId)
+      const envelope = await tx.pendingVote.findUnique({
+        where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
+        select: { id: true },
+      })
+      const counted = await tx.votedMarker.findUnique({
+        where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
+        select: { id: true },
+      })
+      if (envelope || counted) return null
+
       await tx.voterBallotStatus.create({
         data: {
           voterStatusId,
@@ -89,6 +113,8 @@ export async function issueCredential(
 
       return signBlinded(blindedHex, keys.signingPrivateKeyPem)
     })
+
+    if (blindSignature === null) return { status: 'envelope_cast' }
 
     return {
       status: 'issued',

@@ -62,11 +62,11 @@ describe('bevisens och chiffrets hashar är oförändrade', () => {
    * De två funktionerna så som de såg ut med node:crypto, ordagrant utom
    * importen. Kuvert i databasen har sina chifferhashar räknade så här.
    *
-   * `challengeHash` är sedan uppgift 14d bara den partiella dekrypteringens
-   * utmaning. Valsedelns bevis har ett eget transkript, som räknas med samma
-   * SHA-256 (se transcript.test.ts). Kuvert som lades före 14d har sina
-   * utmaningar räknade med den här, och de godkänns inte längre, se
-   * proof-format.test.ts.
+   * `challengeHash` används inte längre av något i src: valsedelns bevis fick ett
+   * eget transkript i uppgift 14d och den partiella dekrypteringen i uppgift 12,
+   * och båda räknas med samma SHA-256 (se transcript.test.ts). Kuvert som lades
+   * före 14d har sina utmaningar räknade med den här, och de godkänns inte
+   * längre, se proof-format.test.ts.
    */
   function oldChallengeHash(context: string, values: bigint[]): bigint {
     const hash = createHash('sha256')

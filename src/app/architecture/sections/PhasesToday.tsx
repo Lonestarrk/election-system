@@ -44,7 +44,7 @@ export function PhasesToday() {
 
       <p className="muted small" style={{ marginTop: '1rem', marginBottom: 0 }}>
         I designen är övergången till STRIPPED villkoret för att något ska få dekrypteras.{' '}
-        {CURRENTLY.decryptionGateNotBuilt.text} <StatusBadge status={CURRENTLY.decryptionGateNotBuilt.status!} />
+        {CURRENTLY.decryptionGate.text} <StatusBadge status={CURRENTLY.decryptionGate.status!} />
       </p>
     </section>
   )

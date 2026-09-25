@@ -11,6 +11,7 @@ import { mirrorElection, removeMirroredElection } from '@/modules/eligibility/el
 // Ur serverns ingång och inte ur de delade modulerna: den privata nyckeln och
 // andelarna exponentieras då i OpenSSL, i konstant tid. Se src/lib/crypto/server.ts.
 import { generateKeyPair, publicShare, splitSecret } from '@/lib/crypto/server'
+import { TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '@/lib/crypto/threshold'
 import { encryptShare } from '@/lib/crypto/share-storage'
 
 /**
@@ -123,7 +124,7 @@ export async function createElection(
      * src/lib/crypto/threshold.ts.
      */
     const keys = generateKeyPair()
-    const shares = splitSecret(keys.privateKey, 3, 2)
+    const shares = splitSecret(keys.privateKey, TRUSTEE_COUNT, TRUSTEE_THRESHOLD)
 
     await votesDb.election.update({
       where: { id: created.id },

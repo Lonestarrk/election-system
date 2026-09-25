@@ -31,15 +31,17 @@ export type ZeroOrOneProof = {
 export type EqualityProof = { a: bigint; b: bigint; challenge: bigint; response: bigint }
 
 /**
- * Fiat–Shamir i det första formatet, v1. Förtroendemännens partiella
- * dekryptering använder det, med kontexten 'partiell-dekryptering' (se
- * threshold.ts), och det är oförändrat.
+ * Fiat–Shamir i det första formatet, v1. INGENTING I src ANVÄNDER DET LÄNGRE.
  *
- * Valsedelns bevis använde det också fram till uppgift 14d, med kontexten
+ * Valsedelns bevis använde det fram till uppgift 14d, med kontexten
  * `${electionId}|${ballotId}|${index}`. Den kontexten band inte de andra
  * chiffren i valsedeln, och ett lodstreck i ett id kunde flytta gränsen mellan
- * fälten. Valsedelns bevis har nu ett eget transkript, se `BallotBinding`
- * nedan.
+ * fälten. Förtroendepersonernas partiella dekryptering använde det fram till
+ * uppgift 12, med kontexten 'partiell-dekryptering', och band då ingenting
+ * utöver talen. Båda har nu egna transkript, se `BallotBinding` och
+ * `partialDecryptionTranscript` nedan. Funktionen finns kvar för testernas
+ * kuvert i det gamla formatet, tests/unit/crypto/legacy-ballot.ts, som
+ * valideringen före stängningen ska känna igen och stoppa.
  *
  * Hashen är `sha256Hex` och inte Nodes `createHash`, eftersom bevisen byggs i
  * väljarens webbläsare, där node:crypto inte finns. Indatan är densamma som
@@ -143,8 +145,9 @@ export function challengeHash(context: string, values: bigint[]): bigint {
  * chifferhashen.
  *
  * INGET FÄLT KAN LÄSAS PÅ TVÅ SÄTT. De två prefixen skiljer sig redan i
- * tecknet efter "valsystem/bevis/v2/", och inget av dem är början på det andra
- * eller på det gamla formatets "valsystem/bevis/v1" och chifferhashens
+ * tecknet efter "valsystem/bevis/v2/", och inget av dem är början på det andra,
+ * på den partiella dekrypteringens prefix (se `partialDecryptionTranscript`
+ * nedan), eller på det gamla formatets "valsystem/bevis/v1" och chifferhashens
  * "valsystem/chiffer/v1". Id:na har längdprefix, och alla andra fält har fast
  * längd. Samma transkript kan alltså bara komma från samma fält.
  *
@@ -328,6 +331,100 @@ export function zeroOrOneChallenge(
 
 export function sumChallenge(publicKey: bigint, binding: BallotBinding, values: SumValues): bigint {
   return challengeOf(sumTranscript(publicKey, binding, values))
+}
+
+/**
+ * DEN PARTIELLA DEKRYPTERINGENS BEVIS BINDER SITT SAMMANHANG (uppgift 12,
+ * ruling 133).
+ *
+ * Förtroendeperson t bidrar till summan av alternativ i med värdet v = C1^x,
+ * där x är hennes andel av nyckeln, och ett Chaum–Pedersen-bevis för att
+ * samma x står i hennes publika andel Y = g^x. Fram till uppgift 12 band
+ * utmaningen bara talen, genom det första formatets `challengeHash` med
+ * kontexten 'partiell-dekryptering'. Ett bidrag hade då hållit för varje
+ * valsedel och varje alternativ med samma summa, och en summa av inga röster
+ * är (1, 1) på varje valsedel. Nu binder utmaningen valet, valsedeln,
+ * alternativet, förtroendepersonens index och publika andel, hela det
+ * aggregerade chiffret och värdet, med samma kodning som valsedelns bevis.
+ *
+ * TRANSKRIPTET, EXAKT. Uppgift 13 skriver en oberoende verifierare ur den här
+ * beskrivningen, och tests/unit/crypto/transcript.test.ts bygger transkriptet
+ * en gång till med node:crypto och kräver samma byte.
+ *
+ *     "valsystem/bevis/v2/partiell-dekryptering"   40 byte ASCII
+ *     00                                            en nollbyte
+ *     L(electionId)
+ *     L(ballotId)
+ *     U32(i)                                        alternativets index, 0 till M − 1
+ *     U32(t)                                        förtroendepersonens index, från 1
+ *     E(Y)                                          hennes publika andel, g^x
+ *     E(C1) E(C2)                                   summan av alternativ i: produkten
+ *                                                   modulo p av c1 respektive c2 i
+ *                                                   varje rad i urnan för valsedeln
+ *     E(v)                                          det partiella värdet, C1^x
+ *     E(a) E(b)                                     åtagandena, g^w och C1^w
+ *
+ *   med L, U32 och E som för valsedelns bevis ovan. Med id:n som UUID är
+ *   transkriptet 41 + 40 + 40 + 4 + 4 + 6 · 256 = 1 665 byte. Utmaningen är
+ *   SHA-256 över transkriptet, läst som ett tal big-endian, modulo q. Beviset
+ *   håller om `challenge` är den utmaningen, g^response = a · Y^challenge och
+ *   C1^response = b · v^challenge, allt modulo p.
+ *
+ * Summan av inga röster är C1 = C2 = 1. Då är v = 1 och b = 1 för varje
+ * förtroendeperson, och beviset håller ändå bara för sin egen valsedel och
+ * sitt eget alternativ, eftersom båda står i transkriptet.
+ *
+ * PREFIXET BESTÄMMER DET SOM INTE STÅR SOM FÄLT: gruppen, som för valsedelns
+ * bevis, och vad beviset påstår, att log_g(Y) = log_C1(v). Det skiljer sig
+ * från valsedelns två prefix redan i tecknet efter "valsystem/bevis/v2/", och
+ * inget av prefixen är början på ett annat. Bidraget bär sitt format som
+ * `format: 2` i det lagrade beviset, se `serialisePartialDecryptionProof` i
+ * threshold.ts.
+ */
+export const PARTIAL_DECRYPTION_FORMAT = 2
+
+/** Vad ett bidrag gäller. Förtroendepersonens index står med, eftersom det står i transkriptet. */
+export type PartialDecryptionTranscriptBinding = {
+  electionId: string
+  ballotId: string
+  optionIndex: number
+  trusteeIndex: number
+}
+
+/** Talen som utmaningen binder, i transkriptets ordning. */
+export type PartialDecryptionValues = readonly [
+  publicShare: bigint,
+  c1: bigint,
+  c2: bigint,
+  value: bigint,
+  a: bigint,
+  b: bigint,
+]
+
+const PARTIAL_DECRYPTION_DOMAIN = encoder.encode(
+  `valsystem/bevis/v${PARTIAL_DECRYPTION_FORMAT}/partiell-dekryptering\u0000`,
+)
+
+/** Transkriptet för förtroendepersonens bevis för ett alternativs summa. */
+export function partialDecryptionTranscript(
+  binding: PartialDecryptionTranscriptBinding,
+  values: PartialDecryptionValues,
+): Uint8Array {
+  return concatenate([
+    PARTIAL_DECRYPTION_DOMAIN,
+    lengthPrefixed(binding.electionId),
+    lengthPrefixed(binding.ballotId),
+    uint32(binding.optionIndex),
+    uint32(binding.trusteeIndex),
+    ...values.map(element),
+  ])
+}
+
+export function partialDecryptionChallenge(
+  binding: PartialDecryptionTranscriptBinding,
+  values: PartialDecryptionValues,
+): bigint {
+  return challengeOf(partialDecryptionTranscript(binding, values))
 }
 
 /**

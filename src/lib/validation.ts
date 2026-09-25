@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { MAX_DECIMAL_DIGITS, parseElement, parseScalar } from './crypto/group'
 import { PROOF_FORMAT } from './crypto/proofs'
+import { TRUSTEE_COUNT } from './crypto/threshold'
 
 /**
  * Indatavalidering med Zod.
@@ -258,6 +259,28 @@ export const statsRequestSchema = z.object({
 
 /** Uppslag av en valsedels innehåll. Id:t ligger i kroppen, inte i sökvägen. */
 export const ballotLookupSchema = z.object({
+  ballotId: z.string().uuid('Ogiltig valsedel.'),
+})
+
+/**
+ * En förtroendepersons bidrag till en valsedels summa (uppgift 12).
+ *
+ * Frasen har ingen övre gräns utöver kroppens, som när valet skapas: en lång
+ * fras ska aldrig avvisas, och en fras som gick att sätta ska gå att lämna.
+ * Den lagras aldrig och loggas aldrig, se src/orchestration/tally.usecase.ts.
+ */
+export const partialDecryptionRequestSchema = z.object({
+  ballotId: z.string().uuid('Ogiltig valsedel.'),
+  trusteeIndex: z
+    .number()
+    .int(`Ange förtroendepersonens nummer, 1 till ${TRUSTEE_COUNT}.`)
+    .min(1, `Ange förtroendepersonens nummer, 1 till ${TRUSTEE_COUNT}.`)
+    .max(TRUSTEE_COUNT, `Ange förtroendepersonens nummer, 1 till ${TRUSTEE_COUNT}.`),
+  passphrase: z.string().min(1, 'Ange förtroendepersonens fras.'),
+})
+
+/** Räkningen av en valsedel (uppgift 12). */
+export const tallyRequestSchema = z.object({
   ballotId: z.string().uuid('Ogiltig valsedel.'),
 })
 
