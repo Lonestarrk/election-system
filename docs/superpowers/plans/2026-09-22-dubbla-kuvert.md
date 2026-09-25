@@ -4178,6 +4178,14 @@ anroparen, och far därför inte arva den tilliten:
    Lagg den i `combine` i `src/lib/crypto/threshold.ts` som en del av den har
    uppgiften, och tacka den med ett test.
 
+1c. **Den partiella dekrypteringens bevis binder sitt sammanhang** (ruling 133). Sedan
+   14d binder valsedelns bevis valet, valsedeln, alternativet, hela chifferlistan och
+   valets publika nyckel. DLEQ-beviset för en partiell dekryptering har kvar det gamla
+   formatet och binder inget av det. Låt dess utmaning binda valets och valsedelns id,
+   alternativets index, förtroendepersonens index och publika andel, det aggregerade
+   chiffret och värdet, med samma kodning som transkriptet i 14d (fast längd eller
+   längdprefix, domänprefix). Skriv transkriptet exakt, så att uppgift 13 kan pröva det.
+
 1b. **Urnan kan ha flera rader med samma chifferhash** sedan ruling 130 i 11d. En kopia av
    någon annans valsedel räknas som en egen röst. Aggregeringen tar varje rad, och ingenting
    i räkningen får slå ihop rader per hash.
