@@ -93,9 +93,11 @@ describe('modulgränser', () => {
      *    Visar båda databaserna med avkortade värden, sorterade så att
      *    skrivordningen inte röjs. Medan röstningen pågår syns kopplingen i
      *    pending_vote med flit; rutten parar aldrig själv ihop raderna.
-     *  – final-check.usecase: slutkontrollen. Jämför ANTAL godkända röstningar
-     *    mot ANTAL registrerade röster. Läser aldrig en enskild väljare, och
-     *    kan inte para ihop sidorna — det finns ingen gemensam identifierare.
+     *  – final-check.usecase: slutkontrollen. Jämför ANTAL markeringar "har
+     *    röstat" per valsedel mot ANTAL rader i urnan, och läser fasen,
+     *    rötterna, ANTALET liggande kuvert och revisionskedjan i röstlängden
+     *    (uppgift 12b). Läser aldrig en enskild väljare, och kan inte para ihop
+     *    sidorna — det finns ingen gemensam identifierare.
      *  – observer/election: samma siffra, publicerad. Utan den kan en
      *    observatör inte kontrollera att antalet godkända röstningar motsvarar
      *    antalet registrerade röster, vilket är ett uttryckligt krav.

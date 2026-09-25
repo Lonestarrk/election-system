@@ -92,6 +92,12 @@ export const AUDIT_EVENTS = {
    * PRE_CLOSE_VALIDATION: skalningen sker en gång per omröstning, så redan ett
    * ensamt antal skulle peka ut precis det tillfället — och tillsammans med
    * timmen vore det en tidsmarkör bredvid varje röst som just flyttats.
+   *
+   * Sedan uppgift 12b bär posten urnroten, och den ingår i postens hash. Roten
+   * är en hash över urnans innehåll, så den säger inte hur många som röstade.
+   * Den står i kedjan och inte bara i omröstningens rad, så att en rot som
+   * skrivits om i raden syns mot kedjan. Båda ligger i röstlängden, som den som
+   * bara kan skriva i röstdatabasen inte når.
    */
   LINK_CLEARED: 'LINK_CLEARED',
   /**
@@ -113,6 +119,12 @@ export const AUDIT_EVENTS = {
   BALLOT_TALLIED: 'BALLOT_TALLIED',
   /** Den sista valsedeln var räknad, och omröstningen gick till TALLIED (uppgift 12). */
   ELECTION_TALLIED: 'ELECTION_TALLIED',
+  /**
+   * Resultatet fastställdes, och omröstningen gick till CERTIFIED (uppgift
+   * 12b). Skrivs i samma transaktion som fasen, så att den ena inte finns utan
+   * den andra.
+   */
+  ELECTION_CERTIFIED: 'ELECTION_CERTIFIED',
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]
@@ -122,25 +134,36 @@ export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]
  *
  * Över löpnummer, händelsetyp, tidpunkt och föregående rads hash. Ändras något
  * av det slutar alla senare hashar stämma.
+ *
+ * URNROTEN INGÅR NÄR POSTEN BÄR EN (uppgift 12b). Den står bara på posten
+ * LINK_CLEARED och läggs då sist. En post utan urnrot hashas som förut, så
+ * kedjan från före uppgiften stämmer oförändrad.
  */
 export function auditEntryHash(input: {
   sequence: number
   eventType: string
   occurredAt: Date
   previousHash: string | null
+  urnRoot?: string | null
 }): string {
-  return createHash('sha256')
-    .update(
-      [
-        input.sequence,
-        input.eventType,
-        input.occurredAt.toISOString(),
-        input.previousHash ?? 'GENESIS',
-      ].join('|'),
-      'utf8',
-    )
-    .digest('hex')
+  const fields: Array<string | number> = [
+    input.sequence,
+    input.eventType,
+    input.occurredAt.toISOString(),
+    input.previousHash ?? 'GENESIS',
+  ]
+  if (input.urnRoot !== undefined && input.urnRoot !== null) fields.push(input.urnRoot)
+
+  return createHash('sha256').update(fields.join('|'), 'utf8').digest('hex')
 }
+
+/**
+ * Det en post bär utöver sin typ och sin timme. Bara posten LINK_CLEARED bär
+ * något: urnroten, så att den står i kedjan och inte bara i omröstningens rad
+ * (uppgift 12b). Roten är en hash över urnans innehåll och säger varken vem
+ * eller hur många.
+ */
+export type AuditDetail = { urnRoot: string }
 
 /**
  * Antal försök att få ett ledigt löpnummer.
@@ -172,10 +195,13 @@ export type AuditClient = Pick<typeof votersDb, 'auditEvent'>
  *   transaktion som GLÖMMER att skicka `tx` hamnar tyst utanför den, och
  *   varken TypeScript eller testerna säger ifrån. Skriver du ett anrop inuti
  *   ett `$transaction`, skicka alltid med `tx`.
+ * @param detail Det posten bär utöver typ och timme, se `AuditDetail`. Bara
+ *   skalningen skickar något: urnroten, på posten LINK_CLEARED.
  */
 export async function recordAuditEvent(
   eventType: AuditEventType,
   client?: AuditClient,
+  detail?: AuditDetail,
 ): Promise<void> {
   /**
    * INUTI NÅGON ANNANS TRANSAKTION ÄR ETT SVALT FEL INTE SNÄLLT — DET ÄR
@@ -204,6 +230,7 @@ export async function recordAuditEvent(
   const db = client ?? votersDb
 
   const occurredAt = truncateToHour(new Date())
+  const urnRoot = detail?.urnRoot ?? null
 
   for (let attempt = 1; attempt <= MAX_SEQUENCE_ATTEMPTS; attempt += 1) {
     try {
@@ -221,7 +248,8 @@ export async function recordAuditEvent(
           occurredAt,
           sequence,
           previousHash,
-          entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash }),
+          urnRoot,
+          entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash, urnRoot }),
         },
       })
 
@@ -264,7 +292,14 @@ export type AuditChainVerdict =
 export async function verifyAuditChain(): Promise<AuditChainVerdict> {
   const entries = await votersDb.auditEvent.findMany({
     orderBy: { sequence: 'asc' },
-    select: { sequence: true, eventType: true, occurredAt: true, previousHash: true, entryHash: true },
+    select: {
+      sequence: true,
+      eventType: true,
+      occurredAt: true,
+      previousHash: true,
+      entryHash: true,
+      urnRoot: true,
+    },
   })
 
   let previousHash: string | null = null
@@ -293,6 +328,7 @@ export async function verifyAuditChain(): Promise<AuditChainVerdict> {
       eventType: entry.eventType,
       occurredAt: entry.occurredAt,
       previousHash: entry.previousHash,
+      urnRoot: entry.urnRoot,
     })
 
     if (recomputed !== entry.entryHash) {
@@ -309,7 +345,16 @@ export async function verifyAuditChain(): Promise<AuditChainVerdict> {
   return { intact: true, entries: entries.length }
 }
 
-/** Antal händelser av en viss typ. Används av slutkontrollen. */
+/** Antal händelser av en viss typ. */
 export async function countAuditEvents(eventType: AuditEventType): Promise<number> {
   return votersDb.auditEvent.count({ where: { eventType } })
+}
+
+/**
+ * Bär någon post LINK_CLEARED den här urnroten? Slutkontrollen frågar, så att
+ * en rot som skrivits om i omröstningens rad, men inte i kedjan, syns (uppgift
+ * 12b). Att kedjan själv är obruten prövar `verifyAuditChain`.
+ */
+export async function urnRootInAuditChain(urnRoot: string): Promise<boolean> {
+  return (await votersDb.auditEvent.count({ where: { eventType: AUDIT_EVENTS.LINK_CLEARED, urnRoot } })) > 0
 }

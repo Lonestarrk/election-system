@@ -116,10 +116,10 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       design: <>Nej. Slutkontrollen vägrar så länge ett enda ytterkuvert finns kvar.</>,
       today: (
         <>
-          {CURRENTLY.certifyBlockedWhileLinked.text} {CURRENTLY.finalCheckOldModel.text}
+          {CURRENTLY.certifyBlockedWhileLinked.text} {CURRENTLY.finalCheckEnvelopeModel.text}
         </>
       ),
-      statuses: [CURRENTLY.certifyBlockedWhileLinked.status!, CURRENTLY.finalCheckOldModel.status!],
+      statuses: [CURRENTLY.certifyBlockedWhileLinked.status!, CURRENTLY.finalCheckEnvelopeModel.status!],
     },
   ]
 }

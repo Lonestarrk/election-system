@@ -16,10 +16,13 @@ import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encodin
 import { encrypt } from '@/lib/crypto/elgamal'
 import { G, P, randomScalar } from '@/lib/crypto/group'
 // Serverns ingång registrerar OpenSSL, så att krypteringen i testet går fort.
-import '@/lib/crypto/server'
+import { partiallyDecrypt } from '@/lib/crypto/server'
+import { decryptShare } from '@/lib/crypto/share-storage'
+import { serialisePartialDecryptionProof } from '@/lib/crypto/threshold'
 import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { resetRateLimits } from '@/lib/rate-limit'
+import { urnRootOf } from '@/lib/urn-root'
 import { AUDIT_EVENTS } from '@/modules/eligibility/audit.service'
 import { createAdminSession } from '@/modules/eligibility/admin-session.service'
 import {
@@ -1016,13 +1019,16 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])
     await submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1])
 
-    // En rad byter ett chiffer: summan blir en annan, och bidragen hör inte längre till den.
-    await tamperUrn(ballotId, (pairs) => {
+    // En rad byter ett chiffer: summan blir en annan, och bidragen hör inte
+    // längre till den. Sedan uppgift 12b pekas raden ut redan av att chiffret
+    // inte ger den hash raden bär.
+    const hash = await tamperUrn(ballotId, (pairs) => {
       pairs[1]!.c2 = ((BigInt(String(pairs[1]!.c2)) * G) % P).toString()
       return pairs
     })
 
     await expect(completeTally(ballotId)).rejects.toThrow(TallyAbortedError)
+    await expect(completeTally(ballotId)).rejects.toThrow(new RegExp(`${hash}.*inte ger den chifferhashen`))
     expect(await votesDb.ballotTally.count()).toBe(0)
   })
 
@@ -1159,10 +1165,15 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
      * skrivits förbi stängningen och krypterar fem röster på S ger en summa
      * utanför [0, 2], och räkningen avbryts vid den i stället för att söka
      * vidare upp till antalet röstberättigade.
+     *
+     * Sedan uppgift 12b stoppar urnroten en sådan rad redan före det första
+     * bidraget. Taket står kvar mot den som kan skriva i båda databaserna och
+     * därför också kan skriva om urnroten, och det är den som prövas här.
      */
     await castFor(anna, 'bp-s')
     await closed(electionId)
     await forgeUrnRow(ballotId, [0n, 5n, 0n])
+    await rewriteUrnRoot()
     await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])
     await submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1])
 
@@ -1177,10 +1188,12 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     'summan av räkneverken måste vara antalet rader i urnan: en rad med %s stoppar räkningen',
     async (_label, messages) => {
       // Varje röst kodar exakt ett alternativ, också blankt. Summan av
-      // räkneverken är därför antalet rader, och allt annat är ett fel.
+      // räkneverken är därför antalet rader, och allt annat är ett fel. Som
+      // taket ovan prövas kravet mot den som också skriver om urnroten.
       await castFor(anna, 'bp-s')
       await closed(electionId)
       await forgeUrnRow(ballotId, messages)
+      await rewriteUrnRoot()
       await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])
       await submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1])
 
@@ -1223,6 +1236,140 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
 
     await votesDb.partialDecryption.deleteMany({ where: { ballotId, trusteeIndex: 2 } })
     await expect(completeTally(ballotId)).rejects.toThrow(/bidragen de räknades ur/)
+  })
+
+  // -------------------------------------------------------------------------
+  // Urnroten i spärren (uppgift 12b, ruling 134)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Byter urnans första rad för valsedeln mot en ny, äkta valsedel för M, med
+   * radens id kvar. Chiffret, bevisen och hashen stämmer med varandra, så inget
+   * i raden själv avslöjar bytet.
+   */
+  async function swapFirstUrnRow(ballot: CountedBallot = counted.first): Promise<EncryptedBallot> {
+    const row = await votesDb.encryptedVote.findFirstOrThrow({ where: { ballotId: ballot.id }, orderBy: { id: 'asc' } })
+    const fresh = encryptBallot(counted.publicKey, electionId, ballot.id, ballot.options, {
+      kind: 'PARTY',
+      ballotPartyId: ballot.bpM,
+    })
+    await votesDb.encryptedVote.update({
+      where: { id: row.id },
+      data: { ciphertext: fresh.ciphertext, proofs: fresh.proofs, ciphertextHash: fresh.ciphertextHash },
+    })
+    return fresh
+  }
+
+  /** Den som kan skriva i båda databaserna skriver om urnroten så att den stämmer med urnan. */
+  async function rewriteUrnRoot(): Promise<void> {
+    const rows = await votesDb.encryptedVote.findMany({
+      where: { ballotId: { in: [counted.first.id, counted.second.id] } },
+      select: { ballotId: true, ciphertextHash: true },
+    })
+    await votersDb.election.update({ where: { id: electionId }, data: { urnRoot: urnRootOf(rows) } })
+  }
+
+  it('en rad som byts ut efter stängningen stoppar dekrypteringen före frasen och innan något bidrag sparas', async () => {
+    /**
+     * Omgranskningen av 14f: den som kan skriva i röstdatabasen byter ut en rad
+     * mot en självkonsekvent rad med giltiga bevis. Uppgift 12 visade att
+     * räkningen då öppnar en annan summa. Urnroten prövas före frasen, så en
+     * fel fras ger samma avbrott, och inget försök står i revisionsloggen.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-s')
+    await castFor(robin, 'bp-m')
+    await closed(electionId)
+    await swapFirstUrnRow()
+
+    await expect(submitPartialDecryption(ballotId, 1, 'fel fras')).rejects.toThrow(/urnroten/)
+    await expect(submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).rejects.toThrow(TallyAbortedError)
+    expect(await auditEvents(AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED)).toBe(0)
+    expect(await votesDb.partialDecryption.count()).toBe(0)
+
+    // Kontrasten: den som också skriver om urnroten kommer förbi spärren.
+    await rewriteUrnRoot()
+    expect(await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).toMatchObject({ status: 'accepted' })
+  })
+
+  it('ett bidrag räknat utanför servern över en bytt urna tas inte emot', async () => {
+    // Förtroendepersonen räknar sitt bidrag ärligt, men över summan av den
+    // bytta urnan, som hon inte kan se är bytt.
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    await closed(electionId)
+    await swapFirstUrnRow()
+
+    const trustee = await votesDb.trusteeShare.findUniqueOrThrow({
+      where: { electionId_trusteeIndex: { electionId, trusteeIndex: 1 } },
+    })
+    const share = { index: 1, value: decryptShare(trustee.encryptedShare, TRUSTEE_PASSPHRASES[0], electionId, 1) }
+    const partials = (await aggregate(ballotId)).map((sum, optionIndex) => {
+      const partial = partiallyDecrypt(share, sum, { electionId, ballotId, optionIndex })
+      return { optionIndex, value: partial.value.toString(), proof: serialisePartialDecryptionProof(partial.proof) }
+    })
+
+    await expect(submitComputedPartialDecryption(ballotId, 1, partials)).rejects.toThrow(/urnroten/)
+    expect(await votesDb.partialDecryption.count()).toBe(0)
+  })
+
+  it('rader som tas bort ur urnan efter stängningen stoppar dekrypteringen (granskningens prob p2 G)', async () => {
+    // Proben tog bort två av tre rader innan förtroendepersonerna bidrog, och
+    // räkningen öppnade den kvarvarande radens röst: [0, 1, 0].
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-s')
+    await castFor(robin, 'bp-m')
+    await closed(electionId)
+    const rows = await votesDb.encryptedVote.findMany({ where: { ballotId }, orderBy: { id: 'asc' } })
+    await votesDb.encryptedVote.deleteMany({ where: { id: { in: rows.slice(1).map((row) => row.id) } } })
+
+    await expect(submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).rejects.toThrow(/urnroten/)
+    await expect(submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1])).rejects.toThrow(/urnroten/)
+    expect(await votesDb.partialDecryption.count()).toBe(0)
+    expect(await votesDb.ballotTally.count()).toBe(0)
+  })
+
+  it('en rad som flyttas till en annan valsedel stoppar dekrypteringen av båda', async () => {
+    // Valsedlarna har lika många alternativ, och chifferhashen binder inte
+    // valsedeln. Utan valsedeln i urnrotens blad hade flytten inte märkts.
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    await closed(electionId)
+    const row = await votesDb.encryptedVote.findFirstOrThrow({ where: { ballotId }, orderBy: { id: 'asc' } })
+    await votesDb.encryptedVote.update({ where: { id: row.id }, data: { ballotId: counted.second.id } })
+
+    await expect(submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).rejects.toThrow(/urnroten/)
+    await expect(submitPartialDecryption(counted.second.id, 1, TRUSTEE_PASSPHRASES[0])).rejects.toThrow(/urnroten/)
+    expect(await votesDb.partialDecryption.count()).toBe(0)
+  })
+
+  it('räkningen prövar urnroten igen före kombinationen', async () => {
+    // Bidragen lämnades medan urnan var hel. Raden byts efteråt.
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    await closed(electionId)
+    await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])
+    await submitPartialDecryption(ballotId, 2, TRUSTEE_PASSPHRASES[1])
+    await swapFirstUrnRow()
+
+    await expect(completeTally(ballotId)).rejects.toThrow(/urnroten/)
+    expect(await votesDb.ballotTally.count()).toBe(0)
+  })
+
+  it('en omröstning som skalades utan urnrot räknas inte, och spärren säger varför i stället för att hoppa över kontrollen', async () => {
+    await castFor(anna, 'bp-s')
+    await closed(electionId)
+    await votersDb.election.update({ where: { id: electionId }, data: { urnRoot: null } })
+
+    const outcomes = [
+      await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0]),
+      await submitRaw(ballotId, { trusteeIndex: 1, partials: [] }),
+      await completeTally(ballotId),
+    ]
+    for (const outcome of outcomes) {
+      expect(outcome).toMatchObject({ status: 'wrong_phase', phase: 'STRIPPED', message: expect.stringMatching(/urnrot/) })
+    }
+    expect(await votesDb.partialDecryption.count()).toBe(0)
   })
 
   // -------------------------------------------------------------------------

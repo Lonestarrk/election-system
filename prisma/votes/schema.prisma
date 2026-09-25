@@ -35,12 +35,14 @@ model Election {
 
   name String
 
-  /// OPEN | UNDER_REVIEW | CERTIFIED
+  /// OPEN | UNDER_REVIEW, och CERTIFIED från det gamla flödet.
   ///
-  /// Ett resultat kan bara fastställas från OPEN och bara om samtliga
-  /// automatiska kontroller gått igenom. Misslyckas någon kontroll hamnar
-  /// omröstningen i UNDER_REVIEW och kan inte fastställas alls via
-  /// gränssnittet — se modules/verification.
+  /// Sedan uppgift 12b är fastställandet fasen CERTIFIED i röstlängden, och
+  /// fältet bär bara markeringen UNDER_REVIEW: en slutkontroll som hittar en
+  /// avvikelse sätter den, och en markerad omröstning fastställs inte via
+  /// gränssnittet. Se src/orchestration/final-check.usecase.ts. Den som kan
+  /// skriva här kan ta bort markeringen, men inte få någon annan kontroll att
+  /// passera med det.
   status String @default("OPEN")
 
   certifiedAt DateTime? @map("certified_at")

@@ -283,6 +283,7 @@ export async function POST(request: Request) {
     moved: outcome.moved,
     cleared: outcome.cleared,
     envelopeRoot: outcome.envelopeRoot,
+    urnRoot: outcome.urnRoot,
     residueRemoved: outcome.residueRemoved,
     urnRowsReplaced: outcome.urnRowsReplaced,
   })

@@ -139,11 +139,14 @@ test.describe('adminens slutverifiering', () => {
     })
 
     // Varje kontroll redovisas med sin fråga i klartext, inte bara ett utfall.
+    // Sedan uppgift 12b är det kuvertmodellens kontroller.
     await expect(
-      page.getByText('Motsvarar varje godkänd röstning exakt en registrerad röst?'),
+      page.getByText('Har urnan lika många rader som markeringar "har röstat", på varje valsedel?'),
     ).toBeVisible()
     await expect(
-      page.getByText('Har varje registrerad röst skapats genom den auktoriserade processen?'),
+      page.getByText(
+        'Är varje rad i urnan en valsedel med exakt ett val, med bevis som håller för omröstningen och valsedeln?',
+      ),
     ).toBeVisible()
   })
 
@@ -182,7 +185,7 @@ test.describe('adminens slutverifiering', () => {
         // Inget av detta finns i schemat, och inget av det ska ha någon effekt.
         force: true,
         skipChecks: true,
-        override: ['election_closed', 'matches_commitment'],
+        override: ['election_tallied', 'urn_root_matches'],
         canCertify: true,
       },
       headers: { Origin: baseURL!, Cookie: cookieHeader, 'X-CSRF-Token': csrf },

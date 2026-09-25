@@ -31,13 +31,18 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
           Med riktig BankID prövas varje signatur mot BankID:s rotcertifikat och varje certifikat
           mot väljarens identitetshash, och stängningen flyttar exakt de kuvert som prövats, så den
           som kan skriva i röstlängden, voters_db, kan inte lägga in en röst för någon som inte
-          skrivit under. Det gäller inte röstdatabasen, votes_db, där den som kan skriva än så länge
-          kan byta ut ett chiffer efter stängningen (spec 4.6, förbehåll 4); det ska uppgift 12b
-          stänga. En rad som redan ligger på ett äkta kuverts plats när stängningen börjar ersätts
-          med det validerade kuvertet, och stängningen larmar. Ett byte efter stängningens städning
-          och före dess återläsning stoppar stängningen, och omkörningen ersätter raden. Ett byte
-          efter återläsningen och före COMMIT räknas däremot, tills uppgift 12b publicerar en
-          urnrot.{' '}
+          skrivit under. Det gäller inte röstdatabasen, votes_db (spec 4.6, förbehåll 4). Där
+          skyddar urnroten: stängningen räknar den ur de validerade kuverten och skriver den i
+          röstlängden, och räkningen och slutkontrollen räknar om den ur urnan. Den som bara kan
+          skriva i votes_db och byter ut ett chiffer, eller lägger till, tar bort eller flyttar en
+          rad, efter stängningen kan därför stoppa räkningen, men inte få en annan summa öppnad.
+          Den som kan skriva i båda databaserna kan skriva om roten också. En rad som redan ligger
+          på ett äkta
+          kuverts plats när stängningen börjar ersätts med det validerade kuvertet, och stängningen
+          larmar. Ett byte efter stängningens städning och före dess återläsning stoppar
+          stängningen, och omkörningen ersätter raden. Ett byte efter återläsningen och före COMMIT
+          märker stängningen inte, men räkningen vägrar sedan urnan, eftersom roten räknades ur det
+          som validerades.{' '}
           <LimitationReference entry={swapCiphertext} /> En
           granskare med åtkomst under valideringen kan pröva varje underskrift mot roten, men bara
           med pepparn, som i Azure ligger i valvet:

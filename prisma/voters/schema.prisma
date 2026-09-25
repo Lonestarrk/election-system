@@ -123,6 +123,24 @@ model Election {
   /// ingen utomstående kan räkna om roten över huvud taget. Se spec 7.3.
   envelopeRoot String? @map("envelope_root")
 
+  /// Merklerot över urnans rader, en per flyttat kuvert: valsedel och
+  /// chifferhash, kopior inräknade (uppgift 12b, ruling 134). Beräknad ur de
+  /// validerade kuverten och skriven en enda gång, i samma sats som STRIPPED
+  /// och kuvertroten, och i posten LINK_CLEARED.
+  ///
+  /// VARFÖR DEN BEHÖVS. Kuvertroten går inte att räkna om efter stängningen,
+  /// eftersom signaturerna är raderade. Urnroten går att räkna om ur votes_db.
+  /// Räkningen gör det före varje bidrag och före kombinationen, och
+  /// slutkontrollen gör det igen. En rad som lagts till, tagits bort, flyttats
+  /// till en annan valsedel eller fått ett annat chiffer efter stängningen ger
+  /// en annan rot. Bevisen ingår inte i roten.
+  ///
+  /// VARFÖR HÄR. Roten ligger i den andra databasen än urnan, så den som bara
+  /// kan skriva i votes_db kan inte skriva om den. Den som kan skriva i båda
+  /// kan det. Hur roten räknas står i src/lib/urn-root.ts. Null för en
+  /// omröstning som inte skalats, och för en som skalades innan roten fanns.
+  urnRoot String? @map("urn_root")
+
   @@map("election")
 }
 
@@ -375,6 +393,12 @@ model AuditEvent {
   /// hela kedjan — skyddet mot det är att kedjans spets publiceras, se
   /// ElectionCommitment i röstdatabasen och observatörsgränssnittet.
   entryHash String @unique @map("entry_hash")
+
+  /// Urnroten, bara på posten LINK_CLEARED (uppgift 12b). Den ingår i radens
+  /// hash, så den går inte att byta ut utan att kedjan bryts. Den är en hash
+  /// över urnans innehåll och bär varken ett antal, en väljare eller en
+  /// tidpunkt utöver postens timme.
+  urnRoot String? @map("urn_root")
 
   @@index([eventType])
   @@map("audit_event")

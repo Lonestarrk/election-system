@@ -14,6 +14,7 @@ import {
   verifyPartialDecryption,
 } from '@/lib/crypto/server'
 import { unlockShare } from '@/lib/crypto/share-storage'
+import { hashCiphertext } from '@/lib/crypto/verify-ballot'
 import {
   parsePartialDecryptionProof,
   serialisePartialDecryptionProof,
@@ -23,6 +24,7 @@ import {
 } from '@/lib/crypto/threshold'
 import { logger } from '@/lib/logger'
 import { truncateToHour } from '@/lib/time'
+import { urnRootOf, type UrnRow } from '@/lib/urn-root'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { AUDIT_EVENTS, recordAuditEvent, type AuditEventType } from '@/modules/eligibility/audit.service'
@@ -40,11 +42,12 @@ import { votersDb } from '@/modules/eligibility/db'
  * förtroendeperson, och räkneverken, ett per alternativ. Ingenting sparas per
  * röst.
  *
- *   1. spärren: fasen står i STRIPPED, kuvertroten är skriven och inget kuvert
- *      ligger kvar i röstlängden (spec 6.1). Annars händer ingenting, och
- *      ingen andel låses upp
+ *   1. spärren: fasen står i STRIPPED, kuvertroten och urnroten är skrivna och
+ *      inget kuvert ligger kvar i röstlängden (spec 6.1). Annars händer
+ *      ingenting, och ingen andel låses upp
  *   2. summan räknas ur varje rad i urnan, med varje tal tolkat strikt och
- *      prövat mot undergruppen innan det multipliceras
+ *      prövat mot undergruppen innan det multipliceras, och urnroten räknas om
+ *      ur samma läsning och ska vara den som stängningen skrev (ruling 134)
  *   3. en förtroendeperson låser upp sin andel med sin fras, i minnet, och
  *      räknar sitt bidrag för varje alternativ, med ett bevis som binder det
  *      till valet, valsedeln, alternativet och summan (ruling 133)
@@ -62,29 +65,31 @@ import { votersDb } from '@/modules/eligibility/db'
  * ge ett annat tal. Ett bidrag som en
  * förtroendeperson lämnar och som inte håller avvisas med `rejected`.
  *
- * VAD RÄKNINGEN INTE PRÖVAR. Den räknar exakt det som ligger i urnan, och den
- * prövar inte varje rösts bevis igen. Att urnan är de validerade kuverten
- * prövar stängningen före skalningen. Efter skalningen prövar ingenting det
- * ännu. Uppgift 12b prövar en urnrot i spärren, innan något dekrypteras
- * (ruling 134). Till dess räknas urnan som den är:
- *   – en rad som lagts till eller ändrats efter stängningen räknas, om den har
- *     valsedelns form, dess tal är gruppelement och räkneverken ligger inom
- *     taket och summerar till antalet rader. Båda kraven räknas ur samma urna.
- *     En sådan rad kan lägga till en röst, men också flytta röster mellan
- *     alternativ: ett chiffer för +2 på ett alternativ och −1 på ett annat
- *     klarar kraven, fast valsedelns bevis hade underkänt det
- *   – en rad som tagits bort tar bort en röst, utan att något märks.
- *     Granskningens prob p2 G tog bort två av tre rader och fick [0, 1, 0]
- * Ändras summan efter att ett bidrag sparats avbryts räkningen, eftersom
- * bidraget då inte håller mot den nya summan. Se posten
- * `votes-db-writer-can-swap-ciphertext` i src/lib/known-limitations.ts.
+ * URNAN SKA VARA DE FLYTTADE KUVERTEN (uppgift 12b, ruling 134). Uppgift 12
+ * visade att räkningen annars räknar exakt det som ligger i urnan. En rad som
+ * lagts till eller ändrats efter stängningen räknades, och den kunde flytta
+ * röster mellan alternativ, med +2 på ett och −1 på ett annat. En rad som
+ * tagits bort tog bort en röst: granskningens prob p2 G tog bort två av tre
+ * rader och fick [0, 1, 0]. Den som tog bort alla rader utom en innan
+ * förtroendepersonerna bidrog fick den radens röst öppnad, och den som bytte ut
+ * dem mot rader med känt innehåll kunde räkna fram den ur resultatet. En
+ * kontroll först i slutkontrollen hade kommit för sent för det, eftersom
+ * dekrypteringen då redan har öppnat summan.
  *
- * DETSAMMA GÄLLER VALHEMLIGHETEN. Det som öppnas är summan av det som ligger
- * i urnan när bidragen räknas. Den som tar bort alla rader utom en innan
- * förtroendepersonerna bidrar får den radens röst öppnad, och den som byter ut
- * dem mot rader med känt innehåll kan räkna fram den ur resultatet. Räkningen
- * kan inte skilja en sådan urna från en ärlig förrän urnroten prövas i
- * spärren.
+ * Därför räknas urnroten om ur urnan, ur samma läsning som summan, och den ska
+ * vara den som stängningen räknade ur de validerade kuverten och skrev i
+ * röstlängden. Det prövas före varje bidrag, alltså före frasen, och före
+ * kombinationen. Roten binder valsedel och chifferhash för varje rad, och
+ * chifferhashen räknas här ur chiffret. En rad som lagts till, tagits bort,
+ * flyttats till en annan valsedel eller fått ett annat chiffer ger en annan
+ * rot, och då dekrypteras ingenting. Bevisen ingår inte i roten, och räkningen
+ * läser dem inte. Se `sumOfUrn` och `requireUrnRoot`.
+ *
+ * VAD SOM INTE PRÖVAS. Räkningen prövar inte varje rösts bevis igen, eftersom
+ * stängningen prövade dem före flytten och urnroten binder raderna sedan dess.
+ * Slutkontrollen prövar dem. Den som kan skriva i båda databaserna kan skriva
+ * om urnroten så att den stämmer med en annan urna, och då räknas den urnan.
+ * Se posten `votes-db-writer-can-swap-ciphertext` i src/lib/known-limitations.ts.
  *
  * FRASEN LAGRAS ALDRIG OCH LOGGAS ALDRIG. Den låser upp andelen i minnet, i
  * `submitPartialDecryption`, och ingenting mer. Den upplåsta andelen sparas
@@ -121,7 +126,8 @@ export type SubmittedPartial = { optionIndex: number; value: unknown; proof: unk
 
 /**
  * Spärrens besked: kopplingen mellan väljare och röst är inte bevisligen
- * borta, eller så är omröstningen redan räknad. Meddelandet säger vilket.
+ * borta, omröstningen saknar den urnrot som urnan prövas mot, eller så är
+ * omröstningen redan räknad. Meddelandet säger vilket.
  */
 export type WrongPhase = { status: 'wrong_phase'; phase: string | null; message: string }
 
@@ -151,8 +157,20 @@ export type TallyOutcome =
 // ---------------------------------------------------------------------------
 
 type Gate =
-  | { open: true; electionId: string; ballotId: string; optionCount: number }
+  | {
+      open: true
+      electionId: string
+      ballotId: string
+      optionCount: number
+      /** Urnroten som stängningen skrev i röstlängden, se `requireUrnRoot`. */
+      urnRoot: string
+      /** Omröstningens valsedlar, ur röstlängdens lista. */
+      ballotIds: string[]
+    }
   | { open: false; outcome: WrongPhase | { status: 'unknown_ballot' } }
+
+/** Spärren öppen, med det räkningen behöver ur den. */
+type OpenGate = Extract<Gate, { open: true }>
 
 function closedGate(phase: string | null, message: string): Gate {
   return { open: false, outcome: { status: 'wrong_phase', phase, message } }
@@ -194,7 +212,7 @@ function messageForPhase(phase: string): string {
  * enda väljares kuvert (spec 6.1 och 6.2). Spärren prövas därför först, före
  * allt annat, och innan någon andel låses upp.
  *
- * Fyra villkor, och alla fyra krävs:
+ * Fem villkor, och alla fem krävs:
  *   – valsedeln står i röstlängdens lista för omröstningen. Vilken omröstning
  *     valsedeln hör till läses ur röstdatabasen, och den som kan skriva där
  *     kunde annars peka valsedeln mot en skalad omröstning (fixrunda 1,
@@ -205,6 +223,13 @@ function messageForPhase(phase: string): string {
  *   – inget kuvert ligger kvar på omröstningens valsedlar i röstlängden.
  *     Skalningen raderar dem i samma transaktion som den skriver STRIPPED,
  *     så ett kuvert här har skrivits dit efteråt, bredvid ett namn
+ *   – urnroten är skriven (uppgift 12b). En omröstning som skalades innan
+ *     roten fanns har ingen, och då går urnan inte att pröva. Spärren vägrar
+ *     med ett besked i stället för att hoppa över prövningen
+ *
+ * Att urnan ger urnroten prövas inte här utan när summan räknas, ur samma
+ * läsning, se `requireUrnRoot`. En prövning här och en läsning av summan
+ * efteråt hade lämnat ett fönster där raderna kunde bytas emellan.
  *
  * Fasen går bara framåt, med jämför-och-sätt, så att den stod i STRIPPED när
  * spärren läste den betyder att kopplingen var raderad ur röstlängden då och
@@ -221,7 +246,7 @@ async function tallyGate(ballotId: string): Promise<Gate> {
 
   const election = await votersDb.election.findUnique({
     where: { id: ballot.electionId },
-    select: { phase: true, envelopeRoot: true, ballots: { select: { id: true } } },
+    select: { phase: true, envelopeRoot: true, urnRoot: true, ballots: { select: { id: true } } },
   })
   if (!election) {
     return closedGate(
@@ -263,6 +288,16 @@ async function tallyGate(ballotId: string): Promise<Gate> {
     )
   }
 
+  if (election.urnRoot === null) {
+    return closedGate(
+      'STRIPPED',
+      'Omröstningen saknar urnrot. Stängningen skriver den i samma sats som STRIPPED sedan uppgift ' +
+        '12b, så omröstningen skalades antingen innan roten fanns, eller så har roten tagits bort ur ' +
+        'röstlängden förbi stängningen. Utan den går det inte att pröva att urnan är de kuvert som ' +
+        'flyttades, och ingenting dekrypteras.',
+    )
+  }
+
   /**
    * Formen läses sist, efter fasen. En valsedel som saknar form finns inte i
    * kuvertmodellen: en fråga i en allmän omröstning räknas inte här förrän
@@ -271,7 +306,14 @@ async function tallyGate(ballotId: string): Promise<Gate> {
   const shape = await getEncryptedBallotShape(ballotId)
   if (!shape) return { open: false, outcome: { status: 'unknown_ballot' } }
 
-  return { open: true, electionId: ballot.electionId, ballotId, optionCount: shape.optionCount }
+  return {
+    open: true,
+    electionId: ballot.electionId,
+    ballotId,
+    optionCount: shape.optionCount,
+    urnRoot: election.urnRoot,
+    ballotIds: election.ballots.map((entry) => entry.id),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +360,20 @@ function parsePair(pair: unknown): Ciphertext | null {
  * Antalet rader är taket för den diskreta logaritmen och det tal räkneverken
  * ska summera till, se `completeTally`. Det räknas ur samma läsning som
  * summan, så att de två alltid gäller samma rader.
+ *
+ * CHIFFERHASHEN RÄKNAS UR CHIFFRET, I SAMMA LÄSNING (uppgift 12b). `hashes` är
+ * radernas chifferhashar räknade ur chiffren som summeras, en per rad, och det
+ * är dem urnroten prövas mot, se `requireUrnRoot`. En rad vars chiffer inte ger
+ * den hash som står i raden har ändrats förbi stängningen, som prövade dem mot
+ * varandra, och räkningen avbryts vid den.
  */
-async function sumOfUrn(ballotId: string, optionCount: number): Promise<{ sums: Ciphertext[]; rows: number }> {
+async function sumOfUrn(
+  ballotId: string,
+  optionCount: number,
+): Promise<{ sums: Ciphertext[]; rows: number; hashes: string[] }> {
   let sums: Ciphertext[] = Array.from({ length: optionCount }, () => ({ c1: 1n, c2: 1n }))
   let rows = 0
+  const hashes: string[] = []
   let after: string | null = null
 
   for (;;) {
@@ -356,6 +408,17 @@ async function sumOfUrn(ballotId: string, optionCount: number): Promise<{ sums: 
         await yieldToEventLoop()
       }
 
+      // Varje par är nu två kanoniska decimalsträngar, så hashen är väldefinierad.
+      const ciphertextHash = hashCiphertext(ciphertext as Array<{ c1: string; c2: string }>)
+      if (ciphertextHash !== row.ciphertextHash) {
+        abort(
+          `raden i urnan med ${describeRow(row)} har ett chiffer som inte ger den chifferhashen. Stängningen ` +
+            'prövade dem mot varandra innan kuvertet flyttades, så raden har ändrats förbi den. Ingenting är ' +
+            'räknat eller sparat.',
+        )
+      }
+      hashes.push(ciphertextHash)
+
       sums = sums.map((sum, optionIndex) => multiply(sum, pairs[optionIndex]!))
       rows += 1
     }
@@ -364,7 +427,57 @@ async function sumOfUrn(ballotId: string, optionCount: number): Promise<{ sums: 
     after = batch[batch.length - 1]!.id
   }
 
-  return { sums, rows }
+  return { sums, rows, hashes }
+}
+
+/** Hur många rader i urnan som läses per fråga när bara valsedel och chifferhash behövs. */
+const URN_HASH_BATCH_SIZE = 5_000
+
+/**
+ * URNAN SKA GE URNROTEN SOM STÄNGNINGEN SKREV (uppgift 12b, ruling 134).
+ *
+ * Roten räknas över varje rad i urnan på omröstningens valsedlar, ur
+ * röstlängdens lista. Valsedelns egna rader tas ur `hashes`, som räknades ur
+ * chiffren i samma läsning som summan, se `sumOfUrn`. Summan som dekrypteras,
+ * eller som ett bidrag prövas mot, är då räknad ur exakt de rader roten gäller,
+ * och ett byte mellan två läsningar kan inte smita emellan. De andra
+ * valsedlarnas rader läses här, med bara valsedel och chifferhash: de ingår inte
+ * i summan, och deras chiffer prövas när de valsedlarna räknas, och i
+ * slutkontrollen.
+ *
+ * Varje blad bär valsedeln, så urnan på varje valsedel måste vara den som
+ * flyttades, också när bara en valsedels rader summeras här. En rad som lagts
+ * till, tagits bort, flyttats till en annan valsedel eller fått ett annat
+ * chiffer ger en annan rot, och räkningen avbryts innan något bidrag räknas
+ * eller sparas och innan någon fras prövas.
+ */
+async function requireUrnRoot(gate: OpenGate, hashes: readonly string[]): Promise<void> {
+  const rows: UrnRow[] = hashes.map((ciphertextHash) => ({ ballotId: gate.ballotId, ciphertextHash }))
+  const others = gate.ballotIds.filter((id) => id !== gate.ballotId)
+
+  let after: string | null = null
+  while (others.length > 0) {
+    const batch: Array<{ id: string; ballotId: string; ciphertextHash: string }> =
+      await votesDb.encryptedVote.findMany({
+        where: after === null ? { ballotId: { in: others } } : { ballotId: { in: others }, id: { gt: after } },
+        select: { id: true, ballotId: true, ciphertextHash: true },
+        orderBy: { id: 'asc' },
+        take: URN_HASH_BATCH_SIZE,
+      })
+    for (const row of batch) rows.push({ ballotId: row.ballotId, ciphertextHash: row.ciphertextHash })
+    if (batch.length < URN_HASH_BATCH_SIZE) break
+    after = batch[batch.length - 1]!.id
+  }
+
+  const root = urnRootOf(rows)
+  if (root !== gate.urnRoot) {
+    abort(
+      `urnroten räknad ur röstdatabasen är ${root.slice(0, 16)}…, men stängningen skrev ` +
+        `${gate.urnRoot.slice(0, 16)}… i röstlängden. Urnan är alltså inte de kuvert som stängningen ` +
+        'flyttade: en rad har lagts till, tagits bort, flyttats till en annan valsedel eller fått ett annat ' +
+        'chiffer efter stängningen. Ingenting är räknat eller sparat, och ingen andel har låsts upp.',
+    )
+  }
 }
 
 /**
@@ -543,7 +656,8 @@ export async function submitComputedPartialDecryption(
   const parsed = parseSubmitted(partials, gate.optionCount, trusteeIndex)
   if (!parsed.ok) return { status: 'rejected', message: parsed.message }
 
-  const { sums } = await sumOfUrn(ballotId, gate.optionCount)
+  const { sums, hashes } = await sumOfUrn(ballotId, gate.optionCount)
+  await requireUrnRoot(gate, hashes)
   return verifyAndStore(gate, trusteeIndex, expectedPublicShare, parsed.partials, sums)
 }
 
@@ -560,8 +674,11 @@ export async function submitComputedPartialDecryption(
  * därefter, så att inte heller en omsändning låser upp något. Sedan summan, så
  * att andelen ligger i klartext i minnet så kort stund som möjligt, och så att
  * en urna som inte går att räkna stoppar bidraget innan frasen prövas
- * (fixrunda 1, Mindre 4). Att läsa urnan tar omkring 73 ms per rad för en
- * riksdagsvalsedel. Sist frasen, som kostar en scrypt-härledning. En fel fras
+ * (fixrunda 1, Mindre 4). Med summan prövas urnroten, så att inte heller en
+ * urna som inte är den flyttade får någon andel upplåst (ruling 134). Att läsa
+ * urnan tar omkring 73 ms per rad för en riksdagsvalsedel, och de andra
+ * valsedlarnas chifferhashar läses för roten. Sist frasen, som kostar en
+ * scrypt-härledning. En fel fras
  * kostar alltså också summan, och gränsen per förtroendeperson i rutten
  * begränsar hur ofta det kan ske.
  */
@@ -579,7 +696,8 @@ export async function submitPartialDecryption(
 
   if (await hasContributed(ballotId, trusteeIndex)) return { status: 'duplicate' }
 
-  const { sums } = await sumOfUrn(ballotId, gate.optionCount)
+  const { sums, hashes } = await sumOfUrn(ballotId, gate.optionCount)
+  await requireUrnRoot(gate, hashes)
   const unlocked = unlockShare(trustee.encryptedShare, passphrase, gate.electionId, trusteeIndex)
   if (unlocked.status === 'wrong_passphrase') {
     // En angreppssignal, som syns i revisionsloggen (ruling 64). Posten säger
@@ -956,10 +1074,12 @@ function sameCounts(a: readonly number[], b: readonly number[]): boolean {
  * kravet att räkneverken summerar till antalet rader. Se `completeTally`.
  */
 async function countFromContributions(
-  gate: { electionId: string; ballotId: string; optionCount: number },
+  gate: OpenGate,
   contributions: ReadonlyMap<number, PartialDecryption[]>,
 ): Promise<number[]> {
-  const { sums, rows } = await sumOfUrn(gate.ballotId, gate.optionCount)
+  const { sums, rows, hashes } = await sumOfUrn(gate.ballotId, gate.optionCount)
+  // Före kombinationen, också när bidragen lämnades medan urnan var hel (ruling 134).
+  await requireUrnRoot(gate, hashes)
 
   for (const [trusteeIndex, partials] of contributions) {
     const trustee = await trusteeOf(gate.electionId, trusteeIndex)

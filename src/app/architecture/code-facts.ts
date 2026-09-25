@@ -139,11 +139,13 @@ const ONLY_SUMS_DECRYPTED: Marker[] = [
     matches: /\bpartiallyDecrypt\(/,
   },
   // Summan räknas ur urnan innan andelen låses upp (fixrunda 1 av uppgift 12),
-  // och det är den som dekrypteras, alternativ för alternativ.
+  // urnroten prövas mot samma läsning innan dess (uppgift 12b, ruling 134), och
+  // det är summan som dekrypteras, alternativ för alternativ.
   {
     file: 'src/orchestration/tally.usecase.ts',
     contains: [
-      '  const { sums } = await sumOfUrn(ballotId, gate.optionCount)',
+      '  const { sums, hashes } = await sumOfUrn(ballotId, gate.optionCount)',
+      '  await requireUrnRoot(gate, hashes)',
       '  const unlocked = unlockShare(trustee.encryptedShare, passphrase, gate.electionId, trusteeIndex)',
     ].join('\n'),
   },
@@ -203,7 +205,8 @@ const PARTIAL_DECRYPTION_BINDS_CONTEXT: Marker = {
  * Spärren (spec 6.1): fasen STRIPPED, kuvertroten skriven och inget kuvert
  * kvar, prövad först i varje ingång till räkningen, före frasen. Och valsedeln
  * står i röstlängdens lista för omröstningen, eftersom omröstningen läses ur
- * röstdatabasen (fixrunda 1 av uppgift 12).
+ * röstdatabasen (fixrunda 1 av uppgift 12). Sedan uppgift 12b krävs också
+ * urnroten, och urnan prövas mot den innan något dekrypteras.
  */
 const DECRYPTION_GATE: Marker[] = [
   { file: 'src/orchestration/tally.usecase.ts', contains: 'if (!election.ballots.some((entry) => entry.id === ballotId)) {' },
@@ -213,6 +216,32 @@ const DECRYPTION_GATE: Marker[] = [
   },
   { file: 'src/orchestration/tally.usecase.ts', contains: 'if (election.envelopeRoot === null) {' },
   { file: 'src/orchestration/tally.usecase.ts', contains: 'if (envelopesLeft > 0) {' },
+  // Urnroten (uppgift 12b, ruling 134): den ska vara skriven, och urnan ska ge
+  // den, räknad ur samma läsning som summan och jämförd med röstlängdens rot,
+  // i alla tre ingångarna. Ingångarna med fras och med ett bidrag räknat utanför
+  // servern prövar den före bidraget, och räkningen före kombinationen.
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'if (election.urnRoot === null) {' },
+  { file: 'src/orchestration/tally.usecase.ts', contains: 'if (root !== gate.urnRoot) {' },
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: 'const ciphertextHash = hashCiphertext(ciphertext as Array<{ c1: string; c2: string }>)',
+  },
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: [
+      '  const { sums, hashes } = await sumOfUrn(ballotId, gate.optionCount)',
+      '  await requireUrnRoot(gate, hashes)',
+      '  return verifyAndStore(gate, trusteeIndex, expectedPublicShare, parsed.partials, sums)',
+    ].join('\n'),
+  },
+  {
+    file: 'src/orchestration/tally.usecase.ts',
+    contains: [
+      '  const { sums, rows, hashes } = await sumOfUrn(gate.ballotId, gate.optionCount)',
+      '  // Före kombinationen, också när bidragen lämnades medan urnan var hel (ruling 134).',
+      '  await requireUrnRoot(gate, hashes)',
+    ].join('\n'),
+  },
   // Spärren är det första varje ingång gör: bidraget med fras, bidraget som
   // räknats utanför servern, och räkningen.
   ...[
@@ -229,6 +258,10 @@ const DECRYPTION_GATE: Marker[] = [
  * TALLIED skrivs med jämför-och-sätt från STRIPPED, i samma transaktion som
  * revisionsposten, och bara av räkningen. Villkoret är att varje valsedel i
  * röstlängdens lista för omröstningen är räknad (fixrunda 1 av uppgift 12).
+ *
+ * Sedan uppgift 12b nämner också fastställandet TALLIED, som villkoret i sitt
+ * jämför-och-sätt till CERTIFIED. Mönstret tillåter filen, och markören efter
+ * det håller att den aldrig skriver fasen TALLIED.
  */
 const TALLIED_WRITTEN_BY_TALLY: Marker[] = [
   {
@@ -243,7 +276,12 @@ const TALLIED_WRITTEN_BY_TALLY: Marker[] = [
   },
   { file: 'src/orchestration/tally.usecase.ts', contains: 'for (const ballot of election.ballots) {' },
   { file: 'src/orchestration/tally.usecase.ts', contains: 'if (!shape || tallied !== shape.optionCount) {' },
-  { onlyIn: ['src/orchestration/tally.usecase.ts'], under: 'src', matches: /\bphase:\s*['"`]TALLIED['"`]/ },
+  {
+    onlyIn: ['src/orchestration/tally.usecase.ts', 'src/orchestration/final-check.usecase.ts'],
+    under: 'src',
+    matches: /\bphase:\s*['"`]TALLIED['"`]/,
+  },
+  { nowhereIn: 'src/orchestration/final-check.usecase.ts', matches: /data:\s*\{[^}]*\bphase:\s*['"`]TALLIED['"`]/ },
 ]
 
 /**
@@ -270,8 +308,8 @@ export const OLD_FLOW_VOTES_AND_RECEIPTS =
  * tests/security/architecture-page.test.ts samma prov för sig.
  *
  * Påståendet gäller röster och kvitton, inte allt i det gamla flödet.
- * Adminsidan läser fortfarande dess statistik och fastställer i det; det står
- * i oldFlowLiveResults och finalCheckOldModel.
+ * Adminsidan läser fortfarande dess statistik; det står i oldFlowLiveResults.
+ * Fram till uppgift 12b fastställde den också i det gamla flödet.
  */
 const NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW: Marker[] = [
   { nowhereIn: 'src/app', matches: OLD_FLOW_VOTES_AND_RECEIPTS },
@@ -374,6 +412,11 @@ const STRIPPING_DELETES_ENVELOPES: Marker = {
  * blir beständiga när låsets transaktion gör COMMIT. Markören börjar därför på
  * anropet, och STRIP_IN_LOCK_TRANSACTION låser att `lock.strip` ger satserna
  * låsets transaktion.
+ *
+ * Uppgift 12b lade urnroten i satsen som skriver STRIPPED och i posten
+ * LINK_CLEARED. Den är en hash över valsedel och chifferhash för varje flyttat
+ * kuvert och säger ingenting om vem som röstat eller när, så påståendet om
+ * markeringen står kvar.
  */
 export const STRIPPING_TRANSACTION: Marker = {
   file: 'src/orchestration/close-election.usecase.ts',
@@ -381,7 +424,7 @@ export const STRIPPING_TRANSACTION: Marker = {
     '  const stripping = await lock.strip(async (tx) => {',
     '    const stripped = await tx.election.updateMany({',
     "      where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
-    "      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
+    "      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },",
     '    })',
     '    if (stripped.count !== 1) throw new PhaseMovedError()',
     '',
@@ -399,7 +442,7 @@ export const STRIPPING_TRANSACTION: Marker = {
     '      throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })',
     '    }',
     '',
-    '    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)',
+    '    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx, { urnRoot })',
     '',
     '    return removed',
     '  })',
@@ -793,12 +836,20 @@ export const CURRENTLY = {
     status: STATUS_DONE,
   },
 
+  /**
+   * Uppgift 12b lade urnroten i spärren (ruling 134). Påståendet om vad den
+   * prövar avgränsas till den som bara kan skriva i röstdatabasen: den som kan
+   * skriva i båda kan skriva om roten, och det står i posten
+   * votes-db-writer-can-swap-ciphertext.
+   */
   decryptionGate: {
     text:
       'Byggt: ingen förtroendeperson kan lämna ett bidrag, och ingenting räknas, förrän fasen är ' +
-      'STRIPPED, kuvertroten skriven och inget kuvert ligger kvar i pending_vote. Valsedeln ska stå i ' +
-      'röstlängdens lista för omröstningen. Spärren prövas före frasen, så andelen låses inte upp i en ' +
-      'fas där den inte får användas.',
+      'STRIPPED, kuvertroten och urnroten skrivna och inget kuvert ligger kvar i pending_vote. Valsedeln ' +
+      'ska stå i röstlängdens lista för omröstningen. Urnroten räknas om ur urnan, ur samma läsning som ' +
+      'summan, före varje bidrag och före kombinationen, och ingenting dekrypteras när den skiljer sig ' +
+      'från roten som stängningen skrev i röstlängden. Spärren prövas före frasen, så andelen låses inte ' +
+      'upp i en fas där den inte får användas, eller för en urna som inte ger roten i röstlängden.',
     holdsWhile: DECRYPTION_GATE,
     status: STATUS_DONE,
   },
@@ -816,30 +867,57 @@ export const CURRENTLY = {
     status: statusPlanned('13'),
   },
 
+  /**
+   * Uppgift 12b lade urnroten bredvid kuvertroten i stängningens svar, och
+   * publicerar den inte heller utanför systemet.
+   */
   envelopeRootNotPublished: {
     text:
-      'Kuvertroten publiceras inte utanför systemet än. Administratören får den i ' +
+      'Kuvertroten och urnroten publiceras inte utanför systemet än. Administratören får dem i ' +
       'stängningens svar.',
     holdsWhile: [
-      { nowhereIn: 'src/app/api/observer', matches: /envelopeRoot/ },
+      { nowhereIn: 'src/app/api/observer', matches: /envelopeRoot|urnRoot/ },
       {
         file: 'src/app/api/admin/elections/close/route.ts',
         contains: 'envelopeRoot: outcome.envelopeRoot',
       },
+      { file: 'src/app/api/admin/elections/close/route.ts', contains: 'urnRoot: outcome.urnRoot' },
     ],
     status: statusPlanned('13'),
   },
 
-  finalCheckOldModel: {
+  /**
+   * Uppgift 12b ersatte "Slutkontrollen granskar i dag det gamla flödets
+   * röster". Markörerna följer kontrollerna i kuvertmodellen, en per sak
+   * texten nämner, och att ingen av dem läser det gamla flödets tabeller.
+   * Fastställandets jämför-och-sätt bär fasen CERTIFIED i fastabellen.
+   */
+  finalCheckEnvelopeModel: {
     text:
-      'Slutkontrollen granskar i dag det gamla flödets röster. Av kuvertmodellen prövar den bara ' +
-      'att kopplingen är raderad; chiffren i encrypted_vote ingår inte i någon kontroll.',
+      'Byggt: slutkontrollen prövar kuvertmodellen. Urnan ska ha lika många rader som markeringar "har ' +
+      'röstat" på varje valsedel, ge den urnrot stängningen skrev och bestå av valsedlar vars bevis ' +
+      'håller. Varje sparat bidrag ska hålla mot förtroendepersonens publika andel och summan, och en ny ' +
+      'kombination av bidragen ska ge de sparade räkneverken. Den som kan skriva i båda databaserna kan ' +
+      'skriva om både urnan och urnroten.',
     holdsWhile: [
-      { file: 'src/orchestration/final-check.usecase.ts', contains: "id: 'every_vote_authorised'" },
-      { file: 'src/orchestration/final-check.usecase.ts', contains: "id: 'link_cleared'" },
-      { nowhereIn: 'src/orchestration/final-check.usecase.ts', matches: /encryptedVote/ },
+      { file: 'src/orchestration/final-check.usecase.ts', contains: "const id = 'urn_matches_markers'" },
+      { file: 'src/orchestration/final-check.usecase.ts', contains: "const id = 'urn_root_matches'" },
+      { file: 'src/orchestration/final-check.usecase.ts', contains: "const id = 'every_vote_verifies'" },
+      { file: 'src/orchestration/final-check.usecase.ts', contains: "const id = 'partial_decryptions_verify'" },
+      { file: 'src/orchestration/final-check.usecase.ts', contains: "const id = 'tally_matches'" },
+      // Urnroten räknas om ur urnan, med chifferhashen ur chiffret.
+      {
+        file: 'src/orchestration/final-check.usecase.ts',
+        contains: 'const recomputed = urnRootOf(readings.flatMap((reading) => reading.leaves))',
+      },
+      { file: 'src/orchestration/final-check.usecase.ts', contains: 'const hash = hashOfCiphertext(row.ciphertext)' },
+      // Ingen kontroll läser det gamla flödets röster, röstintyg eller åtaganden.
+      {
+        nowhereIn: 'src/orchestration/final-check.usecase.ts',
+        matches: /votesDb\.vote\b|countIssuedCredentials|blind-signature|commitment\.service|getElectionResults/,
+      },
     ],
-    status: statusPlanned('12b'),
+    status: STATUS_DONE,
   },
 
   oldFlowLiveResults: {
@@ -1060,11 +1138,15 @@ export const CURRENTLY = {
     status: STATUS_DONE,
   },
 
+  /**
+   * Uppgift 12b lade urnroten i posten LINK_CLEARED, och i postens hash.
+   * Texten säger det, och markören följer skrivningen och hashen.
+   */
   auditChain: {
     text:
       'Byggt, och slutkontrollen prövar kedjan. Posterna bär händelsetyp och timme, men varken ' +
-      'vem eller hur många. Kedjan hindrar inte den som har skrivrätt i databasen från att räkna ' +
-      'om den från början.',
+      'vem eller hur många, och posten om raderingen bär urnroten, en hash över urnans innehåll. ' +
+      'Kedjan hindrar inte den som har skrivrätt i databasen från att räkna om den från början.',
     holdsWhile: [
       { file: 'src/orchestration/final-check.usecase.ts', contains: "id: 'audit_chain_intact'" },
       {
@@ -1073,11 +1155,11 @@ export const CURRENTLY = {
       },
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)',
+        contains: 'recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx, { urnRoot })',
       },
       {
         file: 'src/modules/eligibility/audit.service.ts',
-        contains: 'entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash })',
+        contains: 'entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash, urnRoot })',
       },
       // Inget fält i posten som säger vem eller hur många. `[^}]*` håller
       // mönstret inom modellen, och fältnamnet måste stå först på raden, så en
@@ -1093,7 +1175,7 @@ export const CURRENTLY = {
   certifyBlockedWhileLinked: {
     text: 'Byggt: fastställandet kräver att kontrollen av liggande kuvert har passerat.',
     holdsWhile: [
-      { file: 'src/orchestration/final-check.usecase.ts', contains: "id: 'link_cleared'" },
+      { file: 'src/orchestration/final-check.usecase.ts', contains: "const id = 'link_cleared'" },
       {
         file: 'src/orchestration/final-check.usecase.ts',
         contains: "canCertify: checks.every((check) => check.severity === 'WARNING' || check.passed)",
@@ -1801,8 +1883,8 @@ export const PHASES: PhaseRow[] = [
     today: {
       text:
         'Skrivs av stängningen, med jämför-och-sätt från VALIDATED, i transaktionen som håller ' +
-        'stängningens lås, tillsammans med raderingen av kopplingen, markeringarna och kuvertroten. ' +
-        'En stängning i den här fasen eller en senare, med kuvertroten skriven, svarar att ' +
+        'stängningens lås, tillsammans med raderingen av kopplingen, markeringarna, kuvertroten och ' +
+        'urnroten. En stängning i den här fasen eller en senare, med kuvertroten skriven, svarar att ' +
         'omröstningen redan är stängd, och rör ingenting.',
       holdsWhile: [
         {
@@ -1811,7 +1893,7 @@ export const PHASES: PhaseRow[] = [
         },
         {
           file: 'src/orchestration/close-election.usecase.ts',
-          contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
+          contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },",
         },
         {
           file: 'src/orchestration/close-election.usecase.ts',
@@ -1851,14 +1933,35 @@ export const PHASES: PhaseRow[] = [
     acceptsVotes: false,
     next: 'ingenting',
     today: {
+      // Uppgift 12b ersatte "Skrivs aldrig", när fastställandet byggdes om mot
+      // kuvertmodellen. Det gamla flödets statusfält i votes_db bär nu bara
+      // markeringen UNDER_REVIEW.
       text:
-        'Skrivs aldrig. Fastställandet som finns hör till det gamla flödet och sätter ett eget ' +
-        'statusfält i votes_db.',
+        'Skrivs av fastställandet, med jämför-och-sätt från TALLIED, i samma transaktion som ' +
+        'revisionsposten, och bara när varje kontroll i slutkontrollen har passerat. Ett val som ' +
+        'markerats som avvikande fastställs inte, och ett fastställt val fastställs inte igen.',
       holdsWhile: [
-        neverWritten('CERTIFIED'),
-        { file: 'src/orchestration/final-check.usecase.ts', contains: "data: { status: 'CERTIFIED'" },
+        {
+          file: 'src/orchestration/final-check.usecase.ts',
+          contains: [
+            '    const cas = await tx.election.updateMany({',
+            "      where: { id: electionId, phase: 'TALLIED', envelopeRoot: { not: null }, urnRoot: { not: null } },",
+            "      data: { phase: 'CERTIFIED' },",
+            '    })',
+            '    if (cas.count !== 1) return false',
+            '    await recordAuditEvent(AUDIT_EVENTS.ELECTION_CERTIFIED, tx)',
+          ].join('\n'),
+        },
+        {
+          file: 'src/orchestration/final-check.usecase.ts',
+          contains: "if (report.phase === 'CERTIFIED') return { status: 'already_certified', report }",
+        },
+        { file: 'src/orchestration/final-check.usecase.ts', contains: "const id = 'not_under_review'" },
+        { onlyIn: ['src/orchestration/final-check.usecase.ts'], under: 'src', matches: /\bphase:\s*['"`]CERTIFIED['"`]/ },
+        // Fastställandet sätter inte längre det gamla flödets status.
+        { nowhereIn: 'src/orchestration/final-check.usecase.ts', matches: /status:\s*['"`]CERTIFIED['"`]\s*,\s*certifiedAt/ },
       ],
-      status: statusPlanned('12b'),
+      status: STATUS_DONE,
     },
   },
 ]
@@ -1883,15 +1986,11 @@ export const PHASES: PhaseRow[] = [
  * uppgift körs tidigare.
  *
  * Uppgift 11d strök de två första punkterna, faserna CLOSED och VALIDATED och
- * markeringen "har röstat". Uppgift 12 strök tröskeldekrypteringen. De står nu
+ * markeringen "har röstat". Uppgift 12 strök tröskeldekrypteringen, och
+ * uppgift 12b slutkontrollen och fastställandet med fasen CERTIFIED. De står nu
  * under Klart.
  */
 export const REMAINING: CodeFact[] = [
-  {
-    text: 'Slutkontrollen och fastställandet för kuvertmodellen, med fasen CERTIFIED.',
-    holdsWhile: [...CURRENTLY.finalCheckOldModel.holdsWhile, neverWritten('CERTIFIED')],
-    status: CURRENTLY.finalCheckOldModel.status,
-  },
   {
     text: 'Verifieringssidan visar efter stängningen att du har röstat, men inte vad.',
     holdsWhile: [AFTER_CLOSE_VIEW_NOT_BUILT],
@@ -1961,11 +2060,12 @@ export const BUILT: CodeFact[] = [
   {
     text:
       'Faserna är verkliga tillstånd: stängningen skriver CLOSED innan kuverten läses, VALIDATED när ' +
-      'valideringen passerat och STRIPPED när kopplingen raderas, och räkningen skriver TALLIED när den ' +
-      'sista valsedeln är räknad, var och en med jämför-och-sätt, så att ingen fas går baklänges.',
-    holdsWhile: PHASES.filter((row) => ['CLOSED', 'VALIDATED', 'STRIPPED', 'TALLIED'].includes(row.phase)).flatMap(
-      (row) => row.today.holdsWhile,
-    ),
+      'valideringen passerat och STRIPPED när kopplingen raderas, räkningen skriver TALLIED när den ' +
+      'sista valsedeln är räknad, och fastställandet CERTIFIED när slutkontrollen passerat, var och en ' +
+      'med jämför-och-sätt, så att ingen fas går baklänges.',
+    holdsWhile: PHASES.filter((row) =>
+      ['CLOSED', 'VALIDATED', 'STRIPPED', 'TALLIED', 'CERTIFIED'].includes(row.phase),
+    ).flatMap((row) => row.today.holdsWhile),
     status: STATUS_DONE,
   },
   {
@@ -1981,6 +2081,18 @@ export const BUILT: CodeFact[] = [
       'Tröskeldekrypteringen: efter stängningen öppnar två av tre förtroendepersoner summan av varje ' +
       'valsedel, alternativ för alternativ och med bevis, och bara summan av urnans rader dekrypteras.',
     holdsWhile: [...CURRENTLY.decryptionBuilt.holdsWhile, ...CURRENTLY.decryptionGate.holdsWhile],
+    status: STATUS_DONE,
+  },
+  {
+    // Uppgift 12b flyttade punkten hit från "Kommer att implementeras".
+    text:
+      'Slutkontrollen prövar kuvertmodellen: urnan mot markeringarna och urnroten, varje röst, varje ' +
+      'bidrag och en omräkning av resultatet. Fastställandet kräver att den passerar, och skriver fasen ' +
+      'CERTIFIED.',
+    holdsWhile: [
+      ...CURRENTLY.finalCheckEnvelopeModel.holdsWhile,
+      ...PHASES.find((row) => row.phase === 'CERTIFIED')!.today.holdsWhile,
+    ],
     status: STATUS_DONE,
   },
   {
@@ -2079,7 +2191,8 @@ export const OUT_OF_SCOPE: OutOfScopeItem[] = [
  * observatörsrutterna. Fyra är kuvertmodellens egna, i Remaining.tsx. Ingen
  * uppgift i planen prövar spärrfrågan (OCSP) fullt ut — uppgift 17b förseglar
  * bara svaret för en senare uppgift — så `no-revocation-check` är "ingår
- * inte", inte "kommer".
+ * inte", inte "kommer". Detsamma gäller sedan uppgift 12b
+ * `votes-db-writer-can-swap-ciphertext`, se kommentaren vid posten.
  */
 export const LIMITATION_STATUS: Record<string, Status> = {
   'receipt-proves-choice': statusPlanned('15'),
@@ -2089,7 +2202,10 @@ export const LIMITATION_STATUS: Record<string, Status> = {
   'bankid-order-carries-link': statusPlanned('11e'),
   'no-revocation-check': STATUS_OUT_OF_SCOPE,
   'bankid-xmldsig-adapter-missing': statusPlanned('17b'),
-  // Uppgift 11d stängde bytet före infogningen med återläsningen. Bytet efter
-  // stängningen står kvar tills 12b räknar om en urnrot.
-  'votes-db-writer-can-swap-ciphertext': statusPlanned('12b'),
+  // Uppgift 11d stängde bytet före infogningen med återläsningen, och uppgift
+  // 12b bytet efter stängningen för den som bara kan skriva i röstdatabasen:
+  // räkningen och slutkontrollen prövar urnroten. Kvar är att den kan stoppa
+  // räkningen, och att den som kan skriva i båda databaserna kan skriva om
+  // roten. Ingen uppgift i planen stänger det, så posten är "ingår inte".
+  'votes-db-writer-can-swap-ciphertext': STATUS_OUT_OF_SCOPE,
 }

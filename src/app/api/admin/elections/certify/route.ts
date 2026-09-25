@@ -11,8 +11,9 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/admin/elections/certify
  *
- * Fastställer valresultatet — om, och bara om, samtliga kritiska kontroller
- * går igenom.
+ * Fastställer valresultatet — om, och bara om, omröstningen står i fasen
+ * TALLIED och varje kontroll i slutkontrollen går igenom. Fasen blir då
+ * CERTIFIED, med jämför-och-sätt och en revisionspost (uppgift 12b).
  *
  * SPÄRREN KAN INTE KRINGGÅS HÄRIFRÅN.
  *
@@ -64,9 +65,9 @@ export async function POST(request: Request) {
 
   if (outcome.status === 'not_ready') {
     /**
-     * Förutsättningarna är inte uppfyllda — omröstningen pågår, eller inget
-     * åtagande är publicerat. Ingenting har markerats som avvikande, och
-     * administratören kan komma tillbaka när valet stängt.
+     * Förutsättningarna är inte uppfyllda — omröstningen pågår, är inte
+     * skalad eller inte räknad. Ingenting har markerats som avvikande, och
+     * administratören kan komma tillbaka när valet är räknat.
      */
     return jsonResponse(
       {
@@ -106,8 +107,7 @@ export async function POST(request: Request) {
 
   return jsonResponse({
     status: 'certified',
-    message: 'Resultatet är fastställt.',
-    commitmentSequence: outcome.commitmentSequence,
+    message: 'Resultatet är fastställt, och omröstningen står i fasen CERTIFIED.',
     report: outcome.report,
   })
 }

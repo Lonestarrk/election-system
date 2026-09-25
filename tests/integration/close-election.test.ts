@@ -21,7 +21,8 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, verifyAuditChain } from '@/modules/eligibility/audit.service'
+import { urnRootOf } from '@/lib/urn-root'
 import { parseCertificateChain } from '@/modules/eligibility/bankid/certificate-chain'
 import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
 import {
@@ -64,7 +65,7 @@ vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
 
   return {
     ...actual,
-    recordAuditEvent: async (eventType: string, client?: unknown) => {
+    recordAuditEvent: async (eventType: string, client?: unknown, ...rest: unknown[]) => {
       if (auditControl.poisonTransaction && client) {
         try {
           await (
@@ -77,7 +78,9 @@ vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
         return
       }
 
-      return actual.recordAuditEvent(eventType as never, client as never)
+      // Resten, till exempel urnroten i posten LINK_CLEARED (uppgift 12b), går
+      // vidare orörd.
+      return actual.recordAuditEvent(eventType as never, client as never, ...(rest as []))
     },
   }
 })
@@ -797,6 +800,56 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     const events = await votersDb.auditEvent.findMany({ orderBy: { sequence: 'desc' }, take: 1 })
     expect(events[0]!.eventType).toBe('LINK_CLEARED')
+  })
+
+  it('urnroten räknas ur de validerade kuverten och skrivs med STRIPPED och i posten LINK_CLEARED (uppgift 12b)', async () => {
+    /**
+     * Roten ska vara räknad ur de kuvert som validerades och flyttades, och
+     * ligga på två ställen i röstlängden: i omröstningens rad, skriven i samma
+     * sats som STRIPPED och kuvertroten, och i revisionsposten om raderingen,
+     * där den ingår i postens hash. Urnan i röstdatabasen ger samma rot.
+     */
+    const hashes = [await castFor(anna, 'bp-s'), await castFor(kim, 'bp-m'), await castFor(robin, 'bp-s')]
+
+    const outcome = await closeElection(electionId)
+    expect(outcome.status).toBe('closed')
+    const expected = urnRootOf(hashes.map((ciphertextHash) => ({ ballotId, ciphertextHash })))
+    expect(outcome).toMatchObject({ urnRoot: expected })
+
+    const stored = await votersDb.election.findUniqueOrThrow({
+      where: { id: electionId },
+      select: { phase: true, urnRoot: true, envelopeRoot: true },
+    })
+    expect(stored).toMatchObject({ phase: 'STRIPPED', urnRoot: expected })
+    expect(stored.urnRoot).not.toBe(stored.envelopeRoot)
+
+    const urn = await votesDb.encryptedVote.findMany({
+      where: { ballotId },
+      select: { ballotId: true, ciphertextHash: true },
+    })
+    expect(urnRootOf(urn)).toBe(expected)
+
+    const cleared = await votersDb.auditEvent.findMany({ where: { eventType: AUDIT_EVENTS.LINK_CLEARED } })
+    expect(cleared.map((event) => event.urnRoot)).toEqual([expected])
+    // Ingen annan post bär en urnrot.
+    expect(await votersDb.auditEvent.count({ where: { urnRoot: { not: null } } })).toBe(1)
+    expect(await verifyAuditChain()).toMatchObject({ intact: true })
+  })
+
+  it('en stängning som stoppas skriver ingen urnrot', async () => {
+    // Samma väg som testet av markeringarna nedan: en markering som redan
+    // fanns gör att skalningen förs tillbaka, med roten.
+    await castFor(anna, 'bp-s')
+    await votersDb.votedMarker.create({ data: { voterStatusId: kim, ballotId } })
+
+    await expect(closeElection(electionId)).rejects.toBeInstanceOf(CloseAbortedError)
+
+    const stored = await votersDb.election.findUniqueOrThrow({
+      where: { id: electionId },
+      select: { urnRoot: true, envelopeRoot: true },
+    })
+    expect(stored).toEqual({ urnRoot: null, envelopeRoot: null })
+    expect(await votersDb.auditEvent.count({ where: { urnRoot: { not: null } } })).toBe(0)
   })
 
   it('slutkontrollen låser inte ett val som ännu inte skalats', async () => {

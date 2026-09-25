@@ -223,33 +223,40 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * antalet rader" bland kontrollerna, fast antalet räknas ur samma urna. Och
    * urnroten prövas nu i räkningens spärr, inte bara i slutkontrollen
    * (ruling 134).
+   *
+   * OMSKRIVEN I UPPGIFT 12b. Stängningen skriver en urnrot, och räkningen och
+   * slutkontrollen räknar om den ur urnan. Den som bara kan skriva i
+   * röstdatabasen kan därför inte längre byta ut ett chiffer, eller lägga till,
+   * ta bort eller flytta en rad, obemärkt efter stängningen, men kan stoppa
+   * räkningen. Kvar är
+   * den som kan skriva i båda databaserna, som kan skriva om roten, och
+   * fönstren före skalningens COMMIT, som stängningen själv inte ser. Titeln och
+   * markörerna följer det.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
-    title: 'Den som kan skriva i röstdatabasen kan byta ut ett chiffer',
+    title: 'Den som kan skriva i röstdatabasen kan stoppa räkningen, och den som kan skriva i båda kan byta ut ett chiffer',
     why:
       'Underskriften och kedjan skyddar det yttre kuvertet i röstlängden, inte chiffret i ' +
-      'röstdatabasen. Efter stängningen prövar ingenting att urnan är de flyttade kuverten, och ' +
-      'kuvertroten går inte att räkna om när signaturerna är raderade. Den som kan skriva i ' +
-      'votes_db kan då byta ut ett chiffer och dess hash mot en ny rad med giltiga bevis, utan att ' +
-      'något märker det. Räkningen prövar inte heller rösternas bevis. Den prövar urnans form, att ' +
-      'talen är gruppelement, att räkneverken ligger inom taket och summerar till antalet rader i ' +
-      'samma urna och att summan inte ändrats sedan ett bidrag sparades. Också en rad utan giltiga ' +
-      'bevis räknas alltså, och den kan flytta röster mellan alternativ. En rad som tas bort tar bort ' +
-      'en röst, utan att något märks. Tar samma person bort alla rader utom en innan ' +
-      'förtroendepersonerna bidrar, öppnas den radens röst, och byter hen ut dem mot rader med känt ' +
-      'innehåll går rösten att räkna fram ur resultatet. Uppgift 12b ska räkna om en urnrot, en ' +
-      'Merklerot över de flyttade chifferhasharna, som skrivs vid stängningen, och pröva den i ' +
-      'räkningens spärr innan något dekrypteras. Före stängningen kan samma person lägga en rad på ' +
-      'ett äkta kuverts plats i ' +
-      'urnan, dess id, men med ett annat innehåll, så att infogningen hoppar över det äkta ' +
-      'kuvertet. Stängningen tar då bort raden och infogar det validerade kuvertet i stället, ' +
-      'larmar i serverloggen och anger kuvertets chifferhash i svaret till administratören. Ett ' +
-      'byte efter städningen men före återläsningen fångas av återläsningen, som avbryter ' +
-      'stängningen med kopplingen orörd, och omkörningen ersätter raden. Den som vill hålla ett ' +
-      'val från att stängas måste alltså skriva i det fönstret vid varje körning. Ett byte efter ' +
-      'återläsningen och före skalningens COMMIT märks däremot inte: stängningen svarar att den ' +
-      'är klar, och det förfalskade chiffret räknas, tills uppgift 12b publicerar en urnrot.',
+      'röstdatabasen, och kuvertroten går inte att räkna om när signaturerna är raderade. Därför ' +
+      'räknar stängningen också en urnrot ur de validerade kuverten, en Merklerot över valsedel och ' +
+      'chifferhash för varje flyttat kuvert, och skriver den i röstlängden och i revisionskedjan. ' +
+      'Räkningen räknar om den ur urnan före varje bidrag och före kombinationen, och slutkontrollen ' +
+      'gör det igen. Den som bara kan skriva i votes_db och byter ut ett chiffer, eller lägger till, tar ' +
+      'bort eller flyttar en rad, efter stängningen får alltså ingen annan summa öppnad, men kan stoppa ' +
+      'räkningen: roten stämmer inte, och ingenting dekrypteras. Den som kan skriva i båda databaserna ' +
+      'kan skriva om urnroten och räkna om revisionskedjan, och då räknas den urna hen har lagt dit, ' +
+      'också en där alla rader utom en har känt innehåll. Roten publiceras inte utanför systemet än. Räkningen ' +
+      'prövar inte rösternas bevis igen, det gör slutkontrollen. Före stängningen kan den som skriver ' +
+      'i röstdatabasen lägga en rad på ett äkta kuverts plats i urnan, dess id, men med ett annat ' +
+      'innehåll, så att infogningen hoppar över det äkta kuvertet. Stängningen tar då bort raden och ' +
+      'infogar det validerade kuvertet i stället, larmar i serverloggen och anger kuvertets ' +
+      'chifferhash i svaret till administratören. Ett byte efter städningen men före återläsningen ' +
+      'fångas av återläsningen, som avbryter stängningen med kopplingen orörd, och omkörningen ' +
+      'ersätter raden. Den som vill hålla ett val från att stängas måste alltså skriva i det fönstret ' +
+      'vid varje körning. Ett byte efter återläsningen och före skalningens COMMIT märker stängningen ' +
+      'inte, men urnroten räknas ur de validerade kuverten och inte ur urnan, så räkningen vägrar ' +
+      'sedan den urnan. Då är kuverten redan raderade ur röstlängden.',
     stillTrueIf: [
       // Infogningen hoppar över rader som redan finns, så en rad som skrivs
       // efter städningen stoppar stängningen i stället för att ersättas ...
@@ -266,14 +273,19 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         ].join('\n'),
       },
       { file: 'src/app/api/admin/elections/close/route.ts', contains: 'urnRowsReplaced: outcome.urnRowsReplaced,' },
-      // Efter stängningen: slutkontrollen prövar ännu det gamla flödets röster
-      // och läser inte encrypted_vote, och skalningen skriver bara kuvertroten,
-      // ingen urnrot. Skriver 12b en urnrot i samma sats ändras raden nedan.
-      { file: 'src/orchestration/final-check.usecase.ts', contains: "id: 'every_vote_authorised'" },
+      // Urnroten räknas ur de validerade kuverten, inte ur urnan, och skrivs i
+      // röstlängden med STRIPPED. Räknades den ur urnan hade ett byte efter
+      // återläsningen kommit med i roten.
+      { file: 'src/orchestration/close-election.usecase.ts', contains: 'const urnRoot = urnRootOf(placed)' },
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
+        contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },",
       },
+      // Räkningen jämför med roten i röstlängden, en kolumn som den som kan
+      // skriva där kan skriva om. Jämförs den en dag med något utanför
+      // systemet ändras raden, och texten ska ses över.
+      { file: 'src/orchestration/tally.usecase.ts', contains: 'if (root !== gate.urnRoot) {' },
+      { file: 'prisma/voters/schema.prisma', contains: 'urnRoot String? @map("urn_root")' },
       // Räkningen läser urnans chiffer men inte bevisen, så den prövar inte
       // rösternas bevis. Läser den bevisen ändras raden, och texten ovan ska
       // ses över.

@@ -1301,20 +1301,21 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       expectValidStatus(`fasen ${row.phase}`, row.today.status)
     })
 
-    it('OPEN, CLOSED, VALIDATED, STRIPPED och TALLIED är klara; CERTIFIED är planerad', () => {
-      // Uppgift 11d gjorde CLOSED och VALIDATED till verkliga tillstånd, och
-      // uppgift 12 TALLIED.
+    it('alla sex faser är klara', () => {
+      // Uppgift 11d gjorde CLOSED och VALIDATED till verkliga tillstånd,
+      // uppgift 12 TALLIED och uppgift 12b CERTIFIED.
       const byPhase = Object.fromEntries(PHASES.map((row) => [row.phase, row.today.status]))
       expect(byPhase['OPEN']).toEqual(STATUS_DONE)
       expect(byPhase['CLOSED']).toEqual(STATUS_DONE)
       expect(byPhase['VALIDATED']).toEqual(STATUS_DONE)
       expect(byPhase['STRIPPED']).toEqual(STATUS_DONE)
       expect(byPhase['TALLIED']).toEqual(STATUS_DONE)
-      expect(byPhase['CERTIFIED']).toEqual(statusPlanned('12b'))
+      expect(byPhase['CERTIFIED']).toEqual(STATUS_DONE)
       // Och fastabellen säger inte längre "skrivs aldrig" om någon fas som skrivs.
       expect(check(neverWritten('CLOSED')).holds).toBe(false)
       expect(check(neverWritten('VALIDATED')).holds).toBe(false)
       expect(check(neverWritten('TALLIED')).holds).toBe(false)
+      expect(check(neverWritten('CERTIFIED')).holds).toBe(false)
     })
 
     const labelled = [
@@ -1329,7 +1330,7 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       'sumsNotPublished',
       'auditChain',
       'certifyBlockedWhileLinked',
-      'finalCheckOldModel',
+      'finalCheckEnvelopeModel',
       'oldFlowRoutesRemain',
       'oldFlowLiveResults',
       'azureSetupBuilt',

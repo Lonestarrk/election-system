@@ -99,10 +99,13 @@ export function Weaknesses({
           <Link href={limitationHref(removal)}>Mer om underskriften</Link>
         </li>
         <li style={listItemStyle}>
-          <strong>Den som kan skriva i urnan utan namn kan byta ut ett kuvert.</strong> Underskriften
-          skyddar det yttre kuvertet, inte kuverten i urnan utan namn. Den som kan skriva där kan i
-          dag få ett annat inre kuvert att ligga i ett äkta kuverts ställe, och efter stängningen
-          kontrollerar ingenting urnan.{' '}
+          <strong>Den som kan skriva i båda urnorna kan byta ut ett kuvert.</strong> Underskriften
+          skyddar det yttre kuvertet, inte kuverten i urnan utan namn. Vid stängningen räknas
+          därför ett fingeravtryck av de kuvert som flyttas dit, och det sparas i urnan med namn.
+          Innan summan öppnas räknas fingeravtrycket om ur urnan utan namn, och stämmer det inte
+          öppnas ingenting. Samma prövning görs innan resultatet fastställs. Den som bara kan skriva
+          i urnan utan namn kan därför stoppa räkningen, men inte ändra den utan att det syns. Den
+          som kan skriva i båda urnorna kan byta ut fingeravtrycket också.{' '}
           <Link href={limitationHref(swapCiphertext)}>Mer om urnan utan namn</Link>
         </li>
         <li style={listItemStyle}>

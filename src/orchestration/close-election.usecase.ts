@@ -3,6 +3,7 @@ import type { Prisma as VotersPrisma } from '.prisma/voters'
 import { sha256Hex } from '@/lib/crypto'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
 import { logger } from '@/lib/logger'
+import { urnRootOf } from '@/lib/urn-root'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
@@ -31,11 +32,11 @@ import {
  *   2. beräkna Merkleroten över kuverten (skrivs i steg 6, se nedan)
  *   3. verifiera varje valsedel EN GÅNG TILL
  *   4. skriv VALIDATED, ta bort rester och ersätt förfalskade rader i
- *      votes_db, och infoga, sorterat på chifferhash
+ *      votes_db, räkna urnroten och infoga, sorterat på chifferhash
  *   5. läs tillbaka varje flyttat chiffer och kontrollera antalet
- *   6. först då, odelbart och i låsets transaktion: skriv STRIPPED och roten,
- *      markera väljarna, radera exakt de flyttade kuverten och kontrollera att
- *      inget annat ligger kvar
+ *   6. först då, odelbart och i låsets transaktion: skriv STRIPPED och båda
+ *      rötterna, markera väljarna, radera exakt de flyttade kuverten och
+ *      kontrollera att inget annat ligger kvar
  *   7. efter låsets COMMIT: kontrollera att skalningen finns i röstlängden
  *
  * FASERNA ÄR TILLSTÅND (spec 6.1, uppgift 11d). Varje övergång är ett
@@ -72,6 +73,12 @@ import {
  * lagrar eller exporterar någon sådan. Efter skalningen är dessutom
  * signaturerna borta, så ingen utomstående kan räkna om roten alls.
  *
+ * DÄRFÖR OCKSÅ EN URNROT (uppgift 12b, ruling 134). Den binder valsedel och
+ * chifferhash för varje flyttat kuvert, räknas i steg 4 ur de validerade
+ * kuverten och skrivs i steg 6 i samma sats som STRIPPED och kuvertroten, och
+ * i revisionsposten. Den går att räkna om ur urnan efter skalningen, och
+ * räkningen och slutkontrollen gör det. Se src/lib/urn-root.ts.
+ *
  * Steg 3 känns överflödigt — bevisen kontrollerades ju när rösten lades. Det är
  * ändå rätt: det är den sista punkt där ett fel kan pekas ut.
  *
@@ -96,6 +103,11 @@ export type CloseOutcome =
       moved: number
       cleared: number
       envelopeRoot: string
+      /**
+       * Urnroten över de flyttade kuverten, skriven med STRIPPED (uppgift
+       * 12b). Se src/lib/urn-root.ts.
+       */
+      urnRoot: string
       /**
        * Chifferhashen för varje chiffer i votes_db som togs bort före
        * infogningen, eftersom det inte hörde till något av de validerade
@@ -1337,9 +1349,10 @@ function storedAsValidated(
  *
  * En sådan rad som fanns vid städningen har redan ersatts (ruling 126, se
  * `findUrnDeviations`). Återläsningen fångar det som skrivits efter
- * städningen, och det som infogningen själv inte skrev som väntat. Efter
- * stängningen kontrollerar ingenting urnan förrän uppgift 12b räknar om en
- * urnrot, se posten `votes-db-writer-can-swap-ciphertext` i
+ * städningen, och det som infogningen själv inte skrev som väntat. Det som
+ * skrivs efter återläsningen fångas av urnroten, som räknas ur de validerade
+ * kuverten: räkningen räknar om den ur urnan och vägrar när den inte stämmer
+ * (uppgift 12b), se posten `votes-db-writer-can-swap-ciphertext` i
  * src/lib/known-limitations.ts.
  */
 async function urnMismatch(ballotIds: string[], envelopes: readonly UrnEnvelope[]): Promise<string | null> {
@@ -1387,6 +1400,8 @@ type Preparation =
   | {
       kind: 'ready'
       envelopeRoot: string
+      /** Urnroten över de validerade kuverten, i den form de infogas. */
+      urnRoot: string
       moved: number
       ballotIds: string[]
       /** Hur många kuvert som flyttades per valsedel. Så många markeringar ska det bli. */
@@ -1670,6 +1685,18 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
   const placed = withUrnIds(envelopes)
   const deviations = await findUrnDeviations(ballotIds, placed)
 
+  /**
+   * URNROTEN, UR DE VALIDERADE KUVERTEN (uppgift 12b, ruling 134).
+   *
+   * Räknas ur `placed`, alltså ur exakt de rader som infogas nedan, med en
+   * rad per kuvert, också två med samma chiffer. Den räknas här och inte ur en
+   * läsning av votes_db, så att ett chiffer som byts ut i röstdatabasen efter
+   * återläsningen i steg 5 inte kommer med i roten: urnan ger då en annan rot
+   * än den som skrevs, och räkningen vägrar. Roten skrivs i steg 6, i samma
+   * sats som STRIPPED och kuvertroten.
+   */
+  const urnRoot = urnRootOf(placed)
+
   if (deviations.residue.length > 0 || deviations.forgedRowIds.length > 0) {
     const lostBeforeDeletion = await lockStillHeldOrSettle(electionId, lock, 'raderingen i röstdatabasen')
     if (lostBeforeDeletion) return lostBeforeDeletion
@@ -1728,6 +1755,7 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
   return {
     kind: 'ready',
     envelopeRoot,
+    urnRoot,
     moved: envelopes.length,
     ballotIds,
     movedByBallot,
@@ -1790,7 +1818,7 @@ function withReplacements(outcome: CloseOutcome, urn: UrnChanges): CloseOutcome 
  */
 type UnderLock =
   | { kind: 'outcome'; outcome: CloseOutcome }
-  | { kind: 'stripped'; moved: number; cleared: number; envelopeRoot: string }
+  | { kind: 'stripped'; moved: number; cleared: number; envelopeRoot: string; urnRoot: string }
 
 async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnChanges): Promise<UnderLock> {
   /**
@@ -1845,7 +1873,7 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
 
   if (preparation.kind === 'settled') return { kind: 'outcome', outcome: preparation.outcome }
 
-  const { envelopeRoot, moved, ballotIds, movedByBallot, envelopes } = preparation
+  const { envelopeRoot, urnRoot, moved, ballotIds, movedByBallot, envelopes } = preparation
 
   /**
    * --- 6. Först nu raderas kopplingen mellan väljare och röst -------------
@@ -1899,7 +1927,7 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
   const stripping = await lock.strip(async (tx) => {
     const stripped = await tx.election.updateMany({
       where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },
-      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },
+      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },
     })
     if (stripped.count !== 1) throw new PhaseMovedError()
 
@@ -1917,13 +1945,13 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
       throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })
     }
 
-    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx)
+    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx, { urnRoot })
 
     return removed
   })
 
   if (stripping.outcome === 'done') {
-    return { kind: 'stripped', moved, cleared: stripping.value, envelopeRoot }
+    return { kind: 'stripped', moved, cleared: stripping.value, envelopeRoot, urnRoot }
   }
 
   /**
@@ -2008,7 +2036,7 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
  */
 async function confirmStripped(
   electionId: string,
-  stripped: { moved: number; cleared: number; envelopeRoot: string },
+  stripped: { moved: number; cleared: number; envelopeRoot: string; urnRoot: string },
   urn: UrnChanges,
 ): Promise<CloseOutcome> {
   let after
@@ -2041,6 +2069,7 @@ async function confirmStripped(
       moved: stripped.moved,
       cleared: stripped.cleared,
       envelopeRoot: stripped.envelopeRoot,
+      urnRoot: stripped.urnRoot,
       residueRemoved: urn.residueRemoved,
       urnRowsReplaced: urn.urnRowsReplaced,
     }

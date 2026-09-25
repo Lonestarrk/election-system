@@ -47,12 +47,14 @@ type CheckResult = {
 
 type FinalCheckReport = {
   electionName: string
+  phase: string
   status: string
   checks: CheckResult[]
   canCertify: boolean
   anomalous: boolean
   failures: CheckResult[]
-  merkleRoot: string
+  /** Urnroten räknad ur urnan, null när en rad inte går att hasha (uppgift 12b). */
+  urnRoot: string | null
   voteCount: number
   ranAt: string
 }
@@ -204,7 +206,8 @@ export default function AdminPage() {
 
                 <p className="muted small">
                   Status: <strong>{report.status}</strong> · {report.voteCount} röster ·
-                  Merklerot <span className="mono">{report.merkleRoot.slice(0, 16)}…</span>
+                  Urnrot{' '}
+                  <span className="mono">{report.urnRoot ? `${report.urnRoot.slice(0, 16)}…` : 'saknas'}</span>
                 </p>
 
                 {/*

@@ -65,8 +65,10 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  * Med riktig BankID, där nyckeln som utfärdar certifikaten finns hos BankID,
  * kan den som bara kan skriva i röstlängden därmed inte längre lägga in en röst
  * för någon som inte skrivit under. Det gäller röstlängden och inte
- * röstdatabasen, där den som kan skriva än så länge kan byta ut ett chiffer
- * (spec 4.6, förbehåll 4). Det håller bara för att stängningen flyttar
+ * röstdatabasen, där den som kan skriva kan byta ut ett chiffer (spec 4.6,
+ * förbehåll 4). Sedan uppgift 12b stoppar urnroten då räkningen, men den som
+ * kan skriva i båda databaserna kan skriva om roten. Skyddet i röstlängden
+ * håller bara för att stängningen flyttar
  * exakt de rader som prövats här. Sedan fixrunda 1 av uppgift 14f läser den
  * kuverten en gång, med `readEnvelopes`, och skickar just den läsningen hit.
  * Före det läste stängningen två gånger, och en förfalskad rad som togs bort
