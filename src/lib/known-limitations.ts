@@ -172,6 +172,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * stängningen räcker till återläsningen, och ett byte efter den, före
    * skalningens COMMIT, räknas. Posten sa inget om det senare fönstret, och
    * sidtexten sa att varje byte under stängningen stoppade den.
+   *
+   * RÄTTAD I FIXRUNDA 3 AV 11D (ruling 130). Platsen i urnan är kuvertets id,
+   * inte dess hash, eftersom två kuvert får ha samma chiffer. En rad med ett
+   * äkta kuverts hash men ett annat id tar ingen plats. Den är en rest och tas
+   * bort.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
@@ -182,8 +187,8 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'räkna om när signaturerna är raderade. Den som kan skriva i votes_db kan då byta ut ett ' +
       'chiffer och dess hash mot en ny rad med giltiga bevis, utan att något märker det. Uppgift ' +
       '12b ska räkna om en urnrot, en Merklerot över de flyttade chifferhasharna, som skrivs vid ' +
-      'stängningen. Före stängningen kan samma person lägga en rad med ett äkta kuverts ' +
-      'chifferhash eller id men ett annat innehåll, så att infogningen hoppar över det äkta ' +
+      'stängningen. Före stängningen kan samma person lägga en rad på ett äkta kuverts plats i ' +
+      'urnan, dess id, men med ett annat innehåll, så att infogningen hoppar över det äkta ' +
       'kuvertet. Stängningen tar då bort raden och infogar det validerade kuvertet i stället, ' +
       'larmar i serverloggen och anger kuvertets chifferhash i svaret till administratören. Ett ' +
       'byte efter städningen men före återläsningen fångas av återläsningen, som avbryter ' +
@@ -195,15 +200,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       // Infogningen hoppar över rader som redan finns, så en rad som skrivs
       // efter städningen stoppar stängningen i stället för att ersättas ...
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'skipDuplicates: true,' },
-      // ... medan städningen ersätter en rad som redan låg där, med ett
-      // validerat kuverts hash eller id och ett annat innehåll.
+      // ... medan städningen ersätter en rad som redan låg där, på ett
+      // validerat kuverts plats och med ett annat innehåll.
       {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: [
-          '      for (const envelope of [byHash.get(row.ciphertextHash), byId.get(row.id)]) {',
-          '        if (envelope && !storedAsValidated(row, envelope)) {',
-          '          forged.add(envelope.ciphertextHash)',
-          '          forgedRowIds.add(row.id)',
+          '      const envelope = byPlace.get(row.id)',
+          '      if (envelope && !storedAsValidated(row, envelope)) {',
+          '        forged.push(envelope.ciphertextHash)',
+          '        forgedRowIds.push(row.id)',
         ].join('\n'),
       },
       { file: 'src/app/api/admin/elections/close/route.ts', contains: 'urnRowsReplaced: outcome.urnRowsReplaced,' },
@@ -214,6 +219,60 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot },",
+      },
+    ],
+  },
+  /**
+   * NY I FIXRUNDA 3 AV 11D (ruling 130). Fixrunda 2 avvisade en kopia av en
+   * annans valsedel, och omgranskningens prob R129-E visade att avvisningen
+   * var ett orakel för en köpare. Nu tas kopian emot, och det här är priset.
+   * Specen säger samma sak i avsnitt 10.
+   */
+  {
+    id: 'copied-ballot-counts',
+    title: 'En kopia av någon annans valsedel räknas',
+    why:
+      'Bevisen i en valsedel binder den till omröstningen och valsedeln, men inte till väljaren. ' +
+      'Den som har en annans hela krypterade valsedel kan därför lägga en kopia av den under sin ' +
+      'egen underskrift, och kopian räknas som vilken röst som helst. Läggningen skiljer inte en ' +
+      'kopia från en ny valsedel, eftersom ett svar som gjorde det vore ett orakel: en köpare som ' +
+      'har valsedeln kunde då fråga, ända fram till stängningen, om den fortfarande är väljarens ' +
+      'liggande röst. Priset är att den som har en annans chiffer och får många väljare att lägga ' +
+      'kopior av det förskjuter summan för det alternativet, och kan därmed lära sig något om den ' +
+      'väljarens röst. Det kräver chiffret, som aldrig publiceras, och många medverkande.',
+    stillTrueIf: [
+      // Chifferhashen är unik varken bland kuverten eller i urnan. Ett unikt
+      // index på någondera gör en kopia omöjlig att lägga eller att flytta.
+      { file: 'prisma/voters/schema.prisma', contains: '  ciphertextHash String @map("ciphertext_hash")' },
+      { file: 'prisma/votes/schema.prisma', contains: '  ciphertextHash String @map("ciphertext_hash")' },
+      { file: 'prisma/votes/schema.prisma', contains: '  @@index([ciphertextHash])' },
+      // Läggningen skriver kopian som vilket kuvert som helst, utan någon
+      // prövning av chiffret mellan fasen och skrivningen ...
+      {
+        file: 'src/modules/eligibility/pending-vote.service.ts',
+        contains: [
+          "        return { status: 'closed' }",
+          '      }',
+          '',
+          '      const replaced = await tx.pendingVote.updateMany({',
+          '        where: { voterStatusId, ballotId, castSequence: { lt: signedPayload.castSequence } },',
+          '        data: envelopeData,',
+          '      })',
+          "      if (replaced.count > 0) return { status: 'written', replaced: true }",
+          '',
+          '      const lying = await tx.pendingVote.findUnique({',
+          '        where: { voterStatusId_ballotId: { voterStatusId, ballotId } },',
+          '        select: { castSequence: true },',
+          '      })',
+          "      if (lying) return { status: 'stale_sequence' }",
+          '',
+          '      await tx.pendingVote.create({ data: { voterStatusId, ballotId, ...envelopeData } })',
+        ].join('\n'),
+      },
+      // ... och valideringen har ingen kategori för den.
+      {
+        file: 'src/orchestration/validate-before-close.usecase.ts',
+        contains: "  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF'\n  pendingVoteId: string",
       },
     ],
   },

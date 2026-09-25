@@ -13,7 +13,8 @@ import {
   abortedMessageFor,
   closeElection,
   CloseAbortedError,
-  idForEnvelope,
+  urnIdFor,
+  withUrnIds,
   linkStateOf,
   urnRowsReplacedOf,
   type CloseOutcome,
@@ -111,6 +112,17 @@ const hooks = vi.hoisted(() => ({
   onValidationHash: null as null | (() => Promise<void>),
   /** Slumptalen i krypteringen: spelas in och spelas upp, så att två chiffer blir lika. */
   rng: { mode: 'off' as 'off' | 'record' | 'replay', tape: [] as bigint[], position: 0 },
+  /**
+   * Databasens förval för isolationsnivå, för låsets transaktion. Anger koden
+   * själv en nivå gäller den, som när förvalet är satt för databasen.
+   */
+  lockDefaultIsolation: null as null | 'RepeatableRead',
+  /** Efter låsets COMMIT, före efterkontrollens läsning. Körs en gång. */
+  afterLockCommit: null as null | (() => Promise<void>),
+  /** Skriver över skalningens `lock_timeout` i testet, efter stängningens egen sats. */
+  stripLockTimeoutMs: null as null | number,
+  /** Värdena stängningen själv satte för skalningens tidsgränser. */
+  stripTimeoutValues: [] as unknown[],
 }))
 
 /** Låsets transaktion känns igen på sin tidsgräns, sex timmar. */
@@ -262,6 +274,14 @@ vi.mock('@/modules/eligibility/db', async (importOriginal) => {
       if (sql.includes("set_config('idle_in_transaction_session_timeout', '0', true)") && hooks.skipCodeSetConfig) {
         return [{ set_config: '0' }]
       }
+      if (sql.includes("set_config('lock_timeout'")) {
+        hooks.stripTimeoutValues = values
+        const result = await tx.$queryRaw(strings, ...values)
+        if (hooks.stripLockTimeoutMs !== null) {
+          await tx.$queryRawUnsafe(`SELECT set_config('lock_timeout', '${hooks.stripLockTimeoutMs}', true)`)
+        }
+        return result
+      }
       return tx.$queryRaw(strings, ...values)
     }
 
@@ -272,10 +292,21 @@ vi.mock('@/modules/eligibility/db', async (importOriginal) => {
     const transaction = real.$transaction.bind(real) as (a: unknown, o?: unknown) => Promise<unknown>
     if (typeof arg !== 'function') return transaction(arg, options)
     const fn = arg as (tx: Prisma.TransactionClient) => Promise<unknown>
-    const result = await transaction((tx: Prisma.TransactionClient) => fn(withTxHooks(tx)), options)
-    if ((options as { timeout?: number } | undefined)?.timeout === LOCK_TIMEOUT_MS && hooks.failAfterLockCommit) {
+    const given = options as { timeout?: number; isolationLevel?: string } | undefined
+    const isLock = given?.timeout === LOCK_TIMEOUT_MS
+    const effective =
+      isLock && hooks.lockDefaultIsolation !== null
+        ? { ...given, isolationLevel: given?.isolationLevel ?? hooks.lockDefaultIsolation }
+        : options
+    const result = await transaction((tx: Prisma.TransactionClient) => fn(withTxHooks(tx)), effective)
+    if (isLock && hooks.failAfterLockCommit) {
       hooks.failAfterLockCommit = false
       throw new Error('svaret på låsets COMMIT gick förlorat (simulerat)')
+    }
+    const afterCommit = hooks.afterLockCommit
+    if (isLock && afterCommit) {
+      hooks.afterLockCommit = null
+      await afterCommit()
     }
     return result
   }
@@ -404,6 +435,10 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     hooks.failAfterLockCommit = false
     hooks.onValidationHash = null
     hooks.rng = { mode: 'off', tape: [], position: 0 }
+    hooks.lockDefaultIsolation = null
+    hooks.afterLockCommit = null
+    hooks.stripLockTimeoutMs = null
+    hooks.stripTimeoutValues = []
     vi.restoreAllMocks()
     await resetElectionData()
 
@@ -665,7 +700,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
   }): Promise<void> {
     await votesDb.encryptedVote.create({
       data: {
-        id: row.id ?? idForEnvelope(row.ciphertextHash),
+        id: row.id ?? urnIdFor(row.ciphertextHash, row.ballotId ?? ballotId, 0),
         ballotId: row.ballotId ?? ballotId,
         ciphertext: row.ciphertext as Prisma.InputJsonValue,
         proofs: row.proofs as Prisma.InputJsonValue,
@@ -1356,6 +1391,100 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     })
   })
 
+  describe('låsets transaktion och skalningens gränser (fixrunda 3)', () => {
+    it('N1: skalningen går igenom också när databasens förval är REPEATABLE READ', async () => {
+      /**
+       * Omgranskningen av fixrunda 2, nytt fel 2. Skalningen körs i låsets
+       * transaktion, som började timmar tidigare. Under REPEATABLE READ ser den
+       * fasen som den stod när transaktionen tog sin ögonblicksbild, före
+       * CLOSED och VALIDATED, och jämför-och-sätt till STRIPPED träffar
+       * ingenting. Stängningen anger därför READ COMMITTED själv.
+       */
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+      hooks.lockDefaultIsolation = 'RepeatableRead'
+
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
+      expect((await state()).phase).toBe('STRIPPED')
+    })
+
+    it('en skalning som väntar på ett radlås ger upp efter sin gräns och håller inte omröstningens rad', async () => {
+      /**
+       * Omgranskningen av fixrunda 2, iakttagelse 2. Sedan ruling 128 har
+       * skalningen låsets sex timmar. Utan en egen gräns kunde en skalning som
+       * väntar på ett radlås stå där i timmar och hålla omröstningens rad.
+       * Här håller en annan transaktion raden, och skalningens gräns för att
+       * vänta på lås sätts till en sekund i testet.
+       */
+      await castFor(anna, 'bp-s')
+      hooks.stripLockTimeoutMs = 1_000
+
+      let release!: () => void
+      const released = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let blocker: Promise<unknown> | null = null
+      hooks.beforeStrip = async () => {
+        let holding!: () => void
+        const held = new Promise<void>((resolve) => {
+          holding = resolve
+        })
+        blocker = votersDb.$transaction(
+          async (tx) => {
+            await tx.$queryRaw`SELECT id FROM election WHERE id = ${electionId} FOR UPDATE`
+            holding()
+            await released
+          },
+          { timeout: 20_000, maxWait: 5_000 },
+        )
+        await held
+      }
+
+      const started = Date.now()
+      const { outcome, error } = await attempt()
+      const waited = Date.now() - started
+      release()
+      await blocker
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('untouched')
+      expect(waited).toBeLessThan(15_000)
+      expect(await state()).toEqual({ phase: 'VALIDATED', envelopeRoot: null, linkClearedAt: null })
+      expect(await votersDb.pendingVote.count()).toBe(1)
+
+      // Stängningens egna gränser: att vänta på ett lås och en sats, i millisekunder.
+      const [lockTimeout, statementTimeout] = hooks.stripTimeoutValues.map(Number)
+      expect(lockTimeout).toBeGreaterThan(0)
+      expect(lockTimeout).toBeLessThanOrEqual(60_000)
+      expect(statementTimeout).toBeGreaterThan(0)
+      expect(statementTimeout).toBeLessThanOrEqual(600_000)
+
+      // Utan den andra transaktionen går omkörningen igenom.
+      hooks.beforeStrip = null
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1 })
+    })
+
+    it('efterkontrollen säger inte emot sig själv när fasen har gått vidare efter skalningen', async () => {
+      /**
+       * Omgranskningen av fixrunda 2, nytt fel 3. Stod fasen i TALLIED med
+       * roten skriven när efterkontrollen läste, sade texten först att
+       * skalningens skrivningar inte fanns och sedan att kopplingen var
+       * raderad.
+       */
+      await castFor(anna, 'bp-s')
+      hooks.afterLockCommit = async () => {
+        await votersDb.election.update({ where: { id: electionId }, data: { phase: 'TALLIED' } })
+      }
+
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
+      expect((error as Error).message).toContain('TALLIED')
+      expect((error as Error).message).not.toContain('finns inte i röstlängden')
+    })
+  })
+
   describe('en fas som inte går att läsa ger det försiktiga beskedet (fixrunda 2)', () => {
     /**
      * Omgranskningen av fixrunda 1, nytt fel 1. Gick fasen inte att läsa men
@@ -1619,19 +1748,20 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     })
   })
 
-  describe('två kuvert får aldrig ha samma chifferhash (fixrunda 2, ruling 129)', () => {
+  describe('två kuvert med samma chiffer räknas båda (fixrunda 3, ruling 130)', () => {
     /**
-     * Omgranskningen av fixrunda 1 (D1 och D2). Chifferhashen är unik i urnan,
-     * så två kuvert med samma chiffer kan aldrig båda infogas, och återläsningen
-     * avbröt då varje stängning. Den som lade samma chiffer två gånger kunde
-     * alltså hindra valet från att stängas. Nu tar läggningen inte emot ett
-     * chiffer som redan ligger på ett annat kuvert.
+     * Omgranskningen av fixrunda 1 (D1 och D2) och av fixrunda 2 (R129-E).
+     * Fixrunda 2 gjorde chifferhashen unik i pending_vote, och läggningen
+     * svarade `duplicate_ciphertext` på en kopia. Det svaret var ett orakel:
+     * en köpare som har hela valsedeln kunde fråga om den fortfarande var
+     * väljarens liggande röst. Nu tas en kopia emot som vilken röst som helst,
+     * och urnan nycklas per kuvert, så att båda kuverten flyttas och räknas.
      */
     async function alarms(spy: ReturnType<typeof vi.spyOn>): Promise<number> {
       return spy.mock.calls.filter(([message]) => String(message).includes('LARM')).length
     }
 
-    it('D1: samma chiffer på två valsedlar tas emot bara på den första, och stängningen går igenom utan larm', async () => {
+    it('D1: samma chiffer på två valsedlar tas emot på båda, och båda flyttas', async () => {
       const s = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'S' } })
       const m = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'M' } })
       const created = await createElection({
@@ -1675,28 +1805,78 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       const castOn = async (target: string, ballot: EncryptedBallot) =>
         castPrepared(anna, await prepareCastOf(anna, ballot, undefined, { electionId: twoBallotElection, ballotId: target }))
 
-      expect(await castOn(first!, onFirst)).toMatchObject({ status: 'recorded' })
-      expect(await castOn(second!, onSecond)).toEqual({ status: 'duplicate_ciphertext' })
-      expect(await votersDb.pendingVote.count({ where: { ballotId: { in: [first!, second!] } } })).toBe(1)
+      expect(await castOn(first!, onFirst)).toMatchObject({ status: 'recorded', replaced: false })
+      expect(await castOn(second!, onSecond)).toMatchObject({ status: 'recorded', replaced: false })
+      expect(await votersDb.pendingVote.count({ where: { ballotId: { in: [first!, second!] } } })).toBe(2)
 
-      // Stängningen flyttar det enda kuvertet, utan larm om en förfalskad rad.
+      // Stängningen flyttar båda kuverten, utan larm om en förfalskad rad.
       const errors = vi.spyOn(logger, 'error')
       await votersDb.election.update({ where: { id: twoBallotElection }, data: { closesAt: inThePast() } })
       await votesDb.election.update({ where: { id: twoBallotElection }, data: { closesAt: inThePast() } })
-      expect(await closeElection(twoBallotElection)).toMatchObject({ status: 'closed', moved: 1, urnRowsReplaced: [] })
+      expect(await closeElection(twoBallotElection)).toMatchObject({
+        status: 'closed',
+        moved: 2,
+        urnRowsReplaced: [],
+        residueRemoved: [],
+      })
+      const rows = await votesDb.encryptedVote.findMany({
+        where: { ciphertextHash: onFirst.ciphertextHash },
+        select: { id: true },
+      })
+      expect(rows.map((row) => row.id).sort()).toEqual(
+        [urnIdFor(onFirst.ciphertextHash, first!, 0), urnIdFor(onFirst.ciphertextHash, second!, 0)].sort(),
+      )
       expect(await alarms(errors)).toBe(0)
     })
 
-    it('D2: två väljare med exakt samma chiffer: bara den första tas emot, och stängningen går igenom', async () => {
+    it('D2: två väljare med exakt samma chiffer tas båda emot, och båda flyttas', async () => {
       const copied = buildBallot('bp-s')
-      expect(await castOpen(anna, await prepareCastOf(anna, copied))).toMatchObject({ status: 'recorded' })
-      expect(await castOpen(kim, await prepareCastOf(kim, copied))).toEqual({ status: 'duplicate_ciphertext' })
-      expect(await votersDb.pendingVote.count()).toBe(1)
+      const recorded = { status: 'recorded', ciphertextHash: copied.ciphertextHash, replaced: false }
+      expect(await castOpen(anna, await prepareCastOf(anna, copied))).toEqual(recorded)
+      expect(await castOpen(kim, await prepareCastOf(kim, copied))).toEqual(recorded)
+      expect(await votersDb.pendingVote.count()).toBe(2)
 
       const errors = vi.spyOn(logger, 'error')
-      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 1 })
-      expect(await urn()).toEqual([copied.ciphertextHash])
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
+      const rows = await votesDb.encryptedVote.findMany({ where: { ballotId }, select: { id: true, ciphertextHash: true } })
+      expect(rows.map((row) => row.ciphertextHash)).toEqual([copied.ciphertextHash, copied.ciphertextHash])
+      expect(rows.map((row) => row.id).sort()).toEqual(
+        [urnIdFor(copied.ciphertextHash, ballotId, 0), urnIdFor(copied.ciphertextHash, ballotId, 1)].sort(),
+      )
       expect(await alarms(errors)).toBe(0)
+    })
+
+    it('R129-E: en kopia av någon annans liggande röst får samma svar som när den inte längre är det, och båda kopiorna räknas', async () => {
+      /**
+       * Omgranskningen av fixrunda 2, nytt fel 1. Anna lade köparens
+       * valsedel, och Robins kopia fick `duplicate_ciphertext`. När Anna lagt
+       * om fick en kopia i stället `recorded`. Köparen kunde alltså fråga på
+       * distans, ända fram till stängningen, om Anna ändrat sig. Nu är svaret
+       * detsamma i båda lägena, och detsamma som för en ny valsedel.
+       */
+      const bought = buildBallot('bp-s')
+      const recorded = { status: 'recorded', ciphertextHash: bought.ciphertextHash, replaced: false }
+      expect(await castOpen(anna, await prepareCastOf(anna, bought))).toEqual(recorded)
+
+      // Medan valsedeln är Annas liggande röst.
+      const whileAnnasVote = await castOpen(robin, await prepareCastOf(robin, bought))
+
+      // Anna ändrar sig.
+      expect(await castOpen(anna, await prepareCastOf(anna, buildBallot('bp-m')))).toMatchObject({
+        status: 'recorded',
+        replaced: true,
+      })
+
+      // När den inte längre är hennes.
+      const afterAnnaChanged = await castOpen(sam, await prepareCastOf(sam, bought))
+
+      expect(whileAnnasVote).toEqual(recorded)
+      expect(afterAnnaChanged).toEqual(recorded)
+
+      // Båda kopiorna räknas, bredvid Annas nya röst.
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 3 })
+      expect(await votesDb.encryptedVote.count({ where: { ballotId, ciphertextHash: bought.ciphertextHash } })).toBe(2)
+      expect(await votesDb.encryptedVote.count({ where: { ballotId } })).toBe(3)
     })
 
     it('samma väljare som lägger om samma chiffer på samma valsedel byter som förut', async () => {
@@ -1708,12 +1888,11 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       expect(row).toMatchObject({ castSequence: 2, ciphertextHash: ballot.ciphertextHash })
     })
 
-    it('två väljare som lägger samma chiffer samtidigt: den ena tas emot, den andra får ett tydligt fel', async () => {
+    it('två väljare som lägger samma chiffer samtidigt tas båda emot', async () => {
       /**
-       * Båda läggningarna står vid `create` i sina transaktioner. Den andra
-       * stoppas av det unika indexet på chifferhashen, och det är inte samma
-       * sak som att två läggningar för samma väljare möts. Den ska inte göra om
-       * sin transaktion, utan svara att chiffret redan finns.
+       * Båda läggningarna står vid `create` i sina transaktioner. Sedan
+       * ruling 130 finns inget unikt index på chifferhashen som kan stoppa
+       * den andra, och båda får samma svar som en ny valsedel.
        */
       const copied = buildBallot('bp-s')
       const annas = await prepareCastOf(anna, copied)
@@ -1732,12 +1911,68 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         annaGate.open()
         expect(await annaCast).toMatchObject({ status: 'recorded', replaced: false })
         kimGate.open()
-        expect(await kimCast).toEqual({ status: 'duplicate_ciphertext' })
+        expect(await kimCast).toMatchObject({ status: 'recorded', replaced: false })
       } finally {
         await setClosesAt(inThePast())
       }
 
-      expect(await votersDb.pendingVote.count()).toBe(1)
+      expect(await votersDb.pendingVote.count()).toBe(2)
+    })
+  })
+
+  describe('urnans id nycklas per kuvert (fixrunda 3, ruling 130)', () => {
+    /**
+     * Id:t härleds ur kuvertets chifferhash, valsedel och ett löpnummer bland
+     * likadana kuvert, i innehållets ordning. Löpnumret får inte bero på
+     * väljaren, på läggningens ordning eller på något annat som går att
+     * koppla till röstlängden.
+     */
+    function permutations<T>(items: readonly T[]): T[][] {
+      if (items.length <= 1) return [[...items]]
+      return items.flatMap((item, index) =>
+        permutations([...items.slice(0, index), ...items.slice(index + 1)]).map((rest) => [item, ...rest]),
+      )
+    }
+
+    it('samma innehåll får samma id oavsett väljare, kuvertets id och ordning', () => {
+      const hash = 'a'.repeat(64)
+      const envelope = (proofs: unknown, target = 'valsedel-1') => ({
+        id: 'ersätts',
+        voterStatusId: 'ersätts',
+        ballotId: target,
+        ciphertext: [['1', '2']],
+        proofs,
+        ciphertextHash: hash,
+        bankIdSignature: 'ersätts',
+      })
+      const read = [envelope({ x: 2 }), envelope({ x: 1 }), envelope({ x: 1 }), envelope({ x: 1 }, 'valsedel-2')]
+
+      const idsByContent = (envelopes: ReturnType<typeof envelope>[]) =>
+        withUrnIds(envelopes)
+          .map((placed) => `${placed.urnId} ${placed.ballotId} ${JSON.stringify(placed.proofs)}`)
+          .sort()
+
+      const reference = idsByContent(read)
+      expect(new Set(reference.map((line) => line.split(' ')[0])).size).toBe(4)
+
+      for (const [round, order] of permutations(read).entries()) {
+        const renamed = order.map((placed, index) => ({
+          ...placed,
+          id: `kuvert-${round}-${index}`,
+          voterStatusId: `väljare-${(round + index) % 4}`,
+          bankIdSignature: `underskrift-${round}-${index}`,
+        }))
+        expect(idsByContent(renamed)).toEqual(reference)
+      }
+    })
+
+    it('id:t är löpnumrets, valsedelns och hashens, och inget annat', () => {
+      const hash = 'b'.repeat(64)
+      expect(urnIdFor(hash, 'valsedel-1', 0)).not.toBe(urnIdFor(hash, 'valsedel-1', 1))
+      expect(urnIdFor(hash, 'valsedel-1', 0)).not.toBe(urnIdFor(hash, 'valsedel-2', 0))
+      expect(urnIdFor(hash, 'valsedel-1', 0)).toBe(urnIdFor(hash, 'valsedel-1', 0))
+      expect(urnIdFor(hash, 'valsedel-1', 0)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+      expect(() => urnIdFor('inte-hex', 'valsedel-1', 0)).toThrow()
     })
   })
 
@@ -1779,6 +2014,33 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         residueRemoved: ['en-hash-som-inte-hor-till-nagot-kuvert'],
       })
       expect(await urn()).toEqual([annas])
+    })
+
+    it('en rad med ett validerat kuverts hash men ett annat id är en rest (fixrunda 3, ruling 130)', async () => {
+      /**
+       * Urnan nycklas per kuvert, och två kuvert får ha samma chiffer. En rad
+       * med Annas hash på omröstningens valsedel är därför inte hennes plats
+       * bara för att hashen stämmer: hör id:t inte till något validerat kuvert
+       * är raden en rest, och den tas bort. Annas eget kuvert infogas på sin
+       * plats.
+       */
+      const annas = await castFor(anna, 'bp-s')
+      const annasRow = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
+      await plantUrnRow({
+        id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+        ciphertextHash: annas,
+        ciphertext: annasRow.ciphertext,
+        proofs: annasRow.proofs,
+      })
+
+      expect(await closeElection(electionId)).toMatchObject({
+        status: 'closed',
+        moved: 1,
+        residueRemoved: [annas],
+        urnRowsReplaced: [],
+      })
+      const rows = await votesDb.encryptedVote.findMany({ where: { ballotId }, select: { id: true } })
+      expect(rows).toEqual([{ id: urnIdFor(annas, ballotId, 0) }])
     })
 
     it('städningen rör inte chiffer på en annan omröstnings valsedlar', async () => {
@@ -1829,6 +2091,8 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     }): Promise<void> {
       hooks.beforeInsert = async () => {
         await plantUrnRow({
+          // Kuvertets plats i urnan, med omröstningens valsedel i id:t.
+          id: urnIdFor(row.ciphertextHash, ballotId, 0),
           ciphertextHash: row.ciphertextHash,
           ballotId: row.ballotId,
           ciphertext: row.ciphertext,
@@ -1880,30 +2144,30 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       ['ett annat chiffer', 'ciphertext'],
       ['andra bevis', 'proofs'],
       ['en annan omröstnings valsedel', 'ballot'],
-      ['ett annat id', 'id'],
-      ['en annan hash, på kuvertets id och en annan omröstnings valsedel', 'squat'],
+      ['en annan hash, på en annan omröstnings valsedel', 'hash'],
     ] as const)(
       'en rad som redan ligger på ett äkta kuverts plats men med %s ersätts med det validerade, och det står i beskedet',
       async (_label, swapped) => {
         /**
-         * Ruling 126. Hashen räknas ur chiffret och id:t ur hashen, så ingen
-         * legitim väg ger en rad med ett validerat kuverts hash eller id och
-         * ett annat innehåll. Före fixrundan stoppade en sådan rad varje
-         * stängning tills någon tog bort den för hand, och den som kunde skriva
-         * i röstdatabasen kunde hålla valet öppet. Nu ersätts raden under
-         * låset, före infogningen, och det larmas. Den sista raden tar
-         * kuvertets id med en annan hash, så att infogningen hade stoppats av
-         * primärnyckeln.
+         * Ruling 126. Platsen i urnan är kuvertets id, som härleds ur
+         * kuvertets innehåll. Ingen legitim väg ger en rad med ett validerat
+         * kuverts id och ett annat innehåll. Före fixrunda 1 stoppade en sådan
+         * rad varje stängning tills någon tog bort den för hand, och den som
+         * kunde skriva i röstdatabasen kunde hålla valet öppet. Nu ersätts
+         * raden under låset, före infogningen, och det larmas. Sedan fixrunda
+         * 3 (ruling 130) är platsen id:t och inte hashen, eftersom två kuvert
+         * får ha samma chiffer.
          */
         const annas = await castFor(anna, 'bp-s')
         const annasRow = await votersDb.pendingVote.findFirstOrThrow({ where: { voterStatusId: anna } })
+        const annasPlace = urnIdFor(annas, ballotId, 0)
         const forged = buildBallot('bp-m')
         await plantUrnRow({
-          ciphertextHash: swapped === 'squat' ? forged.ciphertextHash : annas,
-          id: swapped === 'id' ? 'ffffffff-ffff-ffff-ffff-ffffffffffff' : idForEnvelope(annas),
-          ballotId: swapped === 'ballot' || swapped === 'squat' ? otherBallotId : ballotId,
-          ciphertext: swapped === 'ciphertext' || swapped === 'squat' ? forged.ciphertext : annasRow.ciphertext,
-          proofs: swapped === 'proofs' || swapped === 'squat' ? forged.proofs : annasRow.proofs,
+          id: annasPlace,
+          ciphertextHash: swapped === 'hash' ? forged.ciphertextHash : annas,
+          ballotId: swapped === 'ballot' || swapped === 'hash' ? otherBallotId : ballotId,
+          ciphertext: swapped === 'ciphertext' || swapped === 'hash' ? forged.ciphertext : annasRow.ciphertext,
+          proofs: swapped === 'proofs' || swapped === 'hash' ? forged.proofs : annasRow.proofs,
         })
         const alarm = vi.spyOn(logger, 'error')
 
@@ -1914,8 +2178,8 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
           residueRemoved: [],
         })
 
-        const stored = await votesDb.encryptedVote.findUniqueOrThrow({ where: { ciphertextHash: annas } })
-        expect(stored).toMatchObject({ id: idForEnvelope(annas), ballotId })
+        const stored = await votesDb.encryptedVote.findUniqueOrThrow({ where: { id: annasPlace } })
+        expect(stored).toMatchObject({ ciphertextHash: annas, ballotId })
         expect(stored.ciphertext).toEqual(annasRow.ciphertext)
         expect(stored.proofs).toEqual(annasRow.proofs)
         expect(await votesDb.encryptedVote.count({ where: { ballotId: otherBallotId } })).toBe(0)
@@ -2019,7 +2283,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       expect(linkStateOf(error)).toBe('untouched')
       expect(urnRowsReplacedOf(error)).toEqual([])
       // Den förfalskade raden ligger kvar, och en omkörning ersätter den.
-      const stored = await votesDb.encryptedVote.findUniqueOrThrow({ where: { ciphertextHash: annas } })
+      const stored = await votesDb.encryptedVote.findUniqueOrThrow({ where: { id: urnIdFor(annas, ballotId, 0) } })
       expect(stored.ciphertext).toEqual(forged.ciphertext)
       expect(await closeElection(electionId)).toMatchObject({
         status: 'closed',

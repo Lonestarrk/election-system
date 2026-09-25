@@ -48,7 +48,9 @@ export const dynamic = 'force-dynamic'
  *    naturliga radordning speglar i vilken ordning saker hände, och två listor
  *    i tidsordning går att para ihop rad för rad. `pending_vote` har slumpade
  *    id:n, så sorteringen blandar bort tidsordningen. `encrypted_vote` har
- *    id:n härledda ur chifferhashen, så där ÄR id-ordningen innehållets ordning.
+ *    id:n härledda ur kuvertets innehåll, chifferhashen, valsedeln och ett
+ *    löpnummer bland likadana kuvert, så där följer id-ordningen innehållet
+ *    och säger ingenting om när ett kuvert lades.
  *
  * 3. Främmande nycklar och kolumner hämtas ur information_schema i båda
  *    databaserna, och frågan som visar kopplingen körs på riktigt. Påståendena

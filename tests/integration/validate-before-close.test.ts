@@ -8,11 +8,7 @@ import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
-import {
-  readEnvelopes,
-  validateBeforeClose,
-  validateEnvelopes,
-} from '@/orchestration/validate-before-close.usecase'
+import { validateBeforeClose } from '@/orchestration/validate-before-close.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -478,26 +474,31 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     expect(report.anomalies).toHaveLength(0)
   })
 
-  it('två kuvert med samma chifferhash är en avvikelse för båda raderna (fixrunda 2 av 11d, ruling 129)', async () => {
+  it('två väljare med samma chiffer är två giltiga röster, och ingen avvikelse (fixrunda 3 av 11d, ruling 130)', async () => {
     /**
-     * Två kuvert med samma chiffer kan aldrig båda flyttas, eftersom
-     * chifferhashen är unik i urnan. Läggningen tar inte emot det, och ett
-     * unikt index i pending_vote stoppar det. Skrivs en rad ändå förbi det,
-     * till exempel sedan indexet tagits bort, ska valideringen peka ut båda
-     * raderna, i stället för att stängningen avbryts vid återläsningen.
-     * Läsningen dubbleras här i minnet, eftersom indexet stoppar det i
-     * databasen.
+     * Fixrunda 2 lät valideringen flagga två kuvert med samma chifferhash.
+     * Sedan ruling 130 tar läggningen emot en kopia av någon annans valsedel
+     * som vilken röst som helst, och urnan nycklas per kuvert, så båda kan
+     * flyttas. Två väljare som lagt samma chiffer har lagt två röster.
      */
-    const annasRow = await castFor(anna, 'bp-s')
-    const snapshot = await readEnvelopes(electionId)
-    const original = snapshot.envelopes[0]!
-    const copy = { ...original, id: randomUUID(), voterStatusId: kim }
+    const copied = await buildBallot('bp-s')
+    for (const voter of [anna, kim]) {
+      const envelope = await signAs(voter, ballotId, copied.ciphertextHash, await nextCastSequence(voter, ballotId))
+      const outcome = await castEncryptedBallot(
+        voter,
+        electionId,
+        ballotId,
+        copied,
+        envelope,
+        await getEncryptedBallotShape(ballotId),
+      )
+      expect(outcome.status).toBe('recorded')
+    }
 
-    const report = await validateEnvelopes({ ...snapshot, envelopes: [original, copy] })
+    const report = await validateBeforeClose(electionId)
 
-    expect(report.summary.passed).toBe(false)
-    const duplicates = report.anomalies.filter((anomaly) => anomaly.kind === 'DUPLICATE_CIPHERTEXT')
-    expect(duplicates.map((anomaly) => anomaly.pendingVoteId).sort()).toEqual([annasRow.id, copy.id].sort())
+    expect(report.summary).toMatchObject({ votes: 2, voters: 2, passed: true })
+    expect(report.anomalies).toEqual([])
   })
 
   it('upptäcker en röst lagd i någon annans namn', async () => {

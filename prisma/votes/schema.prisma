@@ -318,13 +318,15 @@ model Vote {
 
 /// Det inre kuvertet, efter att identitetslagret skalats bort.
 model EncryptedVote {
-  /// HÄRLEDS UR `ciphertextHash` — SÄTTS ALDRIG AV DATABASEN.
+  /// HÄRLEDS UR KUVERTETS INNEHÅLL — SÄTTS ALDRIG AV DATABASEN.
   ///
-  /// `idForEnvelope` i `src/orchestration/close-election.usecase.ts` bygger
-  /// id:t av chifferhashens första 32 hextecken. Det gör primärnyckelns
-  /// ordning identisk med innehållets, vilket är hela skälet till att raderna
-  /// infogas sorterade: den som läser tabellen sorterar på primärnyckeln, inte
-  /// på fysisk radordning.
+  /// `urnIdFor` i `src/orchestration/close-election.usecase.ts` bygger id:t ur
+  /// chifferhashen, valsedeln och ett löpnummer bland likadana kuvert i
+  /// läsningens innehållsordning (fixrunda 3 av uppgift 11d, ruling 130). Id:t
+  /// säger alltså ingenting om när kuvertet lades eller av vem, och samma
+  /// läsning ger samma id:n, så en omkörning krockar på primärnyckeln i stället
+  /// för att skapa dubbletter. Fram till rundan var id:t chifferhashens första
+  /// 32 hextecken, och två kuvert med samma chiffer fick samma plats.
   ///
   /// Fältet har därför medvetet INGET `@default(uuid())`. Ett slumpat
   /// standardvärde hade tyst brutit den kopplingen för varje framtida
@@ -338,11 +340,14 @@ model EncryptedVote {
   ciphertext Json
   proofs     Json
 
-  /// Unik: gör skalningen idempotent. En avbruten körning kan köras om utan
-  /// att skapa dubbletter.
-  ciphertextHash String @unique @map("ciphertext_hash")
+  /// INTE UNIK (fixrunda 3 av uppgift 11d, ruling 130). Två kuvert får ha
+  /// samma chiffer, en valsedel och en kopia av den, och båda räknas. Det var
+  /// det unika indexet här som gjorde att av två likadana kuvert gick bara det
+  /// ena att flytta. Idempotensen bärs i stället av primärnyckeln.
+  ciphertextHash String @map("ciphertext_hash")
 
   @@index([ballotId])
+  @@index([ciphertextHash])
   @@map("encrypted_vote")
 }
 

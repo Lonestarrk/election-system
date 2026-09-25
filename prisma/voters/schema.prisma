@@ -413,13 +413,13 @@ model PendingVote {
 
   /// SHA-256 över den kanoniska serialiseringen. Väljarens inklusionshandtag.
   ///
-  /// UNIK (fixrunda 2 av uppgift 11d, ruling 129). Chifferhashen är unik i
-  /// urnan, så två kuvert med samma chiffer kan aldrig båda flyttas. Utan
-  /// indexet här tog läggningen emot samma chiffer två gånger, på två
-  /// valsedlar eller från två väljare, och återläsningen avbröt sedan varje
-  /// stängning. Läggningen svarar `duplicate_ciphertext`, och samma väljare
-  /// som lägger om på samma valsedel byter sin egen rad som förut.
-  ciphertextHash String @unique @map("ciphertext_hash")
+  /// INTE UNIK (fixrunda 3 av uppgift 11d, ruling 130). Två kuvert får ha
+  /// samma chiffer: den som lägger en kopia av någon annans valsedel lägger en
+  /// giltig röst. Ett unikt index här, som fixrunda 2 lade, gjorde avvisningen
+  /// av kopian till ett orakel för en köpare. Urnan nycklas per kuvert, så båda
+  /// kuverten flyttas. Se posten `copied-ballot-counts` i
+  /// src/lib/known-limitations.ts.
+  ciphertextHash String @map("ciphertext_hash")
 
   /// Ökar vid varje läggning och ligger INUTI det signerade.
   ///

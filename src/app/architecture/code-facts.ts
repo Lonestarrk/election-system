@@ -288,16 +288,14 @@ export const STRIPPING_TRANSACTION: Marker = {
  * 128). `tx` här är transaktionen som håller stängningens lås, och satserna
  * körs efter en sparpunkt i den. Fick skalningen en egen transaktion igen,
  * på en annan anslutning, kunde en stängning vars lås gått förlorat skala
- * ändå, och raderna nedan ändrades. Exporteras för testet.
+ * ändå, och raderna nedan ändrades. Sparpunkten `stripping` finns bara i
+ * `withClosingLock`, där `tx` är låsets. Exporteras för testet.
  */
 export const STRIP_IN_LOCK_TRANSACTION: Marker = {
   file: 'src/orchestration/close-election.usecase.ts',
-  contains: [
-    '          strip: async (work) => {',
-    '            try {',
-    '              await tx.$queryRaw`SAVEPOINT stripping`',
-    '              const value = await work(tx)',
-  ].join('\n'),
+  contains: ['              await tx.$queryRaw`SAVEPOINT stripping`', '              const value = await work(tx)'].join(
+    '\n',
+  ),
 }
 
 /**
@@ -852,7 +850,8 @@ export const CURRENTLY = {
    *
    * Fixrunda 1 av 11d lade till id:t i jämförelsen, och flyttade den till en
    * funktion som städningen delar. Markörerna följer funktionen och anropet i
-   * återläsningen.
+   * återläsningen. Fixrunda 3 läser tillbaka på kuvertets plats i urnan, id:t,
+   * och inte på hashen, eftersom två kuvert får ha samma chiffer (ruling 130).
    */
   envelopeRootCommitment: {
     text:
@@ -876,7 +875,7 @@ export const CURRENTLY = {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: [
           '    row.ciphertextHash === envelope.ciphertextHash &&',
-          '    row.id === idForEnvelope(envelope.ciphertextHash) &&',
+          '    row.id === envelope.urnId &&',
           '    row.ballotId === envelope.ballotId &&',
           '    sameJson(row.ciphertext, envelope.ciphertext) &&',
           '    sameJson(row.proofs, envelope.proofs)',
@@ -896,7 +895,7 @@ export const CURRENTLY = {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: 'if (onBallots === envelopes.length && missing === 0 && different === 0) return null',
       },
-      { file: 'src/orchestration/close-election.usecase.ts', contains: 'const mismatch = await urnMismatch(ballotIds, envelopes)' },
+      { file: 'src/orchestration/close-election.usecase.ts', contains: 'const mismatch = await urnMismatch(ballotIds, placed)' },
       // Raderingen efter id och chifferhash, och jämförelsen före COMMIT.
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
@@ -988,18 +987,35 @@ export const CURRENTLY = {
 
   writeOrder: {
     text:
-      'Kuverten flyttas i en enda sats vid stängningen, sorterade på chifferhash, och id:t ' +
-      'härleds ur hashen. Tabellens ordning är innehållets.',
+      'Kuverten flyttas i en enda sats vid stängningen, sorterade på innehållet, och id:t härleds ' +
+      'ur chifferhashen, valsedeln och ett löpnummer bland likadana kuvert. Varken tabellens ' +
+      'ordning eller id:t säger något om när ett kuvert lades.',
     holdsWhile: [
+      // Platserna räknas och infogas i innehållets ordning ...
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'const sorted = [...envelopes].sort(byCiphertextHash)',
+        contains: 'return [...envelopes].sort(byContent).map((envelope) => {',
       },
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'id: idForEnvelope(envelope.ciphertextHash)',
+        contains: "const hex = sha256Hex(`${ciphertextHash}|${ballotId}|${copy}`).slice(0, 32)",
       },
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: 'const placed = withUrnIds(envelopes)',
+      },
+      { file: 'src/orchestration/close-election.usecase.ts', contains: 'id: envelope.urnId,' },
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'await votesDb.encryptedVote.createMany({' },
+      // ... och ordningen bygger bara på innehållet, inte på väljaren eller kuvertets id.
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: [
+          '    compareText(a.ciphertextHash, b.ciphertextHash) ||',
+          '    compareText(a.ballotId, b.ballotId) ||',
+          '    compareText(JSON.stringify(a.proofs), JSON.stringify(b.proofs)) ||',
+          '    compareText(JSON.stringify(a.ciphertext), JSON.stringify(b.ciphertext))',
+        ].join('\n'),
+      },
     ],
   },
 

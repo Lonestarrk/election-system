@@ -9,7 +9,7 @@ import {
   closeElection,
   CloseAbortedError,
   envelopeRootOf,
-  idForEnvelope,
+  urnIdFor,
   linkStateOf,
 } from '@/orchestration/close-election.usecase'
 import { describeErrorChain } from '@/lib/logger'
@@ -478,9 +478,9 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
      * annars kan den som vet när någon legitimerade sig peka ut hens rad.
      *
      * TESTET LÄSER `ctid`, INTE `id`. Det är avsiktligt och bär hela
-     * bevisvärdet. `id` härleds ur chifferhashen, så `order by id` ÄR
-     * chifferhashordning oavsett i vilken ordning raderna infogades — en
-     * assertion på den ordningen kan inte fallera och bevakar ingenting.
+     * bevisvärdet. `id` härleds ur kuvertets innehåll, så `order by id` följer
+     * innehållet oavsett i vilken ordning raderna infogades — en assertion på
+     * den ordningen kan inte fallera och bevakar ingenting.
      * `ctid` är radens fysiska plats och speglar den ordning `createMany`
      * skickade arrayen i, alltså exakt det som ska prövas: arrayen kommer ur
      * en `findMany` utan `orderBy` och ligger därför i praktiken i
@@ -525,25 +525,28 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     expect(stored).toEqual([...castOrder].sort())
   })
 
-  it('radens id härleds ur chifferhashen, inte ur slumpen', async () => {
+  it('radens id härleds ur kuvertets innehåll, inte ur slumpen', async () => {
     /**
      * Det som det gamla `order by id`-testet i själva verket prövade.
      *
      * Ett slumpat id hade gjort primärnyckelns ordning oberoende av
      * innehållet, och därmed gjort den sorterade infogningen verkningslös för
-     * alla som läser tabellen sorterad i stället för i fysisk ordning.
+     * alla som läser tabellen sorterad i stället för i fysisk ordning. Sedan
+     * fixrunda 3 av 11d (ruling 130) härleds id:t ur chifferhashen, valsedeln
+     * och ett löpnummer bland likadana kuvert, eftersom två kuvert får ha
+     * samma chiffer.
      */
     await castFor(anna, 'bp-s')
     await castFor(kim, 'bp-m')
     await closeElection(electionId)
 
     const rows = await votesDb.encryptedVote.findMany({
-      select: { id: true, ciphertextHash: true },
+      select: { id: true, ciphertextHash: true, ballotId: true },
     })
 
     expect(rows).toHaveLength(2)
     for (const row of rows) {
-      expect(row.id).toBe(idForEnvelope(row.ciphertextHash))
+      expect(row.id).toBe(urnIdFor(row.ciphertextHash, row.ballotId, 0))
     }
   })
 

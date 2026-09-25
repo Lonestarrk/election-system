@@ -290,9 +290,9 @@ export async function POST(request: Request) {
 function replacedNote(urnRowsReplaced: readonly string[]): string {
   if (urnRowsReplaced.length === 0) return ''
   return (
-    ` LARM: ${urnRowsReplaced.length} rader i röstdatabasen hade ett validerat kuverts ` +
-    'chifferhash eller id men ett annat innehåll. Stängningen tog bort dem för att infoga det ' +
-    'validerade i stället. Ingen legitim väg skriver en sådan rad, så någon har skrivit i ' +
-    'röstdatabasen förbi stängningen. Chifferhasharna står i urnRowsReplaced.'
+    ` LARM: ${urnRowsReplaced.length} rader i röstdatabasen stod på ett validerat kuverts ` +
+    'plats men med ett annat innehåll. Stängningen tog bort dem för att infoga det validerade i ' +
+    'stället. Ingen legitim väg skriver en sådan rad, så någon har skrivit i röstdatabasen förbi ' +
+    'stängningen. Chifferhasharna står i urnRowsReplaced.'
   )
 }

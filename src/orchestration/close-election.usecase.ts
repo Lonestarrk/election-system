@@ -1,5 +1,6 @@
 import { Prisma } from '.prisma/votes'
 import type { Prisma as VotersPrisma } from '.prisma/voters'
+import { sha256Hex } from '@/lib/crypto'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
 import { logger } from '@/lib/logger'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
@@ -77,11 +78,16 @@ import {
  * Steg 4 före 6 är inte en smaksak. Raderade vi först och kraschade skulle
  * rösterna vara borta utan att finnas i räkningen — ingen kan återskapa dem.
  * Flyttar vi först och kraschar är chiffren redan trygga, och omkörningen ser
- * dem som befintliga tack vare det unika indexet på ciphertextHash.
+ * dem som befintliga tack vare primärnyckeln: samma läsning ger samma
+ * platser i urnan, se `withUrnIds`.
  *
  * SORTERINGEN PÅ INNEHÅLL är inte kosmetik. Skulle raderna infogas i den
  * ordning väljarna röstade kunde den som vet när någon legitimerade sig peka
  * ut hens rad, och skalningen vore verkningslös.
+ *
+ * TVÅ KUVERT FÅR HA SAMMA CHIFFER (fixrunda 3, ruling 130). Den som lägger en
+ * kopia av någon annans valsedel lägger en giltig röst, och båda flyttas.
+ * Urnans rader nycklas därför per kuvert och inte per hash.
  */
 
 export type CloseOutcome =
@@ -463,6 +469,23 @@ class StrippingNotCommitted extends Error {
  */
 const CLOSING_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000
 
+/**
+ * Skalningens egna gränser, i låsets transaktion (fixrunda 3 av 11d).
+ *
+ * `STRIP_LOCK_TIMEOUT_MS` är hur länge en sats i skalningen väntar på ett lås.
+ * Läggningen håller omröstningens rad med FOR SHARE i högst några sekunder,
+ * och efter CLOSED bara så länge den behöver för att se att röstningen stängt.
+ * Tio sekunder rymmer det, men inte en transaktion som hänger. Då ger
+ * skalningen upp, förs tillbaka till sparpunkten, och stängningen kan köras
+ * om.
+ *
+ * `STRIP_STATEMENT_TIMEOUT_MS` är hur länge en enskild sats får köra. Den
+ * största är en omgång om tusen raderade kuvert. Två minuter är samma gräns
+ * som skalningens egen transaktion hade före ruling 128, nu per sats.
+ */
+const STRIP_LOCK_TIMEOUT_MS = 10_000
+const STRIP_STATEMENT_TIMEOUT_MS = 120_000
+
 type LockedRun<T> = { taken: false } | { taken: true; value: T }
 
 async function withClosingLock<T>(
@@ -506,6 +529,18 @@ async function withClosingLock<T>(
           },
           strip: async (work) => {
             try {
+              /**
+               * SKALNINGEN HAR EGNA TIDSGRÄNSER (fixrunda 3 av 11d, omgranskningens
+               * iakttagelse 2). Före ruling 128 hade skalningen en egen
+               * transaktion med två minuter, så att en transaktion som hänger
+               * inte håller lås på `election` och `pending_vote` hur länge som
+               * helst. I låsets transaktion hade den i stället sex timmar. Nu
+               * väntar varje sats högst `STRIP_LOCK_TIMEOUT_MS` på ett lås och
+               * kör högst `STRIP_STATEMENT_TIMEOUT_MS`. Gränserna sätts före
+               * sparpunkten, med `true`, så att de gäller resten av låsets
+               * transaktion och inte ångras av en återgång till sparpunkten.
+               */
+              await tx.$queryRaw`SELECT set_config('lock_timeout', ${String(STRIP_LOCK_TIMEOUT_MS)}, true) AS lock_timeout, set_config('statement_timeout', ${String(STRIP_STATEMENT_TIMEOUT_MS)}, true) AS statement_timeout`
               await tx.$queryRaw`SAVEPOINT stripping`
               const value = await work(tx)
               /**
@@ -550,7 +585,16 @@ async function withClosingLock<T>(
 
         if (unusable) throw new StrippingNotCommitted()
       },
-      { timeout: CLOSING_LOCK_TIMEOUT_MS, maxWait: 20_000 },
+      /**
+       * READ COMMITTED, UTTRYCKLIGEN (fixrunda 3 av 11d, omgranskningens N1).
+       * Skalningen körs i den här transaktionen, som började innan fasen
+       * skrevs till CLOSED och VALIDATED i andra anslutningar. Under
+       * REPEATABLE READ ser den fasen som den stod när transaktionen tog sin
+       * ögonblicksbild, och jämför-och-sätt till STRIPPED träffar aldrig. En
+       * databas med ett annat förval hade alltså gjort varje stängning
+       * omöjlig, så nivån står här i stället för att ärvas.
+       */
+      { timeout: CLOSING_LOCK_TIMEOUT_MS, maxWait: 20_000, isolationLevel: 'ReadCommitted' },
     )
   } catch (lockError) {
     if (holder.result === undefined) {
@@ -853,51 +897,69 @@ async function settleRolledBack(
 }
 
 /**
- * Sorterar på chifferhash med samma jämförelse som `Array.prototype.sort` gör
- * på strängar.
+ * Två strängar i samma ordning som `Array.prototype.sort` ger dem.
  *
  * Avsiktligt INTE `localeCompare`: det som skrivs till databasen måste hamna i
  * en ordning som en observatör kan räkna fram igen utan att känna till
  * serverns språkinställning.
- *
- * Det här är den ENDA sorteringen i filen som har någon effekt. Roten sorterar
- * `merkleRoot` själv, på lövhashar — se `envelopeRootOf`.
  */
-function byCiphertextHash(a: Envelope, b: Envelope): number {
-  if (a.ciphertextHash < b.ciphertextHash) return -1
-  if (a.ciphertextHash > b.ciphertextHash) return 1
+function compareText(a: string, b: string): number {
+  if (a < b) return -1
+  if (a > b) return 1
   return 0
 }
 
 /**
- * Radens id, härlett ur chifferhashen i stället för slumpat.
+ * Innehållets ordning: chifferhash, valsedel, bevis och chiffer.
  *
- * ETT SLUMPAT UUID HADE GJORT SORTERINGEN VERKNINGSLÖS I PRAKTIKEN.
- *
- * Raderna infogas i innehållets ordning just för att tabellens egen ordning
- * inte ska avslöja i vilken ordning väljarna röstade. Men den som läser
- * tabellen sorterar på primärnyckeln, inte på fysisk radordning — och ett
- * slumpat id ger en ordning som varken säger något om innehållet eller går
- * att räkna fram igen. Ett härlett id gör primärnyckelns ordning identisk med
- * innehållets: samma egenskap som sorteringen finns för, men bevarad även för
- * den som läser tabellen senare.
- *
- * Det avslöjar ingenting nytt: chifferhashen står redan i raden. Och det är
- * deterministiskt, vilket gör en omkörning till en konflikt på primärnyckeln
- * precis som på det unika indexet.
- *
- * FUNKTIONEN HÄVDAR SIN EGEN FÖRUTSÄTTNING. Hela invarianten — att
- * primärnyckelns ordning är innehållets ordning — vilar på att indata är
- * gemen hex av fast längd. En kortare eller blandad sträng skulle ge id:n vars
- * lexikala ordning inte längre följer chifferhashens, och felet skulle inte
- * synas någonstans förrän någon läser tabellen sorterad och drar fel slutsats.
+ * Det här är den ENDA ordningen i filen som har någon effekt. Roten sorterar
+ * `merkleRoot` själv, på lövhashar — se `envelopeRootOf`. Den bestämmer i
+ * vilken ordning raderna infogas och vilket löpnummer ett av flera likadana
+ * kuvert får, se `withUrnIds`. Den bygger bara på innehållet, aldrig på
+ * väljaren, kuvertets id i röstlängden eller läggningens ordning, så den säger
+ * ingenting om vem som röstade när. Bevisen och chiffret jämförs bara när
+ * hashen och valsedeln är lika, alltså nästan aldrig.
  */
-export function idForEnvelope(ciphertextHash: string): string {
+function byContent(a: Envelope, b: Envelope): number {
+  return (
+    compareText(a.ciphertextHash, b.ciphertextHash) ||
+    compareText(a.ballotId, b.ballotId) ||
+    compareText(JSON.stringify(a.proofs), JSON.stringify(b.proofs)) ||
+    compareText(JSON.stringify(a.ciphertext), JSON.stringify(b.ciphertext))
+  )
+}
+
+/**
+ * Radens id i urnan, härlett ur kuvertets innehåll i stället för slumpat.
+ *
+ * PER KUVERT, INTE PER HASH (fixrunda 3 av uppgift 11d, ruling 130). Två kuvert
+ * får ha samma chiffer, en valsedel och en kopia av den, och båda ska flyttas.
+ * Id:t är därför de första 128 bitarna av SHA-256 över chifferhashen,
+ * valsedeln och `copy`, ett löpnummer bland likadana kuvert i innehållets
+ * ordning. Fram till rundan var id:t chifferhashens första 128 bitar, och två
+ * kuvert med samma chiffer fick samma plats.
+ *
+ * ETT SLUMPAT UUID HADE GJORT SORTERINGEN VERKNINGSLÖS I PRAKTIKEN. Raderna
+ * infogas i innehållets ordning just för att tabellens egen ordning inte ska
+ * avslöja i vilken ordning väljarna röstade. Den som läser tabellen sorterar
+ * på primärnyckeln, och ett härlett id ger en ordning som bara beror på
+ * innehållet och går att räkna fram igen. Det avslöjar ingenting nytt:
+ * chifferhashen och valsedeln står redan i raden. Och det är
+ * deterministiskt, så samma läsning ger samma id:n, och en omkörning krockar
+ * på primärnyckeln i stället för att skapa dubbletter.
+ *
+ * FUNKTIONEN HÄVDAR SIN EGEN FÖRUTSÄTTNING: chifferhashen ska vara 64 gemena
+ * hextecken, som den som räknar fram id:t igen också får.
+ */
+export function urnIdFor(ciphertextHash: string, ballotId: string, copy: number): string {
   if (!/^[0-9a-f]{64}$/.test(ciphertextHash)) {
     throw new Error('Chifferhashen är inte 64 gemena hextecken — id:t kan inte härledas ur den.')
   }
+  if (!Number.isSafeInteger(copy) || copy < 0) {
+    throw new Error('Löpnumret är inte ett heltal från noll och uppåt.')
+  }
 
-  const hex = ciphertextHash.slice(0, 32)
+  const hex = sha256Hex(`${ciphertextHash}|${ballotId}|${copy}`).slice(0, 32)
   return [
     hex.slice(0, 8),
     hex.slice(8, 12),
@@ -905,6 +967,29 @@ export function idForEnvelope(ciphertextHash: string): string {
     hex.slice(16, 20),
     hex.slice(20, 32),
   ].join('-')
+}
+
+/** Ett validerat kuvert med sin plats i urnan. */
+export type UrnEnvelope<T extends Envelope = Envelope> = T & { urnId: string }
+
+/**
+ * Ger varje kuvert i läsningen sin plats i urnan, i innehållets ordning
+ * (fixrunda 3 av uppgift 11d, ruling 130).
+ *
+ * Löpnumret räknas bland kuvert med samma chifferhash och valsedel, i den
+ * ordning `byContent` ger dem. Två helt likadana kuvert är utbytbara, så det
+ * spelar ingen roll vilket av dem som får vilket nummer: raderna i urnan blir
+ * desamma. Skiljer sig bevisen avgör de ordningen. Varken väljaren, kuvertets
+ * id i röstlängden eller läggningens ordning påverkar något id.
+ */
+export function withUrnIds<T extends Envelope>(envelopes: readonly T[]): Array<UrnEnvelope<T>> {
+  const copies = new Map<string, number>()
+  return [...envelopes].sort(byContent).map((envelope) => {
+    const key = `${envelope.ciphertextHash}|${envelope.ballotId}`
+    const copy = copies.get(key) ?? 0
+    copies.set(key, copy + 1)
+    return { ...envelope, urnId: urnIdFor(envelope.ciphertextHash, envelope.ballotId, copy) }
+  })
 }
 
 /**
@@ -954,7 +1039,7 @@ async function firstUnverifiableEnvelope(
 ): Promise<string | null> {
   const shapes = new Map<string, Awaited<ReturnType<typeof getEncryptedBallotShape>>>()
 
-  for (const envelope of [...envelopes].sort(byCiphertextHash)) {
+  for (const envelope of [...envelopes].sort(byContent)) {
     let shape = shapes.get(envelope.ballotId)
     if (shape === undefined) {
       shape = await getEncryptedBallotShape(envelope.ballotId)
@@ -979,16 +1064,17 @@ const RESIDUE_READ_BATCH_SIZE = 5_000
 const URN_DELETE_BATCH_SIZE = 1_000
 
 /**
- * Det städningen hittade i votes_db före infogningen.
+ * Det städningen hittade i votes_db före infogningen, per rad i urnan.
  *
- * `residue`       chifferhashen för varje rad på omröstningens valsedlar vars
- *                 hash inte finns i den validerade läsningen, sorterade
- * `forged`        chifferhashen för varje validerat kuvert vars plats i urnan,
- *                 hashen eller id:t, redan är tagen av en rad med ett annat
- *                 innehåll, sorterade
- * `forgedRowIds`  id:t för de raderna, var i votes_db de än ligger
+ * `residue`        chifferhashen för varje rad på omröstningens valsedlar vars
+ *                  id inte hör till något validerat kuvert, sorterade
+ * `residueRowIds`  id:t för de raderna
+ * `forged`         chifferhashen för varje validerat kuvert vars plats i urnan,
+ *                  dess id, redan är tagen av en rad med ett annat innehåll,
+ *                  sorterade
+ * `forgedRowIds`   id:t för de raderna, var i votes_db de än ligger
  */
-type UrnDeviations = { residue: string[]; forged: string[]; forgedRowIds: string[] }
+type UrnDeviations = { residue: string[]; residueRowIds: string[]; forged: string[]; forgedRowIds: string[] }
 
 /**
  * Vad städningen tagit bort ur votes_db i den här körningen: resterna, och de
@@ -1003,32 +1089,36 @@ type UrnChanges = { residueRemoved: string[]; urnRowsReplaced: string[] }
  * antalet först efter raderingen fanns ingen loggrad om en omgång kastade,
  * fast beskedet om en orörd koppling hänvisar till serverloggen.
  *
+ * PER ID, INTE PER HASH (fixrunda 3 av 11d, ruling 130). Två kuvert får ha
+ * samma chiffer, och varje validerat kuvert har en egen plats i urnan, se
+ * `withUrnIds`. Allt jämförs därför mot platserna.
+ *
  * RESTERNA (uppgift 11d, ruling 115). Exakt de rader i encrypted_vote på
- * omröstningens valsedlar vars chifferhash inte finns i den nyss validerade
- * läsningen. Infogningen sker före transaktionen i röstlängden, eftersom
- * flytten går över en databasgräns. Tas ett kuvert bort eller byts ut efter
- * läsningen avbryts transaktionen, men chiffret ligger redan i votes_db. Ett
- * sådant chiffer har inget kuvert i den nya läsningen och får inte räknas. Det
- * kan också vara skrivet direkt i röstdatabasen. Fram till 11d stoppade
- * antalskontrollen varje omkörning, tills någon städade för hand, så den som
- * kunde skriva i databasen kunde låsa ett val.
+ * omröstningens valsedlar vars id inte är något validerat kuverts plats.
+ * Infogningen sker före transaktionen i röstlängden, eftersom flytten går
+ * över en databasgräns. Tas ett kuvert bort eller byts ut efter läsningen
+ * avbryts transaktionen, men chiffret ligger redan i votes_db. Ett sådant
+ * chiffer har inget kuvert i den nya läsningen och får inte räknas. Det kan
+ * också vara skrivet direkt i röstdatabasen, också med ett validerat kuverts
+ * hash. Fram till 11d stoppade antalskontrollen varje omkörning, tills någon
+ * städade för hand, så den som kunde skriva i databasen kunde låsa ett val.
  *
  * DE FÖRFALSKADE RADERNA (fixrunda 1 av 11d, ruling 126). En rad, var som
- * helst i votes_db, som har ett validerat kuverts chifferhash eller dess id men
- * inte exakt dess innehåll. Infogningen hoppar över en rad som redan finns, så
- * en sådan rad hade stått kvar i stället för det validerade kuvertet. Fram till
- * fixrundan stoppade återläsningen då varje stängning tills någon tog bort
+ * helst i votes_db, som står på ett validerat kuverts plats men inte har
+ * exakt dess innehåll. Infogningen hoppar över en rad som redan finns, så en
+ * sådan rad hade stått kvar i stället för det validerade kuvertet. Fram till
+ * fixrunda 1 stoppade återläsningen då varje stängning tills någon tog bort
  * raden för hand, och den som kunde skriva i röstdatabasen kunde hålla valet
- * öppet. Ingen legitim väg skriver en sådan rad: hashen räknas ur chiffret,
- * id:t ur hashen, och varje chifferhash är unik i tabellen. Att ta bort raden
- * kan alltså bara ta bort en förfalskning, och infogningen sätter det
- * validerade innehållet i dess ställe. Det tyder på ett angrepp, så det larmas
- * i loggen, med antal, och chifferhasharna står i stängningens svar. Loggen
- * maskerar chifferhashar, så de står inte där.
+ * öppet. Ingen legitim väg skriver en sådan rad: platsen härleds ur
+ * kuvertets innehåll, och bara stängningen skriver i urnan. Att ta bort
+ * raden kan alltså bara ta bort en förfalskning, och infogningen sätter det
+ * validerade innehållet i dess ställe. Det tyder på ett angrepp, så det
+ * larmas i loggen, med antal, och chifferhasharna står i stängningens svar.
+ * Loggen maskerar chifferhashar, så de står inte där.
  */
-async function findUrnDeviations(ballotIds: string[], envelopes: readonly Envelope[]): Promise<UrnDeviations> {
-  const validated = new Set(envelopes.map((envelope) => envelope.ciphertextHash))
-  const residue: string[] = []
+async function findUrnDeviations(ballotIds: string[], envelopes: readonly UrnEnvelope[]): Promise<UrnDeviations> {
+  const places = new Set(envelopes.map((envelope) => envelope.urnId))
+  const residue: Array<{ id: string; ciphertextHash: string }> = []
 
   if (ballotIds.length > 0) {
     let after: string | null = null
@@ -1040,32 +1130,30 @@ async function findUrnDeviations(ballotIds: string[], envelopes: readonly Envelo
         select: { id: true, ciphertextHash: true },
       })
       for (const row of batch) {
-        if (!validated.has(row.ciphertextHash)) residue.push(row.ciphertextHash)
+        if (!places.has(row.id)) residue.push(row)
       }
       if (batch.length < RESIDUE_READ_BATCH_SIZE) break
       after = batch[batch.length - 1]!.id
     }
   }
 
-  const forged = new Set<string>()
-  const forgedRowIds = new Set<string>()
+  const forged: string[] = []
+  const forgedRowIds: string[] = []
 
   for (let start = 0; start < envelopes.length; start += ENVELOPE_READ_BATCH_SIZE) {
     const batch = envelopes.slice(start, start + ENVELOPE_READ_BATCH_SIZE)
-    const byHash = new Map(batch.map((envelope) => [envelope.ciphertextHash, envelope]))
-    const byId = new Map(batch.map((envelope) => [idForEnvelope(envelope.ciphertextHash), envelope]))
+    const byPlace = new Map(batch.map((envelope) => [envelope.urnId, envelope]))
 
     const stored = await votesDb.encryptedVote.findMany({
-      where: { OR: [{ ciphertextHash: { in: [...byHash.keys()] } }, { id: { in: [...byId.keys()] } }] },
+      where: { id: { in: [...byPlace.keys()] } },
       select: { id: true, ciphertextHash: true, ballotId: true, ciphertext: true, proofs: true },
     })
 
     for (const row of stored) {
-      for (const envelope of [byHash.get(row.ciphertextHash), byId.get(row.id)]) {
-        if (envelope && !storedAsValidated(row, envelope)) {
-          forged.add(envelope.ciphertextHash)
-          forgedRowIds.add(row.id)
-        }
+      const envelope = byPlace.get(row.id)
+      if (envelope && !storedAsValidated(row, envelope)) {
+        forged.push(envelope.ciphertextHash)
+        forgedRowIds.push(row.id)
       }
     }
   }
@@ -1077,16 +1165,21 @@ async function findUrnDeviations(ballotIds: string[], envelopes: readonly Envelo
       { found: residue.length },
     )
   }
-  if (forgedRowIds.size > 0) {
+  if (forgedRowIds.length > 0) {
     logger.error(
-      'LARM: stängningen hittade rader i röstdatabasen med ett validerat kuverts chifferhash ' +
-        'eller id men ett annat innehåll. Ingen legitim väg skriver en sådan rad. De ersätts med ' +
-        'det validerade innehållet före infogningen, och chifferhasharna står i stängningens svar.',
-      { found: forgedRowIds.size },
+      'LARM: stängningen hittade rader i röstdatabasen på ett validerat kuverts plats men med ett ' +
+        'annat innehåll. Ingen legitim väg skriver en sådan rad. De ersätts med det validerade ' +
+        'innehållet före infogningen, och chifferhasharna står i stängningens svar.',
+      { found: forgedRowIds.length },
     )
   }
 
-  return { residue: residue.sort(), forged: [...forged].sort(), forgedRowIds: [...forgedRowIds].sort() }
+  return {
+    residue: residue.map((row) => row.ciphertextHash).sort(),
+    residueRowIds: residue.map((row) => row.id).sort(),
+    forged: forged.sort(),
+    forgedRowIds: forgedRowIds.sort(),
+  }
 }
 
 /**
@@ -1116,15 +1209,15 @@ async function removeFromUrn(
   electionId: string,
   lock: ClosingLock,
   ballotIds: string[],
-  { residue, forged, forgedRowIds }: UrnDeviations,
+  { residue, residueRowIds, forged, forgedRowIds }: UrnDeviations,
   urn: UrnChanges,
 ): Promise<void> {
   let residueRemoved = 0
-  for (let start = 0; start < residue.length; start += URN_DELETE_BATCH_SIZE) {
+  for (let start = 0; start < residueRowIds.length; start += URN_DELETE_BATCH_SIZE) {
     const result = await votesDb.encryptedVote.deleteMany({
       where: {
         ballotId: { in: ballotIds },
-        ciphertextHash: { in: residue.slice(start, start + URN_DELETE_BATCH_SIZE) },
+        id: { in: residueRowIds.slice(start, start + URN_DELETE_BATCH_SIZE) },
       },
     })
     residueRemoved += result.count
@@ -1197,17 +1290,17 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Ligger raden i urnan exakt som det validerade kuvertet: med dess chifferhash,
- * med id:t härlett ur hashen, och med samma valsedel, samma chiffer och samma
- * bevis? Samma prövning i städningen och i återläsningen.
+ * Ligger raden i urnan exakt som det validerade kuvertet: på dess plats, med
+ * dess chifferhash, och med samma valsedel, samma chiffer och samma bevis?
+ * Samma prövning i städningen och i återläsningen.
  */
 function storedAsValidated(
   row: { id: string; ciphertextHash: string; ballotId: string; ciphertext: unknown; proofs: unknown },
-  envelope: Envelope,
+  envelope: UrnEnvelope,
 ): boolean {
   return (
     row.ciphertextHash === envelope.ciphertextHash &&
-    row.id === idForEnvelope(envelope.ciphertextHash) &&
+    row.id === envelope.urnId &&
     row.ballotId === envelope.ballotId &&
     sameJson(row.ciphertext, envelope.ciphertext) &&
     sameJson(row.proofs, envelope.proofs)
@@ -1224,11 +1317,13 @@ function storedAsValidated(
  * bara räknade raderna, svarade `closed` fast urnans chiffer inte gav sin egen
  * hash.
  *
- * Varje flyttat kuvert läses därför tillbaka, i omgångar, och ska finnas med
- * samma id, samma valsedel, samma chiffer och samma bevis som i den validerade
- * läsningen. Antalet rader på omröstningens valsedlar ska dessutom vara
- * antalet flyttade, så att ingenting finns där som inte validerades. Svaret är
- * null när allt stämmer, annars en beskrivning för loggen.
+ * Varje flyttat kuvert läses därför tillbaka, i omgångar, på sin plats i
+ * urnan, och ska finnas där med samma chifferhash, samma valsedel, samma
+ * chiffer och samma bevis som i den validerade läsningen. Sedan fixrunda 3 av
+ * 11d läses platsen, id:t, och inte hashen, eftersom två kuvert får ha samma
+ * chiffer (ruling 130). Antalet rader på omröstningens valsedlar ska dessutom
+ * vara antalet flyttade, så att ingenting finns där som inte validerades.
+ * Svaret är null när allt stämmer, annars en beskrivning för loggen.
  *
  * En sådan rad som fanns vid städningen har redan ersatts (ruling 126, se
  * `findUrnDeviations`). Återläsningen fångar det som skrivits efter
@@ -1237,7 +1332,7 @@ function storedAsValidated(
  * urnrot, se posten `votes-db-writer-can-swap-ciphertext` i
  * src/lib/known-limitations.ts.
  */
-async function urnMismatch(ballotIds: string[], envelopes: readonly Envelope[]): Promise<string | null> {
+async function urnMismatch(ballotIds: string[], envelopes: readonly UrnEnvelope[]): Promise<string | null> {
   const onBallots = await votesDb.encryptedVote.count({ where: { ballotId: { in: ballotIds } } })
 
   let missing = 0
@@ -1246,13 +1341,13 @@ async function urnMismatch(ballotIds: string[], envelopes: readonly Envelope[]):
   for (let start = 0; start < envelopes.length; start += ENVELOPE_READ_BATCH_SIZE) {
     const batch = envelopes.slice(start, start + ENVELOPE_READ_BATCH_SIZE)
     const stored = await votesDb.encryptedVote.findMany({
-      where: { ciphertextHash: { in: batch.map((envelope) => envelope.ciphertextHash) } },
+      where: { id: { in: batch.map((envelope) => envelope.urnId) } },
       select: { id: true, ciphertextHash: true, ballotId: true, ciphertext: true, proofs: true },
     })
-    const byHash = new Map(stored.map((row) => [row.ciphertextHash, row]))
+    const byPlace = new Map(stored.map((row) => [row.id, row]))
 
     for (const envelope of batch) {
-      const row = byHash.get(envelope.ciphertextHash)
+      const row = byPlace.get(envelope.urnId)
       if (!row) {
         missing += 1
       } else if (!storedAsValidated(row, envelope)) {
@@ -1548,8 +1643,13 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
    * fasen (fixrunda 1 av 11d, M2 och M8). Se `findUrnDeviations` och
    * `removeFromUrn`. Det som tas bort står i `urn`, också om stängningen sedan
    * avbryts.
+   *
+   * PLATSERNA I URNAN räknas här, ur den validerade läsningen och i
+   * innehållets ordning, och samma ordning är infogningens (fixrunda 3 av 11d,
+   * ruling 130, se `withUrnIds`).
    */
-  const deviations = await findUrnDeviations(ballotIds, envelopes)
+  const placed = withUrnIds(envelopes)
+  const deviations = await findUrnDeviations(ballotIds, placed)
 
   if (deviations.residue.length > 0 || deviations.forgedRowIds.length > 0) {
     const lostBeforeDeletion = await lockStillHeldOrSettle(electionId, lock, 'raderingen i röstdatabasen')
@@ -1564,18 +1664,16 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
    * Flytten går över en databasgräns och kan därför omöjligt vara en
    * transaktion. En körning som avbryts mellan infogningen och raderingen
    * lämnar chiffren på plats — och nästa körning ser dem som befintliga tack
-   * vare det unika indexet på `ciphertextHash`, i stället för att skapa
-   * dubbletter. Att en befintlig rad hoppas över betyder också att den som
-   * skrivit en rad med samma hash före infogningen får sin rad kvar. En sådan
-   * rad som fanns vid städningen har redan ersatts ovan, men en som skrivs
-   * mellan städningen och infogningen står kvar. Därför läses varje flyttat
-   * chiffer tillbaka nedan.
+   * vare primärnyckeln, eftersom samma läsning ger samma platser (se
+   * `withUrnIds`), i stället för att skapa dubbletter. Att en befintlig rad
+   * hoppas över betyder också att den som skrivit en rad på ett kuverts plats
+   * före infogningen får sin rad kvar. En sådan rad som fanns vid städningen
+   * har redan ersatts ovan, men en som skrivs mellan städningen och
+   * infogningen står kvar. Därför läses varje flyttat chiffer tillbaka nedan.
    */
-  const sorted = [...envelopes].sort(byCiphertextHash)
-
   await votesDb.encryptedVote.createMany({
-    data: sorted.map((envelope) => ({
-      id: idForEnvelope(envelope.ciphertextHash),
+    data: placed.map((envelope) => ({
+      id: envelope.urnId,
       ballotId: envelope.ballotId,
       ciphertext: envelope.ciphertext as Prisma.InputJsonValue,
       proofs: envelope.proofs as Prisma.InputJsonValue,
@@ -1585,7 +1683,7 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
   })
 
   // --- 5. Urnan måste vara exakt det validerade FÖRE raderingen -----------
-  const mismatch = await urnMismatch(ballotIds, envelopes)
+  const mismatch = await urnMismatch(ballotIds, placed)
 
   if (mismatch !== null) {
     /**
@@ -1929,11 +2027,25 @@ async function confirmStripped(
     }
   }
 
+  /**
+   * TEXTEN FÖLJER FASEN (fixrunda 3 av 11d, omgranskningens nytt fel 3). Står
+   * fasen efter STRIPPED med roten skriven är kopplingen raderad, men fasen har
+   * skrivits vidare förbi stängningen, och beskedet säger det. Förut sade
+   * texten först att skalningens skrivningar saknades och sedan att
+   * kopplingen var raderad.
+   */
   const verdict = verdictFor(after, false)
+  if (verdict.kind === 'cleared') {
+    throw new CloseAbortedError(
+      'unknown',
+      'Stängningen kunde inte bekräftas: låsets transaktion gjorde COMMIT, och kuvertroten är ' +
+        `skriven, men fasen står i ${after.phase} i stället för STRIPPED. Någon har skrivit fasen ` +
+        'förbi stängningen efter skalningen.',
+    )
+  }
   throw new CloseAbortedError(
     'unknown',
     'Stängningen kunde inte bekräftas: låsets transaktion gjorde COMMIT, men skalningens ' +
-      'skrivningar finns inte i röstlängden. ' +
-      (verdict.kind === 'uncertain' ? verdict.statement : describeUnexpectedState(after)),
+      `skrivningar finns inte i röstlängden. ${verdict.statement}`,
   )
 }

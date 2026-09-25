@@ -4,7 +4,7 @@ import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
-import { closeElection, idForEnvelope } from '@/orchestration/close-election.usecase'
+import { closeElection, urnIdFor } from '@/orchestration/close-election.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
 import {
@@ -315,11 +315,11 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
       )
     }
 
-    // Id:t är härlett ur chifferhashen, så id-ordningen är innehållets ordning.
+    // Id:t är härlett ur kuvertets innehåll, och raderna visas i id-ordning.
     const ids = state.votesDb.encryptedVote.map((row) => row.id)
     expect(isSorted(ids)).toBe(true)
     expect(ids).toEqual(
-      [annasHash, kimsHash].sort().map((hash) => shortened(idForEnvelope(hash))),
+      [annasHash, kimsHash].map((hash) => urnIdFor(hash, ballotId, 0)).sort().map((id) => shortened(id)),
     )
 
     const [election] = state.elections
@@ -348,7 +348,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     })
     await votesDb.encryptedVote.create({
       data: {
-        id: idForEnvelope(annasHash),
+        id: urnIdFor(annasHash, ballotId, 0),
         ballotId,
         ciphertext: envelope.ciphertext as Prisma.InputJsonValue,
         proofs: envelope.proofs as Prisma.InputJsonValue,

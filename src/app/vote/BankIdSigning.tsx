@@ -111,12 +111,6 @@ const OUTCOMES: Record<string, string> = {
     'Underskriften kom inte från den som är inloggad, så rösten lades inte. Bara du kan skriva ' +
     'under din röst.',
   not_eligible: 'Den här valsedeln kan inte ta emot din röst. Rösten lades inte.',
-  // Fixrunda 2 av uppgift 11d, ruling 129. "Försök igen" skriver under samma
-  // chiffer en gång till. Avbryt går tillbaka till valet, och sidan krypterar
-  // då på nytt, med nya slumptal, så att chiffret blir ett annat.
-  duplicate_ciphertext:
-    'Exakt samma krypterade röst finns redan, så den här lades inte. Välj Avbryt och rösta en ' +
-    'gång till, så krypteras valet på nytt.',
 }
 
 export function BankIdSigning({
