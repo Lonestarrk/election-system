@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { BallotOption } from '@/lib/crypto/ballot-encoding'
 import { generateKeyPair } from '@/lib/crypto/elgamal'
@@ -61,6 +61,7 @@ function listDigest(list: Array<{ c1: string; c2: string }>): Buffer {
 function independentOrTranscript(
   electionId: string,
   ballotId: string,
+  key: bigint,
   index: number,
   digest: Buffer,
   values: bigint[],
@@ -69,17 +70,25 @@ function independentOrTranscript(
     Buffer.from(OR_DOMAIN + '\u0000', 'ascii'),
     lengthPrefixed(electionId),
     lengthPrefixed(ballotId),
+    element(key),
     u32(index),
     digest,
     ...values.map(element),
   ])
 }
 
-function independentSumTranscript(electionId: string, ballotId: string, digest: Buffer, values: bigint[]): Buffer {
+function independentSumTranscript(
+  electionId: string,
+  ballotId: string,
+  key: bigint,
+  digest: Buffer,
+  values: bigint[],
+): Buffer {
   return Buffer.concat([
     Buffer.from(SUM_DOMAIN + '\u0000', 'ascii'),
     lengthPrefixed(electionId),
     lengthPrefixed(ballotId),
+    element(key),
     digest,
     ...values.map(element),
   ])
@@ -96,22 +105,27 @@ function randomBinding(electionId: string, ballotId: string): BallotBinding {
   return { electionId, ballotId, ciphertextHash: randomBytes(32).toString('hex') }
 }
 
+/** En nyckel för proven av kodningen. Bevisens ekvationer räknas inte här. */
+const KEY = randomElement()
+
 describe('transkriptet är det som beskrivningen i proofs.ts säger', () => {
   it('0-eller-1-beviset, byte för byte, och utmaningen ur det', () => {
     for (let round = 0; round < 20; round += 1) {
       const binding = randomBinding(`val-${round}`, `valsedel-${round}`)
       const index = round * 7
       const values = [0, 1, 2, 3, 4, 5].map(randomElement) as [bigint, bigint, bigint, bigint, bigint, bigint]
+      const key = randomElement()
       const expected = independentOrTranscript(
         binding.electionId,
         binding.ballotId,
+        key,
         index,
         Buffer.from(binding.ciphertextHash, 'hex'),
         values,
       )
 
-      expect(Buffer.from(zeroOrOneTranscript(binding, index, values)).equals(expected)).toBe(true)
-      expect(zeroOrOneChallenge(binding, index, values)).toBe(independentChallenge(expected))
+      expect(Buffer.from(zeroOrOneTranscript(key, binding, index, values)).equals(expected)).toBe(true)
+      expect(zeroOrOneChallenge(key, binding, index, values)).toBe(independentChallenge(expected))
     }
   })
 
@@ -119,30 +133,50 @@ describe('transkriptet är det som beskrivningen i proofs.ts säger', () => {
     for (let round = 0; round < 20; round += 1) {
       const binding = randomBinding(`val-${round}`, `valsedel-${round}`)
       const values = [0, 1, 2, 3].map(randomElement) as [bigint, bigint, bigint, bigint]
+      const key = randomElement()
       const expected = independentSumTranscript(
         binding.electionId,
         binding.ballotId,
+        key,
         Buffer.from(binding.ciphertextHash, 'hex'),
         values,
       )
 
-      expect(Buffer.from(sumTranscript(binding, values)).equals(expected)).toBe(true)
-      expect(sumChallenge(binding, values)).toBe(independentChallenge(expected))
+      expect(Buffer.from(sumTranscript(key, binding, values)).equals(expected)).toBe(true)
+      expect(sumChallenge(key, binding, values)).toBe(independentChallenge(expected))
     }
   })
 
   it('har en fast längd för givna id:n, och talen 0 och p − 1 tar lika mycket plats som andra', () => {
     const binding = randomBinding('e', 'bb')
     const small = [0n, 1n, 2n, 3n, 4n, P - 1n] as const
-    expect(zeroOrOneTranscript(binding, 0, small)).toHaveLength(34 + 5 + 6 + 4 + 32 + 6 * 256)
-    expect(sumTranscript(binding, [0n, 1n, P - 1n, 5n])).toHaveLength(25 + 5 + 6 + 32 + 4 * 256)
+    // Prefixet, två id:n med längdprefix, h, indexet, H och talen.
+    expect(zeroOrOneTranscript(1n, binding, 0, small)).toHaveLength(34 + 5 + 6 + 256 + 4 + 32 + 6 * 256)
+    expect(sumTranscript(P - 1n, binding, [0n, 1n, P - 1n, 5n])).toHaveLength(25 + 5 + 6 + 256 + 32 + 4 * 256)
+  })
+
+  it('med UUID som id är ett 0-eller-1-transkript 1 942 byte och ett summatranskript 1 417 byte', () => {
+    const binding = randomBinding(randomUUID(), randomUUID())
+    expect(zeroOrOneTranscript(KEY, binding, 0, [1n, 2n, 3n, 4n, 5n, 6n])).toHaveLength(1942)
+    expect(sumTranscript(KEY, binding, [1n, 2n, 3n, 4n])).toHaveLength(1417)
+  })
+
+  it('valets publika nyckel står direkt efter valsedelns id, som 256 byte', () => {
+    const binding = randomBinding('val', 'valsedel')
+    const afterIds = OR_DOMAIN.length + 1 + (4 + 3) + (4 + 8)
+    const or = Buffer.from(zeroOrOneTranscript(KEY, binding, 0, [1n, 2n, 3n, 4n, 5n, 6n]))
+    const sum = Buffer.from(sumTranscript(KEY, binding, [1n, 2n, 3n, 4n]))
+
+    expect(or.subarray(afterIds, afterIds + 256).equals(element(KEY))).toBe(true)
+    const afterSumIds = SUM_DOMAIN.length + 1 + (4 + 3) + (4 + 8)
+    expect(sum.subarray(afterSumIds, afterSumIds + 256).equals(element(KEY))).toBe(true)
   })
 
   it('ett id längdprefixas med antalet byte i UTF-8, inte antalet tecken', () => {
     // "å" är två byte. En verifierare som räknar tecken får fel längd och
     // underkänner varje valsedel i ett val vars id har ett sådant tecken.
     const binding = randomBinding('val-å', 'valsedel')
-    const transcript = Buffer.from(zeroOrOneTranscript(binding, 0, [1n, 2n, 3n, 4n, 5n, 6n]))
+    const transcript = Buffer.from(zeroOrOneTranscript(KEY, binding, 0, [1n, 2n, 3n, 4n, 5n, 6n]))
     const afterDomain = OR_DOMAIN.length + 1
 
     expect(transcript.readUInt32BE(afterDomain)).toBe(6)
@@ -160,22 +194,22 @@ describe('ingenting i transkriptet kan läsas på två sätt', () => {
     expect(`${'val|a'}|${'b'}|0`).toBe(`${'val'}|${'a|b'}|0`)
 
     const digest = randomBytes(32).toString('hex')
-    const first = zeroOrOneTranscript({ electionId: 'val|a', ballotId: 'b', ciphertextHash: digest }, 0, values)
-    const second = zeroOrOneTranscript({ electionId: 'val', ballotId: 'a|b', ciphertextHash: digest }, 0, values)
+    const first = zeroOrOneTranscript(KEY, { electionId: 'val|a', ballotId: 'b', ciphertextHash: digest }, 0, values)
+    const second = zeroOrOneTranscript(KEY, { electionId: 'val', ballotId: 'a|b', ciphertextHash: digest }, 0, values)
     expect(Buffer.from(first).equals(Buffer.from(second))).toBe(false)
   })
 
   it('valets och valsedelns id kan inte byta innehåll med varandra', () => {
     const digest = randomBytes(32).toString('hex')
-    const first = zeroOrOneTranscript({ electionId: 'ab', ballotId: 'c', ciphertextHash: digest }, 0, values)
-    const second = zeroOrOneTranscript({ electionId: 'a', ballotId: 'bc', ciphertextHash: digest }, 0, values)
+    const first = zeroOrOneTranscript(KEY, { electionId: 'ab', ballotId: 'c', ciphertextHash: digest }, 0, values)
+    const second = zeroOrOneTranscript(KEY, { electionId: 'a', ballotId: 'bc', ciphertextHash: digest }, 0, values)
     expect(Buffer.from(first).equals(Buffer.from(second))).toBe(false)
   })
 
   it('domänprefixen skiljer de två bevisen åt, och skiljer dem från det gamla formatet och chifferhashen', () => {
     const binding = randomBinding('val', 'valsedel')
-    const or = Buffer.from(zeroOrOneTranscript(binding, 0, values))
-    const sum = Buffer.from(sumTranscript(binding, [1n, 2n, 3n, 4n]))
+    const or = Buffer.from(zeroOrOneTranscript(KEY, binding, 0, values))
+    const sum = Buffer.from(sumTranscript(KEY, binding, [1n, 2n, 3n, 4n]))
 
     expect(or.subarray(0, OR_DOMAIN.length + 1).toString('latin1')).toBe(OR_DOMAIN + '\u0000')
     expect(sum.subarray(0, SUM_DOMAIN.length + 1).toString('latin1')).toBe(SUM_DOMAIN + '\u0000')
@@ -192,38 +226,46 @@ describe('ingenting i transkriptet kan läsas på två sätt', () => {
 
   it('ett tal utanför [0, p) och en hash som inte är 64 små hextecken går inte in i transkriptet', () => {
     const binding = randomBinding('val', 'valsedel')
-    expect(() => zeroOrOneTranscript(binding, 0, [P, 2n, 3n, 4n, 5n, 6n])).toThrow(RangeError)
-    expect(() => zeroOrOneTranscript(binding, 0, [-1n, 2n, 3n, 4n, 5n, 6n])).toThrow(RangeError)
-    expect(() => sumTranscript(binding, [1n, 2n, 3n, P + 5n])).toThrow(RangeError)
-    expect(() => zeroOrOneTranscript(binding, -1, values)).toThrow(RangeError)
-    expect(() => zeroOrOneTranscript(binding, 1.5, values)).toThrow(RangeError)
+    expect(() => zeroOrOneTranscript(KEY, binding, 0, [P, 2n, 3n, 4n, 5n, 6n])).toThrow(RangeError)
+    expect(() => zeroOrOneTranscript(KEY, binding, 0, [-1n, 2n, 3n, 4n, 5n, 6n])).toThrow(RangeError)
+    expect(() => sumTranscript(KEY, binding, [1n, 2n, 3n, P + 5n])).toThrow(RangeError)
+    // Nyckeln kodas som vilket tal som helst i transkriptet.
+    expect(() => zeroOrOneTranscript(P, binding, 0, values)).toThrow(RangeError)
+    expect(() => sumTranscript(-2n, binding, [1n, 2n, 3n, 4n])).toThrow(RangeError)
+    expect(() => zeroOrOneTranscript(KEY, binding, -1, values)).toThrow(RangeError)
+    expect(() => zeroOrOneTranscript(KEY, binding, 1.5, values)).toThrow(RangeError)
 
     for (const ciphertextHash of ['ab', binding.ciphertextHash.toUpperCase(), binding.ciphertextHash + '0']) {
-      expect(() => zeroOrOneTranscript({ ...binding, ciphertextHash }, 0, values)).toThrow()
+      expect(() => zeroOrOneTranscript(KEY, { ...binding, ciphertextHash }, 0, values)).toThrow()
     }
   })
 
   it('ett id som inte är giltig Unicode går inte in i transkriptet', () => {
     // En ensam surrogathalva blir U+FFFD i UTF-8, och då hade de två id:na
     // nedan gett samma byte. Ett giltigt surrogatpar går igenom, som kontrast.
-    expect(Buffer.from('val-\uD800', 'utf8').equals(Buffer.from('val-�', 'utf8'))).toBe(true)
+    expect(Buffer.from('val-\uD800', 'utf8').equals(Buffer.from('val-\uFFFD', 'utf8'))).toBe(true)
 
     const binding = randomBinding('val', 'valsedel')
-    expect(() => zeroOrOneTranscript({ ...binding, electionId: 'val-\uD800' }, 0, values)).toThrow()
-    expect(() => sumTranscript({ ...binding, ballotId: 'valsedel-\uDC00' }, [1n, 2n, 3n, 4n])).toThrow()
-    expect(() => zeroOrOneTranscript({ ...binding, electionId: 'val-�' }, 0, values)).not.toThrow()
-    expect(() => zeroOrOneTranscript({ ...binding, electionId: 'val-𝄞' }, 0, values)).not.toThrow()
+    expect(() => zeroOrOneTranscript(KEY, { ...binding, electionId: 'val-\uD800' }, 0, values)).toThrow()
+    expect(() => sumTranscript(KEY, { ...binding, ballotId: 'valsedel-\uDC00' }, [1n, 2n, 3n, 4n])).toThrow()
+    expect(() => zeroOrOneTranscript(KEY, { ...binding, electionId: 'val-\uFFFD' }, 0, values)).not.toThrow()
+    expect(() => zeroOrOneTranscript(KEY, { ...binding, electionId: 'val-\uD834\uDD1E' }, 0, values)).not.toThrow()
   })
 })
 
 /** Varje utmaning i en valsedel, räknad om ur beskrivningen och jämförd med den som står i valsedeln. */
-function expectEveryChallengeAsDescribed(electionId: string, ballotId: string, ballot: EncryptedBallot): void {
+function expectEveryChallengeAsDescribed(
+  electionId: string,
+  ballotId: string,
+  key: bigint,
+  ballot: EncryptedBallot,
+): void {
   const digest = listDigest(ballot.ciphertext)
   expect(ballot.ciphertextHash).toBe(digest.toString('hex'))
 
   for (const [index, proof] of ballot.proofs.components.entries()) {
     const { c1, c2 } = ballot.ciphertext[index]!
-    const transcript = independentOrTranscript(electionId, ballotId, index, digest, [
+    const transcript = independentOrTranscript(electionId, ballotId, key, index, digest, [
       BigInt(c1),
       BigInt(c2),
       BigInt(proof.a0),
@@ -241,7 +283,7 @@ function expectEveryChallengeAsDescribed(electionId: string, ballotId: string, b
     { c1: 1n, c2: 1n },
   )
   const { sum } = ballot.proofs
-  const transcript = independentSumTranscript(electionId, ballotId, digest, [
+  const transcript = independentSumTranscript(electionId, ballotId, key, digest, [
     product.c1,
     product.c2,
     BigInt(sum.a),
@@ -254,7 +296,12 @@ describe('fixturen i det nya formatet', () => {
   it('varje utmaning i den är den som beskrivningen ger', () => {
     // Den oberoende verifieraren i uppgift 13 kan pröva sig mot fixturen och
     // veta att den följer beskrivningen, inte bara koden.
-    expectEveryChallengeAsDescribed(fixture.electionId, fixture.ballotId, fixture.ballot as EncryptedBallot)
+    expectEveryChallengeAsDescribed(
+      fixture.electionId,
+      fixture.ballotId,
+      BigInt(fixture.publicKey),
+      fixture.ballot as EncryptedBallot,
+    )
   })
 })
 
@@ -281,7 +328,7 @@ describe('en riktig valsedel', () => {
   })
 
   it('varje utmaning i den är den som beskrivningen ger', () => {
-    expectEveryChallengeAsDescribed(ELECTION, BALLOT, ballot)
+    expectEveryChallengeAsDescribed(ELECTION, BALLOT, keys.publicKey, ballot)
   })
 
   it('ett bevis som prövas mot ett annat transkript underkänns, som kontrast', () => {

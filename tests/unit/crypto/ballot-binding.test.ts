@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { BallotOption } from '@/lib/crypto/ballot-encoding'
 import { decryptWithSecret, encrypt, generateKeyPair, multiply, type Ciphertext } from '@/lib/crypto/elgamal'
-import { P, Q, modPow, randomScalar } from '@/lib/crypto/group'
+import { G, G_INVERSE, P, Q, modPow, randomScalar } from '@/lib/crypto/group'
 import {
+  proveSumIsOne,
+  startZeroOrOne,
+  sumChallenge,
   verifySumIsOne,
   verifyZeroOrOne,
+  zeroOrOneChallenge,
   type BallotBinding,
   type EqualityProof,
   type ZeroOrOneProof,
@@ -13,6 +17,8 @@ import {
 import '@/lib/crypto/server'
 import {
   hashCiphertext,
+  serialiseEqualityProof,
+  serialiseZeroOrOneProof,
   verifyEncryptedBallotInSteps,
   type EncryptedBallot,
 } from '@/lib/crypto/verify-ballot'
@@ -261,5 +267,164 @@ describe('utmaningen binder varje fält', () => {
 
     expect(verifyZeroOrOne(keys.publicKey, moved, proof, newPlace, 0)).toBe(false)
     expect(verifyZeroOrOne(keys.publicKey, moved, proof, oldPlace, 0)).toBe(true)
+  })
+})
+
+/**
+ * UTMANINGEN BINDER VALETS PUBLIKA NYCKEL (ruling 132, fixrunda 1 av uppgift 14d).
+ *
+ * Granskaren av uppgift 14d visade det med prob 4. Utan h i transkriptet kan
+ * den som väljer nyckeln efter utmaningen få ett bevis godkänt för ett
+ * chiffer som inte krypterar det beviset påstår. Utmaningen räknas först, och
+ * sedan väljs x ur verifieringens egna ekvationer och h = g^x.
+ *
+ * Ett fälttest som byter nyckeln säger ingenting här. En annan nyckel fäller
+ * redan ekvationerna, med h i transkriptet eller utan. Testerna nedan bygger
+ * därför själva förfalskningen. Angriparen måste lägga en nyckel i
+ * transkriptet innan utmaningen finns, och den enda han kan lägga dit är en
+ * han har valt före utmaningen. Här är det valets egen nyckel.
+ */
+describe('utmaningen binder valets publika nyckel', () => {
+  const mod = (a: bigint) => ((a % Q) + Q) % Q
+  const inverse = (a: bigint) => modPow(mod(a), Q - 2n, Q)
+  const gPow = (e: bigint) => modPow(G, mod(e), P)
+
+  it('ett 0-eller-1-bevis för ett chiffer utanför {0, 1} underkänns under en nyckel vald efter utmaningen', () => {
+    /**
+     * Ekvationerna, med c1 = g^r, c2 = g^β, a0 = g^w0, b0 = g^γ0, a1 = g^w1 och
+     * b1 = g^γ1, där angriparen känner alla exponenter:
+     *
+     *   s0 = w0 + r·e0,  s1 = w1 + r·e1,  e0 + e1 = e
+     *   x·s0 = γ0 + β·e0,  x·s1 = γ1 + (β − 1)·e1
+     *
+     * x elimineras, och kvar blir en andragradsekvation i e0. Den har en
+     * lösning ungefär varannan gång, så försöket görs om med nya slumptal tills
+     * den har det. Klartexten blir β − x·r, ett tal på omkring 2 047 bitar.
+     */
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      const [r, w0, w1, beta, gamma0, gamma1] = Array.from({ length: 6 }, () => randomScalar()) as [
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+      ]
+      const ciphertext = { c1: gPow(r), c2: gPow(beta) }
+      const [a0, b0, a1, b1] = [gPow(w0), gPow(gamma0), gPow(w1), gPow(gamma1)]
+      const binding: BallotBinding = {
+        electionId: ELECTION,
+        ballotId: BALLOT,
+        ciphertextHash: hashCiphertext([{ c1: ciphertext.c1.toString(), c2: ciphertext.c2.toString() }]),
+      }
+
+      const e = zeroOrOneChallenge(keys.publicKey, binding, 0, [ciphertext.c1, ciphertext.c2, a0, b0, a1, b1])
+
+      const A = mod(w1 + r * e)
+      const B = mod(gamma1 + (beta - 1n) * e)
+      const qa = mod(-r)
+      const qb = mod(beta * A - gamma0 * r - B * r + (beta - 1n) * w0)
+      const qc = mod(gamma0 * A - B * w0)
+      const discriminant = mod(qb * qb - 4n * qa * qc)
+      // q ≡ 3 (mod 4), så en kvadratrot är en enda exponentiering.
+      const root = modPow(discriminant, (Q + 1n) / 4n, Q)
+      if (mod(root * root) !== discriminant) continue
+
+      const e0 = mod((mod(-qb) + root) * inverse(2n * qa))
+      const e1 = mod(e - e0)
+      const s0 = mod(w0 + r * e0)
+      const s1 = mod(w1 + r * e1)
+      const x = mod((gamma0 + beta * e0) * inverse(s0))
+      const h = gPow(x)
+      const proof: ZeroOrOneProof = { a0, b0, a1, b1, challenge0: e0, challenge1: e1, response0: s0, response1: s1 }
+
+      // Förfalskningen håller: klartexten är varken 0 eller 1, och alla fyra
+      // ekvationerna gäller under h. Utan det här säger testet ingenting.
+      const plaintext = mod(beta - x * r)
+      expect(plaintext === 0n || plaintext === 1n).toBe(false)
+      const shifted = (ciphertext.c2 * G_INVERSE) % P
+      expect([
+        modPow(G, s0, P) === (a0 * modPow(ciphertext.c1, e0, P)) % P,
+        modPow(h, s0, P) === (b0 * modPow(ciphertext.c2, e0, P)) % P,
+        modPow(G, s1, P) === (a1 * modPow(ciphertext.c1, e1, P)) % P,
+        modPow(h, s1, P) === (b1 * modPow(shifted, e1, P)) % P,
+        mod(e0 + e1) === e,
+      ]).toEqual([true, true, true, true, true])
+
+      // Verifieraren räknar utmaningen med h och får en annan. Före rättelsen
+      // var den densamma, och beviset godkändes.
+      expect(verifyZeroOrOne(h, ciphertext, proof, binding, 0)).toBe(false)
+      return
+    }
+    throw new Error('Andragradsekvationen saknade lösning i 64 försök.')
+  })
+
+  it('ett summabevis för en produkt som inte krypterar 1 underkänns under en nyckel vald efter utmaningen', () => {
+    /**
+     * Här räcker en linjär ekvation. Med C1 = g^R, C2 = g^β, a = g^w och b = g^γ
+     * ger g^s = a·C1^e att s = w + R·e, och h^s = b·(C2/g)^e ger
+     * x = (γ + (β − 1)·e) / s. Produkten krypterar då g^(β − x·R), inte g.
+     */
+    const [R, beta, w, gamma] = Array.from({ length: 4 }, () => randomScalar()) as [bigint, bigint, bigint, bigint]
+    const product = { c1: gPow(R), c2: gPow(beta) }
+    const [a, b] = [gPow(w), gPow(gamma)]
+    const binding: BallotBinding = { electionId: ELECTION, ballotId: BALLOT, ciphertextHash: 'cd'.repeat(32) }
+
+    const e = sumChallenge(keys.publicKey, binding, [product.c1, product.c2, a, b])
+    const s = mod(w + R * e)
+    const x = mod((gamma + (beta - 1n) * e) * inverse(s))
+    const h = gPow(x)
+    const proof: EqualityProof = { a, b, challenge: e, response: s }
+
+    expect(mod(beta - x * R)).not.toBe(1n)
+    const shifted = (product.c2 * G_INVERSE) % P
+    expect([
+      modPow(G, s, P) === (a * modPow(product.c1, e, P)) % P,
+      modPow(h, s, P) === (b * modPow(shifted, e, P)) % P,
+    ]).toEqual([true, true])
+
+    expect(verifySumIsOne(h, product, proof, binding)).toBe(false)
+  })
+})
+
+/**
+ * SERVERN BINDER BEVISEN TILL HASHEN DEN SJÄLV RÄKNAR (fixrunda 1 av uppgift
+ * 14d, granskarens prob 3).
+ *
+ * Sedan uppgift 14d binder bevisen chifferhashen, och det bjuder in till en
+ * förenkling: att hoppa över jämförelsen mellan valsedelns hash och den
+ * omräknade, eftersom bevisen ju binder hashen. Med klientens hash i
+ * bindningen håller då en valsedel vars bevis och hash båda är en påhittad
+ * hash X. Den underskrivna hashen och kuvertroten stämmer sedan inte med
+ * chiffren. Testet i encrypt-client.test.ts byter bara hashen och fångar inte
+ * det, eftersom bevisen där är bundna till den riktiga.
+ */
+describe('servern binder bevisen till hashen den själv räknar', () => {
+  it('en valsedel vars bevis och hash båda är en påhittad hash underkänns', async () => {
+    const vector = [0n, 1n, 0n, 0n]
+    const nonces = vector.map(() => randomScalar())
+    const ciphertexts = vector.map((message, index) => encrypt(keys.publicKey, message, nonces[index]!))
+    const fake = 'f'.repeat(64)
+    const binding: BallotBinding = { electionId: ELECTION, ballotId: BALLOT, ciphertextHash: fake }
+
+    const components = ciphertexts.map((ciphertext, index) =>
+      serialiseZeroOrOneProof(
+        startZeroOrOne(keys.publicKey, ciphertext, vector[index] === 1n ? 1 : 0, nonces[index]!)(binding, index),
+      ),
+    )
+    const sum = serialiseEqualityProof(
+      proveSumIsOne(
+        keys.publicKey,
+        ciphertexts.reduce((a, b) => multiply(a, b)),
+        nonces.reduce((a, b) => a + b, 0n),
+        binding,
+      ),
+    )
+    const ciphertext = ciphertexts.map(({ c1, c2 }) => ({ c1: c1.toString(), c2: c2.toString() }))
+    const ballot = { ciphertext, proofs: { format: 2, components, sum }, ciphertextHash: fake } as EncryptedBallot
+
+    // Chiffren är ärliga, och hashen är inte deras.
+    expect(hashCiphertext(ciphertext)).not.toBe(fake)
+    expect(await whereRejected(ballot)).toBe('före bevisen')
   })
 })

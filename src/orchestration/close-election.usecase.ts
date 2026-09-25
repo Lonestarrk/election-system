@@ -122,7 +122,17 @@ export type CloseOutcome =
     }
   | { status: 'in_progress' }
   | { status: 'validation_failed'; summary: ValidationReport['summary'] }
-  | { status: 'invalid_ballot'; ciphertextHash: string }
+  | {
+      status: 'invalid_ballot'
+      ciphertextHash: string
+      /**
+       * Valideringens sammanfattning, med antal och kategorier och ingen
+       * väljare (fixrunda 1 av uppgift 14d). Kuvertet ovan är det första som
+       * inte verifierar, och sammanfattningen säger hur många som avviker och
+       * hur, till exempel att de har det gamla bevisformatet.
+       */
+      summary: ValidationReport['summary']
+    }
 
 /**
  * Vad som är känt om kopplingen mellan väljare och röst när stängningen
@@ -1425,11 +1435,11 @@ async function reportFinding(
    * fel 5). Svaret kan bli `already_closed` eller det försiktiga beskedet, och
    * då står avvikelsen ingen annanstans. Sammanfattningen bär antal och
    * kategorier men ingen väljare, och chifferhashen står inte med, eftersom
-   * loggen maskerar den.
+   * loggen maskerar den. Sedan fixrunda 1 av uppgift 14d har också
+   * `invalid_ballot` sammanfattningen, så att loggen säger hur många kuvert
+   * som avviker och inte bara att ett gör det.
    */
-  logger.warn(`${found}, och skalningen avbröts`, {
-    ...(finding.status === 'validation_failed' ? { summary: finding.summary } : {}),
-  })
+  logger.warn(`${found}, och skalningen avbröts`, { summary: finding.summary })
 
   const verdict = await verdictWithoutDeletion(electionId, lock)
   if (verdict.kind === 'intact') return { kind: 'settled', outcome: finding }
@@ -1571,7 +1581,11 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
      */
     const broken = await firstUnverifiableEnvelope(electionId, envelopes)
     if (broken !== null) {
-      return reportFinding(electionId, lock, { status: 'invalid_ballot', ciphertextHash: broken })
+      return reportFinding(electionId, lock, {
+        status: 'invalid_ballot',
+        ciphertextHash: broken,
+        summary: report.summary,
+      })
     }
 
     return reportFinding(electionId, lock, { status: 'validation_failed', summary: report.summary })
@@ -1601,9 +1615,14 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
   const envelopeRoot = envelopeRootOf(envelopes)
 
   // --- 3. Varje valsedel verifieras en gång till --------------------------
+  // Sammanfattningen är valideringens, som här har passerat.
   const broken = await firstUnverifiableEnvelope(electionId, envelopes)
   if (broken !== null) {
-    return reportFinding(electionId, lock, { status: 'invalid_ballot', ciphertextHash: broken })
+    return reportFinding(electionId, lock, {
+      status: 'invalid_ballot',
+      ciphertextHash: broken,
+      summary: report.summary,
+    })
   }
 
   // --- 4. VALIDATED, städningen och infogningen i votes_db ----------------

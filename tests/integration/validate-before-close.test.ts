@@ -8,7 +8,7 @@ import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
-import { validateBeforeClose } from '@/orchestration/validate-before-close.usecase'
+import { oldProofFormatNote, validateBeforeClose } from '@/orchestration/validate-before-close.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -809,13 +809,17 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     ])
   })
 
-  it('ett kuvert med bevis i formatet före uppgift 14d fångas som BAD_PROOF, och bara som det', async () => {
+  it('ett kuvert med bevis i formatet före uppgift 14d fångas som OLD_PROOF_FORMAT, och bara som det', async () => {
     /**
      * Så ser kuverten ut som lades före uppgift 14d, i demons databaser lokalt
      * och i Azure: äkta underskrift, rätt valsedel och bevis som var giltiga
      * då. Utmaningarna band inte hela chifferlistan, och nu gör de det, så
      * bevisen håller inte längre. Kuvertet kan inte räknas, och valideringen
      * ska säga det i stället för att släppa igenom det.
+     *
+     * Sedan fixrunda 1 skiljer valideringen ett sådant kuvert från ett trasigt
+     * bevis: det saknar formatmarkören (fixrunda 1 av uppgift 14d), och då är
+     * det gamla formatet och inte ett förfalskat bevis.
      */
     const old = legacyEncryptBallot(publicKey, electionId, ballotId, options, {
       kind: 'PARTY',
@@ -840,10 +844,36 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     const report = await validateBeforeClose(electionId)
 
     expect(report.summary.passed).toBe(false)
-    expect(report.summary.byKind).toEqual({ BAD_PROOF: 1 })
+    expect(report.summary.byKind).toEqual({ OLD_PROOF_FORMAT: 1 })
     expect(report.anomalies).toEqual([
-      expect.objectContaining({ kind: 'BAD_PROOF', voterStatusId: kim }),
+      expect.objectContaining({ kind: 'OLD_PROOF_FORMAT', voterStatusId: kim }),
     ])
+    // Det beskedet säger, med antalet ur sammanfattningen och ingen väljare.
+    expect(oldProofFormatNote(report.summary)).toBe('1 kuvert har det gamla bevisformatet och kan inte räknas.')
+  })
+
+  it('ett kuvert med formatmarkören men trasiga bevis är BAD_PROOF och inte det gamla formatet', async () => {
+    // Kontrasten. Markören säger vilket format bevisen påstår sig ha, och ett
+    // bevis i det nuvarande formatet som inte håller är ett trasigt bevis.
+    const ballot = await buildBallot('bp-m')
+    const proofs = structuredClone(ballot.proofs)
+    proofs.components[1]!.response0 = (BigInt(proofs.components[1]!.response0) + 1n).toString()
+    const castSequence = await nextCastSequence(kim, ballotId)
+    const envelope = await signAs(kim, ballotId, ballot.ciphertextHash, castSequence)
+    await writeRow(kim, ballotId, {
+      ciphertext: ballot.ciphertext,
+      proofs,
+      ciphertextHash: ballot.ciphertextHash,
+      castSequence,
+      bankIdSignature: envelope.signature,
+      bankIdCertificateChain: sealedChainOf(envelope, kim, ballotId),
+    })
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(proofs.format).toBe(2)
+    expect(report.summary.byKind).toEqual({ BAD_PROOF: 1 })
+    expect(oldProofFormatNote(report.summary)).toBe('')
   })
 
   it('rapportens sammanfattning namnger ingen väljare', async () => {

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { MAX_DECIMAL_DIGITS, parseElement, parseScalar } from './crypto/group'
+import { PROOF_FORMAT } from './crypto/proofs'
 
 /**
  * Indatavalidering med Zod.
@@ -156,6 +157,17 @@ export const encryptedBallotSchema = z.object({
     .min(1)
     .max(200),
   proofs: z.object({
+    /**
+     * Bevisens format (fixrunda 1 av uppgift 14d). En röstsida som laddades
+     * före uppdateringen skickar valsedeln utan markören, och bevisen i den är
+     * byggda med det gamla transkriptet. Beskedet säger åt väljaren att ladda
+     * om sidan, som då hämtar den nya koden.
+     */
+    format: z.literal(PROOF_FORMAT, {
+      errorMap: () => ({
+        message: 'Sidan är en äldre version och rösten lades inte. Ladda om sidan och rösta igen.',
+      }),
+    }),
     components: z.array(zeroOrOneProofSchema).min(1).max(200),
     sum: equalityProofSchema,
   }),

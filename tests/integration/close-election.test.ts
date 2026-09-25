@@ -31,7 +31,11 @@ import {
 } from '@/modules/eligibility/pending-vote.service'
 import { sealCertificateChain } from '@/modules/eligibility/sealed-chain'
 import { forgeBallot } from '../unit/crypto/forged-ballot'
-import { legacyEncryptBallot, legacyVerifyEncryptedBallot } from '../unit/crypto/legacy-ballot'
+import {
+  legacyEncryptBallot,
+  legacyVerifyEncryptedBallot,
+  type LegacyEncryptedBallot,
+} from '../unit/crypto/legacy-ballot'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
 /**
@@ -448,7 +452,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
    * `castEncryptedBallot` skrev det. Hur de gamla bevisen byggs står i
    * tests/unit/crypto/legacy-ballot.ts.
    */
-  async function plantOldFormatBallot(voterStatusId: string): Promise<EncryptedBallot> {
+  async function plantOldFormatBallot(voterStatusId: string): Promise<LegacyEncryptedBallot> {
     const ballot = legacyEncryptBallot(publicKey, electionId, ballotId, options, {
       kind: 'PARTY',
       ballotPartyId: bpM,
@@ -480,6 +484,28 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     return ballot
   }
+
+  it('formatmarkören följer med kuvertet till urnan, och återläsningen godkänner det', async () => {
+    /**
+     * Bevisen bär `format: 2` sedan fixrunda 1 av uppgift 14d. Markören ligger
+     * i bevisen och inte i chiffret, så den underskrivna chifferhashen, urnans
+     * id och kuvertroten är oberoende av den. Återläsningen jämför bevisen
+     * som JSON, och markören följer med som vilket fält som helst.
+     */
+    const hashes = [await castFor(anna, 'bp-s'), await castFor(kim, 'bp-m')]
+    const envelopes = await votersDb.pendingVote.findMany({ select: { ciphertextHash: true, proofs: true } })
+
+    const outcome = await closeElection(electionId)
+
+    expect(outcome).toMatchObject({ status: 'closed', moved: 2, cleared: 2 })
+    const urn = await votesDb.encryptedVote.findMany({ select: { ciphertextHash: true, proofs: true } })
+    expect(urn.map((row) => row.ciphertextHash).sort()).toEqual([...hashes].sort())
+    for (const row of urn) {
+      expect((row.proofs as { format?: unknown }).format).toBe(2)
+      const envelope = envelopes.find((candidate) => candidate.ciphertextHash === row.ciphertextHash)
+      expect(row.proofs).toEqual(envelope!.proofs)
+    }
+  })
 
   it('flyttar chiffren och raderar kopplingen', async () => {
     await castFor(anna, 'bp-s')
@@ -636,7 +662,13 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     const outcome = await closeElection(electionId)
 
-    expect(outcome).toEqual({ status: 'invalid_ballot', ciphertextHash: forged.ciphertextHash })
+    // Sammanfattningen följer med sedan fixrunda 1 av uppgift 14d: antal och
+    // kategorier, ingen väljare.
+    expect(outcome).toEqual({
+      status: 'invalid_ballot',
+      ciphertextHash: forged.ciphertextHash,
+      summary: { votes: 2, voters: 2, byKind: { BAD_PROOF: 1 }, passed: false },
+    })
     expect(await votesDb.encryptedVote.count()).toBe(0)
     expect(await votersDb.pendingVote.count()).toBe(2)
   })
@@ -657,10 +689,15 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     const outcome = await closeElection(electionId)
 
-    // Beskedet pekar ut kuvertet vid dess chifferhash, och rutten säger att
-    // skalningen avbröts och att kopplingen är kvar, se
+    // Beskedet pekar ut kuvertet vid dess chifferhash, och sammanfattningen
+    // säger hur många som har det gamla formatet. Rutten säger att skalningen
+    // avbröts och att kopplingen är kvar, se
     // src/app/api/admin/elections/close/route.ts.
-    expect(outcome).toEqual({ status: 'invalid_ballot', ciphertextHash: old.ciphertextHash })
+    expect(outcome).toEqual({
+      status: 'invalid_ballot',
+      ciphertextHash: old.ciphertextHash,
+      summary: { votes: 2, voters: 2, byKind: { OLD_PROOF_FORMAT: 1 }, passed: false },
+    })
     expect(await votersDb.pendingVote.count()).toBe(2)
     expect(await votesDb.encryptedVote.count()).toBe(0)
     expect(await votersDb.votedMarker.count()).toBe(0)
@@ -682,7 +719,12 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     const outcome = await closeElection(electionId)
 
-    expect(outcome).toEqual({ status: 'invalid_ballot', ciphertextHash: forged.ciphertextHash })
+    // Sammanfattningen är valideringens, som här sa ja.
+    expect(outcome).toEqual({
+      status: 'invalid_ballot',
+      ciphertextHash: forged.ciphertextHash,
+      summary: { votes: 0, voters: 0, byKind: {}, passed: true },
+    })
     expect(await votesDb.encryptedVote.count()).toBe(0)
     expect(await votersDb.pendingVote.count()).toBe(2)
   })

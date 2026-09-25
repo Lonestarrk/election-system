@@ -11,6 +11,7 @@ import {
   linkStateOf,
   urnRowsReplacedOf,
 } from '@/orchestration/close-election.usecase'
+import { oldProofFormatNote, type ValidationReport } from '@/orchestration/validate-before-close.usecase'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -222,9 +223,11 @@ export async function POST(request: Request) {
     return jsonResponse(
       {
         status: 'validation_failed',
-        message:
+        message: withOldFormatNote(
           'Läggningen tar inte längre emot kuvert, men skalningen avbröts. Valideringen hittade ' +
-          'avvikelser, och kopplingen mellan väljare och röst är kvar så att de går att utreda.',
+            'avvikelser, och kopplingen mellan väljare och röst är kvar så att de går att utreda.',
+          outcome.summary,
+        ),
         summary: outcome.summary,
       },
       409,
@@ -232,13 +235,24 @@ export async function POST(request: Request) {
   }
 
   if (outcome.status === 'invalid_ballot') {
+    /**
+     * Kuvertet som pekas ut är det första som inte verifierar, och
+     * sammanfattningen säger hur många som avviker och hur (fixrunda 1 av
+     * uppgift 14d). Utan den lät N kuvert i det gamla bevisformatet som en
+     * enda manipulerad valsedel. Bara antal och kategorier går ut, ingen
+     * väljare, som för `validation_failed`.
+     */
     return jsonResponse(
       {
         status: 'invalid_ballot',
-        message:
-          'Läggningen tar inte längre emot kuvert, men skalningen avbröts. En valsedel verifierar ' +
-          'inte längre, och kopplingen mellan väljare och röst är kvar så att den går att utreda.',
+        message: withOldFormatNote(
+          'Läggningen tar inte längre emot kuvert, men skalningen avbröts. Minst en valsedel ' +
+            'verifierar inte längre, och kopplingen mellan väljare och röst är kvar så att det går ' +
+            'att utreda.',
+          outcome.summary,
+        ),
         ciphertextHash: outcome.ciphertextHash,
+        summary: outcome.summary,
       },
       409,
     )
@@ -295,4 +309,14 @@ function replacedNote(urnRowsReplaced: readonly string[]): string {
     'stället. Ingen legitim väg skriver en sådan rad, så någon har skrivit i röstdatabasen förbi ' +
     'stängningen. Chifferhasharna står i urnRowsReplaced.'
   )
+}
+
+/**
+ * Beskedet, med en mening om det gamla bevisformatet när valideringen hittade
+ * sådana kuvert (fixrunda 1 av uppgift 14d). Meningen kommer ur
+ * sammanfattningen och säger bara antalet.
+ */
+function withOldFormatNote(message: string, summary: ValidationReport['summary']): string {
+  const note = oldProofFormatNote(summary)
+  return note === '' ? message : `${message} ${note}`
 }

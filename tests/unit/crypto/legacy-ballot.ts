@@ -38,6 +38,14 @@ import {
  * fixturens frö ger fixturen från före uppgift 14b, byte för byte.
  */
 
+/**
+ * En valsedel i det gamla formatet: samma fält som i dag, men bevisen saknar
+ * formatmarkören och är byggda med det gamla transkriptet.
+ */
+export type LegacyEncryptedBallot = Omit<EncryptedBallot, 'proofs'> & {
+  proofs: Omit<EncryptedBallot['proofs'], 'format'>
+}
+
 function legacyContext(electionId: string, ballotId: string, index: number): string {
   return `${electionId}|${ballotId}|${index}`
 }
@@ -123,7 +131,7 @@ export function legacyEncryptBallot(
   ballotId: string,
   options: BallotOption[],
   choice: BallotOption,
-): EncryptedBallot {
+): LegacyEncryptedBallot {
   const key = BigInt(publicKey)
   const vector = unitVector(options.length, indexOfChoice(options, choice))
   useFixedBase(key)
@@ -226,7 +234,7 @@ export function legacyVerifyEncryptedBallot(
   electionId: string,
   ballotId: string,
   expectedLength: number,
-  ballot: EncryptedBallot,
+  ballot: LegacyEncryptedBallot,
 ): boolean {
   const key = parseElement(publicKey)
   if (key === null) throw new Error('Valets publika nyckel är inte ett tal i [1, p).')

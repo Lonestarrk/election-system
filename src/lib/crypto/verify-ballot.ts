@@ -1,6 +1,7 @@
 import { isInSubgroup, parseElement, parseScalar } from './group'
 import { multiply, type Ciphertext } from './elgamal'
 import {
+  PROOF_FORMAT,
   verifySumIsOne,
   verifyZeroOrOne,
   type BallotBinding,
@@ -32,7 +33,16 @@ export type SerialisedEqualityProof = { a: string; b: string; challenge: string;
 
 export type EncryptedBallot = {
   ciphertext: Array<{ c1: string; c2: string }>
-  proofs: { components: SerialisedZeroOrOneProof[]; sum: SerialisedEqualityProof }
+  /**
+   * `format` är vilket transkript bevisen är byggda med, se `PROOF_FORMAT` i
+   * proofs.ts. Den ligger här och inte bredvid chiffret, så att den inte
+   * ingår i chifferhashen.
+   */
+  proofs: {
+    format: typeof PROOF_FORMAT
+    components: SerialisedZeroOrOneProof[]
+    sum: SerialisedEqualityProof
+  }
   ciphertextHash: string
 }
 
@@ -116,6 +126,36 @@ function parseEqualityProof(proof: unknown): EqualityProof | null {
   })
 }
 
+/**
+ * Är valsedeln hel, men i det gamla bevisformatet?
+ *
+ * Så ser varje kuvert ut som lades före fixrunda 1 av uppgift 14d: bevisen
+ * saknar formatmarkören, men varje tal går att tolka, längderna stämmer och
+ * hashen är chiffrets. Valideringen före stängningen rapporterar ett sådant
+ * kuvert som det gamla bevisformatet i stället för som ett trasigt bevis.
+ * Ingen exponentiering görs. Bevisen i det är byggda med ett transkript som
+ * inte längre godkänns, och ingen prövning av dem kan göra kuvertet giltigt.
+ *
+ * Allt annat är ett trasigt kuvert och inte ett gammalt: bevis som inte är ett
+ * objekt, en annan markör än den nuvarande, ett tal som inte går att tolka
+ * eller en hash som inte är chiffrets. Ingen version av röstsidan har byggt ett
+ * sådant.
+ *
+ * Markören är inte underskriven. BankID:s underskrift gäller chifferhashen och
+ * inte bevisen, så den som kan skriva i röstlängden kan ta bort markören ur
+ * ett kuvert. Ett kuvert som rapporteras som gammalt stoppar ändå stängningen,
+ * precis som ett trasigt, så det ger honom ingenting utöver en annan kategori.
+ */
+export function isOldProofFormat(ballot: unknown, expectedLength: number): boolean {
+  return (
+    isRecord(ballot) &&
+    isRecord(ballot.proofs) &&
+    !Object.hasOwn(ballot.proofs, 'format') &&
+    parseBallotFields(ballot, ballot.proofs, expectedLength) !== null &&
+    ballot.ciphertextHash === hashCiphertext(ballot.ciphertext as EncryptedBallot['ciphertext'])
+  )
+}
+
 type ParsedBallot = { ciphertexts: Ciphertext[]; components: ZeroOrOneProof[]; sum: EqualityProof }
 
 /**
@@ -129,8 +169,21 @@ type ParsedBallot = { ciphertexts: Ciphertext[]; components: ZeroOrOneProof[]; s
 function parseBallot(ballot: unknown, expectedLength: number): ParsedBallot | null {
   if (!isRecord(ballot) || !isRecord(ballot.proofs)) return null
 
+  // Bevis i ett annat format hör till ett annat transkript, och prövas inte
+  // alls. Ett kuvert från före fixrunda 1 av uppgift 14d saknar markören.
+  if (ballot.proofs.format !== PROOF_FORMAT) return null
+
+  return parseBallotFields(ballot, ballot.proofs, expectedLength)
+}
+
+/** Chiffret och bevisen, tal för tal, utan formatmarkören. Se `parseBallot`. */
+function parseBallotFields(
+  ballot: Record<string, unknown>,
+  proofFields: Record<string, unknown>,
+  expectedLength: number,
+): ParsedBallot | null {
   const { ciphertext } = ballot
-  const { components, sum } = ballot.proofs
+  const { components, sum } = proofFields
   if (!Array.isArray(ciphertext) || !Array.isArray(components)) return null
   if (ciphertext.length !== expectedLength || components.length !== expectedLength) return null
 

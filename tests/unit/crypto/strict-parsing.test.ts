@@ -83,10 +83,12 @@ describe('en förfalskad valsedel med +1000 för ett parti och −999 för blank
 
   it('lägger verkligen tusen röster på partiet, och summerar ändå till 1', () => {
     // Utan det här säger testerna nedan ingenting: det är just den här
-    // valsedeln som godkändes före rättelsen.
+    // valsedeln som godkändes före rättelsen. Den bär formatmarkören, så att
+    // det är den negativa utmaningen som fäller den och inte markören.
     expect(decryptWithSecret(keys.privateKey, ciphertexts[1]!)).toBe(1000)
     expect(decryptWithSecret(keys.privateKey, ciphertexts.reduce((a, b) => multiply(a, b)))).toBe(1)
     expect(BigInt(forged.proofs.components[1]!.challenge0) < 0n).toBe(true)
+    expect(forged.proofs.format).toBe(2)
   })
 
   it('underkänns i BigInt', () => {
@@ -233,6 +235,11 @@ describe('trådschemat och verifieringen säger samma sak om varje tal', () => {
     ['ett plustecken', inProof(0, (p) => (p.response0 = '+' + String(p.response0)))],
     ['ett blanksteg', inProof(0, (p) => (p.challenge0 = ' ' + String(p.challenge0)))],
     ['hex', (b) => (b.proofs.sum.response = '0x' + BigInt(b.proofs.sum.response as string).toString(16))],
+    // Formatmarkören (fixrunda 1 av uppgift 14d). Utan den, eller med en annan,
+    // prövas inga bevis, och trådschemat släpper inte igenom den.
+    ['formatmarkören saknas', (b) => delete (b.proofs as Fields).format],
+    ['formatmarkören är 1', (b) => ((b.proofs as Fields).format = 1)],
+    ['formatmarkören är strängen "2"', (b) => ((b.proofs as Fields).format = '2')],
     // Former som bara en databasrad kan ha. Förut kastade de inne i verifieringen.
     ['ett tal i stället för en sträng', inProof(0, (p) => (p.response0 = 5))],
     ['null i stället för ett tal', inProof(0, (p) => (p.b0 = null))],

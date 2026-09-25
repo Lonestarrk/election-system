@@ -1,6 +1,7 @@
 import { randomScalar, useFixedBase } from './crypto/group'
 import { encrypt, multiply, type Ciphertext } from './crypto/elgamal'
 import {
+  PROOF_FORMAT,
   proveSumIsOne,
   startZeroOrOne,
   type BallotBinding,
@@ -103,7 +104,11 @@ function* ballotEncryption(
     ),
   )
 
-  return { ciphertext: serialised, proofs: { components, sum }, ciphertextHash: binding.ciphertextHash }
+  return {
+    ciphertext: serialised,
+    proofs: { format: PROOF_FORMAT, components, sum },
+    ciphertextHash: binding.ciphertextHash,
+  }
 }
 
 export function encryptBallot(

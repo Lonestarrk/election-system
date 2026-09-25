@@ -9,6 +9,7 @@ import { generateKeyPair } from '@/lib/crypto/elgamal'
 import { registerGroupExponentiation } from '@/lib/crypto/group'
 import { nativeModPow } from '@/lib/crypto/native-exponentiation'
 import {
+  isOldProofFormat,
   verifyEncryptedBallot,
   verifyEncryptedBallotInSteps,
   type EncryptedBallot,
@@ -29,9 +30,10 @@ import { seededRandomValues } from './seeded-random'
  * samma valsedel byte för byte efteråt.
  *
  * Uppgift 14d ändrar vad som hashas. Varje utmaning binder nu hela
- * chifferlistan, genom valsedelns chifferhash (se proofs.ts). Samma fixtur är
- * därför nu en valsedel i det gamla formatet, och den ska underkännas. Så ser
- * vart och ett av kuverten ut som lades före ändringen.
+ * chifferlistan, genom valsedelns chifferhash, och valets publika nyckel (se
+ * proofs.ts). Bevisen bär dessutom en formatmarkör, `format: 2`, som den gamla
+ * fixturen saknar. Den är därför nu en valsedel i det gamla formatet, och den
+ * ska underkännas. Så ser vart och ett av kuverten ut som lades före ändringen.
  *
  * ballot-26-14d.json är en valsedel i det nya formatet, krypterad på samma
  * sätt med ett eget frö. Den håller formatet fast: samma frö ska ge samma
@@ -42,6 +44,11 @@ import { seededRandomValues } from './seeded-random'
  */
 
 afterEach(() => registerGroupExponentiation(null))
+
+/** Samma valsedel med formatmarkören i bevisen, som om den vore i det nuvarande formatet. */
+function withFormat(ballot: EncryptedBallot): EncryptedBallot {
+  return { ...ballot, proofs: { ...ballot.proofs, format: 2 } } as EncryptedBallot
+}
 
 /** Krypterar om med en fixturs frö: nyckelparet först, sedan valsedeln, som när fixturen skapades. */
 function withSeed<T>(seed: string, run: () => T): T {
@@ -141,10 +148,39 @@ describe('formatet före uppgift 14d', () => {
     ).toBe(true)
   })
 
-  it('trådschemat godtar den fortfarande, eftersom formen är densamma', () => {
-    // Fälten och talens form har inte ändrats, bara vad utmaningarna binder.
-    // Ett gammalt kuvert syns alltså inte på formen, bara när bevisen prövas.
-    expect(encryptedBallotSchema.safeParse(ballot).success).toBe(true)
+  it('saknar formatmarkören, och trådschemat underkänner den för det', () => {
+    // Talens och fältens form är densamma som förut. Det enda som skiljer på
+    // formen är att bevisen saknar `format`, och det räcker för trådschemat.
+    expect('format' in ballot.proofs).toBe(false)
+    const parsed = encryptedBallotSchema.safeParse(ballot)
+    expect(parsed.success).toBe(false)
+    expect(encryptedBallotSchema.safeParse(withFormat(ballot)).success).toBe(true)
+
+    // En röstsida som laddades före uppdateringen skickar just en sådan
+    // valsedel, och det är det här beskedet väljaren får se.
+    expect(parsed.error?.issues.map((issue) => issue.message)).toEqual([
+      'Sidan är en äldre version och rösten lades inte. Ladda om sidan och rösta igen.',
+    ])
+  })
+
+  it('valideringen känner igen den som det gamla formatet, men inte ett trasigt kuvert utan markör', () => {
+    // Det gamla formatet är ett helt kuvert utan markören. Allt annat är ett
+    // trasigt kuvert, också när markören saknas, och valideringen kallar det
+    // BAD_PROOF (se isOldProofFormat i verify-ballot.ts).
+    expect(isOldProofFormat(ballot, 26)).toBe(true)
+
+    const brokenNumber = structuredClone(ballot)
+    brokenNumber.proofs.components[3]!.response1 = 'inte ett tal'
+    const wrongHash = { ...ballot, ciphertextHash: 'f'.repeat(64) }
+    const wrongLength = { ...ballot, ciphertext: ballot.ciphertext.slice(1) }
+
+    expect(isOldProofFormat(withFormat(ballot), 26)).toBe(false)
+    expect(isOldProofFormat(brokenNumber, 26)).toBe(false)
+    expect(isOldProofFormat(wrongHash, 26)).toBe(false)
+    expect(isOldProofFormat(wrongLength, 26)).toBe(false)
+    expect(isOldProofFormat(ballot, 25)).toBe(false)
+    expect(isOldProofFormat({ ...ballot, proofs: 'bevis' }, 26)).toBe(false)
+    expect(isOldProofFormat(fixture.ballot, 26)).toBe(false)
   })
 
   it('underkänns nu, i BigInt', () => {
@@ -153,7 +189,8 @@ describe('formatet före uppgift 14d', () => {
     ).toBe(false)
   }, 60_000)
 
-  it('och i OpenSSL, i steg, som servern prövar den, vid det första 0-eller-1-beviset', async () => {
+  /** Verifierar i steg, som servern, och räknar pauserna före svaret. */
+  async function stepsBeforeVerdict(candidate: EncryptedBallot): Promise<{ verdict: boolean; pauses: number }> {
     registerGroupExponentiation(nativeModPow)
     let pauses = 0
     const verdict = await verifyEncryptedBallotInSteps(
@@ -161,16 +198,24 @@ describe('formatet före uppgift 14d', () => {
       before14d.electionId,
       before14d.ballotId,
       26,
-      ballot,
+      candidate,
       async () => {
         pauses += 1
       },
     )
+    return { verdict, pauses }
+  }
 
-    expect(verdict).toBe(false)
-    // En paus efter varje undergruppskontroll, och ingen efter något bevis:
-    // talen och chiffren håller, och det första beviset säger nej.
-    expect(pauses).toBe(26)
+  it('och i OpenSSL, i steg, som servern prövar den, innan något räknas', async () => {
+    // Utan formatmarkören prövas inga bevis alls, och ingen exponentiering görs.
+    expect(await stepsBeforeVerdict(ballot)).toEqual({ verdict: false, pauses: 0 })
+  })
+
+  it('och med formatmarkören tillagd underkänns den vid det första 0-eller-1-beviset', async () => {
+    // Markören ensam gör inte ett gammalt kuvert giltigt: bevisen är byggda
+    // med det gamla transkriptet. En paus efter varje undergruppskontroll, och
+    // ingen efter något bevis.
+    expect(await stepsBeforeVerdict(withFormat(ballot))).toEqual({ verdict: false, pauses: 26 })
   })
 })
 
@@ -195,6 +240,7 @@ describe('formatet sedan uppgift 14d', () => {
     expect(ballot.proofs.components).toHaveLength(26)
     // Tecknen och byten skiljer sig, så att längdprefixen prövas i byte.
     expect(new TextEncoder().encode(fixture.electionId).length).toBeGreaterThan(fixture.electionId.length)
+    expect(ballot.proofs.format).toBe(2)
   })
 
   it('godkänns i BigInt', () => {

@@ -1,6 +1,7 @@
 import { encrypt, multiply, type Ciphertext } from '@/lib/crypto/elgamal'
 import { G, G_INVERSE, P, Q, modPow, randomScalar } from '@/lib/crypto/group'
 import {
+  PROOF_FORMAT,
   proveSumIsOne,
   zeroOrOneChallenge,
   type BallotBinding,
@@ -29,7 +30,7 @@ import {
  * fixrunda 1, både i BigInt och i OpenSSL.
  *
  * Utmaningarna räknas med transkriptet sedan uppgift 14d, som binder hela
- * chifferlistan. Förfalskningen håller alltså fram till den punkt där
+ * chifferlistan och valets publika nyckel. Förfalskningen håller alltså fram till den punkt där
  * rättelsen i fixrunda 1 ska stoppa den, och inte längre: med den gamla
  * utmaningen hade den underkänts redan när utmaningen jämfördes, och testerna
  * hade inte sagt något om rättelsen.
@@ -62,7 +63,7 @@ export function forgeZeroOrOneProof(
   const a1 = (groupPow(G, response1) * groupPow(ciphertext.c1, -challenge1)) % P
   const b1 = (groupPow(publicKey, response1) * groupPow(shifted, -challenge1)) % P
 
-  const challenge = zeroOrOneChallenge(binding, index, [ciphertext.c1, ciphertext.c2, a0, b0, a1, b1])
+  const challenge = zeroOrOneChallenge(publicKey, binding, index, [ciphertext.c1, ciphertext.c2, a0, b0, a1, b1])
 
   return {
     a0,
@@ -102,7 +103,13 @@ export function forgeBallot(
   const sum = serialiseEqualityProof(proveSumIsOne(publicKey, product, nonceSum, binding))
 
   return {
-    ballot: { ciphertext, proofs: { components, sum }, ciphertextHash: binding.ciphertextHash },
+    // Med formatmarkören, så att det är de förfalskade bevisen och inte en
+    // saknad markör som ska fälla valsedeln.
+    ballot: {
+      ciphertext,
+      proofs: { format: PROOF_FORMAT, components, sum },
+      ciphertextHash: binding.ciphertextHash,
+    },
     ciphertexts,
   }
 }

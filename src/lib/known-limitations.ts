@@ -272,7 +272,8 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       // ... och valideringen har ingen kategori för den.
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
-        contains: "  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF'\n  pendingVoteId: string",
+        contains:
+          "  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF' | 'OLD_PROOF_FORMAT'\n  pendingVoteId: string",
       },
     ],
   },

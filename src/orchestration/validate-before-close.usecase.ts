@@ -15,7 +15,7 @@ import { trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
 import { hashPersonalNumber } from '@/modules/eligibility/identity'
 import { openCertificateChain } from '@/modules/eligibility/sealed-chain'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
-import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
+import { isOldProofFormat, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 
 /**
@@ -111,8 +111,16 @@ export type Anomaly = {
    * Två kuvert med samma chiffer är ingen avvikelse (fixrunda 3 av uppgift
    * 11d, ruling 130). De är två giltiga röster, en valsedel och en kopia av
    * den, och båda flyttas. Fixrunda 2 hade en egen kategori för dem.
+   *
+   * OLD_PROOF_FORMAT är ett helt kuvert vars bevis saknar formatmarkören,
+   * så som varje kuvert ser ut som lades före fixrunda 1 av uppgift 14d (se
+   * `isOldProofFormat`). Bevisen i det är byggda med ett transkript som inte
+   * längre godkänns, och kuvertet kan inte räknas. Det stoppar stängningen
+   * som varje annan avvikelse. Kategorin skiljer det från BAD_PROOF, som är
+   * allt annat som inte håller: ett bevis i det nuvarande formatet, en annan
+   * markör eller ett kuvert som inte går att tolka.
    */
-  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF'
+  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF' | 'OLD_PROOF_FORMAT'
   pendingVoteId: string
   /** Bara för administratörens utredning. Publiceras aldrig. */
   voterStatusId: string
@@ -129,6 +137,22 @@ export type ValidationReport = {
   summary: { votes: number; voters: number; byKind: Record<string, number>; passed: boolean }
   /** Publiceras inte. Finns för administratören att utreda, och inte längre än så. */
   anomalies: Anomaly[]
+}
+
+/**
+ * Vad sammanfattningen säger om det gamla bevisformatet, som en mening till
+ * administratören, eller en tom sträng när inget kuvert har det.
+ *
+ * Bara antalet ur sammanfattningen, och ingen väljare. Stängningens besked
+ * lägger meningen till sitt eget, så att administratören ser att avvikelserna
+ * är kuvert i det gamla formatet och inte bevis i det nuvarande som inte
+ * håller (granskningen av uppgift 14d, Mindre 2). Markören är inte
+ * underskriven, så kategorin säger vad kuvertet påstår om sitt format, och
+ * ingenting om vem som skrev det.
+ */
+export function oldProofFormatNote(summary: ValidationReport['summary']): string {
+  const count = summary.byKind.OLD_PROOF_FORMAT ?? 0
+  return count === 0 ? '' : `${count} kuvert har det gamla bevisformatet och kan inte räknas.`
 }
 
 /**
@@ -543,7 +567,9 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
  *   3. BAD_SIGNATURE      signaturen i det vanliga fallet (bara en avvikande
  *                        rad kostar flera), och en identitetshash per väljare.
  *   4. BAD_PROOF       — dyrast: en handfull modulär exponentiering per
- *                        alternativ på valsedeln.
+ *                        alternativ på valsedeln. Är kuvertet helt men
+ *                        saknar bevisen formatmarkören blir raden
+ *                        OLD_PROOF_FORMAT i stället, utan att något räknas.
  *
  * "Billigast först" avgör bara ORDNINGEN de körs i, inte OM de körs. En rad
  * kan ha flera samtidiga fel — fel valsedel OCH ett förfalskat bevis är inte
@@ -628,12 +654,21 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
       anomalies.push(anomaly('BAD_SIGNATURE', signature.reason))
     }
 
-    // 4. BAD_PROOF — dyrast, men körs ändå: en rad kan ha ett ogiltigt bevis
-    // OBEROENDE av om valsedeln eller signaturen redan avvek.
+    // 4. OLD_PROOF_FORMAT eller BAD_PROOF — dyrast, men körs ändå: en rad kan
+    // ha ett ogiltigt bevis OBEROENDE av om valsedeln eller signaturen redan
+    // avvek.
     let shape = shapeCache.get(vote.ballotId)
     if (shape === undefined) {
       shape = await getEncryptedBallotShape(vote.ballotId)
       shapeCache.set(vote.ballotId, shape)
+    }
+
+    // Ett helt kuvert utan formatmarkören prövas inte, eftersom dess bevis hör
+    // till ett transkript som inte godkänns längre. Det kostar ingen
+    // exponentiering att se det.
+    if (shape !== null && isOldProofFormat(toEncryptedBallot(vote), shape.optionCount)) {
+      anomalies.push(anomaly('OLD_PROOF_FORMAT'))
+      continue
     }
 
     const proofHolds =

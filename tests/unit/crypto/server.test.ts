@@ -216,8 +216,9 @@ describe('verifieringarna går i tur och ordning', () => {
     const ciphertext = [{ c1: 'inte ett tal', c2: '1' }]
     const malformed: EncryptedBallot = {
       ciphertext,
-      proofs: { components: [ballot.proofs.components[0]!], sum: ballot.proofs.sum },
-      // Rätt hash, så att det är tolkningen som säger nej och inte hashkontrollen.
+      // Formatmarkören och rätt hash, så att det är tolkningen av talet som
+      // säger nej och inte markören eller hashkontrollen.
+      proofs: { format: 2, components: [ballot.proofs.components[0]!], sum: ballot.proofs.sum },
       ciphertextHash: hashCiphertext(ciphertext),
     }
     expect(await verifyEncryptedBallotOnServer(fixture.publicKey, 'val', 'valsedel', 1, malformed)).toBe(

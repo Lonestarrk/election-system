@@ -58,13 +58,23 @@ export function challengeHash(context: string, values: bigint[]): bigint {
  * VALSEDELNS BEVIS BINDER HELA VALSEDELN (uppgift 14d, spec 4.4).
  *
  * Utmaningen i varje 0-eller-1-bevis och i summabeviset binder valets id,
- * valsedelns id, hela chifferlistan och bevisets egna tal. Ett 0-eller-1-bevis
- * binder dessutom sitt alternativs index. Före uppgift 14d band ett
- * 0-eller-1-bevis bara sitt eget chiffer av listan, och summabeviset bara
- * produkten av den. Ett giltigt bevis kunde därför i princip klippas ut ur en
- * valsedel, tillsammans med sitt chiffer, och sättas in på samma plats i en
- * annan. En sådan valsedel stoppades då bara av summabeviset, eftersom
- * produkten ändrades (tests/unit/crypto/ballot-binding.test.ts).
+ * valsedelns id, valets publika nyckel h, hela chifferlistan och bevisets egna
+ * tal. Ett 0-eller-1-bevis binder dessutom sitt alternativs index. Före uppgift
+ * 14d band ett 0-eller-1-bevis bara sitt eget chiffer av listan, och
+ * summabeviset bara produkten av den. Ett giltigt bevis kunde därför i princip
+ * klippas ut ur en valsedel, tillsammans med sitt chiffer, och sättas in på
+ * samma plats i en annan. En sådan valsedel stoppades då bara av summabeviset,
+ * eftersom produkten ändrades (tests/unit/crypto/ballot-binding.test.ts).
+ *
+ * NYCKELN I TRANSKRIPTET (ruling 132, fixrunda 1 av uppgift 14d). Utan h kunde
+ * den som väljer nyckeln efter utmaningen få ett enskilt bevis godkänt för ett
+ * chiffer som inte krypterar det som beviset påstår. x löses då ur
+ * verifieringens egna ekvationer, och h = g^x. Granskaren av uppgift 14d visade
+ * det, och ballot-binding.test.ts bygger samma förfalskning. Nyckeln i
+ * transkriptet är samma tal som ekvationerna räknar med, `publicKey` i varje
+ * funktion nedan, och inte ett eget fält i bindningen, så att de två inte kan
+ * skilja sig åt. Formatet v2 utan h, i commit c06533d, släpptes aldrig: det
+ * pushades inte och driftsattes inte. Därför heter formatet med h också v2.
  *
  * TRANSKRIPTET, EXAKT. Uppgift 13 skriver en oberoende verifierare ur den här
  * beskrivningen, och tests/unit/crypto/transcript.test.ts bygger transkriptet
@@ -76,6 +86,7 @@ export function challengeHash(context: string, values: bigint[]): bigint {
  *     00                                    en nollbyte
  *     L(electionId)
  *     L(ballotId)
+ *     E(h)                                  valets publika nyckel
  *     U32(i)                                alternativets index, 0 till M − 1
  *     H                                     32 byte
  *     E(c1) E(c2)                           alternativets chiffer
@@ -87,6 +98,7 @@ export function challengeHash(context: string, values: bigint[]): bigint {
  *     00                                    en nollbyte
  *     L(electionId)
  *     L(ballotId)
+ *     E(h)                                  valets publika nyckel
  *     H                                     32 byte
  *     E(C1) E(C2)                           produkten av alla chiffer
  *     E(a) E(b)                             åtagandena
@@ -94,7 +106,8 @@ export function challengeHash(context: string, values: bigint[]): bigint {
  *   där
  *
  *     L(s)     längden av s i UTF-8, räknad i byte, som U32, och sedan s i
- *              UTF-8; s ska vara giltig Unicode
+ *              UTF-8. s hashas exakt som id:t lagras, utan
+ *              Unicode-normalisering, och ska vara giltig Unicode
  *     U32(n)   n som fyra byte, big-endian, utan tecken
  *     H        chifferlistans hash, alltså de 32 byte som valsedelns
  *              ciphertextHash skriver med 64 små hextecken: SHA-256 över
@@ -102,17 +115,32 @@ export function challengeHash(context: string, values: bigint[]): bigint {
  *              i ordning, en NUL, c1 och en NUL, c2, talen decimalt utan
  *              inledande nollor, som i valsedeln (`hashCiphertext` i
  *              verify-ballot.ts)
- *     E(x)     x som 256 byte, big-endian, med inledande nollbyte, för
- *              0 ≤ x < p
+ *     E(x)     x som ett tal big-endian, vänsterutfyllt med nollbyte till
+ *              exakt 256 byte, för 0 ≤ x < p
  *     C1, C2   produkten modulo p av alla alternativs c1 respektive c2
  *
- *   Transkriptet är fälten efter varandra, utan något mellan dem. Utmaningen
- *   är SHA-256 över transkriptet, läst som ett tal big-endian, modulo q.
- *   Reduktionen ändrar ingenting, eftersom q är större än 2^256, men den står
- *   med, så att utmaningen alltid är en exponent. Ett 0-eller-1-bevis håller
- *   bara om (challenge0 + challenge1) mod q är utmaningen, och summabeviset
- *   bara om challenge är det. Ekvationerna efter utmaningen är desamma som
- *   före uppgift 14d.
+ *   Transkriptet är fälten efter varandra, utan något mellan dem. Med id:n som
+ *   UUID, 36 byte vardera, är ett 0-eller-1-transkript 1 942 byte och ett
+ *   summatranskript 1 417 byte. Utmaningen är SHA-256 över transkriptet, läst
+ *   som ett tal big-endian, modulo q. Reduktionen ändrar ingenting, eftersom q
+ *   är större än 2^256, men den står med, så att utmaningen alltid är en
+ *   exponent. Ett 0-eller-1-bevis håller bara om (challenge0 + challenge1) mod
+ *   q är utmaningen, och summabeviset bara om challenge är det. Ekvationerna
+ *   efter utmaningen är desamma som före uppgift 14d.
+ *
+ * PREFIXET BESTÄMMER DET SOM INTE STÅR SOM FÄLT. Det är gruppen, alltså p, q
+ * och g = 4 (RFC 3526 MODP Group 14, se group.ts), och vad bevisen påstår: att
+ * varje alternativ krypterar 0 eller 1, och att produkten krypterar 1. En
+ * annan grupp, eller en valsedel där fler än ett alternativ får väljas, kräver
+ * därför ett nytt prefix, och med det en ny formatmarkör.
+ *
+ * FORMATMARKÖREN. Valsedelns bevis bär `format: 2` (`PROOF_FORMAT` nedan), och
+ * siffran är versionen i prefixen. Valsedelns verifiering i verify-ballot.ts
+ * prövar bara bevis med den markören. Valideringen före stängningen skiljer
+ * därmed ett helt kuvert utan markör, som ett som lades före fixrunda 1 av
+ * uppgift 14d, från ett trasigt bevis (`isOldProofFormat` i verify-ballot.ts).
+ * Markören ligger i bevisen och inte i chiffret, så den ingår inte i
+ * chifferhashen.
  *
  * INGET FÄLT KAN LÄSAS PÅ TVÅ SÄTT. De två prefixen skiljer sig redan i
  * tecknet efter "valsystem/bevis/v2/", och inget av dem är början på det andra
@@ -145,10 +173,17 @@ export type ZeroOrOneValues = readonly [c1: bigint, c2: bigint, a0: bigint, b0: 
 /** Talen som summabevisets utmaning binder, i transkriptets ordning. */
 export type SumValues = readonly [c1: bigint, c2: bigint, a: bigint, b: bigint]
 
+/**
+ * Formatmarkören i valsedelns bevis, `proofs.format`, och versionen i
+ * transkriptens prefix. Ett nytt transkript får en ny siffra, och därmed nya
+ * prefix, så att inget bevis kan prövas mot ett annat formats transkript.
+ */
+export const PROOF_FORMAT = 2
+
 const encoder = new TextEncoder()
 
-const ZERO_OR_ONE_DOMAIN = encoder.encode('valsystem/bevis/v2/noll-eller-ett\u0000')
-const SUM_DOMAIN = encoder.encode('valsystem/bevis/v2/summa\u0000')
+const ZERO_OR_ONE_DOMAIN = encoder.encode(`valsystem/bevis/v${PROOF_FORMAT}/noll-eller-ett\u0000`)
+const SUM_DOMAIN = encoder.encode(`valsystem/bevis/v${PROOF_FORMAT}/summa\u0000`)
 
 /** Antal byte i E(x). p har 2048 bitar. */
 const ELEMENT_BYTES = 256
@@ -245,24 +280,31 @@ function element(value: bigint): Uint8Array {
   return fromHex(value.toString(16).padStart(2 * ELEMENT_BYTES, '0'))
 }
 
-/** Transkriptet för 0-eller-1-beviset för alternativ `index`. */
-export function zeroOrOneTranscript(binding: BallotBinding, index: number, values: ZeroOrOneValues): Uint8Array {
+/** Transkriptet för 0-eller-1-beviset för alternativ `index`, under valets publika nyckel `publicKey`. */
+export function zeroOrOneTranscript(
+  publicKey: bigint,
+  binding: BallotBinding,
+  index: number,
+  values: ZeroOrOneValues,
+): Uint8Array {
   return concatenate([
     ZERO_OR_ONE_DOMAIN,
     lengthPrefixed(binding.electionId),
     lengthPrefixed(binding.ballotId),
+    element(publicKey),
     uint32(index),
     listHash(binding.ciphertextHash),
     ...values.map(element),
   ])
 }
 
-/** Transkriptet för summabeviset. */
-export function sumTranscript(binding: BallotBinding, values: SumValues): Uint8Array {
+/** Transkriptet för summabeviset, under valets publika nyckel `publicKey`. */
+export function sumTranscript(publicKey: bigint, binding: BallotBinding, values: SumValues): Uint8Array {
   return concatenate([
     SUM_DOMAIN,
     lengthPrefixed(binding.electionId),
     lengthPrefixed(binding.ballotId),
+    element(publicKey),
     listHash(binding.ciphertextHash),
     ...values.map(element),
   ])
@@ -275,12 +317,17 @@ function challengeOf(transcript: Uint8Array): bigint {
   return value % Q
 }
 
-export function zeroOrOneChallenge(binding: BallotBinding, index: number, values: ZeroOrOneValues): bigint {
-  return challengeOf(zeroOrOneTranscript(binding, index, values))
+export function zeroOrOneChallenge(
+  publicKey: bigint,
+  binding: BallotBinding,
+  index: number,
+  values: ZeroOrOneValues,
+): bigint {
+  return challengeOf(zeroOrOneTranscript(publicKey, binding, index, values))
 }
 
-export function sumChallenge(binding: BallotBinding, values: SumValues): bigint {
-  return challengeOf(sumTranscript(binding, values))
+export function sumChallenge(publicKey: bigint, binding: BallotBinding, values: SumValues): bigint {
+  return challengeOf(sumTranscript(publicKey, binding, values))
 }
 
 /**
@@ -371,7 +418,7 @@ export function startZeroOrOne(
     if (used) throw new Error('Ett 0-eller-1-bevis får bara göras färdigt en gång.')
     used = true
 
-    const challenge = zeroOrOneChallenge(binding, index, [
+    const challenge = zeroOrOneChallenge(publicKey, binding, index, [
       ciphertext.c1,
       ciphertext.c2,
       first.a,
@@ -414,7 +461,7 @@ export function verifyZeroOrOne(
   binding: BallotBinding,
   index: number,
 ): boolean {
-  const challenge = zeroOrOneChallenge(binding, index, [
+  const challenge = zeroOrOneChallenge(publicKey, binding, index, [
     ciphertext.c1,
     ciphertext.c2,
     proof.a0,
@@ -449,7 +496,7 @@ export function proveSumIsOne(
   const commitment = randomScalar()
   const a = modPow(G, commitment, P)
   const b = modPow(publicKey, commitment, P)
-  const challenge = sumChallenge(binding, [product.c1, product.c2, a, b])
+  const challenge = sumChallenge(publicKey, binding, [product.c1, product.c2, a, b])
 
   return { a, b, challenge, response: (commitment + challenge * (nonceSum % Q)) % Q }
 }
@@ -460,7 +507,9 @@ export function verifySumIsOne(
   proof: EqualityProof,
   binding: BallotBinding,
 ): boolean {
-  if (proof.challenge !== sumChallenge(binding, [product.c1, product.c2, proof.a, proof.b])) return false
+  if (proof.challenge !== sumChallenge(publicKey, binding, [product.c1, product.c2, proof.a, proof.b])) {
+    return false
+  }
 
   // Produkten ska kryptera exakt g^1, alltså c2 delat med g.
   const shifted = (product.c2 * G_INVERSE) % P

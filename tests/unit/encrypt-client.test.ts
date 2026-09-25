@@ -93,6 +93,23 @@ describe('krypterad valsedel', () => {
     ).toBe(false)
   })
 
+  it('bevisen bär formatmarkören 2, och den ingår inte i chifferhashen', () => {
+    /**
+     * Markören säger vilket transkript bevisen är byggda med (fixrunda 1 av
+     * uppgift 14d). Den ligger i bevisen och inte i chiffret, så chifferhashen,
+     * som väljaren skriver under och som kuvertroten byggs av, är densamma med
+     * och utan den.
+     */
+    const keys = generateKeyPair()
+    const ballot = encryptBallot(keys.publicKey.toString(), 'val-1', 'vs-1', canonicalOptions(SHAPE), {
+      kind: 'BLANK',
+    })
+
+    expect(ballot.proofs.format).toBe(2)
+    expect(ballot.ciphertext.every((pair) => Object.keys(pair).sort().join() === 'c1,c2')).toBe(true)
+    expect(ballot.ciphertextHash).toBe(hashCiphertext(ballot.ciphertext))
+  })
+
   it('hashen beror på hela chifferlistan', () => {
     const a = hashCiphertext([{ c1: '2', c2: '3' }])
     const b = hashCiphertext([{ c1: '2', c2: '4' }])

@@ -327,7 +327,7 @@ describe('varför den tomma bufferten aldrig får bli ett tal', () => {
     const shifted = (ciphertext.c2 * G_INVERSE) % P
     const a1 = (bigintModPow(G, response1, P) * bigintModPow(ciphertext.c1, Q - challenge1, P)) % P
     const b1 = (bigintModPow(h, response1, P) * bigintModPow(shifted, Q - challenge1, P)) % P
-    const hash = zeroOrOneChallenge(binding, 0, [ciphertext.c1, ciphertext.c2, 0n, 0n, a1, b1])
+    const hash = zeroOrOneChallenge(h, binding, 0, [ciphertext.c1, ciphertext.c2, 0n, 0n, a1, b1])
 
     const forged: ZeroOrOneProof = {
       a0: 0n,
