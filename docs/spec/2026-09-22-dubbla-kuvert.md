@@ -431,18 +431,20 @@ när.
 
 ```
 EncryptedVote
-  id                uuid
+  id                text              första 128 bitarna av SHA-256 över chifferhashen,
+                                      valsedeln och ett löpnummer bland likadana kuvert
+                                      (6, steg 7)
   ballotId          -> ElectionBallot
   ciphertext        jsonb
   proofs            jsonb
-  ciphertextHash    text  @unique      inklusionshandtaget
+  ciphertextHash    text              inte unik, eftersom en kopia räknas (5)
   @@index([ballotId])
 
 TrusteeShare
   electionId        -> Election
   trusteeIndex      int
   publicShare       text              g^{x_i}
-  encryptedShare    text              x_i, skyddad med administratörens nyckel
+  encryptedShare    text              x_i, krypterad med förtroendepersonens lösenfras (4.5)
   @@unique([electionId, trusteeIndex])
 
 PartialDecryption
@@ -466,10 +468,10 @@ BallotTally
 
 1. **Skapa omröstning.** Tröskelnyckel genereras, publik nyckel sparas i `votes_db`,
    tre andelar sparas krypterade, den ursprungliga privata nyckeln raderas.
-2. **Väljaren legitimerar sig** och ser sina valsedlar samt om hon redan röstat.
+2. **Väljaren legitimerar sig** och ser sina valsedlar och om väljaren redan har röstat.
 3. **Klienten** hämtar valsedelns kanoniska alternativlista, bygger enhetsvektorn,
    krypterar och bevisar.
-4. **Väljaren signerar** chifferhashen med BankID `/sign`. Appen visar vad hon godkänner;
+4. **Väljaren signerar** chifferhashen med BankID `/sign`. Appen visar vad som godkänns;
    räknaren och valsedelns id ligger i det icke synliga fältet. Se avsnitt 4.6.
 5. **Servern** verifierar bevisen, prövar kedjan mot BankID:s rot, signaturen mot lövets
    nyckel och personnumret i lövet mot väljarens, kontrollerar att räknaren är högre än den
@@ -478,18 +480,22 @@ BallotTally
    väljaren kan se sin nuvarande röst fram till stängningen. Ingen verifikationskod
    visas. Se 3.1.
 7. **Vid `closesAt`** kör administratören stängningen:
-   validera enligt avsnitt 7 → avbryt vid allvarlig avvikelse → annars infoga i
-   `votes_db` sorterat på chifferhash (idempotent på `ciphertextHash`) → jämför antal →
-   radera `PendingVote` → sätt `linkClearedAt`.
+   `CLOSED` → validera enligt avsnitt 7 → avbryt vid allvarlig avvikelse → `VALIDATED` →
+   infoga i `votes_db` sorterat på innehållet, idempotent per kuvert → läs tillbaka varje
+   flyttat kuvert och jämför byte för byte → i låsets transaktion: `STRIPPED`, kuvertroten,
+   markeringarna och raderingen av `PendingVote`, med antalen prövade före COMMIT.
 8. **k av n förtroendemän** lämnar partiella dekrypteringar av den homomorfa summan.
-9. **Kombinera, räkna, publicera.** Chiffer, bevis, partiella dekrypteringar och resultat
-   blir alla offentliga.
+9. **Kombinera, räkna, publicera.** Bara summorna per alternativ publiceras, med bevis för
+   dekrypteringen (3.1). Enskilda chiffer och deras bevis publiceras inte.
 10. **Slutkontrollen** vägrar fastställa så länge en enda `PendingVote` finns kvar.
 
 Steg 7 kan inte vara en transaktion över två databaser — det är fysiskt omöjligt, vilket
-är själva poängen med separationen. Idempotensen bär i stället: infogningen är
-nyckelfri på `ciphertextHash`, så en avbruten körning kan köras om utan dubbletter.
-Samma resonemang som röstintygens inlösen använde.
+är själva poängen med separationen. Idempotensen bär i stället. Urnans rader nycklas per
+kuvert, med ett id som räknas ur chifferhashen, valsedeln och ett löpnummer bland likadana
+kuvert i den validerade läsningen. En avbruten körning kan därför köras om utan dubbletter,
+och den får samma id:n. Rester från en avbruten körning städas under låset, och en rad med
+ett validerat kuverts plats men ett annat innehåll ersätts. Löpnumret beror bara på
+innehållet och säger ingenting om väljaren eller om när kuvertet lades.
 
 ### 6.1 Faserna är tillstånd, inte bara en ordning i koden
 
