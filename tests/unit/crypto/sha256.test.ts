@@ -11,8 +11,8 @@ import { hashCiphertext } from '@/lib/crypto/verify-ballot'
  * Bevisens utmaningar och chifferhashen räknades tidigare med `createHash` ur
  * node:crypto. Den modulen finns inte i webbläsaren, och det var där
  * valsedeln ska krypteras. Samma funktion används nu på båda sidorna, och den
- * får inte skilja sig från den gamla med en enda bit: då skulle kuvert som
- * redan ligger i databasen sluta verifiera, och en ny valsedel från
+ * får inte skilja sig från den gamla med en enda bit: då skulle chifferhashen
+ * för kuvert som redan ligger i databasen ändras, och en ny valsedel från
  * webbläsaren se manipulerad ut för servern.
  *
  * Jämförelsen görs mot node:crypto, som är facit här. Testfilen körs bara i
@@ -60,7 +60,13 @@ describe('SHA-256', () => {
 describe('bevisens och chiffrets hashar är oförändrade', () => {
   /**
    * De två funktionerna så som de såg ut med node:crypto, ordagrant utom
-   * importen. Kuvert i databasen har sina hashar räknade så här.
+   * importen. Kuvert i databasen har sina chifferhashar räknade så här.
+   *
+   * `challengeHash` är sedan uppgift 14d bara den partiella dekrypteringens
+   * utmaning. Valsedelns bevis har ett eget transkript, som räknas med samma
+   * SHA-256 (se transcript.test.ts). Kuvert som lades före 14d har sina
+   * utmaningar räknade med den här, och de godkänns inte längre, se
+   * proof-format.test.ts.
    */
   function oldChallengeHash(context: string, values: bigint[]): bigint {
     const hash = createHash('sha256')

@@ -1,6 +1,12 @@
 import { isInSubgroup, parseElement, parseScalar } from './group'
 import { multiply, type Ciphertext } from './elgamal'
-import { verifySumIsOne, verifyZeroOrOne, type EqualityProof, type ZeroOrOneProof } from './proofs'
+import {
+  verifySumIsOne,
+  verifyZeroOrOne,
+  type BallotBinding,
+  type EqualityProof,
+  type ZeroOrOneProof,
+} from './proofs'
 import { sha256Hex } from './sha256'
 
 /**
@@ -159,6 +165,11 @@ function parseBallot(ballot: unknown, expectedLength: number): ParsedBallot | nu
  *
  * Av samma skäl är hashen `sha256Hex`, som också finns i webbläsaren, och inte
  * Nodes `createHash`. Indatan är oförändrad, och därmed hashen. Se ./sha256.ts.
+ *
+ * SEDAN UPPGIFT 14d BINDER VARJE BEVIS DEN. Hashen är fältet H i varje
+ * utmaning (se `BallotBinding` i proofs.ts), så bevisen binder hela listan
+ * genom den. Formatet här går därför inte att ändra utan att bevisens format
+ * ändras med det.
  */
 export function hashCiphertext(ciphertext: Array<{ c1: string; c2: string }>): string {
   const parts = ['valsystem/chiffer/v1']
@@ -166,11 +177,6 @@ export function hashCiphertext(ciphertext: Array<{ c1: string; c2: string }>): s
     parts.push('\u0000', pair.c1, '\u0000', pair.c2)
   }
   return sha256Hex(parts.join(''))
-}
-
-/** Kontexten som binder ett bevis till sin plats. Måste vara identisk hos bevisaren. */
-export function proofContext(electionId: string, ballotId: string, index: number): string {
-  return `${electionId}|${ballotId}|${index}`
 }
 
 /**
@@ -228,8 +234,13 @@ function* ballotVerification(
    * som inte finns i den publicerade mangden, och Merkleroten over kuverten
    * beraknas over värden utan motsvarande chiffer. Felet syns forst efter att
    * kopplingen raderats, alltså nar ingen langre kan fraga väljaren.
+   *
+   * Sedan uppgift 14d går den omräknade hashen dessutom in i varje utmaning.
+   * Det är den och inte klientens som bevisen prövas mot, så att bevisen binder
+   * chiffren som faktiskt står i valsedeln.
    */
-  if (ballot.ciphertextHash !== hashCiphertext(ballot.ciphertext)) return false
+  const ciphertextHash = hashCiphertext(ballot.ciphertext)
+  if (ballot.ciphertextHash !== ciphertextHash) return false
 
   for (const { c1, c2 } of parsed.ciphertexts) {
     // REVIEW FOCUS 1. Ett element utanför undergruppen läcker en bit av
@@ -239,17 +250,17 @@ function* ballotVerification(
     yield
   }
 
+  const binding: BallotBinding = { electionId, ballotId, ciphertextHash }
+
   for (const [index, ciphertext] of parsed.ciphertexts.entries()) {
     const proof = parsed.components[index]!
-    if (!verifyZeroOrOne(key, ciphertext, proof, proofContext(electionId, ballotId, index))) {
-      return false
-    }
+    if (!verifyZeroOrOne(key, ciphertext, proof, binding, index)) return false
     yield
   }
 
   const product = parsed.ciphertexts.reduce((a, b) => multiply(a, b))
 
-  return verifySumIsOne(key, product, parsed.sum, proofContext(electionId, ballotId, -1))
+  return verifySumIsOne(key, product, parsed.sum, binding)
 }
 
 /** Alla steg i ett svep, för testerna och för den som inte har någon händelseslinga att hålla fri. */

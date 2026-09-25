@@ -292,7 +292,7 @@ async function measureChromium(): Promise<void> {
     await tab.addScriptTag({ content: measurements.outputFiles[0]!.text })
     const result = await tab.evaluate(
       () =>
-        (globalThis as unknown as { measureCrypto: () => Array<{ label: string; value: number; unit: string }> })
+        (globalThis as unknown as { measureCrypto: () => Promise<Array<{ label: string; value: number; unit: string }>> })
           .measureCrypto(),
     )
     for (const row of result) {

@@ -1,41 +1,53 @@
-import { describe, expect, it } from 'vitest'
-import { P, randomScalar } from '@/lib/crypto/group'
-import { encrypt, generateKeyPair, multiply, type Ciphertext } from '@/lib/crypto/elgamal'
+import { describe, expect, it, vi } from 'vitest'
+import { Q, modPow, randomScalar } from '@/lib/crypto/group'
+import { encrypt, generateKeyPair, multiply } from '@/lib/crypto/elgamal'
 import {
   challengeHash,
   proveSumIsOne,
   proveZeroOrOne,
+  startZeroOrOne,
   verifySumIsOne,
   verifyZeroOrOne,
+  type BallotBinding,
 } from '@/lib/crypto/proofs'
+import { seededRandomValues } from './seeded-random'
 
-const CONTEXT = 'val-1|valsedel-2|index-0'
+/**
+ * Bevisen var för sig. Vad utmaningen binder prövas fält för fält i
+ * ballot-binding.test.ts, och transkriptet byte för byte i transcript.test.ts.
+ * Hashen här står för en chifferlista som testerna inte behöver bygga.
+ */
+const BINDING: BallotBinding = {
+  electionId: 'val-1',
+  ballotId: 'valsedel-2',
+  ciphertextHash: 'ab'.repeat(32),
+}
 
 describe('0-eller-1-bevis', () => {
   it('ett ärligt bevis för 0 går igenom', () => {
     const keys = generateKeyPair()
     const nonce = randomScalar()
     const ciphertext = encrypt(keys.publicKey, 0n, nonce)
-    const proof = proveZeroOrOne(keys.publicKey, ciphertext, 0, nonce, CONTEXT)
+    const proof = proveZeroOrOne(keys.publicKey, ciphertext, 0, nonce, BINDING, 0)
 
-    expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, CONTEXT)).toBe(true)
+    expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, BINDING, 0)).toBe(true)
   })
 
   it('ett ärligt bevis för 1 går igenom', () => {
     const keys = generateKeyPair()
     const nonce = randomScalar()
     const ciphertext = encrypt(keys.publicKey, 1n, nonce)
-    const proof = proveZeroOrOne(keys.publicKey, ciphertext, 1, nonce, CONTEXT)
+    const proof = proveZeroOrOne(keys.publicKey, ciphertext, 1, nonce, BINDING, 0)
 
-    expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, CONTEXT)).toBe(true)
+    expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, BINDING, 0)).toBe(true)
   })
 
   it('avslöjar inte vilket av de två det var', () => {
     // Beviset är disjunktivt: verifieraren lär sig "0 eller 1", ingenting mer.
     // Skulle strukturen skilja sig åt vore varje röst läsbar ur sitt bevis.
     const keys = generateKeyPair()
-    const zero = proveZeroOrOne(keys.publicKey, encrypt(keys.publicKey, 0n, 7n), 0, 7n, CONTEXT)
-    const one = proveZeroOrOne(keys.publicKey, encrypt(keys.publicKey, 1n, 7n), 1, 7n, CONTEXT)
+    const zero = proveZeroOrOne(keys.publicKey, encrypt(keys.publicKey, 0n, 7n), 0, 7n, BINDING, 0)
+    const one = proveZeroOrOne(keys.publicKey, encrypt(keys.publicKey, 1n, 7n), 1, 7n, BINDING, 0)
 
     expect(Object.keys(zero).sort()).toEqual(Object.keys(one).sort())
   })
@@ -48,8 +60,8 @@ describe('0-eller-1-bevis', () => {
 
     // Den ärliga bevisaren kan bara påstå 0 eller 1, och båda blir falska.
     for (const claim of [0, 1] as const) {
-      const proof = proveZeroOrOne(keys.publicKey, ciphertext, claim, nonce, CONTEXT)
-      expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, CONTEXT)).toBe(false)
+      const proof = proveZeroOrOne(keys.publicKey, ciphertext, claim, nonce, BINDING, 0)
+      expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, BINDING, 0)).toBe(false)
     }
   })
 
@@ -58,22 +70,68 @@ describe('0-eller-1-bevis', () => {
     const nonce = randomScalar()
     const mine = encrypt(keys.publicKey, 1n, nonce)
     const other = encrypt(keys.publicKey, 1n, randomScalar())
-    const proof = proveZeroOrOne(keys.publicKey, mine, 1, nonce, CONTEXT)
+    const proof = proveZeroOrOne(keys.publicKey, mine, 1, nonce, BINDING, 0)
 
-    expect(verifyZeroOrOne(keys.publicKey, other, proof, CONTEXT)).toBe(false)
+    expect(verifyZeroOrOne(keys.publicKey, other, proof, BINDING, 0)).toBe(false)
+  })
+
+  it('ett påbörjat bevis görs färdigt en gång, och ett andra försök kastar', () => {
+    const keys = generateKeyPair()
+    const nonce = randomScalar()
+    const ciphertext = encrypt(keys.publicKey, 1n, nonce)
+    const pending = startZeroOrOne(keys.publicKey, ciphertext, 1, nonce)
+
+    const proof = pending(BINDING, 0)
+    expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, BINDING, 0)).toBe(true)
+    expect(() => pending({ ...BINDING, ballotId: 'valsedel-9' }, 0)).toThrow()
+    // Inte heller med samma bindning: spärren frågar inte vad som skickas in.
+    expect(() => pending(BINDING, 0)).toThrow()
+  })
+
+  it('kontrasten till spärren: två svar mot samma åtagande avslöjar slumptalet', () => {
+    /**
+     * Varför ett påbörjat bevis bara får göras färdigt en gång. Två påbörjade
+     * bevis med samma slumpkälla har samma åtaganden, som ett och samma bevis
+     * som görs färdigt två gånger. Med två olika bindningar blir utmaningarna
+     * olika, och slumptalet faller ut ur de två ärliga svaren.
+     */
+    const keys = generateKeyPair()
+    const nonce = randomScalar()
+    const ciphertext = encrypt(keys.publicKey, 1n, nonce)
+
+    const startWithSeed = () => {
+      const spy = vi
+        .spyOn(globalThis.crypto, 'getRandomValues')
+        .mockImplementation(seededRandomValues('samma-åtagande') as typeof crypto.getRandomValues)
+      try {
+        return startZeroOrOne(keys.publicKey, ciphertext, 1, nonce)
+      } finally {
+        spy.mockRestore()
+      }
+    }
+
+    const first = startWithSeed()(BINDING, 0)
+    const second = startWithSeed()({ ...BINDING, ballotId: 'valsedel-9' }, 0)
+    expect(second.a1).toBe(first.a1)
+    expect(second.challenge1).not.toBe(first.challenge1)
+
+    // Gren 1 är den ärliga: svaret är w + c · r, för samma w.
+    const difference = (first.challenge1 - second.challenge1 + Q) % Q
+    const recovered = (((first.response1 - second.response1 + Q) % Q) * modPow(difference, Q - 2n, Q)) % Q
+    expect(recovered).toBe(nonce)
   })
 
   it('ett bevis går inte att flytta till en annan valsedel', () => {
-    // Fiat–Shamir-utmaningen binder kontexten. Utan bindningen kunde ett giltigt
+    // Fiat–Shamir-utmaningen binder valsedeln. Utan bindningen kunde ett giltigt
     // bevis klippas ut ur en valsedel och klistras in i en annan.
     const keys = generateKeyPair()
     const nonce = randomScalar()
     const ciphertext = encrypt(keys.publicKey, 1n, nonce)
-    const proof = proveZeroOrOne(keys.publicKey, ciphertext, 1, nonce, CONTEXT)
+    const proof = proveZeroOrOne(keys.publicKey, ciphertext, 1, nonce, BINDING, 0)
 
-    expect(verifyZeroOrOne(keys.publicKey, ciphertext, proof, 'val-1|valsedel-9|index-0')).toBe(
-      false,
-    )
+    expect(
+      verifyZeroOrOne(keys.publicKey, ciphertext, proof, { ...BINDING, ballotId: 'valsedel-9' }, 0),
+    ).toBe(false)
   })
 })
 
@@ -91,9 +149,9 @@ describe('summabevis', () => {
     const keys = generateKeyPair()
     const { ciphertexts, nonceSum } = buildBallot(keys.publicKey, 3, 8)
     const product = ciphertexts.reduce((a, b) => multiply(a, b))
-    const proof = proveSumIsOne(keys.publicKey, product, nonceSum, CONTEXT)
+    const proof = proveSumIsOne(keys.publicKey, product, nonceSum, BINDING)
 
-    expect(verifySumIsOne(keys.publicKey, product, proof, CONTEXT)).toBe(true)
+    expect(verifySumIsOne(keys.publicKey, product, proof, BINDING)).toBe(true)
   })
 
   it('två ettor fångas trots att varje komponent är giltig', () => {
@@ -114,10 +172,10 @@ describe('summabevis', () => {
       keys.publicKey,
       product,
       nonces.reduce((a, b) => a + b, 0n),
-      CONTEXT,
+      BINDING,
     )
 
-    expect(verifySumIsOne(keys.publicKey, product, proof, CONTEXT)).toBe(false)
+    expect(verifySumIsOne(keys.publicKey, product, proof, BINDING)).toBe(false)
   })
 
   it('en tom vektor fångas', () => {
@@ -129,14 +187,14 @@ describe('summabevis', () => {
       keys.publicKey,
       product,
       nonces.reduce((a, b) => a + b, 0n),
-      CONTEXT,
+      BINDING,
     )
 
-    expect(verifySumIsOne(keys.publicKey, product, proof, CONTEXT)).toBe(false)
+    expect(verifySumIsOne(keys.publicKey, product, proof, BINDING)).toBe(false)
   })
 })
 
-describe('utmaningen', () => {
+describe('utmaningen i formatet v1, som den partiella dekrypteringen använder', () => {
   it('är deterministisk och beror på allt som matas in', () => {
     expect(challengeHash('a', [1n, 2n])).toBe(challengeHash('a', [1n, 2n]))
     expect(challengeHash('a', [1n, 2n])).not.toBe(challengeHash('b', [1n, 2n]))

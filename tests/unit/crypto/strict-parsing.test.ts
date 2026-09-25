@@ -16,12 +16,7 @@ import {
 import { nativeModPow } from '@/lib/crypto/native-exponentiation'
 import { verifyZeroOrOne } from '@/lib/crypto/proofs'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
-import {
-  hashCiphertext,
-  proofContext,
-  verifyEncryptedBallot,
-  type EncryptedBallot,
-} from '@/lib/crypto/verify-ballot'
+import { hashCiphertext, verifyEncryptedBallot, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { encryptedBallotSchema } from '@/lib/validation'
 import { forgeBallot, forgeZeroOrOneProof } from './forged-ballot'
@@ -144,13 +139,17 @@ describe('en negativ exponent kastar, i båda implementationerna', () => {
   it('ett 0-eller-1-bevis med negativ utmaning kastar i stället för att godkännas', () => {
     // Direkt mot beviset, förbi tolkningen. Så når uppgift 12:s och 12b:s kod
     // bevisen om de någon gång bygger dem utan verify-ballot.ts.
-    const context = proofContext(ELECTION, BALLOT, 1)
     const ciphertext = encrypt(keys.publicKey, 1000n, randomScalar())
-    const proof = forgeZeroOrOneProof(keys.publicKey, ciphertext, context)
+    const binding = {
+      electionId: ELECTION,
+      ballotId: BALLOT,
+      ciphertextHash: hashCiphertext([{ c1: ciphertext.c1.toString(), c2: ciphertext.c2.toString() }]),
+    }
+    const proof = forgeZeroOrOneProof(keys.publicKey, ciphertext, binding, 0)
 
     expect(proof.challenge0 < 0n).toBe(true)
-    expect(() => verifyZeroOrOne(keys.publicKey, ciphertext, proof, context)).toThrow(RangeError)
-    expect(() => inBigInt(() => verifyZeroOrOne(keys.publicKey, ciphertext, proof, context))).toThrow(
+    expect(() => verifyZeroOrOne(keys.publicKey, ciphertext, proof, binding, 0)).toThrow(RangeError)
+    expect(() => inBigInt(() => verifyZeroOrOne(keys.publicKey, ciphertext, proof, binding, 0))).toThrow(
       RangeError,
     )
   })

@@ -26,6 +26,7 @@ import {
 } from '@/modules/eligibility/pending-vote.service'
 import { sealCertificateChain } from '@/modules/eligibility/sealed-chain'
 import { forgeBallot } from '../unit/crypto/forged-ballot'
+import { legacyEncryptBallot, legacyVerifyEncryptedBallot } from '../unit/crypto/legacy-ballot'
 import {
   lookalikeHierarchy,
   MOCK_INTERMEDIATE,
@@ -803,6 +804,43 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
 
     expect(report.summary.passed).toBe(false)
     // Bara bevisen avviker. Underskriften är äkta, och valsedeln gäller Kim.
+    expect(report.anomalies).toEqual([
+      expect.objectContaining({ kind: 'BAD_PROOF', voterStatusId: kim }),
+    ])
+  })
+
+  it('ett kuvert med bevis i formatet före uppgift 14d fångas som BAD_PROOF, och bara som det', async () => {
+    /**
+     * Så ser kuverten ut som lades före uppgift 14d, i demons databaser lokalt
+     * och i Azure: äkta underskrift, rätt valsedel och bevis som var giltiga
+     * då. Utmaningarna band inte hela chifferlistan, och nu gör de det, så
+     * bevisen håller inte längre. Kuvertet kan inte räknas, och valideringen
+     * ska säga det i stället för att släppa igenom det.
+     */
+    const old = legacyEncryptBallot(publicKey, electionId, ballotId, options, {
+      kind: 'PARTY',
+      ballotPartyId: bpM,
+    })
+    // Giltigt i det gamla formatet. Utan det här visade testet bara att en
+    // trasig valsedel underkänns.
+    expect(legacyVerifyEncryptedBallot(publicKey, electionId, ballotId, options.length, old)).toBe(true)
+
+    const castSequence = await nextCastSequence(kim, ballotId)
+    const envelope = await signAs(kim, ballotId, old.ciphertextHash, castSequence)
+    await writeRow(kim, ballotId, {
+      ciphertext: old.ciphertext,
+      proofs: old.proofs,
+      ciphertextHash: old.ciphertextHash,
+      castSequence,
+      bankIdSignature: envelope.signature,
+      bankIdCertificateChain: sealedChainOf(envelope, kim, ballotId),
+    })
+    await castFor(anna, 'bp-s')
+
+    const report = await validateBeforeClose(electionId)
+
+    expect(report.summary.passed).toBe(false)
+    expect(report.summary.byKind).toEqual({ BAD_PROOF: 1 })
     expect(report.anomalies).toEqual([
       expect.objectContaining({ kind: 'BAD_PROOF', voterStatusId: kim }),
     ])

@@ -14,6 +14,10 @@ import { createHash } from 'node:crypto'
  * ska ge exakt den valsedeln. Skiljer sig ett enda tal har antingen något
  * räknats annorlunda eller hashats i en annan ordning.
  *
+ * Sedan uppgift 14d är den fixturen det gamla bevisformatet, och samma frö
+ * genom tests/unit/crypto/legacy-ballot.ts ger den. Det nya formatet har en
+ * egen fixtur, fixtures/ballot-26-14d.json, med ett eget frö.
+ *
  * Byteströmmen är SHA-256 över fröet och en räknare. Den är inte slumpmässig
  * i någon kryptografisk mening, och får aldrig användas utanför tester.
  */

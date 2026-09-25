@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { encrypt } from '@/lib/crypto/elgamal'
 import { G, G_INVERSE, P, Q, randomScalar, registerGroupExponentiation } from '@/lib/crypto/group'
 import { nativeModPow, resetUnexpectedFallbackReport } from '@/lib/crypto/native-exponentiation'
-import { challengeHash, verifyZeroOrOne, type ZeroOrOneProof } from '@/lib/crypto/proofs'
+import { verifyZeroOrOne, zeroOrOneChallenge, type ZeroOrOneProof } from '@/lib/crypto/proofs'
+import { hashCiphertext } from '@/lib/crypto/verify-ballot'
 import { logger } from '@/lib/logger'
 
 /**
@@ -313,14 +314,20 @@ describe('varför den tomma bufferten aldrig får bli ett tal', () => {
      */
     const h = bigintModPow(G, randomScalar(), P)
     const ciphertext = encrypt(h, 2n, randomScalar())
-    const context = 'val|valsedel|0'
+    // Valsedeln har bara det här alternativet. Listans hash är fältet H i
+    // utmaningen, se `BallotBinding` i proofs.ts.
+    const binding = {
+      electionId: 'val',
+      ballotId: 'valsedel',
+      ciphertextHash: hashCiphertext([{ c1: ciphertext.c1.toString(), c2: ciphertext.c2.toString() }]),
+    }
 
     const challenge1 = randomScalar()
     const response1 = randomScalar()
     const shifted = (ciphertext.c2 * G_INVERSE) % P
     const a1 = (bigintModPow(G, response1, P) * bigintModPow(ciphertext.c1, Q - challenge1, P)) % P
     const b1 = (bigintModPow(h, response1, P) * bigintModPow(shifted, Q - challenge1, P)) % P
-    const hash = challengeHash(context, [ciphertext.c1, ciphertext.c2, 0n, 0n, a1, b1])
+    const hash = zeroOrOneChallenge(binding, 0, [ciphertext.c1, ciphertext.c2, 0n, 0n, a1, b1])
 
     const forged: ZeroOrOneProof = {
       a0: 0n,
@@ -343,13 +350,13 @@ describe('varför den tomma bufferten aldrig får bli ett tal', () => {
 
     try {
       registerGroupExponentiation(naive)
-      expect(verifyZeroOrOne(h, ciphertext, forged, context)).toBe(true)
+      expect(verifyZeroOrOne(h, ciphertext, forged, binding, 0)).toBe(true)
 
       registerGroupExponentiation(nativeModPow)
-      expect(verifyZeroOrOne(h, ciphertext, forged, context)).toBe(false)
+      expect(verifyZeroOrOne(h, ciphertext, forged, binding, 0)).toBe(false)
 
       registerGroupExponentiation(null)
-      expect(verifyZeroOrOne(h, ciphertext, forged, context)).toBe(false)
+      expect(verifyZeroOrOne(h, ciphertext, forged, binding, 0)).toBe(false)
     } finally {
       registerGroupExponentiation(null)
     }

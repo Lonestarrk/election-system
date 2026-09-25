@@ -1,14 +1,17 @@
 import { randomScalar, useFixedBase } from './crypto/group'
 import { encrypt, multiply, type Ciphertext } from './crypto/elgamal'
-import { proveSumIsOne, proveZeroOrOne } from './crypto/proofs'
+import {
+  proveSumIsOne,
+  startZeroOrOne,
+  type BallotBinding,
+  type PendingZeroOrOneProof,
+} from './crypto/proofs'
 import { indexOfChoice, unitVector, type BallotOption } from './crypto/ballot-encoding'
 import {
   hashCiphertext,
-  proofContext,
   serialiseEqualityProof,
   serialiseZeroOrOneProof,
   type EncryptedBallot,
-  type SerialisedZeroOrOneProof,
 } from './crypto/verify-ballot'
 
 /**
@@ -31,8 +34,9 @@ import {
  * telefon, och en sida som står still så länge ser trasig ut. Båda kör samma
  * kod och ger samma sorts resultat.
  *
- * Det enda som lämnar ett steg är hur många komponenter som är klara. Slumptalen
- * ligger kvar i generatorns egna variabler och försvinner med den.
+ * Det enda som lämnar ett steg är hur många komponenter som är krypterade.
+ * Slumptalen ligger kvar i generatorns egna variabler och i de påbörjade
+ * bevisen, och försvinner med dem.
  */
 function* ballotEncryption(
   publicKey: string,
@@ -58,41 +62,48 @@ function* ballotEncryption(
 
   const nonces: bigint[] = []
   const ciphertexts: Ciphertext[] = []
-  const components: SerialisedZeroOrOneProof[] = []
+  const pending: PendingZeroOrOneProof[] = []
 
   for (const [index, message] of vector.entries()) {
     const nonce = randomScalar()
     const ciphertext = encrypt(key, message, nonce)
 
-    components.push(
-      serialiseZeroOrOneProof(
-        proveZeroOrOne(
-          key,
-          ciphertext,
-          message === 1n ? 1 : 0,
-          nonce,
-          proofContext(electionId, ballotId, index),
-        ),
-      ),
-    )
+    // Beviset påbörjas här, med varje exponentiering det kräver. Det görs
+    // färdigt nedan, när utmaningen kan räknas.
+    pending.push(startZeroOrOne(key, ciphertext, message === 1n ? 1 : 0, nonce))
     ciphertexts.push(ciphertext)
     nonces.push(nonce)
 
     yield index + 1
   }
 
+  /**
+   * BEVISEN GÖRS FÄRDIGA NÄR HELA LISTAN FINNS (uppgift 14d).
+   *
+   * Varje utmaning binder hela chifferlistan genom dess hash (se
+   * `BallotBinding` i src/lib/crypto/proofs.ts), så ingen av dem kan räknas
+   * förrän det sista chiffret finns. Exponentieringarna är redan gjorda, ett
+   * alternativ i taget ovan, och det som återstår är ett transkript, en hash
+   * och några multiplikationer per alternativ, och summabeviset. Stegen är
+   * därför lika många som före uppgift 14d och ungefär lika långa. Det sista
+   * är några millisekunder längre, eftersom utmaningarna räknas där och inte
+   * i stegen före.
+   */
+  const serialised = ciphertexts.map((c) => ({ c1: c.c1.toString(), c2: c.c2.toString() }))
+  const binding: BallotBinding = { electionId, ballotId, ciphertextHash: hashCiphertext(serialised) }
+
+  const components = pending.map((complete, index) => serialiseZeroOrOneProof(complete(binding, index)))
+
   const sum = serialiseEqualityProof(
     proveSumIsOne(
       key,
       ciphertexts.reduce((a, b) => multiply(a, b)),
       nonces.reduce((a, b) => a + b, 0n),
-      proofContext(electionId, ballotId, -1),
+      binding,
     ),
   )
 
-  const serialised = ciphertexts.map((c) => ({ c1: c.c1.toString(), c2: c.c2.toString() }))
-
-  return { ciphertext: serialised, proofs: { components, sum }, ciphertextHash: hashCiphertext(serialised) }
+  return { ciphertext: serialised, proofs: { components, sum }, ciphertextHash: binding.ciphertextHash }
 }
 
 export function encryptBallot(
@@ -129,7 +140,7 @@ export async function encryptBallotInSteps(
   pause: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 0)),
 ): Promise<EncryptedBallot> {
   const steps = ballotEncryption(publicKey, electionId, ballotId, options, choice)
-  // Summabeviset är ett steg till efter komponenterna.
+  // Bevisen görs färdiga och summabeviset räknas i ett steg till efter komponenterna.
   const total = options.length + 1
 
   onProgress(0, total)

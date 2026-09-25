@@ -31,6 +31,7 @@ import {
 } from '@/modules/eligibility/pending-vote.service'
 import { sealCertificateChain } from '@/modules/eligibility/sealed-chain'
 import { forgeBallot } from '../unit/crypto/forged-ballot'
+import { legacyEncryptBallot, legacyVerifyEncryptedBallot } from '../unit/crypto/legacy-ballot'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
 
 /**
@@ -441,6 +442,45 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     return ballot
   }
 
+  /**
+   * Ett kuvert som det lades före uppgift 14d: ett val på M, krypterat och
+   * bevisat med den gamla koden, med en äkta underskrift, och skrivet som
+   * `castEncryptedBallot` skrev det. Hur de gamla bevisen byggs står i
+   * tests/unit/crypto/legacy-ballot.ts.
+   */
+  async function plantOldFormatBallot(voterStatusId: string): Promise<EncryptedBallot> {
+    const ballot = legacyEncryptBallot(publicKey, electionId, ballotId, options, {
+      kind: 'PARTY',
+      ballotPartyId: bpM,
+    })
+    if (!legacyVerifyEncryptedBallot(publicKey, electionId, ballotId, options.length, ballot)) {
+      throw new Error('Kuvertet i det gamla formatet är inte giltigt i det gamla formatet.')
+    }
+
+    const castSequence = await nextCastSequence(voterStatusId, ballotId)
+    const envelope = await signAs(voterStatusId, ballot.ciphertextHash, castSequence)
+    const chain = parseCertificateChain(envelope.certificateChain)
+    if (!chain) throw new Error('Kedjan i BankID-svaret gick inte att läsa.')
+
+    const data = {
+      ciphertext: ballot.ciphertext as unknown as Prisma.InputJsonValue,
+      proofs: ballot.proofs as unknown as Prisma.InputJsonValue,
+      ciphertextHash: ballot.ciphertextHash,
+      castSequence,
+      bankIdSignature: envelope.signature,
+      bankIdCertificateChain: sealCertificateChain(chain, { voterStatusId, ballotId }),
+      updatedAt: new Date(),
+    }
+
+    await votersDb.pendingVote.upsert({
+      where: { voterStatusId_ballotId: { voterStatusId, ballotId } },
+      create: { voterStatusId, ballotId, ...data },
+      update: data,
+    })
+
+    return ballot
+  }
+
   it('flyttar chiffren och raderar kopplingen', async () => {
     await castFor(anna, 'bp-s')
     await castFor(kim, 'bp-m')
@@ -599,6 +639,37 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     expect(outcome).toEqual({ status: 'invalid_ballot', ciphertextHash: forged.ciphertextHash })
     expect(await votesDb.encryptedVote.count()).toBe(0)
     expect(await votersDb.pendingVote.count()).toBe(2)
+  })
+
+  it('kuvert med bevis i formatet före uppgift 14d stoppar stängningen, och ingenting raderas', async () => {
+    /**
+     * Kuverten som låg i demons databaser när uppgift 14d kom, lokalt och i
+     * Azure. Underskriften är äkta och bevisen var giltiga när de lades, men
+     * de binder inte hela chifferlistan, och det gör utmaningen nu. Ett sådant
+     * kuvert går inte att räkna, och det går inte heller att göra om till det
+     * nya formatet: bevisen kräver slumptalen, som klienten kastade. Stängningen
+     * ska därför stanna med kopplingen kvar, och den får inte flytta något.
+     * Fasen står sedan i CLOSED, som efter varje avvikelse, så ingen kan längre
+     * rösta om och ersätta kuvertet.
+     */
+    await castFor(anna, 'bp-s')
+    const old = await plantOldFormatBallot(kim)
+
+    const outcome = await closeElection(electionId)
+
+    // Beskedet pekar ut kuvertet vid dess chifferhash, och rutten säger att
+    // skalningen avbröts och att kopplingen är kvar, se
+    // src/app/api/admin/elections/close/route.ts.
+    expect(outcome).toEqual({ status: 'invalid_ballot', ciphertextHash: old.ciphertextHash })
+    expect(await votersDb.pendingVote.count()).toBe(2)
+    expect(await votesDb.encryptedVote.count()).toBe(0)
+    expect(await votersDb.votedMarker.count()).toBe(0)
+    expect(
+      await votersDb.election.findUniqueOrThrow({
+        where: { id: electionId },
+        select: { phase: true, envelopeRoot: true, linkClearedAt: true },
+      }),
+    ).toEqual({ phase: 'CLOSED', envelopeRoot: null, linkClearedAt: null })
   })
 
   it('omverifieringen stoppar förfalskningen också när valideringen har släppt igenom den', async () => {

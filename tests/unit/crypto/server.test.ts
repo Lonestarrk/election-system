@@ -26,7 +26,7 @@ import {
   verifyEncryptedBallotInSteps,
   type EncryptedBallot,
 } from '@/lib/crypto/verify-ballot'
-import fixture from './fixtures/ballot-26-before-14b.json'
+import fixture from './fixtures/ballot-26-14d.json'
 
 /**
  * SERVERNS INGÅNG TILL KRYPTOT, src/lib/crypto/server.ts.

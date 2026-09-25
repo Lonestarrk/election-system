@@ -9,7 +9,7 @@ import {
   randomScalar,
   registerGroupExponentiation,
 } from '../src/lib/crypto/group'
-import { encryptBallot } from '../src/lib/encrypt-client'
+import { encryptBallot, encryptBallotInSteps } from '../src/lib/encrypt-client'
 
 /**
  * MÄTNINGARNA I WEBBLÄSAREN. Buntas och körs av scripts/measure-crypto.ts --chromium.
@@ -43,7 +43,51 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)]!
 }
 
-function measure(): Row[] {
+/**
+ * Nästa bildruta, som röstsidans paus mellan krypteringens steg (`nextFrame` i
+ * src/app/vote/page.tsx), med sidans tidsgräns för en flik utan omritning.
+ */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0))
+    setTimeout(resolve, 50)
+  })
+}
+
+/**
+ * Låsningen som röstsidan kör den: i steg, med en bildruta mellan stegen.
+ *
+ * Det väljaren väntar på är hela den tiden och inte bara räknandet, och det
+ * längsta steget är hur länge sidan som mest står still mellan två
+ * omritningar. Ett steg räknas från slutet av en paus till nästa rapport om
+ * hur långt krypteringen kommit.
+ */
+async function sealLikeTheVotePage(
+  encrypt: (
+    onProgress: (done: number, total: number) => void,
+    pause: () => Promise<void>,
+  ) => Promise<unknown>,
+): Promise<{ elapsed: number; pauses: number; longest: number }> {
+  let pauses = 0
+  let longest = 0
+  let stepStart = performance.now()
+  const start = stepStart
+
+  await encrypt(
+    () => {
+      longest = Math.max(longest, performance.now() - stepStart)
+    },
+    async () => {
+      pauses += 1
+      await nextFrame()
+      stepStart = performance.now()
+    },
+  )
+
+  return { elapsed: performance.now() - start, pauses, longest }
+}
+
+async function measure(): Promise<Row[]> {
   const rows: Row[] = []
   const exponents = Array.from({ length: 30 }, () => randomScalar())
   const h = bigintModPow(G, randomScalar(), P)
@@ -121,9 +165,32 @@ function measure(): Row[] {
     value: median([0, 1, 2].map(() => timed(encryptOnce, 1))),
     unit: 'ms',
   })
+
+  // Samma väg i steg, med sidans paus. Tabellerna finns redan, som för
+  // väljarens andra valsedel. Median av tre för tiderna.
+  const sealings = []
+  for (let round = 0; round < 3; round += 1) {
+    sealings.push(
+      await sealLikeTheVotePage((onProgress, pause) =>
+        encryptBallotInSteps(h.toString(), 'val-mätning', 'valsedel-mätning', options, choice, onProgress, pause),
+      ),
+    )
+  }
+  rows.push({
+    label: 'röstsidans väg i steg, med en bildruta mellan stegen',
+    value: median(sealings.map((sealing) => sealing.elapsed)),
+    unit: 'ms',
+  })
+  rows.push({ label: '  pauser', value: sealings[0]!.pauses, unit: 'st' })
+  rows.push({
+    label: '  längsta steget',
+    value: median(sealings.map((sealing) => sealing.longest)),
+    unit: 'ms',
+  })
+
   rows.push({ label: 'kontroll: q har bitar', value: Q.toString(2).length, unit: 'st' })
 
   return rows
 }
 
-;(globalThis as { measureCrypto?: () => Row[] }).measureCrypto = measure
+;(globalThis as { measureCrypto?: () => Promise<Row[]> }).measureCrypto = measure

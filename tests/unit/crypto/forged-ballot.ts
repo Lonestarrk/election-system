@@ -1,9 +1,13 @@
 import { encrypt, multiply, type Ciphertext } from '@/lib/crypto/elgamal'
 import { G, G_INVERSE, P, Q, modPow, randomScalar } from '@/lib/crypto/group'
-import { challengeHash, proveSumIsOne, type ZeroOrOneProof } from '@/lib/crypto/proofs'
+import {
+  proveSumIsOne,
+  zeroOrOneChallenge,
+  type BallotBinding,
+  type ZeroOrOneProof,
+} from '@/lib/crypto/proofs'
 import {
   hashCiphertext,
-  proofContext,
   serialiseEqualityProof,
   serialiseZeroOrOneProof,
   type EncryptedBallot,
@@ -24,6 +28,12 @@ import {
  * alltså tusen röster på ett parti, och alla bevis i den höll mot koden före
  * fixrunda 1, både i BigInt och i OpenSSL.
  *
+ * Utmaningarna räknas med transkriptet sedan uppgift 14d, som binder hela
+ * chifferlistan. Förfalskningen håller alltså fram till den punkt där
+ * rättelsen i fixrunda 1 ska stoppa den, och inte längre: med den gamla
+ * utmaningen hade den underkänts redan när utmaningen jämfördes, och testerna
+ * hade inte sagt något om rättelsen.
+ *
  * Bara för tester. Varje test som använder den ska visa att den underkänns.
  */
 
@@ -32,11 +42,15 @@ function groupPow(base: bigint, exponent: bigint): bigint {
   return modPow(base, ((exponent % Q) + Q) % Q, P)
 }
 
-/** Ett 0-eller-1-bevis för ett godtyckligt chiffer, med en negativ utmaning i nollgrenen. */
+/**
+ * Ett 0-eller-1-bevis för ett godtyckligt chiffer, med en negativ utmaning i
+ * nollgrenen, för alternativ `index` i valsedeln som `binding` pekar ut.
+ */
 export function forgeZeroOrOneProof(
   publicKey: bigint,
   ciphertext: Ciphertext,
-  context: string,
+  binding: BallotBinding,
+  index: number,
 ): ZeroOrOneProof {
   const response0 = randomScalar()
   const response1 = randomScalar()
@@ -48,7 +62,7 @@ export function forgeZeroOrOneProof(
   const a1 = (groupPow(G, response1) * groupPow(ciphertext.c1, -challenge1)) % P
   const b1 = (groupPow(publicKey, response1) * groupPow(shifted, -challenge1)) % P
 
-  const challenge = challengeHash(context, [ciphertext.c1, ciphertext.c2, a0, b0, a1, b1])
+  const challenge = zeroOrOneChallenge(binding, index, [ciphertext.c1, ciphertext.c2, a0, b0, a1, b1])
 
   return {
     a0,
@@ -76,23 +90,19 @@ export function forgeBallot(
   const ciphertexts = messages.map((message, index) =>
     encrypt(publicKey, ((message % Q) + Q) % Q, nonces[index]!),
   )
+  const ciphertext = ciphertexts.map((pair) => ({ c1: pair.c1.toString(), c2: pair.c2.toString() }))
+  const binding: BallotBinding = { electionId, ballotId, ciphertextHash: hashCiphertext(ciphertext) }
 
-  const components = ciphertexts.map((ciphertext, index) =>
-    serialiseZeroOrOneProof(
-      forgeZeroOrOneProof(publicKey, ciphertext, proofContext(electionId, ballotId, index)),
-    ),
+  const components = ciphertexts.map((pair, index) =>
+    serialiseZeroOrOneProof(forgeZeroOrOneProof(publicKey, pair, binding, index)),
   )
 
   const product = ciphertexts.reduce((a, b) => multiply(a, b))
   const nonceSum = nonces.reduce((a, b) => a + b, 0n)
-  const sum = serialiseEqualityProof(
-    proveSumIsOne(publicKey, product, nonceSum, proofContext(electionId, ballotId, -1)),
-  )
-
-  const ciphertext = ciphertexts.map((pair) => ({ c1: pair.c1.toString(), c2: pair.c2.toString() }))
+  const sum = serialiseEqualityProof(proveSumIsOne(publicKey, product, nonceSum, binding))
 
   return {
-    ballot: { ciphertext, proofs: { components, sum }, ciphertextHash: hashCiphertext(ciphertext) },
+    ballot: { ciphertext, proofs: { components, sum }, ciphertextHash: binding.ciphertextHash },
     ciphertexts,
   }
 }

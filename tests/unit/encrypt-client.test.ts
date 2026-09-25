@@ -143,7 +143,8 @@ describe('krypteringen i steg, som röstsidan kör den', () => {
       },
     )
 
-    // En komponent per alternativ och summabeviset sist.
+    // En komponent per alternativ, och sist ett steg där bevisen görs färdiga
+    // och summabeviset räknas (uppgift 14d).
     const total = options.length + 1
     expect(reported).toEqual(
       Array.from({ length: total + 1 }, (_, done) => [done, total]),

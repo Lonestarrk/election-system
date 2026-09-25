@@ -75,7 +75,13 @@ const EXPONENTIATING: Record<string, string[]> = {
     'discreteLog',
     'isInSubgroup',
   ],
-  'src/lib/crypto/proofs': ['proveZeroOrOne', 'verifyZeroOrOne', 'proveSumIsOne', 'verifySumIsOne'],
+  'src/lib/crypto/proofs': [
+    'proveZeroOrOne',
+    'startZeroOrOne',
+    'verifyZeroOrOne',
+    'proveSumIsOne',
+    'verifySumIsOne',
+  ],
   'src/lib/crypto/threshold': [
     'publicShare',
     'partiallyDecrypt',
