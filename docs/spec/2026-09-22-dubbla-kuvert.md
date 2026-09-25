@@ -240,9 +240,74 @@ kandidat, och ingen skulle märka något förrän summan var orimlig.
 **Per valsedel:** produkten av alla komponenters chiffer krypterar `g^1`, bevisat med ett
 vanligt Chaum–Pedersen-bevis.
 
-Utmaningarna beräknas med Fiat–Shamir: `SHA-256` över ett domänseparerat prefix plus
-`electionId`, `ballotId`, komponentens index och **hela chifferlistan**. Bindningen till
-listan hindrar att ett bevis klipps ut och återanvänds på en annan valsedel.
+Utmaningarna beräknas med **stark Fiat–Shamir** (uppgift 14d). Varje utmaning binder:
+- ett domänseparerat prefix
+- `electionId` och `ballotId`
+- **valets publika nyckel h**
+- komponentens index, för 0-eller-1-bevisen
+- **hela chifferlistan**, genom valsedelns chifferhash H
+- bevisets egna tal
+
+Bindningen till listan hindrar att ett bevis klipps ut och återanvänds på en annan
+valsedel. Bindningen till h hindrar ett bevis som godkänns under en nyckel som valts
+efter utmaningen. En svag variant utan nyckeln har fällt verkliga system (Bernhard,
+Pereira och Warinschi 2012, om Helios). Utmaningen är `e = int(SHA-256(T)) mod q`, där T är
+fälten nedan efter varandra.
+
+**0-eller-1-beviset för alternativ i:**
+
+| # | Fält | Kodning |
+|---|---|---|
+| 1 | prefix | ASCII `valsystem/bevis/v2/noll-eller-ett` och en nollbyte, 34 byte |
+| 2 | electionId | L(s) |
+| 3 | ballotId | L(s) |
+| 4 | h | E(x) |
+| 5 | i | U32 |
+| 6 | H | 32 byte |
+| 7, 8 | c1, c2 för alternativ i | E(x) |
+| 9–12 | a0, b0, a1, b1 | E(x) |
+
+**Summabeviset**, utan index:
+
+| # | Fält | Kodning |
+|---|---|---|
+| 1 | prefix | ASCII `valsystem/bevis/v2/summa` och en nollbyte, 25 byte |
+| 2 | electionId | L(s) |
+| 3 | ballotId | L(s) |
+| 4 | h | E(x) |
+| 5 | H | 32 byte |
+| 6, 7 | C1 = Π c1_j mod p, C2 = Π c2_j mod p | E(x) |
+| 8, 9 | a, b | E(x) |
+
+**Kodningarna:**
+- **L(s)** är antalet byte i UTF-8(s) som U32, följt av UTF-8(s). Id:t hashas exakt som det
+  lagras, utan Unicode-normalisering.
+- **U32** är fyra byte, big-endian.
+- **E(x)** är x big-endian, vänsterutfyllt med nollbyte till exakt 256 byte, för 0 ≤ x < p.
+- **H** är SHA-256 över valsedelns kanoniska chifferlista. Servern räknar alltid om den själv.
+
+Med id:n som UUID är ett 0-eller-1-transkript 1 942 byte och ett summatranskript 1 417
+byte. Varje fält har fast längd eller längdprefix, så samma transkript kan bara komma från
+samma fält.
+
+**Prefixet bestämmer det som inte står som fält.** Det gäller gruppen (p, q och g = 4) och
+vad bevisen påstår: att varje alternativ krypterar 0 eller 1, och att produkten krypterar 1.
+En annan grupp, eller en valsedel där fler än ett alternativ får väljas, kräver ett nytt
+prefix.
+
+**Bevisen bär sitt format.** `proofs.format` är JSON-talet 2, och verifieringen underkänner
+allt annat innan något räknas. Markören ligger i bevisen och inte i chiffret, så den ingår
+inte i H. Valideringen före stängningen skiljer då ett kuvert i det gamla formatet
+(`OLD_PROOF_FORMAT`) från ett trasigt bevis (`BAD_PROOF`). Båda stoppar stängningen, och
+ingenting raderas. Markören är inte underskriven. Den som kan skriva i röstlängden kan få
+ett kuvert att se gammalt ut, men det stoppar bara stängningen och får ingen röst att räknas.
+
+Testvektorn är `tests/unit/crypto/fixtures/ballot-26-14d.json`.
+`tests/unit/crypto/transcript.test.ts` räknar om varje utmaning i den ur den här
+beskrivningen.
+
+**Den partiella dekrypteringens bevis** (4.5) binder ännu inte sitt sammanhang. Det rättas i
+uppgift 12 (ruling 133).
 
 ### 4.5 Tröskelnyckel
 
