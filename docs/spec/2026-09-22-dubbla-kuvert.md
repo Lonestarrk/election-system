@@ -894,6 +894,11 @@ kontroll mot nuläget skulle förkasta giltiga röster.
 - **En insider med läsrätt i `votes_db` och en enhets sparade chifferhash** kan se om
   den enhetens röst var den som räknades, men inte vad den innehöll. Det kräver både
   intrång i databasen och tillgång till väljarens enhet.
+- **En valsedel med mycket få röster avslöjar dem genom summan.** Med en enda röst visar talen
+  hur väljaren röstade, och den publicerade summan är då exakt den röstens chiffer. Den som har sett
+  just det chiffret kan alltså se att det räknades. Det gäller varje system som publicerar summor
+  per valsedel. Riktiga val döljer därför små tal eller slår ihop dem, men det ligger utanför den här
+  specen (ruling 138).
 - **En kopia av någon annans valsedel räknas.** Den som har en annans chiffer och får många
   väljare att lägga kopior av det förskjuter summan för det alternativet, och kan därmed
   lära sig något om den väljarens röst. Det kräver chiffret, som aldrig publiceras, och många
