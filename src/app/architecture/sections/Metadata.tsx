@@ -8,7 +8,7 @@ import { LimitationReference, type PageLimitations } from './shared'
  * säger det.
  */
 export function Metadata({ limitations }: { limitations: PageLimitations }) {
-  const { link, bankIdOrder, liveResults } = limitations
+  const { link, bankIdOrder } = limitations
 
   return (
     <section className="card" aria-labelledby="metadata">
@@ -56,7 +56,7 @@ export function Metadata({ limitations }: { limitations: PageLimitations }) {
             >
               I kuvertmodellens design räknas ingenting under röstningen, och en dekryptering får
               inte beställas förrän fasen är STRIPPED. {CURRENTLY.decryptionGate.text}{' '}
-              {CURRENTLY.oldFlowLiveResults.text} <LimitationReference entry={liveResults} />
+              {CURRENTLY.noLiveResults.text}
             </MetadataRow>
             <MetadataRow
               risk="Personröst och små alternativ"

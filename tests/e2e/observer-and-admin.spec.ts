@@ -4,8 +4,9 @@ import { expect, test } from './fixtures'
  * E2E: adminens slutverifiering och den oberoende granskningen.
  *
  * Det som prövas här är inte att knapparna finns, utan att spärrarna håller:
- * att observatörsgränssnittet ger allt som krävs för att verifiera valet utan
- * inloggning, och att fastställandet inte går att tvinga fram.
+ * att observatörsgränssnittet under röstningen bara visar valdeltagandet, och
+ * att fastställandet inte går att tvinga fram. Publiceringen efter räkningen,
+ * och det oberoende verktyget mot den, prövas i closing-flow.spec.ts.
  */
 
 // Etiketter på demoknapparna, inte personnummer: BankID v6 har ingen
@@ -22,7 +23,10 @@ async function adminLogin(page: import('@playwright/test').Page, demoIdentity: s
 }
 
 test.describe('observatörsgränssnittet', () => {
-  test('ger hela röstunderlaget utan inloggning', async ({ request, baseURL }) => {
+  test('visar fasen och valdeltagandet utan inloggning, men inget resultat under röstningen', async ({
+    request,
+    baseURL,
+  }) => {
     const list = await request.post(`${baseURL}/api/observer/election`, {
       data: {},
       headers: { Origin: baseURL! },
@@ -44,64 +48,28 @@ test.describe('observatörsgränssnittet', () => {
     expect(detail.ok()).toBe(true)
     const data = await detail.json()
 
-    // Det observatören behöver för att kunna verifiera själv.
+    // Demovalet pågår: bara valdeltagandet, ingen rot och inget resultat (spec 6.2).
+    expect(data.election.phase).toBe('OPEN')
     expect(data.ballots.length).toBeGreaterThan(0)
-    for (const ballot of data.ballots) {
-      expect(ballot.signingPublicKeyPem).toContain('BEGIN PUBLIC KEY')
-    }
-    expect(data.approvedVotings).toBeDefined()
-    expect(data.currentRoot.root).toMatch(/^[0-9a-f]{64}$/)
-    expect(data.howToVerify).toBeDefined()
+    for (const ballot of data.ballots) expect(Number.isInteger(ballot.voted)).toBe(true)
+    expect(data.envelopeRoot).toBeNull()
+    expect(data.urnRoot).toBeNull()
+    expect(data.publishedResults).toBeNull()
+    expect(JSON.stringify(data)).not.toMatch(/votesByParty|counts|"results"|totalVotes/)
+
+    const results = await request.get(`${baseURL}/api/observer/results?electionId=${electionId}`)
+    expect(results.status()).toBe(409)
+    expect((await results.json()).status).toBe('not_published')
   })
 
-  test('röstunderlaget innehåller ingenting som pekar mot en person', async ({
-    request,
-    baseURL,
-  }) => {
-    const list = await request.post(`${baseURL}/api/observer/election`, {
+  test('det gamla flödets röster lämnas inte längre ut', async ({ request, baseURL }) => {
+    // /api/observer/votes lämnade ut varje röst i det gamla flödet med sitt
+    // innehåll, utan inloggning och under röstningen. Rutten finns inte längre.
+    const response = await request.post(`${baseURL}/api/observer/votes`, {
       data: {},
       headers: { Origin: baseURL! },
     })
-    const electionId = (await list.json()).elections.find(
-      (election: { name: string }) => election.name === 'Valet 2026',
-    ).id
-
-    const response = await request.post(`${baseURL}/api/observer/votes`, {
-      data: { electionId },
-      headers: { Origin: baseURL! },
-    })
-
-    expect(response.ok()).toBe(true)
-    const body = await response.json()
-
-    const serialised = JSON.stringify(body)
-
-    // Ingen identitet, inget sessionsspår, ingen tidsstämpel att sortera på.
-    for (const forbidden of [
-      'personalNumber',
-      'personnummer',
-      'externalIdentityHash',
-      'voterStatusId',
-      'sessionId',
-      'createdAt',
-      'votedAt',
-    ]) {
-      expect(serialised, `underlaget innehåller ${forbidden}`).not.toContain(forbidden)
-    }
-
-    for (const vote of body.votes) {
-      // Varje röst har det som krävs för att verifieras — och ingenting mer.
-      expect(Object.keys(vote).sort()).toEqual([
-        'ballotId',
-        'ballotPartyId',
-        'canonical',
-        'candidateId',
-        'credentialId',
-        'credentialSignature',
-        'optionId',
-        'tokenHash',
-      ])
-    }
+    expect(response.status()).toBe(404)
   })
 
   test('kräver ingen inloggning men avvisar främmande ursprung', async ({ request, baseURL }) => {

@@ -41,7 +41,6 @@ export type PageLimitations = {
   revocation: KnownLimitation
   xmlAdapter: KnownLimitation
   dealer: KnownLimitation
-  liveResults: KnownLimitation
   /** Den som har pepparn, som i Azure ligger i valvet, läser namnen i de liggande kuverten. */
   pepperHolder: KnownLimitation
   demoIssuer: KnownLimitation
@@ -61,7 +60,6 @@ export function pageLimitations(): PageLimitations {
     revocation: limitation('no-revocation-check'),
     xmlAdapter: limitation('bankid-xmldsig-adapter-missing'),
     dealer: limitation('trusted-dealer'),
-    liveResults: limitation('live-results-in-old-flow'),
     pepperHolder: limitation('pepper-holder-reads-voter-names'),
     demoIssuer: limitation('mock-issues-certificates-in-demo'),
     signingKeys: limitation('signing-keys-in-database'),

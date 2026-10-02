@@ -38,8 +38,9 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
           rad, efter stängningen kan därför stoppa räkningen, men inte få en annan summa öppnad.
           Den som kan skriva i båda databaserna behöver bara skriva om roten i omröstningens rad i
           röstlängden, så öppnar dekrypteringen den urna hen har lagt dit. Slutkontrollen märker det
-          efteråt, om inte revisionskedjan också räknas om. När uppgift 13 publicerar roten kan den
-          som sparar den vid stängningen jämföra efteråt. En rad som redan ligger på ett äkta
+          efteråt, om inte revisionskedjan också räknas om. Roten publiceras från stängningen, så den
+          som sparar den då kan se om den skrivs om, men räkningen stannar inte för det: den jämför
+          bara med raden i röstlängden. En rad som redan ligger på ett äkta
           kuverts plats när stängningen börjar ersätts med det validerade kuvertet, och stängningen
           larmar. Ett byte efter stängningens städning och före dess återläsning stoppar
           stängningen, och omkörningen ersätter raden. Ett byte efter återläsningen och före COMMIT

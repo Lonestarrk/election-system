@@ -308,7 +308,8 @@ export const OLD_FLOW_VOTES_AND_RECEIPTS =
  * tests/security/architecture-page.test.ts samma prov för sig.
  *
  * Påståendet gäller röster och kvitton, inte allt i det gamla flödet.
- * Adminsidan läser fortfarande dess statistik; det står i oldFlowLiveResults.
+ * Adminsidans statistik läste det gamla flödets tabell fram till uppgift 13,
+ * se noLiveResults.
  * Fram till uppgift 12b fastställde den också i det gamla flödet.
  */
 const NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW: Marker[] = [
@@ -378,11 +379,42 @@ export const DEVICE_VIEW: Marker[] = [
   },
 ]
 
-/** Verifieringssidan säger att visningen efter stängningen inte är byggd. */
-const AFTER_CLOSE_VIEW_NOT_BUILT: Marker = {
-  file: 'src/app/verify/page.tsx',
-  contains: 'Den delen är inte byggd än.',
-}
+/**
+ * VERIFIERINGSSIDAN VISAR ATT VÄLJAREN RÖSTAT, INTE VAD (uppgift 13). Ersätter
+ * markören AFTER_CLOSE_VIEW_NOT_BUILT, som sa att visningen efter stängningen
+ * inte var byggd.
+ *
+ * Beskedet kommer ur kuvertet före skalningen och ur markeringen efter, med
+ * `count` och inget annat ur raderna. Rutten svarar med ett ja eller nej per
+ * valsedel, och varken sidan eller rutten nämner ett chiffer, en räknare eller
+ * en tid.
+ */
+const VERIFY_PAGE_SHOWS_PARTICIPATION: Marker[] = [
+  {
+    file: 'src/modules/eligibility/participation.service.ts',
+    contains: "const ENVELOPES_LIE_IN: ReadonlySet<string> = new Set(['OPEN', 'CLOSED', 'VALIDATED'])",
+  },
+  {
+    file: 'src/modules/eligibility/participation.service.ts',
+    contains: [
+      "      basis === 'envelopes'",
+      '        ? await votersDb.pendingVote.count({ where })',
+      '        : await votersDb.votedMarker.count({ where })',
+    ].join('\n'),
+  },
+  {
+    file: 'src/app/api/vote/participation/route.ts',
+    contains: 'participationOf(session.voterStatusId, session.electionId),',
+  },
+  { file: 'src/app/api/vote/participation/route.ts', contains: 'voted: ballot.voted,' },
+  { file: 'src/app/verify/page.tsx', contains: "const response = await fetch('/api/vote/participation', {" },
+  { file: 'src/app/verify/page.tsx', contains: "{ballot.voted ? 'Du har röstat.' : 'Du har inte röstat.'}" },
+  { nowhereIn: 'src/app/verify/page.tsx', matches: /ciphertext|castSequence|updatedAt|createdAt|toLocale|new Date/ },
+  {
+    nowhereIn: 'src/app/api/vote/participation/route.ts',
+    matches: /ciphertext|castSequence|updatedAt|createdAt|closesAt/,
+  },
+]
 
 /** Raden i pending_vote raderas vid stängningen, med signatur och räknare. */
 const STRIPPING_DELETES_ENVELOPES: Marker = {
@@ -576,11 +608,6 @@ export const VOTED_MARKER_HAS_NO_TIME: Marker = {
   matches: /model VotedMarker \{[^}]*\n\s+(?!(?:id|voterStatusId|voterStatus|ballotId|ballot)\s)[A-Za-z]\w*\s/,
 }
 
-/** Ingen sida och ingen rutt läser markeringen än. Verifieringssidan byggs i uppgift 13. */
-const NO_PAGE_SHOWS_VOTED_MARKER: Marker = {
-  nowhereIn: 'src/app',
-  matches: /votedMarker|VotedMarker|voted_marker/,
-}
 
 /**
  * Röstlängdens modeller, som de är i dag.
@@ -805,8 +832,8 @@ export const CURRENTLY = {
       'från. Enheten skickar den chifferhash den sparade, och servern svarar bara om den stämmer ' +
       'med rösten som ligger. Röstsidan får aldrig någon annan hash än den enheten själv räknat ' +
       'fram. När sidan ser att fasen lämnat OPEN raderar enheten det den sparat, också i en flik ' +
-      'som står öppen över stängningen. Efter stängningen visar verifieringssidan ännu ingenting.',
-    holdsWhile: [...DEVICE_VIEW, AFTER_CLOSE_VIEW_NOT_BUILT],
+      'som står öppen över stängningen.',
+    holdsWhile: DEVICE_VIEW,
     status: STATUS_DONE,
   },
 
@@ -860,36 +887,72 @@ export const CURRENTLY = {
     status: STATUS_DONE,
   },
 
-  sumsNotPublished: {
+  /**
+   * Uppgift 13 ersatte "Ingenting ur kuvertmodellen publiceras än". Markörerna
+   * bär vägen från rutten till omräkningen, att ingenting per röst lämnas ut,
+   * och att verktyget är fristående och säger vad det inte kan pröva.
+   */
+  sumsPublished: {
     text:
-      'Ingenting ur kuvertmodellen publiceras än, varken summor eller bevis. ' +
-      'Observatörsgränssnittet lämnar fortfarande ut det gamla flödets röster, en och en.',
-    short: 'publiceringen är inte byggd än',
+      'Byggt: när omröstningen är räknad publicerar observatörsgränssnittet per valsedel summan per ' +
+      'alternativ, varje förtroendepersons partiella dekryptering med bevis och resultatet. Ingenting ' +
+      'publiceras per röst. Före publiceringen räknas varje valsedel om ur urnan och de prövade ' +
+      'bidragen, och stämmer omräkningen inte med de sparade räkneverken publiceras ingenting. Ett ' +
+      'fristående verktyg, tools/verify-election.mjs, prövar bevisen och kombinationen utan appens ' +
+      'kod. Det kan inte pröva att summan består av exakt de giltiga rösterna: det vilar på ' +
+      'valideringen och slutkontrollen, som den som driver systemet kör.',
+    short: 'det steget är byggt',
     holdsWhile: [
-      { file: 'src/app/api/observer/votes/route.ts', contains: 'votesDb.vote.findMany' },
-      // Rör observatörsgränssnittet kuvertmodellens tabeller publiceras något ur den.
-      { nowhereIn: 'src/app/api/observer', matches: /encryptedVote|partialDecryption|ballotTally/ },
+      { file: 'src/app/api/observer/results/route.ts', contains: 'const outcome = await publishedResults(parsed.data.electionId)' },
+      {
+        file: 'src/orchestration/publish-results.usecase.ts',
+        contains: "if (phase !== 'TALLIED' && phase !== 'CERTIFIED') return { status: 'not_published', phase }",
+      },
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'const outcome = await recountForPublication(ballot.id)' },
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'if (error instanceof TallyAbortedError) return mismatch(error.message)' },
+      { file: 'src/orchestration/tally.usecase.ts', contains: 'const { counts, sums, rows } = await countFromContributions(gate, contributions)' },
+      {
+        file: 'src/orchestration/tally.usecase.ts',
+        contains:
+          "abort('valsedelns sparade räkneverk stämmer inte med en omräkning ur urnan och bidragen. Ingenting publiceras.')",
+      },
+      // Ingenting per röst: varken publiceringen eller observatörsrutterna läser urnans rader själva.
+      { nowhereIn: 'src/orchestration/publish-results.usecase.ts', matches: /ciphertextHash|encryptedVote|\bproofs\b/ },
+      { nowhereIn: 'src/app/api/observer', matches: /ciphertextHash|encryptedVote|votesDb|votersDb/ },
+      // Verktyget importerar bara Nodes moduler, och säger vad det inte kan pröva.
+      { nowhereIn: 'tools/verify-election.mjs', matches: /^\s*import\b[^'"]*['"](?!node:)/m },
+      { file: 'tools/verify-election.mjs', contains: "if (challenge !== expected) throw new Invalid('utmaningen är inte den som transkriptet ger')" },
+      { file: 'tools/verify-election.mjs', contains: 'if (modPow(G, BigInt(count), P) !== opened) {' },
+      {
+        file: 'tools/verify-election.mjs',
+        contains: "'  – Att summan består av exakt de giltiga rösterna. De enskilda chiffren publiceras inte, så',",
+      },
     ],
-    status: statusPlanned('13'),
+    status: STATUS_DONE,
   },
 
   /**
-   * Uppgift 12b lade urnroten bredvid kuvertroten i stängningens svar, och
-   * publicerar den inte heller utanför systemet.
+   * Uppgift 13 ersatte "Kuvertroten och urnroten publiceras inte utanför
+   * systemet än" (ruling 135). Påståendet avgränsas: rötterna skyddar bara den
+   * som sparar dem, och räkningen jämför inte med något utanför systemet.
    */
-  envelopeRootNotPublished: {
+  rootsPublished: {
     text:
-      'Kuvertroten och urnroten publiceras inte utanför systemet än. Administratören får dem i ' +
-      'stängningens svar.',
+      'Byggt: kuvertroten och urnroten publiceras i observatörsgränssnittet från skalningen, före ' +
+      'räkningen, och i det publicerade resultatet. Ingen utanför systemet kan räkna om dem, eftersom ' +
+      'de enskilda kuverten och chiffren inte publiceras. De skyddar bara om någon sparar dem vid ' +
+      'stängningen och jämför efteråt: räkningen jämför med roten i röstlängden, inte med något ' +
+      'utanför systemet.',
     holdsWhile: [
-      { nowhereIn: 'src/app/api/observer', matches: /envelopeRoot|urnRoot/ },
-      {
-        file: 'src/app/api/admin/elections/close/route.ts',
-        contains: 'envelopeRoot: outcome.envelopeRoot',
-      },
-      { file: 'src/app/api/admin/elections/close/route.ts', contains: 'urnRoot: outcome.urnRoot' },
+      { file: 'src/orchestration/election-overview.usecase.ts', contains: 'envelopeRoot: stripped ? election.envelopeRoot : null,' },
+      { file: 'src/orchestration/election-overview.usecase.ts', contains: 'urnRoot: stripped ? election.urnRoot : null,' },
+      { file: 'src/app/api/observer/election/route.ts', contains: 'envelopeRoot: overview.envelopeRoot,' },
+      { file: 'src/app/api/observer/election/route.ts', contains: 'urnRoot: overview.urnRoot,' },
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'envelopeRoot: election.envelopeRoot,' },
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'urnRoot: election.urnRoot,' },
+      { file: 'src/orchestration/tally.usecase.ts', contains: 'if (root !== gate.urnRoot) {' },
     ],
-    status: statusPlanned('13'),
+    status: STATUS_DONE,
   },
 
   /**
@@ -926,27 +989,34 @@ export const CURRENTLY = {
     status: STATUS_DONE,
   },
 
-  oldFlowLiveResults: {
+  /**
+   * Uppgift 13 ersatte "Det gamla flödet räknar i klartext medan röstningen
+   * pågår" (oldFlowLiveResults). Observatörsrutten och adminvyn räknade då
+   * röster per parti ur tabellen vote, och /api/observer/votes lämnade ut
+   * varje röst med sitt innehåll. Markörerna bär det omvända, och avgränsar
+   * det: rutterna visar inget, men tabellen vote finns kvar med det gamla
+   * flödet.
+   */
+  noLiveResults: {
     text:
-      'Det gamla flödet räknar i klartext medan röstningen pågår: observatörsgränssnittet, som ' +
-      'är öppet utan inloggning, lämnar ut antalet röster per parti, och adminvyn visar samma ' +
-      'siffror. Samma gränssnitt lämnar dessutom ut varje röst i det gamla flödet med sitt ' +
-      'innehåll, alltså parti, kandidat eller svarsalternativ, också medan röstningen pågår.',
+      'Byggt: inga löpande resultat. Medan röstningen pågår visar observatörsgränssnittet och ' +
+      'adminvyn bara valdeltagandet per valsedel, och resultatet visas först när omröstningen är ' +
+      'räknad. Rutten som lämnade ut det gamla flödets röster en och en, med innehåll, finns inte ' +
+      'längre. Livevyn i demon visar räkneverken först när resultatet är publicerat. Det gamla ' +
+      'flödets tabell vote finns kvar tills flödet tas bort, och den som kan läsa röstdatabasen kan ' +
+      'räkna i den.',
     holdsWhile: [
-      { file: 'src/app/api/observer/election/route.ts', contains: 'getElectionResults(election.id)' },
-      { file: 'src/app/api/admin/stats/route.ts', contains: 'getElectionResults(electionId)' },
-      // Varje röst lämnas ut med sitt val.
-      { file: 'src/app/api/observer/votes/route.ts', contains: 'ballotPartyId: true,' },
-      { file: 'src/app/api/observer/votes/route.ts', contains: 'candidateId: true,' },
-      { file: 'src/app/api/observer/votes/route.ts', contains: 'optionId: true,' },
-      // ... och rutten frågar inte om röstningen har stängt. Ett villkor på
-      // fas, stängningstid eller status behöver ett av de här orden.
+      { nowhereIn: 'src/app/api', matches: /getElectionResults|countVotes\(/ },
+      { nowhereIn: 'src/app/api/observer', matches: /votesDb|ballotTally|getElectionResults/ },
+      { file: 'src/app/api/admin/stats/route.ts', contains: 'voted: ballot.voted,' },
+      { file: 'src/orchestration/election-overview.usecase.ts', contains: 'const turnout = await turnoutByBallot(electionId)' },
       {
-        nowhereIn: 'src/app/api/observer/votes/route.ts',
-        matches: /\b(phase|closesAt|linkClearedAt|tallyCompletedAt|status)\b/,
+        file: 'src/app/api/demo/database-state/route.ts',
+        contains: 'ballotTally: ballotTallies.filter((row) => resultPublished(row.ballotId)).map((row) => ({',
       },
+      { file: 'src/modules/ballot-box/vote.service.ts', contains: 'votesDb.vote.create' },
     ],
-    status: statusPlanned('13'),
+    status: STATUS_DONE,
   },
 
   /**
@@ -987,12 +1057,19 @@ export const CURRENTLY = {
     status: STATUS_DONE,
   },
 
-  votedMarkerNotShown: {
+  /**
+   * Uppgift 13 ersatte "Ingen sida visar markeringen än" (votedMarkerNotShown).
+   * Påståendet avgränsas mot spec 10: beskedet är röstlängdens.
+   */
+  votedMarkerShown: {
     text:
-      'Ingen sida visar markeringen än, så efter stängningen ser väljaren ännu inte att hon ' +
-      'röstat. Verifieringssidan ska visa det, men inte vad hon röstat på.',
-    holdsWhile: [NO_PAGE_SHOWS_VOTED_MARKER, AFTER_CLOSE_VIEW_NOT_BUILT],
-    status: statusPlanned('13'),
+      'Byggt: verifieringssidan visar per valsedel "Du har röstat" eller "Du har inte röstat", men ' +
+      'inte vad. Före skalningen kommer beskedet ur det liggande kuvertet, efter skalningen ur ' +
+      'markeringen. Sidan visar inget chiffer och ingen tid. Beskedet är röstlängdens: den som kan ' +
+      'skriva där kan skriva eller radera en markering, och ett äldre äkta kuvert som lagts tillbaka ' +
+      'före stängningen ger en markering som vilket annat.',
+    holdsWhile: VERIFY_PAGE_SHOWS_PARTICIPATION,
+    status: STATUS_DONE,
   },
 
   castOnlyWhileOpen: {
@@ -1997,25 +2074,11 @@ export const PHASES: PhaseRow[] = [
  *
  * Uppgift 11d strök de två första punkterna, faserna CLOSED och VALIDATED och
  * markeringen "har röstat". Uppgift 12 strök tröskeldekrypteringen, och
- * uppgift 12b slutkontrollen och fastställandet med fasen CERTIFIED. De står nu
- * under Klart.
+ * uppgift 12b slutkontrollen och fastställandet med fasen CERTIFIED. Uppgift 13
+ * strök verifieringssidan och publiceringen av summorna och rötterna. De står
+ * nu under Klart.
  */
 export const REMAINING: CodeFact[] = [
-  {
-    text: 'Verifieringssidan visar efter stängningen att du har röstat, men inte vad.',
-    holdsWhile: [AFTER_CLOSE_VIEW_NOT_BUILT],
-    status: statusPlanned('13'),
-  },
-  {
-    text:
-      'Publiceringen av summorna, förtroendemännens bidrag med bevis och kuvertroten, utanför ' +
-      'systemet.',
-    holdsWhile: [
-      ...CURRENTLY.sumsNotPublished.holdsWhile,
-      ...CURRENTLY.envelopeRootNotPublished.holdsWhile,
-    ],
-    status: CURRENTLY.sumsNotPublished.status,
-  },
   {
     text: 'Att det gamla flödet tas bort, med sina röstintyg, blinda signaturer och kvitton.',
     holdsWhile: [
@@ -2195,17 +2258,17 @@ export const OUT_OF_SCOPE: OutOfScopeItem[] = [
  * STATUS FÖR DE KÄNDA BEGRÄNSNINGAR UTVECKLINGSSTATUS MÄRKER MED EN ETIKETT.
  *
  * Begränsningarna själva står i src/lib/known-limitations.ts. Den här kartan
- * är den enda källan för vilken status de har på Utvecklingsstatus: fyra hör
- * till det gamla flödet och försvinner när det tas bort (uppgift 15) utom
- * `live-results-in-old-flow`, som uppgift 13 stänger genom att skriva om
- * observatörsrutterna. Fyra är kuvertmodellens egna, i Remaining.tsx. Ingen
+ * är den enda källan för vilken status de har på Utvecklingsstatus: tre hör
+ * till det gamla flödet och försvinner när det tas bort (uppgift 15). En
+ * fjärde, `live-results-in-old-flow`, stängde uppgift 13 genom att skriva om
+ * observatörsrutterna, och den är borta ur listan. Fyra är kuvertmodellens
+ * egna, i Remaining.tsx. Ingen
  * uppgift i planen prövar spärrfrågan (OCSP) fullt ut — uppgift 17b förseglar
  * bara svaret för en senare uppgift — så `no-revocation-check` är "ingår
  * inte", inte "kommer".
  */
 export const LIMITATION_STATUS: Record<string, Status> = {
   'receipt-proves-choice': statusPlanned('15'),
-  'live-results-in-old-flow': statusPlanned('13'),
   'signing-keys-in-database': statusPlanned('15'),
   'no-guaranteed-anonymity-set': statusPlanned('15'),
   'bankid-order-carries-link': statusPlanned('11e'),
@@ -2215,8 +2278,11 @@ export const LIMITATION_STATUS: Record<string, Status> = {
   // 12b bytet efter stängningen för den som bara kan skriva i röstdatabasen:
   // räkningen och slutkontrollen prövar urnroten. Kvar är att den kan stoppa
   // räkningen, och att den som kan skriva i båda databaserna kan skriva om
-  // roten. Uppgift 13 publicerar urnroten (ruling 135), och posten blir Klart i
-  // den del som roten stänger. Posten bär en markör för att roten ännu inte
-  // publiceras.
-  'votes-db-writer-can-swap-ciphertext': statusPlanned('13'),
+  // roten. Uppgift 13 publicerar urnroten (ruling 135), och det stänger den
+  // del som roten kan stänga: den som sparade roten kan se i efterhand att en
+  // annan urna räknats. Det som står kvar, att spärren bara jämför med raden i
+  // röstlängden och inte stannar för en rot som skrivits om, har ingen uppgift i planen.
+  // Därför "ingår inte" och inte "Klart": etiketten står bredvid postens rubrik,
+  // och "Klart" där hade läst som att begränsningen är löst.
+  'votes-db-writer-can-swap-ciphertext': STATUS_OUT_OF_SCOPE,
 }

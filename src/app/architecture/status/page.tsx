@@ -44,7 +44,6 @@ export default function StatusPage() {
         <OldFlow
           entries={[
             limitation('receipt-proves-choice'),
-            limitation('live-results-in-old-flow'),
             limitation('signing-keys-in-database'),
             limitation('no-guaranteed-anonymity-set'),
           ]}

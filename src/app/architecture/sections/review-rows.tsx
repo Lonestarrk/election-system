@@ -57,10 +57,10 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       ),
       today: (
         <>
-          {CURRENTLY.envelopeRootCommitment.text} {CURRENTLY.envelopeRootNotPublished.text}
+          {CURRENTLY.envelopeRootCommitment.text} {CURRENTLY.rootsPublished.text}
         </>
       ),
-      statuses: [CURRENTLY.envelopeRootCommitment.status!, CURRENTLY.envelopeRootNotPublished.status!],
+      statuses: [CURRENTLY.envelopeRootCommitment.status!, CURRENTLY.rootsPublished.status!],
     },
     {
       question: 'Kan väljaren kontrollera sin röst?',
@@ -74,13 +74,13 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       today: (
         <>
           {CURRENTLY.deviceViewBuilt.text} {CURRENTLY.votedMarkerWritten.text}{' '}
-          {CURRENTLY.votedMarkerNotShown.text}
+          {CURRENTLY.votedMarkerShown.text}
         </>
       ),
       statuses: [
         CURRENTLY.deviceViewBuilt.status!,
         CURRENTLY.votedMarkerWritten.status!,
-        CURRENTLY.votedMarkerNotShown.status!,
+        CURRENTLY.votedMarkerShown.status!,
       ],
     },
     {
@@ -94,10 +94,10 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       ),
       today: (
         <>
-          {CURRENTLY.decryptionBuilt.text} {CURRENTLY.sumsNotPublished.text}
+          {CURRENTLY.decryptionBuilt.text} {CURRENTLY.sumsPublished.text}
         </>
       ),
-      statuses: [CURRENTLY.decryptionBuilt.status!, CURRENTLY.sumsNotPublished.status!],
+      statuses: [CURRENTLY.decryptionBuilt.status!, CURRENTLY.sumsPublished.status!],
     },
     {
       question: 'Har revisionsloggen ändrats?',

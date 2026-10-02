@@ -98,9 +98,14 @@ describe('modulgränser', () => {
      *    rötterna, ANTALET liggande kuvert och revisionskedjan i röstlängden
      *    (uppgift 12b). Läser aldrig en enskild väljare, och kan inte para ihop
      *    sidorna — det finns ingen gemensam identifierare.
-     *  – observer/election: samma siffra, publicerad. Utan den kan en
-     *    observatör inte kontrollera att antalet godkända röstningar motsvarar
-     *    antalet registrerade röster, vilket är ett uttryckligt krav.
+     *  – observer/election stod här fram till uppgift 13, med antalet
+     *    godkända röstningar ur det gamla flödet. Sedan uppgiften läser den
+     *    valdeltagandet och rötterna genom election-overview.usecase och ser
+     *    bara den anonyma modulens lista över omröstningar själv.
+     *  – publish-results.usecase: publiceringen (uppgift 13). Läser fasen,
+     *    rötterna och ANTALET markeringar per valsedel i röstlängden, och
+     *    urnan, andelarna och bidragen i röstdatabasen, genom räkningens
+     *    omräkning. Läser ingen väljare och kan inte para ihop sidorna.
      *  – vote/encrypted: lägger det yttre kuvertet i röstlängden, men behöver
      *    omröstningens krypteringsnyckel och valsedelns antal alternativ för
      *    att kunna verifiera bevisen — och de uppgifterna finns bara i den
@@ -156,9 +161,15 @@ describe('modulgränser', () => {
        * finns bara i demoläget.
        */
       'src/orchestration/reset-demo-election.usecase.ts',
+      /**
+       * Publiceringen av resultatet med bevis (uppgift 13). Omräkningen sker
+       * i räkningen, och filen läser utöver den bara ANTALET markeringar per
+       * valsedel, fasen och rötterna i röstlängden, och valets publika nyckel
+       * och andelarna i röstdatabasen. Ingenting per väljare eller per röst.
+       */
+      'src/orchestration/publish-results.usecase.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
-      'src/app/api/observer/election/route.ts',
       'src/app/api/vote/encrypted/route.ts',
     ]
 

@@ -6,8 +6,10 @@ import type { ResultsView } from './types'
  * kvar efter en omladdning.
  *
  * Det här är summor, inte röster: ingenting säger vem som röstat på vad, och
- * inget är per väljare. Resultatet är inte publicerat. Det ser bara den
- * inloggade administratören, och publiceringen med bevis är uppgift 13.
+ * inget är per väljare. Talen här är de sparade räkneverken, som den
+ * inloggade administratören ser. Offentligt publiceras resultatet med bevis i
+ * /api/observer/results, och först efter en omräkning ur urnan och bidragen
+ * (uppgift 13).
  */
 export function Results({ view, certified }: { view: ResultsView; certified: boolean }) {
   return (
@@ -17,9 +19,9 @@ export function Results({ view, certified }: { view: ResultsView; certified: boo
         {certified
           ? 'Resultatet är fastställt av servern (fasen är CERTIFIED).'
           : 'Resultatet är räknat men inte fastställt. Slutkontrollen kan ännu hitta en avvikelse som stoppar fastställandet.'}{' '}
-        Det är inte publicerat: appen lämnar inte ut det till någon annan än den inloggade administratören.
-        Räkneverken ligger i röstdatabasen, så den som kan läsa den ser dem också. Att publicera summorna med
-        bevis är nästa steg i bygget (uppgift 13).
+        Talen här är de sparade räkneverken. Offentligt publiceras resultatet med bevis, och bara om en
+        omräkning ur urnan och förtroendepersonernas bidrag ger samma tal. Räkneverken ligger i
+        röstdatabasen, så den som kan läsa den ser dem också.
       </p>
 
       {view.ballots.map((ballot) => (

@@ -35,7 +35,7 @@ export type DemoIdentity = { personalNumber: string; label: string }
 
 type Props = {
   /** Styr texten som visas i BankID-appen. */
-  purpose: 'vote' | 'admin'
+  purpose: 'vote' | 'verify' | 'admin'
   /** Rutt som pollas för status. */
   collectPath: string
   /** Extra fält som följer med varje statusanrop, t.ex. omröstningens id. */

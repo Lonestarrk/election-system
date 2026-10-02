@@ -1,9 +1,8 @@
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
-import { getElection, getElectionResults, listElections } from '@/modules/ballot-box'
-import { listCommitments, currentRoot } from '@/modules/ballot-box/commitment.service'
-import { countIssuedCredentials } from '@/modules/eligibility/credential.service'
+import { listElections } from '@/modules/ballot-box'
+import { getObserverOverview } from '@/orchestration/election-overview.usecase'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -13,38 +12,26 @@ export const dynamic = 'force-dynamic'
  *
  * OBSERVATÖRSGRÄNSSNITTET. Öppet, utan inloggning.
  *
- * Kravet är att det inte ska räcka att lita på att administratören säger att
- * databasen är korrekt. En oberoende part måste kunna kontrollera kedjan
- * själv:
+ * Utan omröstning: listan, så att observatören hittar rätt. Med en omröstning:
  *
- *   en legitim röstning genomfördes → exakt en anonym röst skapades →
- *   rösten finns kvar → rösten räknades korrekt
+ *   1. FASEN, som röstlängden står i (spec 6.1).
+ *   2. VALDELTAGANDET per valsedel, alltså hur många som röstat. Det är det
+ *      enda som publiceras medan röstningen pågår (spec 6.2).
+ *   3. KUVERTROTEN, URNROTEN OCH ANTALET KUVERT, från skalningen (ruling 135).
+ *      De visas före räkningen, så att den som vill kan spara dem innan något
+ *      dekrypteras och jämföra med publiceringen efteråt.
+ *   4. VAR RESULTATET FINNS, när omröstningen är räknad. Själva resultatet,
+ *      med bevis, lämnar /api/observer/results.
  *
- * Den här rutten ger de fyra sakerna som krävs för att göra det:
+ * INGA LÖPANDE RESULTAT (uppgift 13, spec 6.2). Fram till uppgiften lämnade
+ * rutten ut antalet röster per parti ur det gamla flödets tabell medan
+ * röstningen pågick, till vem som helst. Delsiffror påverkar dem som ännu inte
+ * röstat, och differensen mellan två hämtningar är rösterna som lades
+ * däremellan. Nu finns inget resultat här alls, i någon fas.
  *
- *   1. VALSEDLARNAS PUBLIKA NYCKLAR. Med dem kan observatören verifiera att
- *      varje röst bär ett äkta röstintyg — alltså att den skapats genom den
- *      auktoriserade processen och inte lagts till vid sidan om. Kontrollen
- *      kräver inte tillit till systemet: den är ren matematik.
- *
- *   2. ANTALET GODKÄNDA RÖSTNINGAR per valsedel. Stämmer det inte med antalet
- *      registrerade röster finns röster utan godkännande, eller godkännanden
- *      utan röster.
- *
- *   3. ÅTAGANDEKEDJAN. Varje åtagande är Merkleroten över röstunderlaget vid
- *      en tidpunkt. En observatör som sparat ett tidigare åtagande kan avgöra
- *      om något ändrats sedan dess — utan att fråga systemet.
- *
- *   4. DET SAMMANRÄKNADE RESULTATET, som kan jämföras mot en egen omräkning av
- *      rösterna från /api/observer/votes.
- *
- * VAD SOM INTE FINNS HÄR, OCH ALDRIG KOMMER ATT FINNAS
- *
- * Någon uppgift om vem som röstat. Observatören kan verifiera ATT antalet
- * godkända röstningar stämmer, men får aldrig veta vilka personer det rör sig
- * om — och kan därför inte para ihop en väljare med en röst. Underlaget för en
- * sådan koppling finns inte i någon databas, så begränsningen sitter i datan
- * och inte i det här gränssnittet.
+ * INGENTING PER RÖST OCH INGENTING PER VÄLJARE. Valdeltagandet är ett antal
+ * per valsedel. Rötterna är hashar och binder vilka kuvert som fanns utan att
+ * peka ut något av dem.
  */
 export async function POST(request: Request) {
   if (!hasValidOrigin(request)) {
@@ -62,7 +49,6 @@ export async function POST(request: Request) {
   if (!body.ok) return errorResponse('INVALID_INPUT', body.message, 400)
 
   if (!body.data.electionId) {
-    // Utan vald omröstning: bara listan, så att observatören kan hitta rätt.
     const elections = await listElections()
 
     return jsonResponse({
@@ -76,70 +62,22 @@ export async function POST(request: Request) {
     })
   }
 
-  const election = await getElection(body.data.electionId)
-  if (!election) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
+  const overview = await getObserverOverview(body.data.electionId)
+  if (!overview) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
 
-  const [results, commitments, root, approved] = await Promise.all([
-    getElectionResults(election.id),
-    listCommitments(election.id),
-    currentRoot(election.id),
-    /**
-     * Antalet godkända röstningar per valsedel, hämtat ur röstlängden.
-     *
-     * Detta är enda anledningen till att rutten rör båda databaserna, och den
-     * rör dem som RENA ANTAL. Att veta att sex röstningar godkändes på
-     * kommunvalsedeln säger ingenting om vilka sex personer det var — och
-     * kopplingen finns inte lagrad någonstans att hämta.
-     *
-     * Utan siffran kan observatören inte kontrollera kravet att antalet
-     * godkända röstningar motsvarar antalet registrerade röster, vilket är en
-     * av de viktigaste sakerna hen ska kunna kontrollera.
-     */
-    countIssuedCredentials(election.id),
-  ])
+  const resultsPath = `/api/observer/results?electionId=${encodeURIComponent(overview.election.id)}`
 
   return jsonResponse({
-    election: {
-      id: election.id,
-      name: election.name,
-      kind: election.kind,
-      opensAt: election.opensAt.toISOString(),
-      closesAt: election.closesAt.toISOString(),
-    },
-    ballots: election.ballots.map((ballot) => ({
-      id: ballot.id,
-      kind: ballot.kind,
-      label: ballot.label,
-      allowsCandidateVote: ballot.allowsCandidateVote,
-      // Med den här kan vem som helst verifiera samtliga röstintyg på
-      // valsedeln, utan att fråga systemet om lov.
-      signingPublicKeyPem: ballot.signingPublicKeyPem,
-    })),
-    results,
-    approvedVotings: approved,
-    commitments,
-    /**
-     * Roten just nu, framräknad ur de röster som finns i detta ögonblick.
-     *
-     * Stämmer den inte med det senaste åtagandet har underlaget ändrats sedan
-     * åtagandet publicerades. Observatören behöver inte lita på oss för att se
-     * det — samma rot går att räkna fram ur rösterna från /api/observer/votes.
-     */
-    currentRoot: root,
-    howToVerify: {
-      steg1:
-        'Hämta samtliga röster från /api/observer/votes och verifiera varje ' +
-        'credentialSignature mot valsedelns signingPublicKeyPem (RSA, full-domain ' +
-        'hash via MGF1-SHA256 över credentialId).',
-      steg2:
-        'Kontrollera att varje credentialId förekommer exakt en gång. Ett återanvänt ' +
-        'intyg vore en dubbelröst.',
-      steg3:
-        'Räkna om Merkleroten: hasha varje röst kanoniskt, sortera hashvärdena, ' +
-        'bygg trädet. Jämför med currentRoot och med sparade åtaganden.',
-      steg4:
-        'Räkna rösterna per alternativ och jämför med results. Jämför antalet ' +
-        'röster per valsedel med approvedVotings.',
-    },
+    election: overview.election,
+    ballots: overview.ballots,
+    turnoutBasis: overview.turnoutBasis,
+    envelopeRoot: overview.envelopeRoot,
+    urnRoot: overview.urnRoot,
+    envelopeCount: overview.envelopeCount,
+    publishedResults: overview.resultsAvailable ? resultsPath : null,
+    howToVerify: overview.resultsAvailable
+      ? `Hämta ${resultsPath} och kör node tools/verify-election.mjs med adressen eller den sparade filen.`
+      : 'Resultatet publiceras med bevis när omröstningen är räknad. Spara kuvertroten och urnroten ' +
+        'när de visas här, så kan du jämföra dem med publiceringen.',
   })
 }

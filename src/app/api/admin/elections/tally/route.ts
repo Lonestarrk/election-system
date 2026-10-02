@@ -27,9 +27,9 @@ export const dynamic = 'force-dynamic'
  * varje bidrag när det kommer in.
  *
  * RESULTATET PUBLICERAS INTE HÄR. Räkneverken sparas i röstdatabasen, och
- * svaret går till den inloggade administratören. Publiceringen, med bevis, är
- * uppgift 13. I demoläget visar livevyn på arkitektursidan röstdatabasens
- * tabeller som en insider ser dem, och därmed också räkneverken.
+ * svaret går till den inloggade administratören. Publiceringen, med bevis,
+ * sker i /api/observer/results när varje valsedel är räknad (uppgift 13). I
+ * demoläget visar livevyn på arkitektursidan räkneverken först då.
  */
 export async function POST(request: Request) {
   if (!hasValidOrigin(request)) {

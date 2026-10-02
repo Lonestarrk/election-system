@@ -495,6 +495,37 @@ button.secondary:hover:not(:disabled) {
   margin-bottom: 1rem;
 }
 
+/* Verifieringssidan (uppgift 13) ----------------------------------------- */
+
+/*
+ * Ett besked per valsedel, som en notis: valsedeln och "Du har röstat" eller
+ * "Du har inte röstat". Ingen tid och inget chiffer.
+ */
+.verify-ballots {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.verify-ballots li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+}
+
+.verify-command {
+  font-family: var(--font-mono);
+  font-size: 0.87rem;
+  word-break: break-word;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+
 /* Röstsidan ------------------------------------------------------------- */
 
 /*

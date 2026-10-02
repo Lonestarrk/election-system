@@ -965,7 +965,7 @@ export async function completeTally(ballotId: string): Promise<TallyOutcome> {
     return { status: 'needs_more_trustees', have: contributions.size, need: TRUSTEE_THRESHOLD }
   }
 
-  const counts = await countFromContributions(gate, contributions)
+  const { counts } = await countFromContributions(gate, contributions)
 
   if (stored.kind === 'complete') {
     if (!sameCounts(stored.counts, counts)) {
@@ -1079,7 +1079,7 @@ function sameCounts(a: readonly number[], b: readonly number[]): boolean {
 async function countFromContributions(
   gate: OpenGate,
   contributions: ReadonlyMap<number, PartialDecryption[]>,
-): Promise<number[]> {
+): Promise<{ counts: number[]; sums: Ciphertext[]; rows: number }> {
   const { sums, rows, hashes } = await sumOfUrn(gate.ballotId, gate.optionCount)
   // Före kombinationen, också när bidragen lämnades medan urnan var hel (ruling 134).
   await requireUrnRoot(gate, hashes)
@@ -1121,5 +1121,144 @@ async function countFromContributions(
   }
 
   requireSumOfCounts(counts, rows)
-  return counts
+  return { counts, sums, rows }
+}
+
+// ---------------------------------------------------------------------------
+// Omräkningen före publiceringen (uppgift 13)
+// ---------------------------------------------------------------------------
+
+/**
+ * Det som publiceras för en räknad valsedel: summan per alternativ, varje
+ * prövat bidrag och räkneverken, alla ur samma omräkning. Ingenting per röst.
+ */
+export type RecountedBallot = {
+  ballotId: string
+  /** Antalet rader i urnan för valsedeln, ur samma läsning som summan. */
+  rows: number
+  sums: Ciphertext[]
+  counts: number[]
+  /** Förtroendepersonernas bidrag, i index ordning, vart och ett prövat mot summan. */
+  contributions: Array<{ trusteeIndex: number; partials: PartialDecryption[] }>
+}
+
+export type RecountOutcome =
+  | { status: 'recounted'; ballot: RecountedBallot }
+  | WrongPhase
+  | { status: 'unknown_ballot' }
+
+/**
+ * Spärren för publiceringen. Samma villkor som räkningens spärr, utom fasen:
+ * omröstningen ska vara räknad, alltså stå i TALLIED eller CERTIFIED. Varje
+ * villkor prövas eftersom publiceringen läser samma urna och samma bidrag som
+ * räkningen, och de kan ha rörts sedan dess. Röstlängdens rot är den som
+ * urnan prövas mot, också här.
+ */
+async function publicationGate(ballotId: string): Promise<Gate> {
+  const ballot = await votesDb.electionBallot.findUnique({
+    where: { id: ballotId },
+    select: { electionId: true },
+  })
+  if (!ballot) return { open: false, outcome: { status: 'unknown_ballot' } }
+
+  const election = await votersDb.election.findUnique({
+    where: { id: ballot.electionId },
+    select: { phase: true, envelopeRoot: true, urnRoot: true, ballots: { select: { id: true } } },
+  })
+  if (!election) {
+    return closedGate(null, 'Omröstningen finns inte i röstlängden, och ingenting publiceras.')
+  }
+  if (!election.ballots.some((entry) => entry.id === ballotId)) {
+    abort(
+      `valsedeln hör i röstdatabasen till omröstningen ${ballot.electionId}, men röstlängden har den ` +
+        'inte bland omröstningens valsedlar. Ingenting publiceras.',
+    )
+  }
+  if (election.phase !== 'TALLIED' && election.phase !== 'CERTIFIED') {
+    return closedGate(
+      election.phase,
+      `Omröstningen är inte räknad, och fasen står i ${election.phase}. Ingenting publiceras före TALLIED.`,
+    )
+  }
+  if (election.envelopeRoot === null || election.urnRoot === null) {
+    abort(
+      `fasen står i ${election.phase}, men kuvertroten eller urnroten är oskriven. Båda skrivs med ` +
+        'STRIPPED, så någon har skrivit i röstlängden förbi stängningen. Ingenting publiceras.',
+    )
+  }
+  const envelopesLeft = await votersDb.pendingVote.count({
+    where: { ballotId: { in: election.ballots.map((entry) => entry.id) } },
+  })
+  if (envelopesLeft > 0) {
+    abort(
+      `${envelopesLeft} kuvert ligger i röstlängden bredvid väljarnas namn, fast omröstningen är räknad. ` +
+        'Ingenting publiceras förrän det är utrett.',
+    )
+  }
+
+  const shape = await getEncryptedBallotShape(ballotId)
+  if (!shape) return { open: false, outcome: { status: 'unknown_ballot' } }
+
+  return {
+    open: true,
+    electionId: ballot.electionId,
+    ballotId,
+    optionCount: shape.optionCount,
+    urnRoot: election.urnRoot,
+    ballotIds: election.ballots.map((entry) => entry.id),
+  }
+}
+
+/**
+ * RÄKNAR OM EN RÄKNAD VALSEDEL, FÖR PUBLICERINGEN (uppgift 13, från 12b).
+ *
+ * Publiceringen läser inte bara `ballot_tally`. Granskaren av 12b ändrade ett
+ * räkneverk efter CERTIFIED, och fastställandet svarade `already_certified`
+ * utan att se det. Här räknas valsedeln om från grunden, som räkningen gör:
+ * summan ur urnan, urnroten ur samma läsning mot röstlängdens rot, varje sparat
+ * bidrag prövat mot summan och förtroendepersonens publika andel, alla bidrag
+ * kombinerade, den diskreta logaritmen med antalet rader som tak, och kravet
+ * att räkneverken summerar till antalet rader.
+ *
+ * DE SPARADE RÄKNEVERKEN SKA VARA EXAKT DE OMRÄKNADE. Är de inte det avbryts
+ * omräkningen med `TallyAbortedError`, och publiceringen publicerar ingenting.
+ * Det omräknade talet ges bara tillbaka när det är detsamma som det sparade,
+ * så att inget av dem lämnas ut när de skiljer sig åt.
+ *
+ * Funktionen skriver ingenting.
+ */
+export async function recountForPublication(ballotId: string): Promise<RecountOutcome> {
+  const gate = await publicationGate(ballotId)
+  if (!gate.open) return gate.outcome
+
+  const stored = await storedTally(ballotId, gate.optionCount)
+  if (stored.kind !== 'complete') {
+    abort('valsedeln saknar sina räkneverk, fast omröstningen är räknad. Ingenting publiceras.')
+  }
+
+  const contributions = await storedContributions(ballotId, gate.optionCount)
+  if (contributions.size < TRUSTEE_THRESHOLD) {
+    abort(
+      `bara ${contributions.size} förtroendepersoners bidrag finns kvar, fast omröstningen är räknad. ` +
+        'Ingenting publiceras.',
+    )
+  }
+
+  const { counts, sums, rows } = await countFromContributions(gate, contributions)
+  if (!sameCounts(stored.counts, counts)) {
+    abort('valsedelns sparade räkneverk stämmer inte med en omräkning ur urnan och bidragen. Ingenting publiceras.')
+  }
+
+  return {
+    status: 'recounted',
+    ballot: {
+      ballotId,
+      rows,
+      sums,
+      counts,
+      contributions: [...contributions]
+        .sort(([a], [b]) => a - b)
+        .map(([trusteeIndex, partials]) => ({ trusteeIndex, partials })),
+    },
+  }
 }

@@ -199,7 +199,7 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
         <p className="muted small" style={{ marginTop: '0.75rem' }}>
           Fasen och kuvertroten står i röstlängden, nyckeln och räkningen i röstdatabasen.
           Kuvertroten är ett åtagande om exakt vilka kuvert som fanns vid stängningen, se
-          granskningen på Tekniska detaljer. {CURRENTLY.envelopeRootNotPublished.text}
+          granskningen på Tekniska detaljer. {CURRENTLY.rootsPublished.text}
         </p>
         <p className="muted small">
           Frågan &quot;vem röstade på vad&quot;, körd mot databaserna just nu, och vad den visar om

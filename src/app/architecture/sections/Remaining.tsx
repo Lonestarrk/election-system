@@ -14,8 +14,9 @@ import { StatusBadge } from './StatusBadge'
  * 10), liksom den som kan skriva i röstdatabasen och byta ut ett chiffer
  * (spec 4.6, förbehåll 4, granskningen av 11g). Uppgift 11d stängde bytet före
  * infogningen, och uppgift 12b bytet efter stängningen för den som bara kan
- * skriva i röstdatabasen. Kvar är den som kan skriva i båda databaserna, märkt
- * Kommer (13), eftersom uppgift 13 publicerar urnroten (ruling 135).
+ * skriva i röstdatabasen. Kvar är den som kan skriva i båda databaserna. Uppgift
+ * 13 publicerade urnroten (ruling 135), och det som står kvar har ingen uppgift
+ * i planen, så posten är märkt "ingår inte".
  * Spärrkontrollen (OCSP) har specen också en åtgärd för, men ingen uppgift i
  * planen prövar svaret — bara uppgift 17b sparar det förseglat — så den
  * punkten är märkt "ingår inte", inte "kommer" (fixrunda 1 av uppgift 11h).

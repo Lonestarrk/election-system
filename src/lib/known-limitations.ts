@@ -173,8 +173,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'röstade från, där jämförelsen svarar att rösten ändrats eller att ingen röst finns. Vid ' +
       'skalningen skrivs markeringen "har röstat" för varje kuvert som flyttas, så ett borttaget ' +
       'kuvert ger ingen markering, medan ett återställt äldre kuvert ger en markering som vilket ' +
-      'annat. Men ingen sida visar markeringen än (uppgift 13), och den som kan skriva i ' +
-      'röstlängden kan också skriva eller radera en markering efter stängningen.',
+      'annat. Verifieringssidan visar markeringen efter stängningen, så väljaren ser där att ett ' +
+      'borttaget kuvert saknas, men inte att ett äldre kuvert lagts tillbaka. Och den som kan skriva ' +
+      'i röstlängden kan också skriva eller radera en markering efter stängningen, och då visar ' +
+      'sidan det den skrev.',
     stillTrueIf: [
       // Räknaren som valideringen jämför med är radens egen. Kom den från
       // något som den som driver systemet inte kan skriva om, till exempel en
@@ -184,9 +186,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         contains: 'castSequence: vote.castSequence,',
       },
       { file: 'prisma/voters/schema.prisma', contains: 'castSequence Int @map("cast_sequence")' },
-      // Ingen sida visar markeringen efter stängningen. När verifieringssidan
-      // gör det i uppgift 13 ändras raden, och texten ska ses över.
-      { file: 'src/app/verify/page.tsx', contains: 'Den delen är inte byggd än.' },
+      // Verifieringssidans besked efter stängningen kommer ur markeringen i
+      // röstlängden, som den som driver systemet kan skriva (uppgift 13).
+      // Kommer beskedet en dag ur något som den inte kan skriva om ändras
+      // raden, och texten ska ses över.
+      { file: 'src/modules/eligibility/participation.service.ts', contains: ': await votersDb.votedMarker.count({ where })' },
     ],
   },
   /**
@@ -244,6 +248,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * det räcker att skriva om den. Kedjan behövs bara för att komma förbi
    * slutkontrollen, och då är rösten redan öppnad. Uppgift 13 publicerar
    * urnroten (ruling 135), och posten har status Kommer (13) tills dess.
+   *
+   * OMSKRIVEN I UPPGIFT 13. Roten publiceras nu, från skalningen. Det stänger
+   * att den som skriver i båda databaserna kan byta urna utan att någon utanför
+   * kan se det, men bara för den som sparade roten, och räkningen stannar inte
+   * för det. Spärren jämför fortfarande med raden i röstlängden.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
@@ -263,8 +272,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'revisionskedjan, så dekrypteringen öppnar då den urna hen har lagt dit, också en där alla rader ' +
       'utom en har känt innehåll. Slutkontrollen märker det efteråt, eftersom posten LINK_CLEARED bär ' +
       'roten som stängningen skrev, om inte revisionskedjan också räknas om. Då är rösten redan öppnad. ' +
-      'Roten publiceras inte utanför systemet än. Uppgift 13 ska publicera den, så att den som sparar ' +
-      'den vid stängningen kan jämföra efteråt. Räkningen ' +
+      'Sedan uppgift 13 publiceras roten i observatörsgränssnittet från skalningen, före räkningen, och ' +
+      'i det publicerade resultatet. Den som sparar den vid stängningen kan alltså se att den skrivits ' +
+      'om, men ingenting i systemet stannar för det, och det syns bara om någon sparade den: varken ' +
+      'räkningen eller publiceringen jämför med något utanför systemet. Räkningen ' +
       'prövar inte rösternas bevis igen, det gör slutkontrollen. Före stängningen kan den som skriver ' +
       'i röstdatabasen lägga en rad på ett äkta kuverts plats i urnan, dess id, men med ett annat ' +
       'innehåll, så att infogningen hoppar över det äkta kuvertet. Stängningen tar då bort raden och ' +
@@ -310,20 +321,18 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         contains: 'select: { phase: true, envelopeRoot: true, urnRoot: true, ballots: { select: { id: true } } },',
       },
       { file: 'prisma/voters/schema.prisma', contains: 'urnRoot String? @map("urn_root")' },
-      // Roten publiceras inte utanför systemet än: observatörens svar om
-      // omröstningen bär bara id, namn, sort och tider. Publicerar uppgift 13
-      // urnroten där ändras raderna, och posten ska flyttas till Klart i den
-      // del som roten stänger (ruling 135).
+      // Uppgift 13 publicerar roten (ruling 135). Publiceringens spärr jämför
+      // också med raden i röstlängden och inte med något utanför systemet.
+      // Gör den det en dag ändras raden, och texten ska ses över.
       {
-        file: 'src/app/api/observer/election/route.ts',
+        file: 'src/orchestration/tally.usecase.ts',
         contains: [
-          '    election: {',
-          '      id: election.id,',
-          '      name: election.name,',
-          '      kind: election.kind,',
-          '      opensAt: election.opensAt.toISOString(),',
-          '      closesAt: election.closesAt.toISOString(),',
-          '    },',
+          '  return {',
+          '    open: true,',
+          '    electionId: ballot.electionId,',
+          '    ballotId,',
+          '    optionCount: shape.optionCount,',
+          '    urnRoot: election.urnRoot,',
         ].join('\n'),
       },
       // Räkningen läser urnans chiffer men inte bevisen, så den prövar inte
@@ -580,35 +589,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'från förr visar fortfarande sitt parti. Kuvertmodellen är utformad utan kvitto (spec 3.1). ' +
       'Före stängningen ser väljaren sin nuvarande röst på enheten hon röstade från, men enheten ' +
       'sparar aldrig slumptalet, så det den visar bevisar ingenting för någon annan. Ingen kod ' +
-      'visas, och efter stängningen ska bara summorna publiceras, så att det inte finns något per ' +
+      'visas, och efter stängningen publiceras bara summorna, så att det inte finns något per ' +
       'röst att visa upp eller matcha mot. Posten gäller det gamla flödet och försvinner med det.',
     // `choice` i verifieringssvaret är precis det som bevisar valet.
     stillTrueIf: { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
-  },
-  {
-    id: 'live-results-in-old-flow',
-    title: 'Det gamla flödets resultat och röster är öppna medan röstningen pågår',
-    why:
-      'Observatörsgränssnittet, som är öppet utan inloggning, lämnar ut antalet röster per parti ' +
-      'ur det gamla flödets tabell vote medan röstningen pågår. Rutten /api/observer/votes går ' +
-      'längre och lämnar ut varje röst en och en, med sitt innehåll: parti, kandidat eller ' +
-      'svarsalternativ. Det är ett löpande resultat, och det får inte finnas: delsiffror påverkar ' +
-      'dem som ännu inte röstat, och differensen mellan två hämtningar är rösterna som lades ' +
-      'däremellan. Har bara en person röstat under tiden är differensen den personens röst. I ' +
-      'kuvertmodellens design räknas ingenting förrän kopplingen raderats, men det gamla flödet ' +
-      'räknar i klartext, när som helst.',
-    stillTrueIf: [
-      // Rutten räknar ur tabellen vote vid varje anrop, utan att fråga om
-      // röstningen stängt. När den under röstningen bara visar valdeltagandet,
-      // och resultat först när en valsedel räknats, försvinner anropet.
-      { file: 'src/app/api/observer/election/route.ts', contains: 'getElectionResults(election.id)' },
-      // Varje röst lämnas ut med sitt val: parti, kandidat och svarsalternativ,
-      // en markör för vart och ett, eftersom texten nämner alla tre. Tas något
-      // av dem bort ur svaret, eller rutten helt, faller posten.
-      { file: 'src/app/api/observer/votes/route.ts', contains: 'ballotPartyId: true,' },
-      { file: 'src/app/api/observer/votes/route.ts', contains: 'candidateId: true,' },
-      { file: 'src/app/api/observer/votes/route.ts', contains: 'optionId: true,' },
-    ],
   },
   {
     id: 'municipality-beside-identity-hash',

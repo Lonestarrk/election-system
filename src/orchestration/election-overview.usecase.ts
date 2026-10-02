@@ -3,6 +3,7 @@ import { TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '@/lib/crypto/threshold'
 import { getBallotChoices, getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
+import { turnoutByBallot } from '@/modules/eligibility/participation.service'
 
 /**
  * Det adminsidan läser för att veta var avslutningen står (uppgift 12c).
@@ -163,8 +164,9 @@ export type ElectionResultOutcome =
  *
  * Räkningens rutt vägrar efter TALLIED, och ingen annan rutt lämnar ut
  * räkneverken igen. Det här är läsvägen för adminsidan, också efter en
- * omladdning. Den ligger bakom adminsessionen och är inte offentlig:
- * publiceringen, med bevis, är uppgift 13.
+ * omladdning. Den ligger bakom adminsessionen och är inte offentlig. Det
+ * offentliga resultatet, med bevis och efter en omräkning, är
+ * `publishedResults` i publish-results.usecase.ts (uppgift 13).
  *
  * Före TALLIED svarar den `not_tallied` och lämnar inget ur räkneverken, också
  * om några valsedlar redan är räknade. Fasen är det som säger att varje
@@ -215,7 +217,7 @@ export async function getElectionTallyResults(electionId: string): Promise<Elect
  * Alternativens namn i den kanoniska ordning räkningen använder (blankt,
  * partierna, sedan kandidaterna), som `getEncryptedBallotShape` bygger den.
  */
-async function optionLabelsOf(ballotId: string): Promise<string[]> {
+export async function optionLabelsOf(ballotId: string): Promise<string[]> {
   const choices = await getBallotChoices(ballotId)
   if (!choices || choices.kind !== 'PARTY') return []
 
@@ -235,4 +237,78 @@ async function optionLabelsOf(ballotId: string): Promise<string[]> {
     if (option.kind === 'PARTY') return party?.name ?? 'Okänt parti'
     return `${candidateById.get(option.candidateId) ?? 'Okänd kandidat'} (${party?.abbreviation ?? '?'})`
   })
+}
+
+// ---------------------------------------------------------------------------
+// Observatörens överblick (uppgift 13)
+// ---------------------------------------------------------------------------
+
+export type ObserverOverview = {
+  election: { id: string; name: string; kind: string; opensAt: string; closesAt: string; phase: string }
+  /** Valdeltagandet per valsedel: hur många som röstat, och ingenting annat. */
+  ballots: Array<{ id: string; label: string; kind: string; voted: number }>
+  /** Var siffran kommer ifrån: liggande kuvert före skalningen, markeringar efter. */
+  turnoutBasis: 'envelopes' | 'markers'
+  /** Kuvertroten och urnroten, från skalningen. Null före den. */
+  envelopeRoot: string | null
+  urnRoot: string | null
+  /** Antalet kuvert som skalades, ur markeringarna "har röstat". Null före skalningen. */
+  envelopeCount: number | null
+  /** Sant när omröstningen är räknad och resultatet går att hämta med bevis. */
+  resultsAvailable: boolean
+}
+
+/**
+ * Det observatörsgränssnittet visar om en omröstning, i varje fas.
+ *
+ * BARA VALDELTAGANDET MEDAN RÖSTNINGEN PÅGÅR (spec 6.2). Inget resultat,
+ * ingen delsumma och ingenting per röst. Resultatet publiceras först i TALLIED,
+ * med bevis, av /api/observer/results.
+ *
+ * RÖTTERNA FRÅN SKALNINGEN (ruling 135). Kuvertroten och urnroten skrivs med
+ * STRIPPED och visas här från den fasen, före räkningen, så att den som vill
+ * kan spara dem innan något dekrypteras och jämföra med publiceringen efteråt.
+ * Roten skyddar bara om någon utanför systemet sparar den.
+ */
+export async function getObserverOverview(electionId: string): Promise<ObserverOverview | null> {
+  const election = await votersDb.election.findUnique({
+    where: { id: electionId },
+    select: {
+      name: true,
+      kind: true,
+      opensAt: true,
+      closesAt: true,
+      phase: true,
+      envelopeRoot: true,
+      urnRoot: true,
+    },
+  })
+  if (!election) return null
+
+  const turnout = await turnoutByBallot(electionId)
+  if (!turnout) return null
+
+  const stripped = turnout.basis === 'markers'
+
+  return {
+    election: {
+      id: electionId,
+      name: election.name,
+      kind: election.kind,
+      opensAt: election.opensAt.toISOString(),
+      closesAt: election.closesAt.toISOString(),
+      phase: election.phase,
+    },
+    ballots: turnout.ballots.map((ballot) => ({
+      id: ballot.ballotId,
+      label: ballot.label,
+      kind: ballot.kind,
+      voted: ballot.voted,
+    })),
+    turnoutBasis: turnout.basis,
+    envelopeRoot: stripped ? election.envelopeRoot : null,
+    urnRoot: stripped ? election.urnRoot : null,
+    envelopeCount: stripped ? turnout.ballots.reduce((total, ballot) => total + ballot.voted, 0) : null,
+    resultsAvailable: election.phase === 'TALLIED' || election.phase === 'CERTIFIED',
+  }
 }

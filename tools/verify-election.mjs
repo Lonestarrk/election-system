@@ -1,252 +1,651 @@
 #!/usr/bin/env node
 /**
- * OBEROENDE VERIFIERING AV ETT VAL
+ * OBEROENDE KONTROLL AV ETT PUBLICERAT VALRESULTAT (uppgift 13)
  *
- * Det här skriptet är avsiktligt fristående. Det importerar ingenting från
- * src/ — inte Merkle-implementationen, inte signaturverifieringen, ingenting.
- * Allt räknas fram på nytt ur det som observatörs-API:t lämnar ut.
+ * Verktyget läser det som valet publicerar efter räkningen och räknar om det
+ * som går att räkna om utan de enskilda rösterna:
  *
- * Det är hela poängen. Ett verifieringsverktyg som återanvänder systemets egen
- * kod bevisar bara att koden är konsekvent med sig själv. Skulle
- * Merkle-konstruktionen vara felimplementerad skulle båda räkna fel på samma
- * sätt, och felet aldrig synas.
+ *   1. varje förtroendepersons partiella dekryptering, mot hennes publika andel
+ *      och summans c1, med beviset (DLEQ) räknat ur spec 4.5
+ *   2. att de publika andelarna hör till valets publika nyckel
+ *   3. att Lagrange-kombinationen av bidragen ger g^antal = c2 / kombinationen,
+ *      för varje alternativ och med det publicerade antalet
+ *   4. att räkneverken summerar till antalet rader i urnan, och att antalet
+ *      rader, markeringarna "har röstat" och antalet kuvert stämmer med
+ *      varandra
+ *   5. att kuvertroten och urnroten finns och har formen av en rot
+ *
+ * VERKTYGET ÄR AVSIKTLIGT FRISTÅENDE. Det importerar bara Nodes inbyggda
+ * moduler och ingenting ur src. Transkriptet, tolkningen av talen och
+ * kombinationen är skrivna på nytt ur specen (docs/spec/2026-09-22-dubbla-kuvert.md,
+ * avsnitt 4.4 och 4.5), inte ur appens kod. Gruppen tas ur OpenSSL:s kopia av
+ * RFC 3526. Ett verktyg som delade kod med appen hade bara visat att appen är
+ * konsekvent med sig själv: ett fel i kodningen hade gett samma fel på båda
+ * sidor och aldrig synts.
+ *
+ * VARJE TAL TOLKAS STRIKT. Uppgift 14b:s granskning fann att appen räknade en
+ * negativ exponent som 1 och inte prövade några intervall, så att en förfalskad
+ * valsedel med +1000 och −999 godkändes. Verktyget godtar därför bara kanoniska
+ * decimaltal med högst 617 siffror, utmaningar och svar i [0, q), gruppelement
+ * i [1, p) och, där specen kräver det, i undergruppen av ordning q. Ett
+ * räkneverk är ett heltal från 0 till antalet rader i urnan.
+ *
+ * VAD VERKTYGET INTE KAN KONTROLLERA står i utskriften, längst ned. Det
+ * viktigaste: att summan består av exakt de giltiga rösterna. De enskilda
+ * chiffren publiceras aldrig (spec 3.1), så summan går inte att räkna om här.
  *
  * Använd:
- *   node tools/verify-election.mjs [bas-URL] [omröstningens namn]
+ *   node tools/verify-election.mjs <URL eller fil>
  *
- * Kräver ingen inloggning och ingen behörighet. Det är meningen.
+ * URL:en är den offentliga rutten, till exempel
+ *   https://<värd>/api/observer/results?electionId=<omröstningens id>
+ * och filen en JSON-fil med samma innehåll. Ingen inloggning krävs.
+ *
+ * Utfallet: 0 när allt som går att kontrollera stämmer, 1 när något inte gör
+ * det, 2 när underlaget inte gick att läsa.
  */
 
-import { createHash, createPublicKey, constants, publicDecrypt } from 'node:crypto'
+import { createHash, getDiffieHellman } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const BASE = process.argv[2] ?? 'http://localhost:3000'
-const NAME = process.argv[3] ?? 'Valet 2026'
+// ---------------------------------------------------------------------------
+// Gruppen, ur OpenSSL och inte ur appen
+// ---------------------------------------------------------------------------
 
-const ORIGIN = new URL(BASE).origin
+/** RFC 3526 MODP Group 14, 2048 bitar, som OpenSSL har den. */
+export const P = BigInt('0x' + getDiffieHellman('modp14').getPrime('hex'))
+/** Undergruppens ordning. p är ett säkert primtal, så q är också ett primtal. */
+export const Q = (P - 1n) / 2n
+/** Generatorn enligt spec 4.1. 4 är ett kvadrattal och ligger därför i undergruppen. */
+export const G = 4n
 
-async function post(path, body) {
-  const response = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) throw new Error(`${path} svarade ${response.status}`)
-  return response.json()
-}
+/** Tröskeln enligt spec 4.5: tre förtroendepersoner, två krävs. */
+export const TRUSTEE_COUNT = 3
+export const TRUSTEE_THRESHOLD = 2
 
-// --- Merkleträd, egen implementation --------------------------------------
+/** Publiceringens format, som rutten skriver det. */
+export const PUBLICATION_FORMAT = 'valsystem/publicering/v1'
 
-const LEAF = Buffer.from([0x00])
-const NODE = Buffer.from([0x01])
-const ROOT = Buffer.from([0x02])
+/** Antalet siffror i p. Inget tal i gruppen är längre. */
+const MAX_DIGITS = P.toString().length
 
-const sha256 = (...parts) => {
-  const hash = createHash('sha256')
-  for (const part of parts) hash.update(part)
-  return hash.digest()
-}
+const ELEMENT_BYTES = 256
 
-function merkleRoot(leaves) {
-  const count = Buffer.alloc(8)
-  count.writeBigUInt64BE(BigInt(leaves.length))
+/** Ett fel i underlaget. Fångas per kontroll och blir en rad i utskriften. */
+class Invalid extends Error {}
 
-  if (leaves.length === 0) return sha256(ROOT, count, sha256(LEAF)).toString('hex')
-
-  let level = [...leaves].sort().map((hex) => Buffer.from(hex, 'hex'))
-
-  while (level.length > 1) {
-    const next = []
-    for (let i = 0; i < level.length; i += 2) {
-      const right = level[i + 1]
-      next.push(right ? sha256(NODE, level[i], right) : level[i])
-    }
-    level = next
+function modPow(base, exponent, modulus) {
+  if (exponent < 0n) throw new Invalid('en negativ exponent')
+  let result = 1n
+  let square = ((base % modulus) + modulus) % modulus
+  let rest = exponent
+  while (rest > 0n) {
+    if (rest & 1n) result = (result * square) % modulus
+    square = (square * square) % modulus
+    rest >>= 1n
   }
-
-  return sha256(ROOT, count, level[0]).toString('hex')
+  return result
 }
 
-// --- RSA-signaturverifiering, egen implementation --------------------------
-
-function mgf1(seed, length) {
-  const blocks = []
-  let counter = 0
-  while (Buffer.concat(blocks).length < length) {
-    const c = Buffer.alloc(4)
-    c.writeUInt32BE(counter, 0)
-    blocks.push(sha256(seed, c))
-    counter += 1
-  }
-  return Buffer.concat(blocks).subarray(0, length)
+/** Inversen mod ett primtal, med Fermats lilla sats. */
+function inverse(value, prime) {
+  if (value % prime === 0n) throw new Invalid('noll har ingen invers')
+  return modPow(value, prime - 2n, prime)
 }
 
-function toBigInt(buffer) {
-  let value = 0n
-  for (const byte of buffer) value = (value << 8n) | BigInt(byte)
+// ---------------------------------------------------------------------------
+// Tolkningen av talen
+// ---------------------------------------------------------------------------
+
+const CANONICAL = /^(?:0|[1-9][0-9]*)$/
+
+/** Ett kanoniskt decimaltal: bara ASCII-siffror, ingen inledande nolla, högst 617 siffror. */
+function parseDecimal(value, what) {
+  if (typeof value !== 'string') throw new Invalid(`${what} är inte en decimalsträng`)
+  if (value.length > MAX_DIGITS) throw new Invalid(`${what} har fler än ${MAX_DIGITS} siffror`)
+  if (!CANONICAL.test(value)) throw new Invalid(`${what} är inte ett kanoniskt skrivet decimaltal`)
+  return BigInt(value)
+}
+
+/** En utmaning eller ett svar: ett heltal i [0, q). */
+function parseExponent(value, what) {
+  const parsed = parseDecimal(value, what)
+  if (parsed >= Q) throw new Invalid(`${what} ligger inte i [0, q)`)
+  return parsed
+}
+
+/** Ett tal modulo p: ett heltal i [1, p). */
+function parseResidue(value, what) {
+  const parsed = parseDecimal(value, what)
+  if (parsed < 1n || parsed >= P) throw new Invalid(`${what} ligger inte i [1, p)`)
+  return parsed
+}
+
+/** I undergruppen av ordning q, och inte 1: 1 < y < p och y^q ≡ 1 (mod p). */
+function inSubgroup(value) {
+  return value > 1n && value < P && modPow(value, Q, P) === 1n
+}
+
+/** Ett gruppelement som ska ligga i undergruppen. */
+function parseSubgroupElement(value, what) {
+  const parsed = parseResidue(value, what)
+  if (!inSubgroup(parsed)) throw new Invalid(`${what} ligger inte i undergruppen av ordning q`)
+  return parsed
+}
+
+/** Ett antal: ett heltal som JSON-tal, från 0. */
+function parseCount(value, what) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Invalid(`${what} är inte ett heltal från 0`)
   return value
 }
 
-function verifySignature(message, signatureHex, publicKeyPem) {
-  const jwk = createPublicKey(publicKeyPem).export({ format: 'jwk' })
-  const modulus = Buffer.from(jwk.n, 'base64url')
-  const n = toBigInt(modulus)
+/** En text som kodas i transkriptet. En ensam surrogathalva hade blivit U+FFFD och kunnat förväxlas. */
+function parseId(value, what) {
+  if (typeof value !== 'string' || value.length === 0) throw new Invalid(`${what} saknas`)
+  if (!value.isWellFormed()) throw new Invalid(`${what} är inte giltig Unicode`)
+  return value
+}
 
-  const expanded = mgf1(sha256(Buffer.from(message, 'utf8')), modulus.length - 1)
-  const expected = toBigInt(expanded) % n
+const ROOT = /^[0-9a-f]{64}$/
 
-  const signature = toBigInt(Buffer.from(signatureHex, 'hex'))
-  if (signature <= 0n || signature >= n) return false
+// ---------------------------------------------------------------------------
+// Transkriptet, ur spec 4.5
+// ---------------------------------------------------------------------------
 
-  // s^e mod n via Nodes RSA — samma operation, annan väg än systemets egen.
-  const recovered = toBigInt(
-    publicDecrypt(
-      { key: createPublicKey(publicKeyPem), padding: constants.RSA_NO_PADDING },
-      Buffer.from(signatureHex, 'hex'),
-    ),
+const PARTIAL_DOMAIN = Buffer.from('valsystem/bevis/v2/partiell-dekryptering\u0000', 'ascii')
+
+/** U32: fyra byte, big-endian. */
+function u32(value) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff) throw new RangeError('index utanför U32')
+  const bytes = Buffer.alloc(4)
+  bytes.writeUInt32BE(value)
+  return bytes
+}
+
+/** L(s): antalet byte i UTF-8(s) som U32, följt av UTF-8(s). */
+function lengthPrefixed(text) {
+  if (typeof text !== 'string' || !text.isWellFormed()) throw new RangeError('id:t är inte giltig Unicode')
+  const bytes = Buffer.from(text, 'utf8')
+  return Buffer.concat([u32(bytes.length), bytes])
+}
+
+/** E(x): x big-endian, vänsterutfyllt med nollbyte till exakt 256 byte, för 0 ≤ x < p. */
+function element(value) {
+  if (typeof value !== 'bigint' || value < 0n || value >= P) throw new RangeError('talet ligger inte i [0, p)')
+  return Buffer.from(value.toString(16).padStart(ELEMENT_BYTES * 2, '0'), 'hex')
+}
+
+/**
+ * T för den partiella dekrypteringens bevis, fält för fält som tabellen i
+ * spec 4.5: prefixet, valets och valsedelns id, alternativets och
+ * förtroendepersonens index, och sedan Y, C1, C2, v, a och b.
+ */
+export function partialDecryptionTranscript(binding, values) {
+  if (!Array.isArray(values) || values.length !== 6) throw new RangeError('transkriptet har sex tal')
+  return Buffer.concat([
+    PARTIAL_DOMAIN,
+    lengthPrefixed(binding.electionId),
+    lengthPrefixed(binding.ballotId),
+    u32(binding.optionIndex),
+    u32(binding.trusteeIndex),
+    ...values.map(element),
+  ])
+}
+
+/** e = int(SHA-256(T)) mod q. */
+export function partialDecryptionChallenge(binding, values) {
+  const digest = createHash('sha256').update(partialDecryptionTranscript(binding, values)).digest('hex')
+  return BigInt('0x' + digest) % Q
+}
+
+// ---------------------------------------------------------------------------
+// Kontrollerna
+// ---------------------------------------------------------------------------
+
+/**
+ * Ett bidrag för ett alternativ, prövat enligt "Beviset håller om" i spec 4.5.
+ * Kastar `Invalid` med skälet, annars ingenting.
+ */
+function checkPartial({ electionId, ballotId, optionIndex, trusteeIndex, publicShare, sum, partial }) {
+  if (typeof partial !== 'object' || partial === null) throw new Invalid('bidraget saknas')
+  if (partial.optionIndex !== optionIndex) throw new Invalid('bidraget står inte på sitt alternativs plats')
+
+  const proof = partial.proof
+  if (typeof proof !== 'object' || proof === null || Array.isArray(proof)) throw new Invalid('beviset saknas')
+  if (proof.format !== 2) throw new Invalid('beviset har inte formatet 2')
+
+  const v = parseResidue(partial.value, 'värdet')
+  const a = parseResidue(proof.a, 'a')
+  const b = parseResidue(proof.b, 'b')
+  const challenge = parseExponent(proof.challenge, 'utmaningen')
+  const response = parseExponent(proof.response, 'svaret')
+
+  // v är 1 när C1 är 1, och ligger annars i undergruppen.
+  if (sum.c1 === 1n ? v !== 1n : !inSubgroup(v)) {
+    throw new Invalid(sum.c1 === 1n ? 'värdet är inte 1 fast summans c1 är 1' : 'värdet ligger inte i undergruppen')
+  }
+
+  const expected = partialDecryptionChallenge({ electionId, ballotId, optionIndex, trusteeIndex }, [
+    publicShare,
+    sum.c1,
+    sum.c2,
+    v,
+    a,
+    b,
+  ])
+  if (challenge !== expected) throw new Invalid('utmaningen är inte den som transkriptet ger')
+  if (modPow(G, response, P) !== (a * modPow(publicShare, challenge, P)) % P) {
+    throw new Invalid('g^svar är inte a · Y^utmaning')
+  }
+  if (modPow(sum.c1, response, P) !== (b * modPow(v, challenge, P)) % P) {
+    throw new Invalid('C1^svar är inte b · v^utmaning')
+  }
+  return v
+}
+
+/** Lagrange-koefficienten i x = 0 för punkten `index` bland `indices`, mod q. */
+function lagrange(index, indices) {
+  let numerator = 1n
+  let denominator = 1n
+  const i = BigInt(index)
+  for (const other of indices) {
+    if (other === index) continue
+    const j = BigInt(other)
+    numerator = (numerator * j) % Q
+    denominator = (denominator * (((j - i) % Q) + Q)) % Q
+  }
+  return (numerator * inverse(denominator, Q)) % Q
+}
+
+/** Π base_t^λ_t mod p, över förtroendepersonerna i `values`. */
+function combineAt(values) {
+  const indices = [...values.keys()]
+  let combined = 1n
+  for (const [index, value] of values) combined = (combined * modPow(value, lagrange(index, indices), P)) % P
+  return combined
+}
+
+/**
+ * Prövar en publicering och ger raderna som ska skrivas ut. `ok` är sant när
+ * ingen kontroll underkändes.
+ */
+export function verifyPublication(publication) {
+  const lines = []
+  let failures = 0
+  let decryptionHolds = true
+
+  const pass = (label, detail = '') => lines.push(`  OK   ${label}${detail ? ` — ${detail}` : ''}`)
+  const fail = (label, detail = '') => {
+    failures += 1
+    lines.push(`  FEL  ${label}${detail ? ` — ${detail}` : ''}`)
+  }
+  /** Kör en kontroll. Ett `Invalid` blir en underkänd rad, och kontrollen ger null. */
+  const attempt = (label, run) => {
+    try {
+      return run()
+    } catch (error) {
+      if (!(error instanceof Invalid) && !(error instanceof RangeError)) throw error
+      fail(label, error.message)
+      return null
+    }
+  }
+
+  if (typeof publication !== 'object' || publication === null || Array.isArray(publication)) {
+    fail('Underlaget är ingen publicering')
+    return finish()
+  }
+  if (publication.status !== 'published') {
+    const message = typeof publication.message === 'string' ? publication.message : 'inget besked'
+    fail('Valet har inget publicerat resultat', message)
+    return finish()
+  }
+  if (publication.format !== PUBLICATION_FORMAT) {
+    fail('Publiceringen har ett annat format än det verktyget läser', String(publication.format))
+    return finish()
+  }
+
+  // --- Gruppen och tröskeln ----------------------------------------------------
+  const group = publication.group ?? {}
+  if (group.p === P.toString() && group.q === Q.toString() && group.g === G.toString()) {
+    pass('Gruppen är RFC 3526 MODP Group 14 med g = 4')
+  } else {
+    fail('Publiceringen gäller en annan grupp än RFC 3526 MODP Group 14 med g = 4')
+    return finish()
+  }
+
+  const trustees = publication.trustees ?? {}
+  if (trustees.count !== TRUSTEE_COUNT || trustees.threshold !== TRUSTEE_THRESHOLD) {
+    fail(`Tröskeln är inte ${TRUSTEE_THRESHOLD} av ${TRUSTEE_COUNT} förtroendepersoner, som spec 4.5 säger`)
+    return finish()
+  }
+
+  const electionId = attempt('Omröstningens id', () => parseId(publication.election?.id, 'omröstningens id'))
+  if (electionId === null) return finish()
+
+  // --- Rötterna ------------------------------------------------------------------
+  for (const [key, name] of [
+    ['envelopeRoot', 'Kuvertroten'],
+    ['urnRoot', 'Urnroten'],
+  ]) {
+    if (typeof publication[key] === 'string' && ROOT.test(publication[key])) {
+      pass(`${name} finns`, publication[key])
+    } else {
+      fail(`${name} saknas eller är inte 64 små hextecken`)
+    }
+  }
+
+  // --- De publika andelarna hör till valets nyckel -------------------------------
+  const shares = new Map()
+  const publicKey = attempt('Valets publika nyckel', () =>
+    parseSubgroupElement(publication.encryptionPublicKey, 'valets publika nyckel'),
   )
-
-  return recovered === expected
-}
-
-// --- Verifieringen ---------------------------------------------------------
-
-let failures = 0
-const check = (label, ok, detail = '') => {
-  console.log(`${ok ? '  OK  ' : '  FEL '} ${label}${detail ? ` — ${detail}` : ''}`)
-  if (!ok) failures += 1
-}
-
-const list = await post('/api/observer/election', {})
-const summary = list.elections.find((election) => election.name === NAME)
-if (!summary) throw new Error(`Hittade ingen omröstning som heter "${NAME}"`)
-
-const data = await post('/api/observer/election', { electionId: summary.id })
-
-console.log(`\nOmröstning: ${data.election.name}`)
-console.log(`Stänger: ${data.election.closesAt}`)
-console.log(`Valsedlar: ${data.ballots.length}\n`)
-
-// Hämta hela underlaget, sidvis.
-const votes = []
-let offset = 0
-for (;;) {
-  const page = await post('/api/observer/votes', {
-    electionId: summary.id,
-    offset,
-    pageSize: 500,
-  })
-  votes.push(...page.votes)
-  offset += page.votes.length
-  if (offset >= page.total || page.votes.length === 0) break
-}
-
-console.log(`Hämtade ${votes.length} röster.\n`)
-
-const keyByBallot = new Map(data.ballots.map((ballot) => [ballot.id, ballot.signingPublicKeyPem]))
-
-// 1. Varje röst bär ett äkta röstintyg.
-const invalid = votes.filter(
-  (vote) => !verifySignature(vote.credentialId, vote.credentialSignature, keyByBallot.get(vote.ballotId)),
-)
-check(
-  'Varje röst bär ett röstintyg signerat av valsedelns nyckel',
-  invalid.length === 0,
-  invalid.length ? `${invalid.length} ogiltiga` : `${votes.length} verifierade`,
-)
-
-// 2. Inget intyg använt mer än en gång.
-const unique = new Set(votes.map((vote) => vote.credentialId))
-check('Inget röstintyg förekommer mer än en gång', unique.size === votes.length)
-
-// 3. Den kanoniska formen stämmer med fälten.
-const canonicalMismatch = votes.filter((vote) => {
-  const rebuilt = [
-    vote.tokenHash,
-    vote.credentialId,
-    vote.credentialSignature,
-    vote.ballotId,
-    vote.ballotPartyId ?? '-',
-    vote.candidateId ?? '-',
-    vote.optionId ?? '-',
-  ].join('|')
-  return rebuilt !== vote.canonical
-})
-check(
-  'Den kanoniska formen stämmer med rösternas fält',
-  canonicalMismatch.length === 0,
-  canonicalMismatch.length ? `${canonicalMismatch.length} avviker` : 'byggd om från fälten',
-)
-
-// 4. Merkleroten, omräknad från grunden.
-const leaves = votes.map((vote) => sha256(LEAF, Buffer.from(vote.canonical, 'utf8')).toString('hex'))
-const recomputed = merkleRoot(leaves)
-check(
-  'Merkleroten stämmer med systemets',
-  recomputed === data.currentRoot.root,
-  `${recomputed.slice(0, 16)}…`,
-)
-
-// 5. Åtagandekedjan.
-let previousHash = null
-let chainOk = data.commitments.length > 0
-for (const [index, commitment] of data.commitments.entries()) {
-  const expected = sha256(
-    NODE,
-    Buffer.from(
-      [commitment.sequence, commitment.root, commitment.voteCount, previousHash ?? 'GENESIS'].join('|'),
-      'utf8',
-    ),
-  ).toString('hex')
-
-  if (
-    commitment.sequence !== index + 1 ||
-    commitment.previousHash !== previousHash ||
-    expected !== commitment.entryHash
-  ) {
-    chainOk = false
-    break
+  const listed = Array.isArray(trustees.publicShares) ? trustees.publicShares : []
+  for (const entry of listed) {
+    const index = entry?.trusteeIndex
+    const label = `Förtroendeperson ${index}:s publika andel`
+    if (!Number.isSafeInteger(index) || index < 1 || index > TRUSTEE_COUNT) {
+      fail(`Förtroendeperson ${index} finns inte bland de ${TRUSTEE_COUNT}`)
+      continue
+    }
+    if (shares.has(index)) {
+      fail(`Förtroendeperson ${index}:s publika andel står två gånger`)
+      continue
+    }
+    const share = attempt(label, () => parseSubgroupElement(entry.publicShare, `förtroendeperson ${index}:s publika andel`))
+    if (share !== null) shares.set(index, share)
   }
-  previousHash = commitment.entryHash
-}
-check('Åtagandekedjan är obruten', chainOk, `${data.commitments.length} åtaganden`)
-
-// 6. Det senaste åtagandet stämmer med underlaget.
-const latest = data.commitments.at(-1)
-check(
-  'Senaste åtagandet stämmer med det hämtade underlaget',
-  latest !== undefined && latest.root === recomputed && latest.voteCount === votes.length,
-  latest ? `#${latest.sequence}` : 'inget åtagande',
-)
-
-// 7. Egen rösträkning mot systemets redovisade resultat.
-let tallyOk = true
-for (const ballot of data.results) {
-  const own = new Map()
-  for (const vote of votes.filter((vote) => vote.ballotId === ballot.ballotId)) {
-    const key = vote.ballotPartyId ?? vote.optionId ?? 'okänt'
-    own.set(key, (own.get(key) ?? 0) + 1)
+  if (shares.size !== TRUSTEE_COUNT) {
+    fail(`Publiceringen har inte alla ${TRUSTEE_COUNT} förtroendepersoners publika andelar i undergruppen`)
+  } else if (publicKey !== null) {
+    // Andelarna ligger på ett polynom av grad k − 1 med nyckeln i x = 0, så varje
+    // par ska kombineras till valets publika nyckel.
+    const indices = [...shares.keys()]
+    let consistent = true
+    for (const first of indices) {
+      for (const second of indices) {
+        if (second <= first) continue
+        const pair = new Map([
+          [first, shares.get(first)],
+          [second, shares.get(second)],
+        ])
+        if (combineAt(pair) !== publicKey) consistent = false
+      }
+    }
+    if (consistent) pass('De publika andelarna hör till valets publika nyckel', 'varje par kombineras till den')
+    else fail('De publika andelarna hör inte till valets publika nyckel', 'ett par kombineras till en annan')
   }
 
-  const ownTotal = [...own.values()].reduce((sum, count) => sum + count, 0)
-  const reportedTotal = ballot.rows.reduce((sum, row) => sum + row.votes, 0)
+  // --- Valsedlarna -----------------------------------------------------------------
+  const ballots = Array.isArray(publication.ballots) ? publication.ballots : null
+  if (ballots === null || ballots.length === 0) {
+    fail('Publiceringen har inga valsedlar')
+    return finish()
+  }
 
-  if (ownTotal !== ballot.totalVotes || reportedTotal !== ballot.totalVotes) tallyOk = false
+  let totalRows = 0
+  let totalMarkers = 0
+  let countsKnown = true
+
+  for (const [position, ballot] of ballots.entries()) {
+    const name = typeof ballot?.label === 'string' ? ballot.label : `Valsedel ${position + 1}`
+    const ballotId = attempt(`${name}: valsedelns id`, () => parseId(ballot?.ballotId, 'valsedelns id'))
+    const rows = attempt(`${name}: antalet rader i urnan`, () => parseCount(ballot?.rows, 'antalet rader'))
+    const markers = attempt(`${name}: antalet markeringar "har röstat"`, () =>
+      parseCount(ballot?.markedAsVoted, 'antalet markeringar'),
+    )
+    if (ballotId === null || rows === null || markers === null) {
+      countsKnown = false
+      decryptionHolds = false
+      continue
+    }
+    totalRows += rows
+    totalMarkers += markers
+
+    const options = Array.isArray(ballot.options) ? ballot.options : []
+    if (options.length === 0) {
+      fail(`${name}: valsedeln har inga alternativ`)
+      decryptionHolds = false
+      continue
+    }
+
+    // Summan per alternativ.
+    const sums = options.map((option, optionIndex) =>
+      attempt(`${name}: summan för alternativ ${optionIndex}`, () => {
+        if (option?.optionIndex !== optionIndex) throw new Invalid('alternativet står inte på sin plats')
+        const c1 = parseResidue(option.c1, 'c1')
+        const c2 = parseResidue(option.c2, 'c2')
+        // C1 och C2 är 1 eller ligger i undergruppen. Summan av inga röster är (1, 1).
+        if (c1 !== 1n && !inSubgroup(c1)) throw new Invalid('c1 är varken 1 eller i undergruppen')
+        if (c2 !== 1n && !inSubgroup(c2)) throw new Invalid('c2 är varken 1 eller i undergruppen')
+        return { c1, c2 }
+      }),
+    )
+
+    // Bidragen, prövade ett och ett.
+    const contributions = Array.isArray(ballot.contributions) ? ballot.contributions : []
+    const valid = new Map()
+    let partialsChecked = 0
+    let ballotHolds = sums.every((sum) => sum !== null)
+
+    // Två bidrag från samma förtroendeperson ger fel Lagrange-koefficienter utan
+    // att något kastar (spec 4.5). Inget av dem räknas.
+    const occurrences = new Map()
+    for (const contribution of contributions) {
+      const index = contribution?.trusteeIndex
+      occurrences.set(index, (occurrences.get(index) ?? 0) + 1)
+    }
+
+    for (const contribution of contributions) {
+      const trusteeIndex = contribution?.trusteeIndex
+      if (!Number.isSafeInteger(trusteeIndex) || trusteeIndex < 1 || trusteeIndex > TRUSTEE_COUNT) {
+        fail(`${name}: ett bidrag från förtroendeperson ${trusteeIndex}, som inte finns bland de ${TRUSTEE_COUNT}`)
+        ballotHolds = false
+        continue
+      }
+      if (occurrences.get(trusteeIndex) > 1) {
+        if (!valid.has(trusteeIndex)) fail(`${name}: förtroendeperson ${trusteeIndex} lämnar bidrag två gånger`)
+        valid.set(trusteeIndex, null)
+        ballotHolds = false
+        continue
+      }
+      const share = shares.get(trusteeIndex)
+      if (share === undefined) {
+        fail(`${name}: förtroendeperson ${trusteeIndex} har ingen publik andel att pröva bidraget mot`)
+        valid.set(trusteeIndex, null)
+        ballotHolds = false
+        continue
+      }
+      const partials = Array.isArray(contribution.partials) ? contribution.partials : []
+      if (partials.length !== options.length) {
+        fail(`${name}: förtroendeperson ${trusteeIndex}:s bidrag har inte ett värde per alternativ`)
+        valid.set(trusteeIndex, null)
+        ballotHolds = false
+        continue
+      }
+
+      const values = []
+      for (const [optionIndex, partial] of partials.entries()) {
+        const sum = sums[optionIndex]
+        if (sum === null) {
+          values.push(null)
+          continue
+        }
+        const value = attempt(`${name}: förtroendeperson ${trusteeIndex}:s bidrag för alternativ ${optionIndex}`, () =>
+          checkPartial({ electionId, ballotId, optionIndex, trusteeIndex, publicShare: share, sum, partial }),
+        )
+        if (value !== null) partialsChecked += 1
+        values.push(value)
+      }
+      if (values.some((value) => value === null)) {
+        ballotHolds = false
+        valid.set(trusteeIndex, null)
+      } else {
+        valid.set(trusteeIndex, values)
+      }
+    }
+
+    const usable = new Map([...valid].filter(([, values]) => values !== null))
+    if (usable.size < TRUSTEE_THRESHOLD) {
+      fail(
+        `${name}: bidrag som håller finns från ${usable.size} förtroendepersoner, och kombinationen kräver ` +
+          `${TRUSTEE_THRESHOLD} förtroendepersoner`,
+      )
+      decryptionHolds = false
+      countsKnown = false
+      continue
+    }
+    if (ballotHolds) {
+      pass(`${name}: varje partiell dekryptering håller`, `${partialsChecked} bevis, från ${usable.size} förtroendepersoner`)
+    }
+
+    // Kombinationen och räkneverken.
+    let total = 0
+    let countsValid = true
+    for (const [optionIndex, option] of options.entries()) {
+      const sum = sums[optionIndex]
+      const count = attempt(`${name}: räkneverket för alternativ ${optionIndex}`, () => {
+        const parsed = parseCount(option?.count, 'räkneverket')
+        if (parsed > rows) throw new Invalid(`räkneverket ${parsed} är fler än urnans ${rows} rader`)
+        return parsed
+      })
+      if (count === null) {
+        countsValid = false
+        ballotHolds = false
+        continue
+      }
+      total += count
+      if (sum === null) continue
+
+      const shared = combineAt(new Map([...usable].map(([index, values]) => [index, values[optionIndex]])))
+      const opened = (sum.c2 * inverse(shared, P)) % P
+      if (modPow(G, BigInt(count), P) !== opened) {
+        fail(
+          `${name}: resultatet för alternativ ${optionIndex} är inte dekrypteringen av summan`,
+          `g^${count} är inte c2 delat med kombinationen av bidragen`,
+        )
+        ballotHolds = false
+      }
+    }
+
+    if (ballotHolds) pass(`${name}: dekrypteringen av summan ger de publicerade talen`)
+    else decryptionHolds = false
+
+    if (countsValid) {
+      if (total === rows) pass(`${name}: räkneverken summerar till antalet rader i urnan`, `${rows}`)
+      else fail(`${name}: räkneverken summerar till ${total}, men urnan har ${rows} rader för valsedeln`)
+    } else {
+      countsKnown = false
+    }
+
+    if (rows === markers) pass(`${name}: urnan har lika många rader som markeringar "har röstat"`, `${markers}`)
+    else fail(`${name}: urnan har ${rows} rader, men ${markers} markeringar "har röstat"`)
+  }
+
+  // --- Antalet kuvert ------------------------------------------------------------------
+  const envelopeCount = publication.envelopeCount
+  if (!Number.isSafeInteger(envelopeCount) || envelopeCount < 0) {
+    fail('Antalet kuvert saknas eller är inte ett heltal från 0')
+  } else if (!countsKnown) {
+    fail('Antalet kuvert går inte att jämföra med antalet röster, eftersom ett räkneverk inte gick att läsa')
+  } else if (envelopeCount === totalRows && envelopeCount === totalMarkers) {
+    pass('Antalet kuvert som skalades stämmer med antalet röster och markeringar', `${envelopeCount}`)
+  } else {
+    fail(
+      `Antalet kuvert som skalades är ${envelopeCount}, men urnan har ${totalRows} rader och röstlängden ` +
+        `${totalMarkers} markeringar`,
+    )
+  }
+
+  if (decryptionHolds) {
+    lines.push('', '  Slutsats: dekrypteringen stämmer för varje valsedel.')
+  }
+
+  return finish()
+
+  function finish() {
+    lines.push(
+      '',
+      failures === 0
+        ? 'ALLT SOM VERKTYGET KAN KONTROLLERA STÄMMER'
+        : `${failures} ${failures === 1 ? 'KONTROLL UNDERKÄND' : 'KONTROLLER UNDERKÄNDA'}`,
+      '',
+      'Det här kan verktyget inte kontrollera:',
+      '  – Att summan består av exakt de giltiga rösterna. De enskilda chiffren publiceras inte, så',
+      '    summan kan inte räknas om här. Det vilar på valideringen medan kopplingen mellan väljare och',
+      '    röst fanns, och på slutkontrollen, som båda körs av den som driver systemet.',
+      '  – Kuvertroten och urnroten kan inte räknas om, eftersom de enskilda kuverten och chiffren inte',
+      '    publiceras. De är åtaganden: den som sparade dem vid stängningen kan jämföra dem med de',
+      '    publicerade. Ändras urnan och rötterna tillsammans syns det inte här.',
+      '  – Att antalet rader, markeringarna och antalet kuvert är riktiga. Verktyget prövar bara att de',
+      '    stämmer med varandra och med räkneverken.',
+      '  – Att valets publika nyckel och förtroendepersonernas andelar är de som fanns när rösterna',
+      '    krypterades. Den som sparade nyckeln medan röstningen pågick kan jämföra med den.',
+      '',
+    )
+    return { ok: failures === 0, lines }
+  }
 }
-check('Egen rösträkning ger samma totaler som systemet redovisar', tallyOk)
 
-// 8. Godkända röstningar mot registrerade röster.
-let approvalOk = true
-for (const row of data.approvedVotings) {
-  const recorded = votes.filter((vote) => vote.ballotId === row.ballotId).length
-  if (row.issued !== recorded) approvalOk = false
+// ---------------------------------------------------------------------------
+// Programmet
+// ---------------------------------------------------------------------------
+
+const USAGE = [
+  'Använd: node tools/verify-election.mjs <URL eller fil>',
+  '',
+  '  URL:en är den offentliga rutten, till exempel',
+  '    https://<värd>/api/observer/results?electionId=<omröstningens id>',
+  '  och filen en JSON-fil med samma innehåll.',
+].join('\n')
+
+async function load(source) {
+  if (/^https?:\/\//i.test(source)) {
+    const response = await fetch(source, { headers: { Accept: 'application/json' } })
+    const text = await response.text()
+    try {
+      return JSON.parse(text)
+    } catch {
+      throw new Error(`svaret var inte JSON (status ${response.status})`)
+    }
+  }
+  return JSON.parse(await readFile(source, 'utf8'))
 }
-check('Antal godkända röstningar motsvarar antal registrerade röster', approvalOk)
 
-// 9. Inget i underlaget pekar mot en person.
-const serialised = JSON.stringify(votes)
-const leaky = ['personalNumber', 'externalIdentityHash', 'voterStatusId', 'createdAt', 'votedAt']
-  .filter((field) => serialised.includes(field))
-check('Underlaget innehåller inget som pekar mot en person', leaky.length === 0, leaky.join(', '))
+async function main(argv) {
+  const source = argv[2]
+  if (!source || argv.length > 3) {
+    console.error(USAGE)
+    return 2
+  }
 
-console.log(`\n${failures === 0 ? 'ALLT VERIFIERAT' : `${failures} KONTROLL(ER) FALLERADE`}\n`)
-process.exit(failures === 0 ? 0 : 1)
+  let publication
+  try {
+    publication = await load(source)
+  } catch (error) {
+    console.error(`Kunde inte läsa ${source}: ${error instanceof Error ? error.message : String(error)}`)
+    return 2
+  }
+
+  const name = typeof publication?.election?.name === 'string' ? publication.election.name : 'okänd omröstning'
+  console.log(`\nOmröstning: ${name}`)
+  if (typeof publication?.election?.phase === 'string') console.log(`Fas: ${publication.election.phase}`)
+  console.log('')
+
+  const { ok, lines } = verifyPublication(publication)
+  for (const line of lines) console.log(line)
+  return ok ? 0 : 1
+}
+
+/** Sant när filen körs som program, inte när den importeras av ett test. */
+function invokedDirectly() {
+  if (!process.argv[1]) return false
+  const self = fileURLToPath(import.meta.url)
+  const invoked = resolve(process.argv[1])
+  return process.platform === 'win32' ? self.toLowerCase() === invoked.toLowerCase() : self === invoked
+}
+
+if (invokedDirectly()) {
+  process.exitCode = await main(process.argv)
+}

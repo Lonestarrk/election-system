@@ -362,7 +362,9 @@ test.describe('vad sidorna inte läcker', () => {
 
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
     await expect(page.getByRole('textbox')).toHaveCount(0)
-    await expect(page.getByText(/inte byggd än/i)).toBeVisible()
+    // Sedan uppgift 13 legitimerar sig väljaren här och ser att hon röstat, inte vad.
+    await expect(page.getByText(/Du får ingen kod att spara/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'BankID på annan enhet' })).toBeVisible()
 
     // Menyn och rubriken säger samma sak. Menyn sa tidigare "Verifiera röst"
     // om en sida som inte längre verifierar någon kod.

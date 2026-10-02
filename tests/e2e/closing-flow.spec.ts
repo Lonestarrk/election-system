@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { DEMO_TRUSTEE_PASSPHRASES } from '../../src/lib/demo-election'
 import { closeTimePassed, dropElection, partyIdsFor } from './db'
@@ -55,7 +57,7 @@ async function voteFor(page: Page, demoIdentity: string, party: string, ballotNa
 }
 
 /** Fyra skärmdumpar av läget, om katalogen är satt. */
-async function shoot(page: Page, name: string) {
+async function shoot(page: Page, name: string, prefix = '12c') {
   const directory = process.env.E2E_SCREENSHOT_DIR
   if (!directory) return
   mkdirSync(directory, { recursive: true })
@@ -65,11 +67,26 @@ async function shoot(page: Page, name: string) {
     for (const scheme of ['light', 'dark'] as const) {
       await page.setViewportSize({ width, height: 900 })
       await page.emulateMedia({ colorScheme: scheme })
-      await page.screenshot({ path: `${directory}/12c-${name}-${width}-${scheme}.png`, fullPage: true })
+      await page.screenshot({ path: `${directory}/${prefix}-${name}-${width}-${scheme}.png`, fullPage: true })
     }
   }
   await page.emulateMedia({ colorScheme: null })
   if (original) await page.setViewportSize(original)
+}
+
+/**
+ * Verifieringssidan för en väljare (uppgift 13): legitimering för den valda
+ * omröstningen, och sedan beskedet per valsedel.
+ */
+async function verifyAs(page: Page, electionName: string, demoIdentity: string) {
+  await page.goto('/verify')
+  const electionSelect = page.getByLabel('Omröstning')
+  await expect(electionSelect).toBeVisible()
+  await electionSelect.selectOption({ label: electionName })
+  await page.getByRole('button', { name: 'BankID på annan enhet' }).click()
+  await expect(page.getByAltText('QR-kod för BankID')).toBeVisible()
+  await page.getByRole('button', { name: demoIdentity }).click()
+  await expect(page.getByRole('heading', { name: electionName })).toBeVisible({ timeout: 30_000 })
 }
 
 /** Fasen sidan visar som den nuvarande, ur stegraden. */
@@ -225,6 +242,59 @@ test.describe('avslutningen på adminsidan', () => {
       await expect(currentPhase(page)).toHaveText('CERTIFIED', { timeout: 120_000 })
       await expect(page.getByRole('button', { name: 'Redan fastställt' })).toBeDisabled()
       await shoot(page, 'certified')
+
+      // --- Publiceringen och det oberoende verktyget (uppgift 13) -----------
+      const published = await page.request.get(`/api/observer/results?electionId=${electionId}`)
+      expect(published.status()).toBe(200)
+      const publication = await published.json()
+      expect(publication.ballots[0].options.map((option: { count: number }) => option.count)).toEqual([0, 1, 1])
+      expect(JSON.stringify(publication)).not.toMatch(/ciphertextHash/)
+
+      // Verktyget läser samma adress som en granskare ger det, och importerar ingenting ur src.
+      const toolOutput = execFileSync(
+        process.execPath,
+        [join(process.cwd(), 'tools/verify-election.mjs'), new URL(`/api/observer/results?electionId=${electionId}`, page.url()).href],
+        { encoding: 'utf8' },
+      )
+      expect(toolOutput).toContain('dekrypteringen stämmer')
+
+      // --- Verifieringssidan: att väljaren röstat, inte vad -------------------
+      const voterPage = await (await browser.newContext()).newPage()
+      await verifyAs(voterPage, name, VOTERS.first)
+      const answer = voterPage.getByRole('list', { name: 'Valsedlar' })
+      await expect(answer.getByText('Regionfullmäktige E2E')).toBeVisible()
+      await expect(answer.getByText('Du har röstat.')).toBeVisible()
+      // Inget om vad: varken partiet eller något som liknar en hash eller en tid.
+      await expect(voterPage.getByText(/Socialdemokraterna|Moderaterna/)).toHaveCount(0)
+      expect(await voterPage.locator('main').innerText()).not.toMatch(/[0-9a-f]{16}|\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}/)
+      await expect(voterPage.getByRole('link', { name: 'Det publicerade resultatet' })).toHaveAttribute(
+        'href',
+        `/api/observer/results?electionId=${electionId}`,
+      )
+      await expect(voterPage.getByText('node tools/verify-election.mjs', { exact: false })).toBeVisible()
+      await shoot(voterPage, 'verify-voted', '13')
+      for (const width of [1280, 390]) {
+        await voterPage.setViewportSize({ width, height: 900 })
+        const sideways = await voterPage.evaluate(
+          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        )
+        expect(sideways, `verifieringssidan rullar i sidled vid ${width} px`).toBeLessThanOrEqual(0)
+      }
+      await voterPage.context().close()
+
+      // Robin bor i regionen men röstade inte.
+      const otherPage = await (await browser.newContext()).newPage()
+      await verifyAs(otherPage, name, 'Robin — röstberättigad')
+      await expect(otherPage.getByRole('list', { name: 'Valsedlar' }).getByText('Du har inte röstat.')).toBeVisible()
+      await shoot(otherPage, 'verify-not-voted', '13')
+      await otherPage.context().close()
+
+      // Utan legitimering: valet av omröstning och BankID.
+      const anonymous = await (await browser.newContext()).newPage()
+      await anonymous.goto('/verify')
+      await expect(anonymous.getByRole('button', { name: 'BankID på annan enhet' })).toBeVisible()
+      await shoot(anonymous, 'verify-login', '13')
+      await anonymous.context().close()
 
       // Sidan ska aldrig rulla i sidled.
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)

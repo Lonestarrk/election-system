@@ -438,6 +438,11 @@ export async function GET() {
   })])
 
   const voterBallotById = new Map(voterBallots.map((ballot) => [ballot.id, ballot]))
+  const phaseByElection = new Map(elections.map((election) => [election.id, election.phase]))
+  const resultPublished = (ballotId: string): boolean => {
+    const phase = phaseByElection.get(voterBallotById.get(ballotId)?.electionId ?? '')
+    return phase === 'TALLIED' || phase === 'CERTIFIED'
+  }
   const voteBallotById = new Map(voteBallots.map((ballot) => [ballot.id, ballot]))
   const voteElectionById = new Map(voteElections.map((election) => [election.id, election]))
 
@@ -545,7 +550,17 @@ export async function GET() {
         trusteeIndex: row.trusteeIndex,
         value: shorten(row.value),
       })),
-      ballotTally: ballotTallies.map((row) => ({
+      /**
+       * RÄKNEVERKEN FÖRST NÄR RESULTATET ÄR PUBLICERAT (uppgift 13, från 12).
+       *
+       * Fram till uppgiften visade livevyn räkneverken så snart en valsedel
+       * var räknad, utan inloggning, medan resten av appen inte visade något
+       * resultat förrän omröstningen var räknad. Nu visas de först när
+       * omröstningen står i TALLIED eller CERTIFIED, som publiceringen kräver.
+       * Den som har databasen ser dem ändå, men livevyn är ingen genväg förbi
+       * publiceringen.
+       */
+      ballotTally: ballotTallies.filter((row) => resultPublished(row.ballotId)).map((row) => ({
         ballotId: shorten(row.ballotId),
         ballotLabel: voteBallotById.get(row.ballotId)?.label ?? null,
         optionIndex: row.optionIndex,

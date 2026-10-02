@@ -113,6 +113,15 @@ export const RATE_LIMITS = {
   /** Adminstatistik. Läses om ofta medan en omröstning pågår. */
   adminStats: { limit: 120, windowMs: 60_000 },
 
+  /**
+   * Det publicerade resultatet (uppgift 13). Varje hämtning räknar om
+   * valsedlarna ur urnan och prövar varje bidrag, så en hämtning kostar
+   * omkring en sekund för ett litet val och mer för ett stort. Gränsen finns
+   * mot att det blir ett billigt lastangrepp. En granskare hämtar en gång och
+   * sparar svaret.
+   */
+  observerResults: { limit: 10, windowMs: 60_000 },
+
   /** Skapa omröstning. Sällan-operation; gränsen finns mot felslagna skript. */
   createElection: { limit: 10, windowMs: 300_000 },
 

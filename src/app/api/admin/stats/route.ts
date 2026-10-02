@@ -2,7 +2,8 @@ import { isAdminAuthenticated } from '@/lib/admin-auth'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
-import { getElectionResults, listElections } from '@/modules/ballot-box'
+import { listElections } from '@/modules/ballot-box'
+import { turnoutByBallot } from '@/modules/eligibility/participation.service'
 import { getVoterStatistics } from '@/modules/eligibility/voter-status.service'
 
 export const runtime = 'nodejs'
@@ -11,40 +12,32 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/admin/stats
  *
- * Valstatistik för administratören.
+ * Valstatistik för administratören: omröstningarna, och för en omröstning
+ * antalet röstberättigade och valdeltagandet per valsedel.
  *
- * Detta är den enda platsen i systemet där siffror från båda databaserna möts,
- * och de möts som AGGREGAT: antal, inte rader.
+ * INGA LÖPANDE RESULTAT, INTE HELLER FÖR ADMINISTRATÖREN (uppgift 13, spec
+ * 6.2). Fram till uppgiften visade rutten antalet röster per parti ur det
+ * gamla flödets tabell medan röstningen pågick. Spec 6.2 gäller alla: den som
+ * kan titta på ett löpande resultat kan också påverka när det slutliga kommer.
+ * Resultatet finns först när omröstningen är räknad, i
+ * /api/admin/elections/results och offentligt, med bevis, i
+ * /api/observer/results.
+ *
+ * Valdeltagandet räknas ur kuvertmodellen: liggande kuvert före skalningen,
+ * markeringar "har röstat" efter. Bara antal.
  *
  * Vad som medvetet saknas, och inte kommer att läggas till:
  *   – sökning på väljare
  *   – listning av enskilda väljare eller enskilda röster
- *   – utlämning av tokens eller token-hashar
  *   – tidsserier med fin upplösning (som skulle kunna korreleras)
- *   – korsningar mellan valsedlar ("hur röstade de som röstade på X i
- *     kommunvalet?") — den kopplingen finns inte lagrad någonstans
+ *   – korsningar mellan valsedlar
  *
  * VARFÖR POST FÖR EN LÄSNING
  *
  * Omröstningens id ligger i kroppen. Att läsa det ur URL:ens frågesträng hade
  * krävt webb-API:t för frågeparametrar, och API-ytans test förbjuder just de
  * orden i den här filen — en spärr mot att adminvyn någonsin får en
- * uppslagsfunktion över väljare. Att kringgå spärren med en annan stavning
- * vore att kringgå dess syfte, så rutten tar emot en kropp i stället.
- *
- * En administratör kan alltså se att 3 av 8 röstberättigade har röstat på
- * kommunvalsedeln och hur rösterna fördelar sig, men kan inte ta reda på vem
- * som röstat på vad. Begränsningen ligger inte i gränssnittet utan i datan:
- * kopplingen finns inte i någon databas administratören når.
- *
- * INTEGRITETSKONTROLLEN RÄKNAS PER VALSEDEL.
- *
- * Med tre valsedlar är "antal markerade väljare" mot "antal röster" en
- * meningslös jämförelse på omröstningsnivå — en person som röstat på två av
- * tre valsedlar skulle se ut som en avvikelse. Skillnaden räknas därför per
- * valsedel, där den faktiskt betyder något: ett värde skilt från noll betyder
- * att en röst gick förlorad mellan de två skrivningarna. Se resonemanget om
- * ordning i orchestration/cast-vote.usecase.ts.
+ * uppslagsfunktion över väljare.
  */
 export async function POST(request: Request) {
   if (!hasValidOrigin(request)) {
@@ -88,47 +81,21 @@ export async function POST(request: Request) {
     return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
   }
 
-  // Två oberoende aggregat från två oberoende databaser.
-  const [voterStats, results] = await Promise.all([
-    getVoterStatistics(electionId),
-    getElectionResults(electionId),
-  ])
-
-  const markedByBallot = new Map(
-    voterStats.perBallot.map((row) => [row.ballotId, row.markedAsVoted]),
-  )
+  const [voterStats, turnout] = await Promise.all([getVoterStatistics(electionId), turnoutByBallot(electionId)])
+  if (!turnout) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
 
   return jsonResponse({
     electionId,
+    phase: turnout.phase,
     electorate: { totalEligible: voterStats.totalEligible },
-    ballots: results.map((ballot) => {
-      const markedAsVoted = markedByBallot.get(ballot.ballotId) ?? 0
-
-      return {
-        ballotId: ballot.ballotId,
-        ballot: ballot.ballot,
-        kind: ballot.kind,
-        totalVotes: ballot.totalVotes,
-        turnoutPercent:
-          voterStats.totalEligible === 0
-            ? 0
-            : Math.round((markedAsVoted / voterStats.totalEligible) * 1000) / 10,
-        rows: ballot.rows,
-        /**
-         * Skillnaden mellan antal markerade väljare och antal registrerade
-         * röster på valsedeln.
-         *
-         * Ska normalt vara noll. Ett värde skilt från noll betyder att en röst
-         * gick förlorad mellan de två skrivningarna. Det är avsiktligt synligt
-         * för administratören, eftersom det är ett integritetsfel som måste
-         * kunna upptäckas.
-         */
-        integrity: {
-          markedAsVoted,
-          recordedVotes: ballot.totalVotes,
-          discrepancy: markedAsVoted - ballot.totalVotes,
-        },
-      }
-    }),
+    turnoutBasis: turnout.basis,
+    ballots: turnout.ballots.map((ballot) => ({
+      ballotId: ballot.ballotId,
+      ballot: ballot.label,
+      kind: ballot.kind,
+      voted: ballot.voted,
+      turnoutPercent:
+        voterStats.totalEligible === 0 ? 0 : Math.round((ballot.voted / voterStats.totalEligible) * 1000) / 10,
+    })),
   })
 }

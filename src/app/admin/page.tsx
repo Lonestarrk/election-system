@@ -113,9 +113,11 @@ export default function AdminPage() {
             <div className="card">
               <h2>Oberoende granskning</h2>
               <p className="muted small">
-                Publiceringen av summorna med bevis, så att vem som helst kan kontrollera räkningen, är
-                nästa steg i bygget (uppgift 13). Tills dess lämnar appen inte ut resultatet till någon
-                annan än den inloggade administratören.
+                När omröstningen är räknad publiceras summorna med bevis i observatörsgränssnittet, om
+                en omräkning ur urnan och förtroendepersonernas bidrag ger de sparade talen. Vem som
+                helst kan då kontrollera dekrypteringen med det fristående verktyget
+                tools/verify-election.mjs. Medan röstningen pågår lämnar appen bara ut valdeltagandet,
+                också till administratören.
               </p>
             </div>
           </>

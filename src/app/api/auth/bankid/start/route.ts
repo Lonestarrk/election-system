@@ -10,6 +10,19 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /**
+ * Texten i BankID-appen, per syfte. Verifieringssidan (uppgift 13) legitimerar
+ * väljaren för att visa om hon röstat, inte för att rösta, och texten säger det.
+ */
+const USER_VISIBLE_TEXT = {
+  vote: 'Legitimering för att rösta',
+  verify: 'Legitimering för att se om du har röstat',
+  admin: 'Legitimering för valadministration',
+} as const
+
+/** Sidan BankID-appen skickar tillbaka till på iOS, per syfte. Fasta sökvägar, se nedan. */
+const RETURN_PATH = { vote: '/identify', verify: '/verify', admin: '/admin' } as const
+
+/**
  * POST /api/auth/bankid/start
  *
  * Startar en BankID-legitimering enligt v6 (Secure Start).
@@ -69,9 +82,7 @@ export async function POST(request: Request) {
      * lurad att signera något annat: den som ringts upp och ombetts "verifiera
      * sig" ser här att det handlar om att rösta.
      */
-    userVisibleData: body.data.purpose === 'admin'
-      ? 'Legitimering för valadministration'
-      : 'Legitimering för att rösta',
+    userVisibleData: USER_VISIBLE_TEXT[body.data.purpose ?? 'vote'],
   })
 
   await recordAuditEvent(AUDIT_EVENTS.AUTH_STARTED)
@@ -89,7 +100,7 @@ export async function POST(request: Request) {
    */
   const origin = request.headers.get('origin')
   const baseOrigin = origin && env.appOrigins.includes(origin) ? origin : env.appOrigins[0]!
-  const returnUrl = `${baseOrigin}${body.data.purpose === 'admin' ? '/admin' : '/identify'}`
+  const returnUrl = `${baseOrigin}${RETURN_PATH[body.data.purpose ?? 'vote']}`
 
   const initialQr = await bankIdService.qrData(order.orderRef)
 

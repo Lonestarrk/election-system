@@ -95,8 +95,17 @@ describe('API-ytan', () => {
       'src/app/api/demo/reset-rate-limits/route.ts',
       'src/app/api/demo/trustee-passphrases/route.ts',
       'src/app/api/elections/route.ts',
+      /**
+       * Observatörens överblick: fasen, valdeltagandet och rötterna. Inget
+       * resultat i någon fas (uppgift 13, spec 6.2).
+       */
       'src/app/api/observer/election/route.ts',
-      'src/app/api/observer/votes/route.ts',
+      /**
+       * Det publicerade resultatet med bevis, efter TALLIED (uppgift 13). Det
+       * oberoende verktyget läser det. /api/observer/votes, som lämnade ut
+       * varje röst i det gamla flödet med innehåll, finns inte längre.
+       */
+      'src/app/api/observer/results/route.ts',
       'src/app/api/push/subscribe/route.ts',
       'src/app/api/verify/route.ts',
       'src/app/api/vote/ballot/route.ts',
@@ -114,6 +123,12 @@ describe('API-ytan', () => {
       'src/app/api/vote/compare/route.ts',
       'src/app/api/vote/credential/route.ts',
       'src/app/api/vote/encrypted/route.ts',
+      /**
+       * Verifieringssidans besked "Du har röstat" per valsedel (uppgift 13).
+       * Kräver session och svarar bara om den egna väljaren, med ett ja eller
+       * nej per valsedel. Se "verifieringssidans besked" nedan.
+       */
+      'src/app/api/vote/participation/route.ts',
       'src/app/api/vote/session/route.ts',
       'src/app/api/vote/sign-start/route.ts',
     ])
@@ -212,8 +227,14 @@ describe('adminytan', () => {
 
   it('hämtar bara aggregat', () => {
     expect(stats.content).toMatch(/getVoterStatistics/)
-    expect(stats.content).toMatch(/getElectionResults/)
+    expect(stats.content).toMatch(/turnoutByBallot/)
     expect(stats.content).not.toMatch(/findMany/)
+  })
+
+  it('visar inga löpande resultat (uppgift 13, spec 6.2)', () => {
+    // Fram till uppgift 13 räknade rutten röster per parti ur det gamla
+    // flödets tabell medan röstningen pågick.
+    expect(stats.content).not.toMatch(/getElectionResults|ballotTally|votesDb|recordedVotes/)
   })
 
   it('kräver inloggning', () => {
@@ -312,6 +333,68 @@ describe('jämförelsen av enhetens röst', () => {
 
   it('sessionsrutten lämnar inte ut någon chifferhash', () => {
     expect(session).not.toMatch(/ciphertextHash|pendingVoteFor/)
+  })
+})
+
+describe('publiceringen och observatören (uppgift 13)', () => {
+  /**
+   * BARA SUMMORNA PUBLICERAS, OCH INGENTING UNDER RÖSTNINGEN.
+   *
+   * Observatörsrutterna läser inte det gamla flödets röster eller resultat, och
+   * inte urnans rader själva. Resultatet går genom publiceringen, som räknar om
+   * det ur urnan och de prövade bidragen. Att svaren saknar allt per röst prövas
+   * mot riktiga databaser i tests/integration/independent-verification.test.ts.
+   * Kommentarerna tas bort först, eftersom rutterna förklarar det här i text.
+   */
+  function code(source: string): string {
+    return source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n')
+  }
+
+  const observerRoutes = routes.filter((route) => route.path.startsWith('src/app/api/observer/'))
+  const results = code(routes.find((route) => route.path === 'src/app/api/observer/results/route.ts')!.content)
+
+  it('observatörsrutterna läser inget per röst och inget ur det gamla flödet', () => {
+    for (const route of observerRoutes) {
+      const content = code(route.content)
+      expect(content, route.path).not.toMatch(
+        /votesDb|votersDb|getElectionResults|countIssuedCredentials|commitment\.service|encryptedVote|ciphertextHash/,
+      )
+    }
+  })
+
+  it('resultatet lämnas bara ut genom publiceringen, som räknar om det', () => {
+    expect(results).toMatch(/from '@\/orchestration\/publish-results\.usecase'/)
+    expect(results).not.toMatch(/@\/modules\//)
+    expect(results).toMatch(/export async function GET\(/)
+    expect(results).not.toMatch(/export async function (POST|PUT|PATCH|DELETE)\b/)
+    expect(results).not.toMatch(/cookies\(/)
+    expect(results).toMatch(/checkRateLimit\('observer-results', getClientIp\(request\), RATE_LIMITS\.observerResults\)/)
+  })
+})
+
+describe('verifieringssidans besked (uppgift 13)', () => {
+  const participation = routes.find((route) => route.path === 'src/app/api/vote/participation/route.ts')!
+  const content = participation.content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n')
+
+  it('kräver egen origin, en hastighetsgräns och en session, och svarar bara om sessionens väljare', () => {
+    expect(content).toMatch(/if \(!hasValidOrigin\(request\)\)/)
+    expect(content).toMatch(/checkRateLimit\('vote-participation'/)
+    expect(content).toMatch(/await getValidVotingSession\(sessionId\)/)
+    expect(content).toMatch(/participationOf\(session\.voterStatusId, session\.electionId\)/)
+    expect(content).not.toMatch(/body\.data|parseJsonBody/)
+  })
+
+  it('svarar med ett ja eller nej per valsedel, utan chiffer, hash, räknare eller tid', () => {
+    expect(content).not.toMatch(/ciphertext|castSequence|updatedAt|createdAt|closesAt|votedMarker|pendingVote/)
+    expect(content).toContain('voted: ballot.voted,')
   })
 })
 

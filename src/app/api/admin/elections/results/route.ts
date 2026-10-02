@@ -14,8 +14,9 @@ export const dynamic = 'force-dynamic'
  * Räkningens rutt vägrar efter TALLIED, och ingen annan rutt lämnar ut
  * räkneverken igen, så adminsidan behöver en läsväg, också efter en omladdning.
  *
- * INTE OFFENTLIG. Rutten kräver den inloggade administratören. Att publicera
- * resultatet, med bevis, är uppgift 13, och först då kan någon annan läsa det.
+ * INTE OFFENTLIG. Rutten kräver den inloggade administratören och lämnar de
+ * sparade räkneverken. Offentligt publiceras resultatet med bevis av
+ * /api/observer/results, efter en omräkning ur urnan och bidragen (uppgift 13).
  * Före TALLIED svarar rutten att omröstningen inte är räknad och lämnar inga
  * räkneverk, också om några valsedlar redan är räknade.
  */

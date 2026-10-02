@@ -20,8 +20,7 @@ export function OldFlow({ entries }: { entries: KnownLimitation[] }) {
       <h2 id="gamla-flodet">Vad det gamla flödet fortfarande gör</h2>
       <p className="muted small">
         {CURRENTLY.oldFlowRoutesRemain.text} <StatusBadge status={CURRENTLY.oldFlowRoutesRemain.status!} /> Så
-        länge det finns kvar gäller dess egna problem, som kuvertmodellen är byggd för att inte ha.{' '}
-        {CURRENTLY.oldFlowLiveResults.text} <StatusBadge status={CURRENTLY.oldFlowLiveResults.status!} />
+        länge det finns kvar gäller dess egna problem, som kuvertmodellen är byggd för att inte ha.
       </p>
       <p className="muted small">Flödets egna poster i listan över kända begränsningar:</p>
       <ul className="small" style={{ paddingLeft: '1.25rem', marginBottom: 0 }}>

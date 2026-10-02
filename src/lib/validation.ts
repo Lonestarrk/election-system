@@ -32,7 +32,7 @@ export const personalNumberSchema = z
  * ett skydd mot att bli lurad att signera något annat än man tror.
  */
 export const startAuthSchema = z.object({
-  purpose: z.enum(['vote', 'admin']).default('vote'),
+  purpose: z.enum(['vote', 'verify', 'admin']).default('vote'),
 })
 
 /** Hämtning av den animerade QR-kodens aktuella data. */
@@ -246,11 +246,9 @@ export const pushUnsubscribeSchema = z.object({
   endpoint: z.string().url('Ogiltig endpoint.').max(2000),
 })
 
-/** Observatörens sidindelade hämtning av röstunderlaget. */
-export const observerVotesSchema = z.object({
+/** Hämtningen av det publicerade resultatet. Omröstningens id står i adressen. */
+export const observerResultsSchema = z.object({
   electionId: z.string().uuid('Ogiltig omröstning.'),
-  offset: z.number().int().min(0).max(10_000_000).optional(),
-  pageSize: z.number().int().min(1).max(2000).optional(),
 })
 
 /** Statistikbegäran. Utan omröstning svarar rutten bara med listan. */
