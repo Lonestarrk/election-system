@@ -1,6 +1,7 @@
 import { getAdminSession } from '@/lib/admin-auth'
 import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
+import { describeErrorChain, logger } from '@/lib/logger'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
 import { certifyElection } from '@/orchestration/final-check.usecase'
@@ -27,9 +28,11 @@ export const dynamic = 'force-dynamic'
  * tvingar igenom ett resultat skulle göra varje annan kontroll i systemet
  * meningslös — den som kan trycka på den behöver inte bry sig om någon av dem.
  *
- * Ett val i UNDER_REVIEW går inte heller att återställa via applikationen.
- * Avvikelsen kräver mänsklig granskning, och en knapp som markerar den som
- * utredd vore samma spärr med ett extra klick.
+ * Ett val i UNDER_REVIEW går inte heller att återställa via applikationen i
+ * skarpt läge. Avvikelsen kräver mänsklig granskning, och en knapp som markerar
+ * den som utredd vore samma spärr med ett extra klick. Det enda undantaget är
+ * demovalet, som demoläget kan nollställa i sin helhet, se
+ * /api/demo/reset-election.
  */
 export async function POST(request: Request) {
   if (!hasValidOrigin(request)) {
@@ -57,7 +60,27 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', 'Ange vilken omröstning som ska fastställas.', 400)
   }
 
-  const outcome = await certifyElection(body.data.electionId)
+  /**
+   * ETT OVÄNTAT FEL ÄR ETT BESKED TILL SIDAN, INTE EN NAKEN 500 (granskningen av
+   * 12b). Fastställandet kör hela slutkontrollen, som läser båda databaserna,
+   * och ett fel där ska inte nå administratören som ett tomt svar. Beskedet
+   * gissar ingen orsak, som stängningens: den står i serverloggen. Fastställandet
+   * skriver CERTIFIED med jämför-och-sätt och revisionsposten i en transaktion,
+   * så ett kast efter den kan inte lämna en fas utan post. Sidan läser därför om
+   * fasen från servern, och säger inte att något är fastställt.
+   */
+  let outcome: Awaited<ReturnType<typeof certifyElection>>
+  try {
+    outcome = await certifyElection(body.data.electionId)
+  } catch (error) {
+    logger.error('Fastställandet avbröts', { reason: describeErrorChain(error) })
+    return errorResponse(
+      'INTERNAL',
+      'Fastställandet kunde inte slutföras, av ett skäl som står i serverloggen. Läs om omröstningens ' +
+        'fas för att se om resultatet blev fastställt, och kör slutkontrollen igen innan du försöker på nytt.',
+      500,
+    )
+  }
 
   if (outcome.status === 'unknown_election') {
     return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)

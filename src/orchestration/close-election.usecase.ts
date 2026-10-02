@@ -508,9 +508,13 @@ const CLOSING_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000
 const STRIP_LOCK_TIMEOUT_MS = 10_000
 const STRIP_STATEMENT_TIMEOUT_MS = 120_000
 
-type LockedRun<T> = { taken: false } | { taken: true; value: T }
+export type LockedRun<T> = { taken: false } | { taken: true; value: T }
 
-async function withClosingLock<T>(
+/**
+ * Exporterad för demoåterställningen (uppgift 12c), som tar samma lås så att
+ * den inte kan köra samtidigt med en stängning av samma omröstning.
+ */
+export async function withClosingLock<T>(
   electionId: string,
   run: (lock: ClosingLock) => Promise<T>,
 ): Promise<LockedRun<T>> {

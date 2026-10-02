@@ -140,7 +140,7 @@ vi.mock('@/orchestration/validate-before-close.usecase', async (importOriginal) 
       // Ett godtyckligt fel mitt i förberedelsen, som när databasen inte svarar.
       if (validationControl.throwError) throw new Error('valideringen kunde inte slutföras')
       if (!validationControl.forcePass) return actual.validateEnvelopes(snapshot)
-      return { summary: { votes: 0, voters: 0, byKind: {}, passed: true }, anomalies: [] }
+      return { summary: { votes: 0, voters: 0, rejected: 0, byKind: {}, passed: true }, anomalies: [] }
     },
   }
 })
@@ -670,7 +670,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     expect(outcome).toEqual({
       status: 'invalid_ballot',
       ciphertextHash: forged.ciphertextHash,
-      summary: { votes: 2, voters: 2, byKind: { BAD_PROOF: 1 }, passed: false },
+      summary: { votes: 2, voters: 2, rejected: 1, byKind: { BAD_PROOF: 1 }, passed: false },
     })
     expect(await votesDb.encryptedVote.count()).toBe(0)
     expect(await votersDb.pendingVote.count()).toBe(2)
@@ -699,7 +699,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     expect(outcome).toEqual({
       status: 'invalid_ballot',
       ciphertextHash: old.ciphertextHash,
-      summary: { votes: 2, voters: 2, byKind: { OLD_PROOF_FORMAT: 1 }, passed: false },
+      summary: { votes: 2, voters: 2, rejected: 1, byKind: { OLD_PROOF_FORMAT: 1 }, passed: false },
     })
     expect(await votersDb.pendingVote.count()).toBe(2)
     expect(await votesDb.encryptedVote.count()).toBe(0)
@@ -726,7 +726,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     expect(outcome).toEqual({
       status: 'invalid_ballot',
       ciphertextHash: forged.ciphertextHash,
-      summary: { votes: 0, voters: 0, byKind: {}, passed: true },
+      summary: { votes: 0, voters: 0, rejected: 0, byKind: {}, passed: true },
     })
     expect(await votesDb.encryptedVote.count()).toBe(0)
     expect(await votersDb.pendingVote.count()).toBe(2)

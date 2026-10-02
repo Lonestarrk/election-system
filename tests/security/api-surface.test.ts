@@ -39,6 +39,7 @@ describe('API-ytan', () => {
     const paths = routes.map((route) => route.path).sort()
     expect(paths).toEqual([
       'src/app/api/admin/elections/certify/route.ts',
+      'src/app/api/admin/elections/check-status/route.ts',
       'src/app/api/admin/elections/check/route.ts',
       /**
        * Stängningen: flyttar chiffren till den anonyma sidan och raderar
@@ -58,7 +59,14 @@ describe('API-ytan', () => {
        * nedan.
        */
       'src/app/api/admin/elections/decrypt/route.ts',
+      /**
+       * Räkneverken per valsedel efter TALLIED (uppgift 12c, 7c). Bakom
+       * adminsessionen, inte offentlig: publiceringen är uppgift 13.
+       */
+      'src/app/api/admin/elections/results/route.ts',
       'src/app/api/admin/elections/route.ts',
+      /** Omröstningens fas och antal, för adminsidan (uppgift 12c). Inget per väljare. */
+      'src/app/api/admin/elections/state/route.ts',
       /** Räkningen av en valsedel, när två bidrag finns (uppgift 12). */
       'src/app/api/admin/elections/tally/route.ts',
       'src/app/api/admin/login/route.ts',
@@ -83,7 +91,9 @@ describe('API-ytan', () => {
        * "hastighetsbegränsar" nedan textuellt men urholkat egenskapen det
        * finns för att garantera.
        */
+      'src/app/api/demo/reset-election/route.ts',
       'src/app/api/demo/reset-rate-limits/route.ts',
+      'src/app/api/demo/trustee-passphrases/route.ts',
       'src/app/api/elections/route.ts',
       'src/app/api/observer/election/route.ts',
       'src/app/api/observer/votes/route.ts',
@@ -393,7 +403,9 @@ describe('demorutterna', () => {
     expect(demoRoutes.map((route) => route.path).sort()).toEqual([
       'src/app/api/demo/bankid-scan/route.ts',
       'src/app/api/demo/database-state/route.ts',
+      'src/app/api/demo/reset-election/route.ts',
       'src/app/api/demo/reset-rate-limits/route.ts',
+      'src/app/api/demo/trustee-passphrases/route.ts',
     ])
   })
 

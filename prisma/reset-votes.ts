@@ -32,9 +32,13 @@ import { PrismaClient as VotesClient } from '.prisma/votes'
  *
  * SKRIPTET ÄR AVSIKTLIGT SKILT FRÅN APPLIKATIONEN.
  *
- * Det finns ingen motsvarande funktion i src/ — inget API, ingen adminknapp,
- * ingen tjänst som kan radera röster. Det här är ett utvecklingsverktyg som
- * kräver direkt databasåtkomst, och det ska det fortsätta vara.
+ * I skarpt läge finns ingen motsvarande funktion i src/ — inget API, ingen
+ * adminknapp, ingen tjänst som kan radera röster. Det här är ett
+ * utvecklingsverktyg som kräver direkt databasåtkomst, och det ska det
+ * fortsätta vara. Det enda undantaget är demoläget (uppgift 12c): rutten
+ * /api/demo/reset-election återställer demovalet, och bara det, bakom
+ * `isDemoMode()`, adminsessionen och CSRF. Den skriver en revisionspost,
+ * medan det här skriptet tömmer hela kedjan.
  */
 
 const votersDb = new VotersClient()
@@ -70,6 +74,14 @@ async function main() {
   // tidpunkt nollställs också: räkningen skriver den bara när den saknas, så
   // en gammal timme hade annars stått kvar efter nästa räkning.
   await votesDb.election.updateMany({ data: { status: 'OPEN', certifiedAt: null, tallyCompletedAt: null } })
+
+  // Fasen och rötterna i röstlängden återställs också (uppgift 12c). Utan det
+  // står en omröstning som en tidigare körning stängde kvar i STRIPPED eller
+  // CERTIFIED, med en tom urna, och ingen läggning tas emot. Rötterna och
+  // tidpunkten för raderingen hör till fasen och nollställs med den.
+  await votersDb.election.updateMany({
+    data: { phase: 'OPEN', envelopeRoot: null, urnRoot: null, linkClearedAt: null },
+  })
 
   process.stdout.write(
     `Nollställt: ${votes.count} röster, ${commitments.count} åtaganden, ` +

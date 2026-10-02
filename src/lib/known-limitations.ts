@@ -137,6 +137,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         file: 'src/app/api/admin/elections/decrypt/route.ts',
         contains: 'body.data.passphrase)',
       },
+      // ... och adminsidan skickar frasen dit, och säger det (uppgift 12c).
+      {
+        file: 'src/app/admin/ElectionPanel.tsx',
+        contains: "post('/api/admin/elections/decrypt', {",
+      },
     ],
   },
   /**

@@ -3,7 +3,8 @@ import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
-import { runFinalCheck } from '@/orchestration/final-check.usecase'
+import { getMirroredElection } from '@/modules/eligibility/election.service'
+import { startFinalCheck } from '@/orchestration/final-check-job'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -11,17 +12,22 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/admin/elections/check
  *
- * Kör den automatiska slutkontrollen och returnerar rapporten.
+ * Startar den automatiska slutkontrollen i bakgrunden och svarar direkt med 202
+ * (uppgift 12c, punkt 7d). Rapporten läses med /api/admin/elections/check-status.
+ *
+ * Sedan 12b verifierar kontrollen varje rad i urnan, omkring 0,4 s per rad, så
+ * ett stort val tar timmar. En HTTP-begäran ska inte vänta så länge. Resultatet
+ * sparas i minnet och går förlorat vid en omstart, och då får kontrollen köras
+ * om, se src/orchestration/final-check-job.ts.
  *
  * ADMINISTRATÖREN SKA INTE KUNNA KLICKA FRAM ETT RESULTAT OCH GODKÄNNA DET.
  *
- * Den här rutten finns för att administratören ska se hela bilden INNAN
- * fastställandet: vilka kontroller som gått igenom, vilka som fallerat, vilka
- * avvikelser som finns, och om resultatet över huvud taget får fastställas.
- *
- * Rapporten är läsning. Den ändrar ingenting och ger ingen behörighet — och
- * fastställandet litar inte på den. /api/admin/elections/certify kör samma
- * kontroll om, på servern, och vägrar om något kritiskt fallerar.
+ * Rutten finns för att administratören ska se hela bilden INNAN fastställandet:
+ * vilka kontroller som gått igenom, vilka som fallerat, vilka avvikelser som
+ * finns, och om resultatet över huvud taget får fastställas. Rapporten är
+ * läsning. Den ändrar ingenting och ger ingen behörighet, och fastställandet
+ * litar inte på den. /api/admin/elections/certify kör en egen kontroll på
+ * servern vid varje anrop och vägrar om något kritiskt fallerar.
  */
 export async function POST(request: Request) {
   if (!hasValidOrigin(request)) {
@@ -49,8 +55,19 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', 'Ange vilken omröstning som ska kontrolleras.', 400)
   }
 
-  const report = await runFinalCheck(body.data.electionId)
-  if (!report) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
+  const election = await getMirroredElection(body.data.electionId)
+  if (!election) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
 
-  return jsonResponse({ report })
+  const started = startFinalCheck(body.data.electionId)
+
+  return jsonResponse(
+    {
+      status: started,
+      message:
+        started === 'started'
+          ? 'Slutkontrollen har startat. Den kan ta lång tid i ett stort val, och sidan läser resultatet när det är klart.'
+          : 'Slutkontrollen körs redan för den här omröstningen. Sidan läser resultatet när det är klart.',
+    },
+    202,
+  )
 }

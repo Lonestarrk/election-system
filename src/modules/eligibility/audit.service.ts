@@ -133,6 +133,14 @@ export const AUDIT_EVENTS = {
    * vilken omröstning det gällde, som ingen post i kedjan gör.
    */
   ELECTION_UNDER_REVIEW: 'ELECTION_UNDER_REVIEW',
+  /**
+   * Demovalet återställdes till OPEN, och urnan, bidragen, räkneverken,
+   * markeringarna och de liggande kuverten tömdes (uppgift 12c). Bara i
+   * demoläget. Posten läggs till i kedjan och ersätter ingen gammal post, så
+   * kedjan består. Den säger inte vilken omröstning det gällde, som ingen post
+   * gör, men återställningen gäller bara demovalet.
+   */
+  ELECTION_DEMO_RESET: 'ELECTION_DEMO_RESET',
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]

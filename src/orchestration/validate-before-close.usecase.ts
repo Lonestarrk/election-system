@@ -136,7 +136,18 @@ export type Anomaly = {
 
 export type ValidationReport = {
   /** Publiceras: antal, kategorier, utfall — aldrig vem. */
-  summary: { votes: number; voters: number; byKind: Record<string, number>; passed: boolean }
+  summary: {
+    votes: number
+    voters: number
+    /**
+     * Antalet kuvert med minst en avvikelse (uppgift 12c). Ett kuvert kan ha
+     * flera, så summan av `byKind` kan vara större. Adminsidan visar det som
+     * underkända, och resten av `votes` som godkända.
+     */
+    rejected: number
+    byKind: Record<string, number>
+    passed: boolean
+  }
   /** Publiceras inte. Finns för administratören att utreda, och inte längre än så. */
   anomalies: Anomaly[]
 }
@@ -689,6 +700,7 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
   const summary = {
     votes: pendingVotes.length,
     voters: new Set(pendingVotes.map((vote) => vote.voterStatusId)).size,
+    rejected: new Set(anomalies.map((found) => found.pendingVoteId)).size,
     byKind,
     passed: anomalies.length === 0,
   }

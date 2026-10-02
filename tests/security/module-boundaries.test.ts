@@ -143,6 +143,19 @@ describe('modulgränser', () => {
        * kopplingen redan raderad.
        */
       'src/orchestration/tally.usecase.ts',
+      /**
+       * Adminsidans läsning av avslutningen (uppgift 12c). ANTAL liggande
+       * kuvert och rader i urnan, fasen och rötterna ur röstlängden,
+       * förtroendepersonernas bidrag och räkneverken ur röstdatabasen. Läser
+       * ingen väljare och inget kuvert, och kan inte para ihop sidorna.
+       */
+      'src/orchestration/election-overview.usecase.ts',
+      /**
+       * Demoåterställningen (uppgift 12c). Tömmer båda sidorna för demovalet,
+       * på valsedel, och läser aldrig en väljares identitet. Rutten bakom den
+       * finns bara i demoläget.
+       */
+      'src/orchestration/reset-demo-election.usecase.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
       'src/app/api/observer/election/route.ts',
