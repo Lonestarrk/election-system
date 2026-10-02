@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { MAX_DECIMAL_DIGITS, parseElement, parseScalar } from './crypto/group'
 import { PROOF_FORMAT } from './crypto/proofs'
 import { TRUSTEE_COUNT } from './crypto/threshold'
+import { DEMO_ELECTION_NAME } from './demo-election'
 
 /**
  * Indatavalidering med Zod.
@@ -347,6 +348,12 @@ export const createElectionSchema = z
   })
   .refine((value) => value.closesAt > value.opensAt, {
     message: 'Omröstningen måste stänga efter att den öppnat.',
+  })
+  // Demoåterställningen identifierar demovalet på namnet, så ingen annan omröstning
+  // får skapas med det (granskningen av 12c). Seedningen skapar demovalet direkt.
+  .refine((value) => value.name.trim().toLowerCase() !== DEMO_ELECTION_NAME.toLowerCase(), {
+    message: `Namnet "${DEMO_ELECTION_NAME}" är reserverat för demovalet.`,
+    path: ['name'],
   })
 
 /** En enhets prenumeration på notiser. Innehåller ingenting om vem enheten tillhör. */

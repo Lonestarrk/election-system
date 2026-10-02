@@ -1,5 +1,6 @@
 import { scryptHex } from '../src/lib/crypto'
 import { describeElectionSeed } from './election-seed-report'
+import { demoElectionWindow } from '../src/lib/demo-election'
 import { generateElectionKeyPair } from '../src/lib/blind-signature'
 // Serverns ingång, som i createElection: nyckeln exponentieras i OpenSSL.
 import { generateKeyPair, publicShare, splitSecret } from '../src/lib/crypto/server'
@@ -166,8 +167,8 @@ async function main() {
       data: {
         name: 'Valet 2026',
         kind: 'RIKSDAGSVAL',
-        opensAt: new Date(Date.UTC(2026, 8, 1)),
-        closesAt: new Date(Date.UTC(2026, 8, 30)),
+        // Tiderna räknas från idag (ruling 136), så att demovalet är öppet när det seedas.
+        ...demoElectionWindow(),
       },
     })
 

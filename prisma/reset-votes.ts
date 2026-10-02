@@ -1,5 +1,6 @@
 import { PrismaClient as VotersClient } from '.prisma/voters'
 import { PrismaClient as VotesClient } from '.prisma/votes'
+import { demoElectionWindow } from '../src/lib/demo-election'
 
 /**
  * Nollställer röstdata inför en E2E-körning.
@@ -82,6 +83,13 @@ async function main() {
   await votersDb.election.updateMany({
     data: { phase: 'OPEN', envelopeRoot: null, urnRoot: null, linkClearedAt: null },
   })
+
+  // Demovalets tider flyttas fram från idag (ruling 136). Annars har valet
+  // stängt för läggning när dagarna gått, och ingen kan rösta i det. Bara
+  // demovalet, vid namn: en testomröstning har sina egna tider.
+  const window = demoElectionWindow()
+  await votersDb.election.updateMany({ where: { name: 'Valet 2026' }, data: window })
+  await votesDb.election.updateMany({ where: { name: 'Valet 2026' }, data: window })
 
   process.stdout.write(
     `Nollställt: ${votes.count} röster, ${commitments.count} åtaganden, ` +

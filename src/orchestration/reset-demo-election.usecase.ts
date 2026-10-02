@@ -1,4 +1,4 @@
-import { DEMO_ELECTION_NAME } from '@/lib/demo-election'
+import { DEMO_ELECTION_NAME, demoElectionWindow } from '@/lib/demo-election'
 import { votesDb } from '@/modules/ballot-box/db'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { votersDb } from '@/modules/eligibility/db'
@@ -81,13 +81,16 @@ export async function resetDemoElection(electionId: string): Promise<ResetOutcom
 async function clear(electionId: string, ballotIds: string[]) {
   const inBallots = { ballotId: { in: ballotIds } }
 
+  // Tiderna flyttas fram från idag (ruling 136), så att den återställda omröstningen är öppen.
+  const window = demoElectionWindow()
+
   const [urnRows, contributions, tallies] = await votesDb.$transaction([
     votesDb.encryptedVote.deleteMany({ where: inBallots }),
     votesDb.partialDecryption.deleteMany({ where: inBallots }),
     votesDb.ballotTally.deleteMany({ where: inBallots }),
     votesDb.election.update({
       where: { id: electionId },
-      data: { status: 'OPEN', certifiedAt: null, tallyCompletedAt: null },
+      data: { status: 'OPEN', certifiedAt: null, tallyCompletedAt: null, ...window },
     }),
   ])
 
@@ -97,7 +100,7 @@ async function clear(electionId: string, ballotIds: string[]) {
       const markers = await tx.votedMarker.deleteMany({ where: inBallots })
       await tx.election.update({
         where: { id: electionId },
-        data: { phase: 'OPEN', envelopeRoot: null, urnRoot: null, linkClearedAt: null },
+        data: { phase: 'OPEN', envelopeRoot: null, urnRoot: null, linkClearedAt: null, ...window },
       })
       await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`
       await recordAuditEvent(AUDIT_EVENTS.ELECTION_DEMO_RESET, tx)

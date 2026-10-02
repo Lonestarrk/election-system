@@ -59,8 +59,7 @@ export function CertifyStep(props: {
 
       {running && (
         <div className="notice info" style={{ marginTop: '1rem' }}>
-          Slutkontrollen pågår. Du kan lämna sidan och komma tillbaka: den fortsätter i servern så länge den
-          inte startas om.
+          Slutkontrollen pågår. Du kan lämna sidan och komma tillbaka: den fortsätter i servern så länge servern inte startas om eller skalas ned. Den körs i serverns huvudtråd, så servern kan svara långsamt under tiden.
         </div>
       )}
       {job.status === 'failed' && (

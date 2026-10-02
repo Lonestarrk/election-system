@@ -14,6 +14,7 @@ import { POST as checkRoute } from '@/app/api/admin/elections/check/route'
 import { POST as checkStatusRoute } from '@/app/api/admin/elections/check-status/route'
 import { POST as resultsRoute } from '@/app/api/admin/elections/results/route'
 import { POST as stateRoute } from '@/app/api/admin/elections/state/route'
+import { POST as createRoute } from '@/app/api/admin/elections/route'
 import { POST as resetRoute } from '@/app/api/demo/reset-election/route'
 import { POST as passphrasesRoute } from '@/app/api/demo/trustee-passphrases/route'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
@@ -47,12 +48,18 @@ const demo = vi.hoisted(() => ({ on: true }))
 vi.mock('@/lib/demo-mode', () => ({ isDemoMode: () => demo.on }))
 
 /** Låter ett test få fastställandet att kasta. Alla andra anrop går till den äkta funktionen. */
-const fault = vi.hoisted(() => ({ certify: false }))
+const fault = vi.hoisted(() => ({ certify: false, checkDelayMs: 0, checkCalls: 0 }))
 
 vi.mock('@/orchestration/final-check.usecase', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/orchestration/final-check.usecase')>()
   return {
     ...actual,
+    // Räknar anropen och kan hålla kvar kontrollen, så att två starter hinner mötas.
+    runFinalCheck: async (electionId: string) => {
+      fault.checkCalls += 1
+      if (fault.checkDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, fault.checkDelayMs))
+      return actual.runFinalCheck(electionId)
+    },
     certifyElection: async (electionId: string) => {
       if (fault.certify) throw new Error('Testet: fastställandet kastade.')
       return actual.certifyElection(electionId)
@@ -138,6 +145,8 @@ describe.skipIf(!databaseAvailable)('adminsidans rutter', () => {
     cookieJar.admin = undefined
     demo.on = true
     fault.certify = false
+    fault.checkDelayMs = 0
+    fault.checkCalls = 0
     resetRateLimits()
     await resetElectionData()
   })
@@ -349,16 +358,43 @@ describe.skipIf(!databaseAvailable)('adminsidans rutter', () => {
       expect(done.report).toMatchObject({ phase: 'TALLIED', canCertify: true })
     })
 
-    it('en kontroll som redan körs startas inte en gång till', async () => {
+    it('två starter samtidigt kör kontrollen en gång', async () => {
       await loginAdmin()
       const { electionId } = await newElection('Kontroll')
+      fault.checkDelayMs = 400
 
-      const first = await post(checkRoute, '/api/admin/elections/check', { electionId })
-      const second = await post(checkRoute, '/api/admin/elections/check', { electionId })
-      expect(first.status).toBe(202)
-      expect(second.status).toBe(202)
-      // Den andra kom antingen medan den första körde, eller efter att den var klar.
-      expect(['started', 'already_running']).toContain((await second.json()).status)
+      const [first, second] = await Promise.all([
+        post(checkRoute, '/api/admin/elections/check', { electionId }),
+        post(checkRoute, '/api/admin/elections/check', { electionId }),
+      ])
+      const statuses = [(await first.json()).status, (await second.json()).status].sort()
+
+      expect(statuses).toEqual(['already_running', 'started'])
+      expect(fault.checkCalls).toBe(1)
+      await waitForReport(electionId)
+    })
+
+    it('ett jobb som en återställning glömt hindrar en ny start medan det kör', async () => {
+      await loginAdmin()
+      const { electionId, ballotId } = await newElection(DEMO_ELECTION_NAME)
+      await tallied(electionId, ballotId)
+      fault.checkDelayMs = 600
+
+      expect((await (await post(checkRoute, '/api/admin/elections/check', { electionId })).json()).status).toBe('started')
+      expect((await post(resetRoute, '/api/demo/reset-election', { electionId })).status).toBe(200)
+
+      // Det glömda jobbet kör fortfarande, så en ny start läggs inte ovanpå.
+      expect((await (await post(checkRoute, '/api/admin/elections/check', { electionId })).json()).status).toBe(
+        'already_running',
+      )
+      expect(fault.checkCalls).toBe(1)
+
+      // När det är klart skrivs dess resultat inte tillbaka, och en ny start går igenom.
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      expect(await (await post(checkStatusRoute, '/api/admin/elections/check-status', { electionId })).json()).toEqual({
+        status: 'none',
+      })
+      expect((await (await post(checkRoute, '/api/admin/elections/check', { electionId })).json()).status).toBe('started')
       await waitForReport(electionId)
     })
 
@@ -557,6 +593,27 @@ describe.skipIf(!databaseAvailable)('adminsidans rutter', () => {
       }
     })
 
+    it('flyttar fram demovalets tider så att röstningen är öppen igen (ruling 136)', async () => {
+      await loginAdmin()
+      // Skapas med tider som passerat, som demovalet gör när dagarna går.
+      const { electionId } = await newElection(DEMO_ELECTION_NAME)
+      const other = await newElection('Ett annat val')
+      const otherBefore = await votesDb.election.findUniqueOrThrow({ where: { id: other.electionId } })
+
+      expect((await reset(electionId)).status).toBe(200)
+
+      const now = new Date()
+      for (const row of [
+        await votesDb.election.findUniqueOrThrow({ where: { id: electionId } }),
+        await votersDb.election.findUniqueOrThrow({ where: { id: electionId } }),
+      ]) {
+        expect(row.opensAt.getTime()).toBeLessThanOrEqual(now.getTime())
+        expect(row.closesAt.getTime()).toBeGreaterThan(now.getTime() + 25 * 86_400_000)
+      }
+      const otherAfter = await votesDb.election.findUniqueOrThrow({ where: { id: other.electionId } })
+      expect(otherAfter.closesAt).toEqual(otherBefore.closesAt)
+    })
+
     it('går att stänga igen efter en återställning', async () => {
       await loginAdmin()
       const { electionId, ballotId } = await newElection(DEMO_ELECTION_NAME)
@@ -564,6 +621,10 @@ describe.skipIf(!databaseAvailable)('adminsidans rutter', () => {
 
       expect((await reset(electionId)).status).toBe(200)
 
+      // Återställningen öppnar valet 30 dygn framåt. Stängningen väntar på stängningstiden.
+      const past = new Date(Date.now() - 60_000)
+      await votersDb.election.update({ where: { id: electionId }, data: { closesAt: past } })
+      await votesDb.election.update({ where: { id: electionId }, data: { closesAt: past } })
       expect(await closeElection(electionId)).toMatchObject({ status: 'closed' })
       expect(await phaseOf(electionId)).toBe('STRIPPED')
     })
@@ -602,6 +663,28 @@ describe.skipIf(!databaseAvailable)('adminsidans rutter', () => {
       const body = await (await post(checkStatusRoute, '/api/admin/elections/check-status', { electionId })).json()
       expect(body).toEqual({ status: 'none' })
     })
+  })
+
+  describe('demovalets namn', () => {
+    it.each([DEMO_ELECTION_NAME, '  valet 2026 ', 'VALET 2026'])(
+      'ett val som en administratör skapar får inte heta "%s"',
+      async (name) => {
+        await loginAdmin()
+        const s = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'S' } })
+
+        const response = await post(createRoute, '/api/admin/elections', {
+          name,
+          kind: 'RIKSDAGSVAL',
+          opensAt: new Date(Date.now() - 60_000).toISOString(),
+          closesAt: new Date(Date.now() + 3_600_000).toISOString(),
+          ballots: [{ kind: 'RIKSDAG', label: 'Riksdagen', parties: [{ partyId: s.id }] }],
+          trusteePassphrases: [...PASSPHRASES],
+        })
+
+        expect(response.status).toBe(400)
+        expect(await votesDb.election.count()).toBe(0)
+      },
+    )
   })
 
   // -------------------------------------------------------------------------
@@ -655,6 +738,9 @@ describe('demovalet och seedningen', () => {
     const script = readFileSync('prisma/reset-votes.ts', 'utf8')
 
     expect(script).toContain("data: { phase: 'OPEN', envelopeRoot: null, urnRoot: null, linkClearedAt: null }")
+    // Ruling 136: tiderna räknas från idag, i båda skripten.
+    expect(script).toContain('demoElectionWindow(')
+    expect(seed).toContain('demoElectionWindow(')
     expect(script).toContain(`name: { not: '${DEMO_ELECTION_NAME}' }`)
   })
 })

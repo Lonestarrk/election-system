@@ -70,8 +70,11 @@ export function ElectionPanel({ electionId }: { electionId: string }) {
     if (current.current !== id) return null
 
     if (!result.ok) {
-      setOverview(null)
-      say({ tone: 'danger', text: messageOf(result, 'Omröstningens läge kunde inte läsas.') })
+      // Den senast lästa översikten får stå kvar, så att panelen inte töms av ett läsfel.
+      say({
+        tone: 'danger',
+        text: `${messageOf(result, 'Omröstningens läge kunde inte läsas.')} Det som visas är det senast lästa och kan vara inaktuellt.`,
+      })
       return null
     }
 

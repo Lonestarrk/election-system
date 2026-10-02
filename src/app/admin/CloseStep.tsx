@@ -61,6 +61,13 @@ export function CloseStep(props: {
           ligger kvar i röstlängden.
         </p>
       )}
+      {overview.linkCleared && (
+        <p className="small">
+          Kuvertrot: <Mono>{overview.envelopeRoot ?? 'saknas'}</Mono>
+          <br />
+          Urnrot: <Mono>{overview.urnRoot ?? 'saknas'}</Mono>
+        </p>
+      )}
 
       <p className="muted small">
         Stängningen gör tre saker i ett anrop: den stänger läggningen, validerar varje kuvert mot dess
@@ -96,15 +103,16 @@ export function CloseStep(props: {
         </p>
       )}
 
-      {closeView && <CloseReport view={closeView} />}
+      {closeView && <CloseReport view={closeView} phase={phase} />}
     </section>
   )
 }
 
 /** Det som stängningens senaste anrop svarade, ordagrant, och de två stegen efter det. */
-function CloseReport({ view }: { view: CloseView }) {
+function CloseReport({ view, phase }: { view: CloseView; phase: string }) {
   const summary = view.summary
-  const closed = view.status === 'closed' || view.status === 'already_closed'
+  const validationFailed = view.status === 'validation_failed'
+  const verificationFailed = view.status === 'invalid_ballot'
 
   return (
     <div style={{ marginTop: '1.25rem' }}>
@@ -113,7 +121,7 @@ function CloseReport({ view }: { view: CloseView }) {
         Serverns besked: <q>{view.message}</q>
       </p>
 
-      {(summary || view.status === 'closed') && (
+      {(validationFailed || verificationFailed || view.status === 'closed') && (
         <>
           <h3>Valideringen</h3>
           {view.status === 'closed' && (
@@ -121,49 +129,52 @@ function CloseReport({ view }: { view: CloseView }) {
               Godkända kuvert: <strong>{view.moved ?? 0}</strong>. Underkända: <strong>0</strong>.
             </p>
           )}
-          {summary && (
-            <>
-              <p>
-                Granskade kuvert: <strong>{summary.votes}</strong>. Godkända:{' '}
-                <strong>{Math.max(summary.votes - summary.rejected, 0)}</strong>. Underkända:{' '}
-                <strong>{summary.rejected}</strong>.
-              </p>
-              {Object.keys(summary.byKind).length > 0 && (
-                <div className="admin-table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Kod</th>
-                        <th>Förklaring</th>
-                        <th className="num">Antal</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(summary.byKind).map(([code, count]) => (
-                        <tr key={code}>
-                          <td className="mono">{code}</td>
-                          <td>{VALIDATION_REASONS[code] ?? 'Ett skäl som den här sidan inte känner igen. Se serverloggen.'}</td>
-                          <td className="num">{count}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {!summary.passed && (
-                <div className="notice warning" style={{ marginTop: '1rem' }}>
-                  <strong>Vad du kan göra.</strong> Ingenting har flyttats eller raderats, och kopplingen
-                  mellan väljare och röst är kvar så att avvikelserna går att utreda. Läggningen är ändå
-                  stängd, så fasen står i CLOSED. När avvikelsen är utredd kör du valideringen igen med
-                  knappen ovan. Rapporten visar bara antal och skäl, aldrig vem som lagt ett kuvert.
-                </div>
-              )}
-            </>
+          {validationFailed && summary && (
+            <p>
+              Granskade kuvert: <strong>{summary.votes}</strong>. Godkända:{' '}
+              <strong>{Math.max(summary.votes - summary.rejected, 0)}</strong>. Underkända:{' '}
+              <strong>{summary.rejected}</strong>.
+            </p>
+          )}
+          {verificationFailed && (
+            <p>
+              Valideringen av kuverten passerade, men omverifieringen av valsedlarna före skalningen föll: minst
+              en valsedel verifierar inte. {summary ? 'Granskade kuvert: ' + summary.votes + '.' : ''}
+            </p>
+          )}
+          {summary && Object.keys(summary.byKind).length > 0 && (
+            <div className="admin-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Kod</th>
+                    <th>Förklaring</th>
+                    <th className="num">Antal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(summary.byKind).map(([code, count]) => (
+                    <tr key={code}>
+                      <td className="mono">{code}</td>
+                      <td>{VALIDATION_REASONS[code] ?? 'Ett skäl som den här sidan inte känner igen. Se serverloggen.'}</td>
+                      <td className="num">{count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
           {view.ciphertextHash && (
             <p className="small">
               Första kuvertet som inte verifierar, med chifferhash: <Mono>{view.ciphertextHash}</Mono>
             </p>
+          )}
+          {(validationFailed || verificationFailed) && (
+            <div className="notice warning" style={{ marginTop: '1rem' }}>
+              <strong>Vad du kan göra.</strong> Utred avvikelsen. Rapporten visar bara antal och skäl, aldrig vem
+              som lagt ett kuvert. Fasen enligt servern är <strong>{phase}</strong>. Står den i CLOSED eller
+              VALIDATED kan du köra stängningen igen med knappen ovan när avvikelsen är utredd.
+            </div>
           )}
         </>
       )}
@@ -173,11 +184,6 @@ function CloseReport({ view }: { view: CloseView }) {
           <h3>Raderingen av kopplingen</h3>
           <p>
             Flyttade kuvert: <strong>{view.moved}</strong>. Raderade ur röstlängden: <strong>{view.cleared}</strong>.
-          </p>
-          <p className="small">
-            Kuvertrot: <Mono>{view.envelopeRoot ?? ''}</Mono>
-            <br />
-            Urnrot: <Mono>{view.urnRoot ?? ''}</Mono>
           </p>
           {(view.residueRemoved?.length ?? 0) > 0 && (
             <p className="small">
@@ -193,10 +199,6 @@ function CloseReport({ view }: { view: CloseView }) {
           LARM: {view.urnRowsReplaced!.length} rader i röstdatabasen stod på ett validerat kuverts plats men
           med ett annat innehåll. Det tyder på att någon har skrivit i röstdatabasen förbi stängningen.
         </div>
-      )}
-
-      {!closed && !summary && view.status === 'aborted' && (
-        <p className="muted small">Fasen nedan är den servern står i nu, och den enda du kan lita på.</p>
       )}
     </div>
   )

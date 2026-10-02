@@ -9,6 +9,10 @@ import { runFinalCheck, type FinalCheckReport } from './final-check.usecase'
  * begäran ska inte vänta så länge. Startrutten svarar därför direkt, kontrollen
  * körs i processen, och sidan läser resultatet med en statusrutt.
  *
+ * KONTROLLEN KÖR I SERVERNS HUVUDTRÅD. Varje steg om 0,4 s blockerar andra
+ * förfrågningar medan det pågår, så ett stort val gör servern trög under hela
+ * kontrollen. En worker bygger vi inte nu.
+ *
  * RESULTATET LIGGER BARA I MINNET, PER OMRÖSTNING. Startas servern om, eller
  * körs appen i flera processer, går resultatet förlorat eller ligger i en annan
  * process, och statusrutten svarar då `none`. Kontrollen får då köras om. Ett
@@ -33,14 +37,25 @@ export type FinalCheckJob =
 const store = globalThis as typeof globalThis & { __finalCheckJobs?: Map<string, FinalCheckJob> }
 const jobs: Map<string, FinalCheckJob> = (store.__finalCheckJobs ??= new Map())
 
+/**
+ * Omröstningar vars kontroll kör just nu, också efter att resultatet glömts. En kontroll
+ * går inte att avbryta, så en återställning som glömmer jobbet lämnar det körande kvar.
+ * Tills det är klart hindras en ny start, så att två kontroller aldrig kör samtidigt.
+ */
+const storeActive = globalThis as typeof globalThis & { __finalCheckActive?: Set<string> }
+const active: Set<string> = (storeActive.__finalCheckActive ??= new Set())
+
 /** Startar kontrollen, om ingen redan körs för omröstningen. Svarar direkt. */
 export function startFinalCheck(electionId: string): 'started' | 'already_running' {
-  if (jobs.get(electionId)?.status === 'running') return 'already_running'
+  if (active.has(electionId) || jobs.get(electionId)?.status === 'running') return 'already_running'
 
   const running: FinalCheckJob = { status: 'running', startedAt: new Date().toISOString() }
   jobs.set(electionId, running)
+  active.add(electionId)
 
-  void runFinalCheck(electionId).then(
+  void runFinalCheck(electionId)
+    .finally(() => active.delete(electionId))
+    .then(
     (report) => {
       // Ett jobb som glömts under tiden, till exempel av en återställning, skrivs inte tillbaka.
       if (jobs.get(electionId) !== running) return
