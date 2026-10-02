@@ -913,7 +913,8 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   - Ett borttaget kuvert syns, eftersom markeringen då saknas.
   - Ett återlagt äldre kuvert syns inte. Det ger en markering som vilket annat.
   - Den som kan skriva i röstlängden kan skriva eller radera en markering.
-  - Ingen sida visar markeringen än (uppgift 13).
+  - Markeringen visas på `/verify` för väljaren själv, som "Du har röstat" eller "Du har inte
+    röstat", utan tid (uppgift 13).
 - **Ingen spärrkontroll (OCSP).** Ett spärrat BankID-certifikat godkänns så länge det
   gäller i tid. Åtgärdas genom att OCSP-svaret som BankID skickar med prövas, både när
   rösten läggs och i valideringen.
