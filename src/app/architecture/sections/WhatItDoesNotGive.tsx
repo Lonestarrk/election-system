@@ -36,8 +36,10 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
           röstlängden, och räkningen och slutkontrollen räknar om den ur urnan. Den som bara kan
           skriva i votes_db och byter ut ett chiffer, eller lägger till, tar bort eller flyttar en
           rad, efter stängningen kan därför stoppa räkningen, men inte få en annan summa öppnad.
-          Den som kan skriva i båda databaserna kan skriva om roten också. En rad som redan ligger
-          på ett äkta
+          Den som kan skriva i båda databaserna behöver bara skriva om roten i omröstningens rad i
+          röstlängden, så öppnar dekrypteringen den urna hen har lagt dit. Slutkontrollen märker det
+          efteråt, om inte revisionskedjan också räknas om. När uppgift 13 publicerar roten kan den
+          som sparar den vid stängningen jämföra efteråt. En rad som redan ligger på ett äkta
           kuverts plats när stängningen börjar ersätts med det validerade kuvertet, och stängningen
           larmar. Ett byte efter stängningens städning och före dess återläsning stoppar
           stängningen, och omkörningen ersätter raden. Ett byte efter återläsningen och före COMMIT

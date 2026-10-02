@@ -576,6 +576,11 @@ function phaseCheck(phase: string): CheckResult {
  * ett kuvert som ändå ligger kvar, eller en kuvertrot som saknas, är en
  * avvikelse. Fram till uppgift 12b avgjorde `linkClearedAt` det. Nu gör fasen
  * det, som i resten av filen.
+ *
+ * VAD DEN INTE SKYDDAR MOT (fixrunda 1, granskningens Mindre 5). Kontrollen
+ * läser röstlängden som den är nu. Säkerhetskopior, läsreplikor och WAL-loggen
+ * omfattas inte av raderingen, och med riktig BankID finns kopplingen kvar i
+ * BankID-ordern (spec 10). Frågan säger därför "ur röstlängden".
  */
 function linkClearedCheck(
   phase: string,
@@ -584,7 +589,7 @@ function linkClearedCheck(
   envelopeRoot: string | null,
 ): CheckResult {
   const id = 'link_cleared'
-  const question = 'Är kopplingen mellan väljare och röst raderad, och kuvertroten skriven?'
+  const question = 'Är kopplingen mellan väljare och röst raderad ur röstlängden, och kuvertroten skriven?'
 
   if (linked) {
     const lying = remaining > 0 ? `${remaining} kuvert ligger i röstlängden, och fasen står i ${phase}.` : `Fasen står i ${phase}.`
@@ -610,7 +615,9 @@ function linkClearedCheck(
     id,
     question,
     { critical, pending: [] },
-    'Inga kuvert ligger kvar i röstlängden, och kuvertroten är skriven.',
+    'Inga kuvert ligger kvar i röstlängden, och kuvertroten är skriven. Kontrollen läser röstlängden som ' +
+      'den är nu. Säkerhetskopior, läsreplikor och WAL-loggen omfattas inte av raderingen, och med riktig ' +
+      'BankID finns kopplingen kvar i BankID-ordern (spec 10).',
   )
 }
 
@@ -884,7 +891,11 @@ function partialHolds(
  * en avvikelse. Före räkningen är det en förutsättning som inte är uppfylld.
  *
  * VAD DEN INTE SÄGER. Bidragen hör till summan av det som ligger i urnan. Att
- * urnan är de flyttade kuverten prövar urnroten.
+ * urnan är de flyttade kuverten prövar urnroten. Och de publika andelarna ligger
+ * i röstdatabasen, bredvid bidragen (fixrunda 1, granskningens Mindre 5). Den som
+ * byter ut en andel och ett bidrag tillsammans, med ett bevis för den nya
+ * andelen, får kontrollen att passera. Bara omräkningen i `tallyCheck` fångar
+ * det, eftersom det nya värdet inte kombineras till räkneverken.
  */
 function partialsCheck(
   electionId: string,
@@ -957,7 +968,9 @@ function partialsCheck(
     `Varje valsedel har bidrag från minst ${TRUSTEE_THRESHOLD} förtroendepersoner, och vart och ett av de ` +
       `${verified} värdena håller mot förtroendepersonens publika andel och summan av valsedelns rader i ` +
       'urnan, bundet till valet, valsedeln och alternativet. Kontrollen visar att bidragen hör till summan ' +
-      'av det som ligger i urnan, inte att urnan är de flyttade kuverten: det prövar urnroten.',
+      'av det som ligger i urnan, inte att urnan är de flyttade kuverten: det prövar urnroten. De publika ' +
+      'andelarna ligger i röstdatabasen, så en andel och ett bidrag som byts ut tillsammans passerar ' +
+      'kontrollen. Bara omräkningen av räkneverken fångar det.',
   )
 }
 
@@ -1076,13 +1089,24 @@ function tallyCheck(
  * och markeringen går inte att lämna via applikationen. Fram till uppgiften
  * fastställde `certifyElection` ändå ett markerat val, om kontrollerna senare
  * gick igenom, och markeringen skrevs över. Nu är markeringen en kontroll för
- * sig, så att den syns i rapporten och stoppar fastställandet. Den som kan
- * skriva i röstdatabasen kan ta bort markeringen, men inte få en annan kontroll
- * att passera med den.
+ * sig, så att den syns i rapporten och stoppar fastställandet.
+ *
+ * VAD DEN PRÖVAR, OCH VAD DEN INTE PRÖVAR (fixrunda 1, granskningens Mindre 2).
+ * Kontrollen läser markeringen i röstdatabasen, och inget annat. Den som kan
+ * skriva där kan ta bort markeringen, och då passerar kontrollen, men ingen
+ * annan kontroll passerar för det. Den gamla texten sa att ingen tidigare
+ * slutkontroll hade markerat omröstningen, och det kan kontrollen inte veta.
+ * När fastställandet markerar en omröstning skriver det sedan fixrundan också
+ * en post i revisionskedjan i röstlängden, så att en borttagen markering syns
+ * där, se `markUnderReview`.
  */
 function underReviewCheck(underReview: boolean): CheckResult {
   const id = 'not_under_review'
-  const question = 'Är omröstningen fri från en markering om avvikelse från en tidigare slutkontroll?'
+  const question = 'Saknar röstdatabasen en markering om avvikelse från en tidigare slutkontroll?'
+  const stored =
+    'Markeringen står i röstdatabasen, och den som kan skriva där kan ta bort den. När en slutkontroll ' +
+    'markerar en omröstning skrivs också en post i revisionskedjan i röstlängden, så att en borttagen ' +
+    'markering syns där. Posten säger inte vilken omröstning det gällde.'
 
   return underReview
     ? {
@@ -1091,16 +1115,16 @@ function underReviewCheck(underReview: boolean): CheckResult {
         severity: 'CRITICAL',
         passed: false,
         detail:
-          'En tidigare slutkontroll fann en avvikelse och markerade omröstningen för granskning. Resultatet ' +
-          'fastställs inte så länge markeringen står kvar, och den går bara att ta bort utanför appen, när ' +
-          'avvikelsen är utredd.',
+          'Röstdatabasen bär markeringen UNDER_REVIEW: en tidigare slutkontroll fann en avvikelse och ' +
+          'markerade omröstningen för granskning. Resultatet fastställs inte så länge markeringen står kvar, ' +
+          `och den går bara att ta bort utanför appen, när avvikelsen är utredd. ${stored}`,
       }
     : {
         id,
         question,
         severity: 'CRITICAL',
         passed: true,
-        detail: 'Ingen tidigare slutkontroll har markerat omröstningen som avvikande.',
+        detail: `Röstdatabasen bär ingen markering om avvikelse. ${stored}`,
       }
 }
 
@@ -1153,46 +1177,109 @@ export async function certifyElection(electionId: string): Promise<CertifyOutcom
 
   if (report.phase === 'CERTIFIED') return { status: 'already_certified', report }
 
-  if (!report.canCertify) {
-    /**
-     * BARA EN VERKLIG AVVIKELSE MARKERAR OMRÖSTNINGEN.
-     *
-     * Har en KRITISK kontroll fallerat stämmer inte underlaget, och det ska
-     * synas som avvikande för alla som tittar efteråt — inte bara för den
-     * administratör som råkade trycka på knappen.
-     *
-     * Är det däremot bara en FÖRUTSÄTTNING som inte är uppfylld — omröstningen
-     * pågår, är inte skalad eller inte räknad — avvisas begäran utan att något
-     * markeras. En administratör som trycker för tidigt ska inte kunna göra
-     * valet omöjligt att fastställa (ruling 42).
-     */
-    if (report.anomalous) {
-      await votesDb.election.updateMany({ where: { id: electionId }, data: { status: 'UNDER_REVIEW' } })
-      return { status: 'blocked', report: { ...report, status: 'UNDER_REVIEW' } }
-    }
+  if (!report.canCertify) return refuse(electionId, report)
 
-    return { status: 'not_ready', report }
+  if (await writeCertified(electionId)) {
+    return { status: 'certified', report: { ...report, phase: 'CERTIFIED', status: 'CERTIFIED' } }
   }
-
-  const certified = await votersDb.$transaction(async (tx) => {
-    const cas = await tx.election.updateMany({
-      where: { id: electionId, phase: 'TALLIED', envelopeRoot: { not: null }, urnRoot: { not: null } },
-      data: { phase: 'CERTIFIED' },
-    })
-    if (cas.count !== 1) return false
-    await recordAuditEvent(AUDIT_EVENTS.ELECTION_CERTIFIED, tx)
-    return true
-  })
-
-  if (certified) return { status: 'certified', report: { ...report, phase: 'CERTIFIED', status: 'CERTIFIED' } }
 
   /**
    * Fasen hade ändrats när jämför-och-sätt kom fram. En annan anropare kan ha
    * fastställt valet, eller så har fasen skrivits förbi koden. Kontrollen körs
-   * om, så att svaret säger vad som gäller nu.
+   * om, och svaret följer den nya rapporten som i huvudvägen: en avvikelse
+   * markerar valet (fixrunda 1, granskningens Mindre 3 och prob P6a). Förut
+   * svarade grenen `not_ready` också på en avvikelse, utan att markera något.
    */
   const now = await runFinalCheck(electionId)
   if (!now) return { status: 'unknown_election' }
   if (now.phase === 'CERTIFIED') return { status: 'already_certified', report: now }
-  return { status: 'not_ready', report: now }
+  return refuse(electionId, now)
+}
+
+/**
+ * Ett val som inte kan fastställas.
+ *
+ * BARA EN VERKLIG AVVIKELSE MARKERAR OMRÖSTNINGEN.
+ *
+ * Har en KRITISK kontroll fallerat stämmer inte underlaget, och det ska synas
+ * som avvikande för alla som tittar efteråt — inte bara för den administratör
+ * som råkade trycka på knappen.
+ *
+ * Är det däremot bara en FÖRUTSÄTTNING som inte är uppfylld — omröstningen
+ * pågår, är inte skalad eller inte räknad — avvisas begäran utan att något
+ * markeras. En administratör som trycker för tidigt ska inte kunna göra valet
+ * omöjligt att fastställa (ruling 42).
+ */
+async function refuse(electionId: string, report: FinalCheckReport): Promise<CertifyOutcome> {
+  if (report.anomalous) {
+    await markUnderReview(electionId)
+    return { status: 'blocked', report: { ...report, status: 'UNDER_REVIEW' } }
+  }
+  return { status: 'not_ready', report }
+}
+
+/**
+ * Markerar omröstningen som avvikande, och skriver en post om det i
+ * revisionskedjan (fixrunda 1, granskningens Mindre 2).
+ *
+ * Markeringen står i röstdatabasen, där den som kan skriva kan ta bort den
+ * utan att något märks. Posten ELECTION_UNDER_REVIEW står i röstlängdens kedja,
+ * så att en borttagen markering syns där. Den skrivs bara när markeringen
+ * sätts, inte vid varje nytt försök att fastställa ett redan markerat val.
+ * Posten har inget omröstnings-id, som ingen post i kedjan har, så den säger
+ * att en omröstning markerades och vilken timme, inte vilken.
+ *
+ * Markeringen skrivs först och posten sedan. Dör processen mellan dem finns
+ * markeringen utan post, och ett nytt försök skriver ingen, eftersom valet redan
+ * är markerat.
+ */
+async function markUnderReview(electionId: string): Promise<void> {
+  const marked = await votesDb.election.updateMany({
+    where: { id: electionId, status: { not: 'UNDER_REVIEW' } },
+    data: { status: 'UNDER_REVIEW' },
+  })
+  if (marked.count === 1) await recordAuditEvent(AUDIT_EVENTS.ELECTION_UNDER_REVIEW)
+}
+
+/**
+ * CERTIFIED MED JÄMFÖR-OCH-SÄTT, I SAMMA TRANSAKTION SOM POSTEN.
+ *
+ * Svarar sant om fasen skrevs, och falskt om den inte stod i TALLIED med båda
+ * rötterna skrivna.
+ *
+ * INGEN ANNAN POST KAN TA LÖPNUMRET (fixrunda 1, granskningens Mindre 4 och
+ * prob P4c). Posten tar nästa löpnummer i kedjan. Skrevs en annan post, till
+ * exempel om en inloggning, mellan att transaktionen läste det senaste numret
+ * och skrev sitt, avvisade det unika indexet posten med P2002, PostgreSQL
+ * avbröt transaktionen, och nästa läsning svarade 25P02. Fastställandet kastade,
+ * och rutten svarade 500 fast ingenting var fel. Skrivningen var ändå odelbar.
+ *
+ * Därför låses tabellen audit_event mot andra skrivare, efter jämför-och-sätt
+ * och före posten, till transaktionens slut. Låset väntar in en post som redan
+ * skrivs, och håller nästa post borta tills fasen och posten är skrivna. Andra
+ * läsare påverkas inte. Det täcker varje skrivare, också posterna om
+ * inloggning, som räkningens lås för revisionsposter inte gör. Att bara försöka
+ * igen räckte inte: under granskarens ström av poster krockade fem försök av
+ * fem. Låset tas efter jämför-och-sätt, i samma ordning som skalningen och
+ * räkningen tar omröstningens rad och sedan skriver sin post.
+ *
+ * READ COMMITTED, UTTRYCKLIGEN. Läsningen av det senaste numret görs efter att
+ * låset tagits och ska se en post som gjorde COMMIT medan låset väntade. Under
+ * REPEATABLE READ hade den sett kedjan som den stod vid transaktionens första
+ * sats, och krockat ändå.
+ */
+async function writeCertified(electionId: string): Promise<boolean> {
+  return votersDb.$transaction(
+    async (tx) => {
+      const cas = await tx.election.updateMany({
+        where: { id: electionId, phase: 'TALLIED', envelopeRoot: { not: null }, urnRoot: { not: null } },
+        data: { phase: 'CERTIFIED' },
+      })
+      if (cas.count !== 1) return false
+      await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`
+      await recordAuditEvent(AUDIT_EVENTS.ELECTION_CERTIFIED, tx)
+      return true
+    },
+    { isolationLevel: 'ReadCommitted' },
+  )
 }

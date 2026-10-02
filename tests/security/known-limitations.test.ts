@@ -66,7 +66,13 @@ describe('kända begränsningar', () => {
             'Har begränsningen lösts? Ta då bort posten ur src/lib/known-limitations.ts.',
         ).toBe(true)
 
-        const content = readFileSync(path, 'utf8')
+        /**
+         * Radslut normaliseras till \n, som i arkitektursidans test (fixrunda 1
+         * av uppgift 12b). En markör över flera rader skrivs med \n, och en fil
+         * som git har checkat ut på Windows har CRLF. Utan normaliseringen hade
+         * markören hållit eller fallerat beroende på vem som senast skrev filen.
+         */
+        const content = readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
 
         expect(
           content.includes(marker.contains),

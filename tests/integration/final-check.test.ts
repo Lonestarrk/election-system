@@ -4,7 +4,7 @@ import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
 import { closeElection } from '@/orchestration/close-election.usecase'
-import { completeTally, submitPartialDecryption } from '@/orchestration/tally.usecase'
+import { aggregate, completeTally, submitPartialDecryption } from '@/orchestration/tally.usecase'
 import {
   certifyElection,
   runFinalCheck,
@@ -17,7 +17,8 @@ import { encrypt, multiply } from '@/lib/crypto/elgamal'
 import { Q, randomScalar } from '@/lib/crypto/group'
 import { PROOF_FORMAT, proveSumIsOne, proveZeroOrOne } from '@/lib/crypto/proofs'
 // Serverns ingång registrerar OpenSSL, så att krypteringen i testet går fort.
-import '@/lib/crypto/server'
+import { partiallyDecrypt, publicShare } from '@/lib/crypto/server'
+import { serialisePartialDecryptionProof } from '@/lib/crypto/threshold'
 import {
   hashCiphertext,
   serialiseEqualityProof,
@@ -26,8 +27,9 @@ import {
 } from '@/lib/crypto/verify-ballot'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { resetRateLimits } from '@/lib/rate-limit'
+import { truncateToHour } from '@/lib/time'
 import { urnRootOf } from '@/lib/urn-root'
-import { AUDIT_EVENTS } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, auditEntryHash, recordAuditEvent, verifyAuditChain } from '@/modules/eligibility/audit.service'
 import {
   MockBankIdService,
   selectDemoIdentity,
@@ -63,6 +65,8 @@ import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from 
 const auditControl = vi.hoisted(() => ({
   failOn: null as null | string,
   afterChain: null as null | (() => Promise<void>),
+  /** Varje revisionspost som skrivs eller försöks, i ordning, för testet av omförsöken. */
+  calls: [] as string[],
 }))
 
 vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
@@ -70,6 +74,7 @@ vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
   return {
     ...actual,
     recordAuditEvent: async (...args: Parameters<typeof actual.recordAuditEvent>) => {
+      auditControl.calls.push(args[0])
       if (auditControl.failOn !== null && args[0] === auditControl.failOn) {
         throw new Error(`Testet: revisionsposten ${args[0]} gick inte att skriva.`)
       }
@@ -200,6 +205,7 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
   beforeEach(async () => {
     auditControl.failOn = null
     auditControl.afterChain = null
+    auditControl.calls = []
     resetRateLimits()
     await resetElectionData()
 
@@ -345,6 +351,10 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
     return (await votesDb.election.findUniqueOrThrow({ where: { id }, select: { status: true } })).status
   }
 
+  async function postsOf(eventType: string): Promise<number> {
+    return votersDb.auditEvent.count({ where: { eventType } })
+  }
+
   async function report(): Promise<FinalCheckReport> {
     const result = await runFinalCheck(electionId)
     if (!result) throw new Error('Slutkontrollen hittade inte omröstningen.')
@@ -410,6 +420,11 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
     const stored = await votersDb.election.findUniqueOrThrow({ where: { id: electionId }, select: { urnRoot: true } })
     expect(stored.urnRoot).toMatch(/^[0-9a-f]{64}$/)
     expect(result.urnRoot).toBe(stored.urnRoot)
+
+    // Texterna säger vad kontrollerna inte skyddar mot (fixrunda 1, granskningens Mindre 2 och 5).
+    expect(checkOf(result, 'link_cleared').detail).toMatch(/Säkerhetskopior, läsreplikor och WAL-loggen/)
+    expect(checkOf(result, 'partial_decryptions_verify').detail).toMatch(/publika andelarna ligger i röstdatabasen/)
+    expect(checkOf(result, 'not_under_review').detail).toMatch(/^Röstdatabasen bär ingen markering om avvikelse/)
   })
 
   it('ingen kontroll läser det gamla flödet', async () => {
@@ -515,6 +530,22 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
     expect(await certifyElection(electionId)).toMatchObject({ status: 'blocked' })
     expect(await statusOf(electionId)).toBe('UNDER_REVIEW')
     expect(await phaseOf(electionId)).toBe('TALLIED')
+
+    /**
+     * Markeringen får en post i revisionskedjan, en gång (fixrunda 1,
+     * granskningens Mindre 2). Ett nytt försök på ett markerat val skriver
+     * ingen ny post. Tar den som kan skriva i röstdatabasen bort markeringen
+     * passerar kontrollen, men posten står kvar i röstlängdens kedja, som är
+     * obruten, så att borttagningen syns där.
+     */
+    expect(await postsOf(AUDIT_EVENTS.ELECTION_UNDER_REVIEW)).toBe(1)
+    expect(await certifyElection(electionId)).toMatchObject({ status: 'blocked' })
+    expect(await postsOf(AUDIT_EVENTS.ELECTION_UNDER_REVIEW)).toBe(1)
+
+    await votesDb.election.update({ where: { id: electionId }, data: { status: 'OPEN' } })
+    expect(checkOf(await report(), 'not_under_review').passed).toBe(true)
+    expect(await postsOf(AUDIT_EVENTS.ELECTION_UNDER_REVIEW)).toBe(1)
+    expect(await verifyAuditChain()).toMatchObject({ intact: true })
   })
 
   it('en borttagen kuvertrot fångas bara av kopplingens kontroll', async () => {
@@ -630,6 +661,36 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
     const result = await report()
     expect(failed(result)).toEqual(['partial_decryptions_verify'])
     expect(checkOf(result, 'partial_decryptions_verify').severity).toBe('CRITICAL')
+  })
+
+  it('en publik andel och ett bidrag som byts ut tillsammans passerar bidragens kontroll, och bara omräkningen fångar dem', async () => {
+    /**
+     * Texten i partial_decryptions_verify säger det (fixrunda 1, granskningens
+     * Mindre 5). Den som kan skriva i röstdatabasen väljer en ny andel åt
+     * förtroendeperson 2, skriver dess publika andel och räknar nya bidrag, med
+     * bevis som håller för den nya andelen. Bidragens kontroll passerar, men
+     * de nya värdena kombineras inte till de sparade räkneverken.
+     */
+    await tallied()
+    const share = { index: 2, value: randomScalar() }
+    await votesDb.trusteeShare.update({
+      where: { electionId_trusteeIndex: { electionId, trusteeIndex: 2 } },
+      data: { publicShare: publicShare(share).toString() },
+    })
+    for (const ballot of [counted.first, counted.second]) {
+      for (const [optionIndex, sum] of (await aggregate(ballot.id)).entries()) {
+        const partial = partiallyDecrypt(share, sum, { electionId, ballotId: ballot.id, optionIndex })
+        const updated = await votesDb.partialDecryption.updateMany({
+          where: { ballotId: ballot.id, trusteeIndex: 2, optionIndex },
+          data: { value: partial.value.toString(), proof: serialisePartialDecryptionProof(partial.proof) },
+        })
+        expect(updated.count).toBe(1)
+      }
+    }
+
+    const result = await report()
+    expect(failed(result)).toEqual(['tally_matches'])
+    expect(checkOf(result, 'partial_decryptions_verify').passed).toBe(true)
   })
 
   it('ett räknat val vars bidrag tagits bort passerar varken bidragens eller räkningens kontroll', async () => {
@@ -799,11 +860,14 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
     const result = await report()
     expect(failed(result)).toEqual(['not_under_review'])
     expect(checkOf(result, 'not_under_review').severity).toBe('CRITICAL')
+    expect(checkOf(result, 'not_under_review').detail).toMatch(/^Röstdatabasen bär markeringen UNDER_REVIEW/)
     expect(result.status).toBe('UNDER_REVIEW')
 
     expect(await certifyElection(electionId)).toMatchObject({ status: 'blocked' })
     expect(await phaseOf(electionId)).toBe('TALLIED')
     expect(await statusOf(electionId)).toBe('UNDER_REVIEW')
+    // Markeringen sattes inte av fastställandet, så ingen post skrevs.
+    expect(await postsOf(AUDIT_EVENTS.ELECTION_UNDER_REVIEW)).toBe(0)
   })
 
   // -------------------------------------------------------------------------
@@ -852,6 +916,143 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
 
       expect(await certifyElection(electionId)).toMatchObject({ status: 'certified' })
       expect(await certifiedPosts()).toBe(1)
+    })
+
+    it('en avvikelse som uppstår mellan kontrollen och jämför-och-sätt markerar valet och svarar blocked (granskningens P6a)', async () => {
+      /**
+       * Fixrunda 1, granskningens Mindre 3. En fas utanför specen skrivs efter
+       * kontrollen och före jämför-och-sätt. Jämför-och-sätt missar, och den
+       * omkörda kontrollen hittar en avvikelse. Förut svarade grenen
+       * `not_ready`, med `anomalous: true`, och markerade ingenting.
+       */
+      await tallied()
+      auditControl.afterChain = async () => {
+        await votersDb.election.update({ where: { id: electionId }, data: { phase: 'RÄKNAD' } })
+      }
+
+      const outcome = await certifyElection(electionId)
+      expect(outcome).toMatchObject({ status: 'blocked', report: { anomalous: true, status: 'UNDER_REVIEW' } })
+      expect(await statusOf(electionId)).toBe('UNDER_REVIEW')
+      expect(await phaseOf(electionId)).toBe('RÄKNAD')
+      expect(await certifiedPosts()).toBe(0)
+      expect(await postsOf(AUDIT_EVENTS.ELECTION_UNDER_REVIEW)).toBe(1)
+    })
+
+    /** Släpper den andra skrivaren när en sats i testdatabasen väntar på ett lås, eller efter fem sekunder. */
+    async function releaseWhenWaiting(release: () => void): Promise<void> {
+      for (let tries = 0; tries < 200; tries += 1) {
+        const [row] = await votersDb.$queryRaw<Array<{ waiting: number }>>`
+          SELECT count(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'`
+        if ((row?.waiting ?? 0) > 0) break
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      release()
+    }
+
+    it('en post som en annan skrivare håller på att skriva väntas in och tar inte fastställandets löpnummer (granskningens P4c)', async () => {
+      /**
+       * Fixrunda 1, granskningens Mindre 4. Proben skrev en ström av andra
+       * poster medan valet fastställdes, och fastställandet kastade redan första
+       * gången: en annan post tog löpnumret, det unika indexet avvisade
+       * fastställandets post med P2002, och transaktionens nästa läsning svarade
+       * 25P02. Rutten svarade 500.
+       *
+       * Testet framkallar samma läge en gång, utan att hänga på tidtagning. En
+       * annan skrivare har tagit nästa löpnummer i en transaktion som står öppen,
+       * och gör COMMIT först när fastställandets transaktion väntar på ett lås.
+       * Fastställandet låser revisionstabellen innan det läser det senaste
+       * numret, så låset väntar in den andra posten, och fastställandets post tar
+       * numret efter. Utan låset hade posten väntat på samma nummer och fått
+       * P2002, som i proben.
+       */
+      await tallied()
+
+      let release!: () => void
+      const released = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let taken!: () => void
+      const numberTaken = new Promise<void>((resolve) => {
+        taken = resolve
+      })
+
+      const other = votersDb.$transaction(
+        async (tx) => {
+          const previous = await tx.auditEvent.findFirstOrThrow({
+            orderBy: { sequence: 'desc' },
+            select: { sequence: true, entryHash: true },
+          })
+          const sequence = previous.sequence + 1
+          const eventType = AUDIT_EVENTS.AUTH_STARTED
+          const occurredAt = truncateToHour(new Date())
+          const previousHash = previous.entryHash
+          await tx.auditEvent.create({
+            data: {
+              eventType,
+              occurredAt,
+              sequence,
+              previousHash,
+              entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash }),
+            },
+          })
+          taken()
+          await released
+        },
+        { timeout: 60_000 },
+      )
+      await numberTaken
+
+      // Slutkontrollens sista läsning. Därefter skriver fastställandet.
+      auditControl.afterChain = async () => {
+        void releaseWhenWaiting(release)
+      }
+
+      const outcome = await certifyElection(electionId)
+      await other
+
+      expect(outcome).toMatchObject({ status: 'certified' })
+      // Ett enda försök, utan krock, och posten står efter den andra skrivarens.
+      expect(auditControl.calls.filter((eventType) => eventType === AUDIT_EVENTS.ELECTION_CERTIFIED)).toHaveLength(1)
+      expect(await phaseOf(electionId)).toBe('CERTIFIED')
+      expect(await certifiedPosts()).toBe(1)
+      const [last, beforeLast] = await votersDb.auditEvent.findMany({
+        orderBy: { sequence: 'desc' },
+        take: 2,
+        select: { eventType: true },
+      })
+      expect([beforeLast?.eventType, last?.eventType]).toEqual([AUDIT_EVENTS.AUTH_STARTED, AUDIT_EVENTS.ELECTION_CERTIFIED])
+      expect(await verifyAuditChain()).toMatchObject({ intact: true })
+    })
+
+    it('fastställandet under en ström av andra revisionsposter fastställer, med en post och kedjan hel (granskningens P4c)', async () => {
+      // Probens form: en annan skrivare lägger post efter post så länge
+      // fastställandet pågår. Förut kastade fastställandet, också med fem
+      // omförsök. Med låset väntar strömmen i stället medan posten skrivs.
+      await tallied()
+      let stop = false
+      const flood = (async () => {
+        let written = 0
+        while (!stop) {
+          await recordAuditEvent(AUDIT_EVENTS.AUTH_STARTED)
+          written += 1
+        }
+        return written
+      })()
+
+      let outcome: Awaited<ReturnType<typeof certifyElection>>
+      try {
+        outcome = await certifyElection(electionId)
+      } finally {
+        stop = true
+      }
+      const written = await flood
+
+      expect(written).toBeGreaterThan(0)
+      expect(outcome).toMatchObject({ status: 'certified' })
+      expect(await phaseOf(electionId)).toBe('CERTIFIED')
+      expect(await certifiedPosts()).toBe(1)
+      expect(await verifyAuditChain()).toMatchObject({ intact: true })
     })
 
     it('fasen skrivs med jämför-och-sätt: en fas som ändrats efter kontrollen skrivs inte över', async () => {

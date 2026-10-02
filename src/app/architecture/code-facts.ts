@@ -841,6 +841,10 @@ export const CURRENTLY = {
    * prövar avgränsas till den som bara kan skriva i röstdatabasen: den som kan
    * skriva i båda kan skriva om roten, och det står i posten
    * votes-db-writer-can-swap-ciphertext.
+   *
+   * RÄTTAD I FIXRUNDA 1 AV 12b (granskningens Mindre 1). Texten sa "roten som
+   * stängningen skrev". Spärren jämför med roten som står i omröstningens rad,
+   * och läser inte revisionskedjan, så det är den raden texten nu nämner.
    */
   decryptionGate: {
     text:
@@ -848,8 +852,10 @@ export const CURRENTLY = {
       'STRIPPED, kuvertroten och urnroten skrivna och inget kuvert ligger kvar i pending_vote. Valsedeln ' +
       'ska stå i röstlängdens lista för omröstningen. Urnroten räknas om ur urnan, ur samma läsning som ' +
       'summan, före varje bidrag och före kombinationen, och ingenting dekrypteras när den skiljer sig ' +
-      'från roten som stängningen skrev i röstlängden. Spärren prövas före frasen, så andelen låses inte ' +
-      'upp i en fas där den inte får användas, eller för en urna som inte ger roten i röstlängden.',
+      'från roten i omröstningens rad i röstlängden. Stängningen skriver roten där, men den som kan skriva ' +
+      'i röstlängden kan skriva om raden, och spärren läser inte revisionskedjan. Spärren prövas före ' +
+      'frasen, så andelen låses inte upp i en fas där den inte får användas, eller för en urna som inte ' +
+      'ger roten i omröstningens rad.',
     holdsWhile: DECRYPTION_GATE,
     status: STATUS_DONE,
   },
@@ -1935,7 +1941,10 @@ export const PHASES: PhaseRow[] = [
     today: {
       // Uppgift 12b ersatte "Skrivs aldrig", när fastställandet byggdes om mot
       // kuvertmodellen. Det gamla flödets statusfält i votes_db bär nu bara
-      // markeringen UNDER_REVIEW.
+      // markeringen UNDER_REVIEW. Fixrunda 1 av 12b låser revisionstabellen
+      // mot andra skrivare före posten, så att en samtidig post inte tar
+      // löpnumret, och markerar ett val vars avvikelse uppstår mellan
+      // kontrollen och jämför-och-sätt.
       text:
         'Skrivs av fastställandet, med jämför-och-sätt från TALLIED, i samma transaktion som ' +
         'revisionsposten, och bara när varje kontroll i slutkontrollen har passerat. Ett val som ' +
@@ -1944,12 +1953,13 @@ export const PHASES: PhaseRow[] = [
         {
           file: 'src/orchestration/final-check.usecase.ts',
           contains: [
-            '    const cas = await tx.election.updateMany({',
-            "      where: { id: electionId, phase: 'TALLIED', envelopeRoot: { not: null }, urnRoot: { not: null } },",
-            "      data: { phase: 'CERTIFIED' },",
-            '    })',
-            '    if (cas.count !== 1) return false',
-            '    await recordAuditEvent(AUDIT_EVENTS.ELECTION_CERTIFIED, tx)',
+            '      const cas = await tx.election.updateMany({',
+            "        where: { id: electionId, phase: 'TALLIED', envelopeRoot: { not: null }, urnRoot: { not: null } },",
+            "        data: { phase: 'CERTIFIED' },",
+            '      })',
+            '      if (cas.count !== 1) return false',
+            '      await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`',
+            '      await recordAuditEvent(AUDIT_EVENTS.ELECTION_CERTIFIED, tx)',
           ].join('\n'),
         },
         {
@@ -2191,8 +2201,7 @@ export const OUT_OF_SCOPE: OutOfScopeItem[] = [
  * observatörsrutterna. Fyra är kuvertmodellens egna, i Remaining.tsx. Ingen
  * uppgift i planen prövar spärrfrågan (OCSP) fullt ut — uppgift 17b förseglar
  * bara svaret för en senare uppgift — så `no-revocation-check` är "ingår
- * inte", inte "kommer". Detsamma gäller sedan uppgift 12b
- * `votes-db-writer-can-swap-ciphertext`, se kommentaren vid posten.
+ * inte", inte "kommer".
  */
 export const LIMITATION_STATUS: Record<string, Status> = {
   'receipt-proves-choice': statusPlanned('15'),
@@ -2206,6 +2215,8 @@ export const LIMITATION_STATUS: Record<string, Status> = {
   // 12b bytet efter stängningen för den som bara kan skriva i röstdatabasen:
   // räkningen och slutkontrollen prövar urnroten. Kvar är att den kan stoppa
   // räkningen, och att den som kan skriva i båda databaserna kan skriva om
-  // roten. Ingen uppgift i planen stänger det, så posten är "ingår inte".
-  'votes-db-writer-can-swap-ciphertext': STATUS_OUT_OF_SCOPE,
+  // roten. Uppgift 13 publicerar urnroten (ruling 135), och posten blir Klart i
+  // den del som roten stänger. Posten bär en markör för att roten ännu inte
+  // publiceras.
+  'votes-db-writer-can-swap-ciphertext': statusPlanned('13'),
 }

@@ -232,10 +232,19 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
    * den som kan skriva i båda databaserna, som kan skriva om roten, och
    * fönstren före skalningens COMMIT, som stängningen själv inte ser. Titeln och
    * markörerna följer det.
+   *
+   * RÄTTAD I FIXRUNDA 1 AV 12b (granskningens Mindre 1). Posten sa att den som
+   * kan skriva i båda databaserna också måste räkna om revisionskedjan för att
+   * en annan urna ska räknas. Spärren läser bara roten i omröstningens rad, så
+   * det räcker att skriva om den. Kedjan behövs bara för att komma förbi
+   * slutkontrollen, och då är rösten redan öppnad. Uppgift 13 publicerar
+   * urnroten (ruling 135), och posten har status Kommer (13) tills dess.
    */
   {
     id: 'votes-db-writer-can-swap-ciphertext',
-    title: 'Den som kan skriva i röstdatabasen kan stoppa räkningen, och den som kan skriva i båda kan byta ut ett chiffer',
+    title:
+      'Den som kan skriva i röstdatabasen kan stoppa räkningen, och den som kan skriva i båda kan få en ' +
+      'annan urna räknad',
     why:
       'Underskriften och kedjan skyddar det yttre kuvertet i röstlängden, inte chiffret i ' +
       'röstdatabasen, och kuvertroten går inte att räkna om när signaturerna är raderade. Därför ' +
@@ -245,8 +254,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'gör det igen. Den som bara kan skriva i votes_db och byter ut ett chiffer, eller lägger till, tar ' +
       'bort eller flyttar en rad, efter stängningen får alltså ingen annan summa öppnad, men kan stoppa ' +
       'räkningen: roten stämmer inte, och ingenting dekrypteras. Den som kan skriva i båda databaserna ' +
-      'kan skriva om urnroten och räkna om revisionskedjan, och då räknas den urna hen har lagt dit, ' +
-      'också en där alla rader utom en har känt innehåll. Roten publiceras inte utanför systemet än. Räkningen ' +
+      'behöver bara skriva om urnroten i omröstningens rad i röstlängden. Spärren läser inte ' +
+      'revisionskedjan, så dekrypteringen öppnar då den urna hen har lagt dit, också en där alla rader ' +
+      'utom en har känt innehåll. Slutkontrollen märker det efteråt, eftersom posten LINK_CLEARED bär ' +
+      'roten som stängningen skrev, om inte revisionskedjan också räknas om. Då är rösten redan öppnad. ' +
+      'Roten publiceras inte utanför systemet än. Uppgift 13 ska publicera den, så att den som sparar ' +
+      'den vid stängningen kan jämföra efteråt. Räkningen ' +
       'prövar inte rösternas bevis igen, det gör slutkontrollen. Före stängningen kan den som skriver ' +
       'i röstdatabasen lägga en rad på ett äkta kuverts plats i urnan, dess id, men med ett annat ' +
       'innehåll, så att infogningen hoppar över det äkta kuvertet. Stängningen tar då bort raden och ' +
@@ -281,11 +294,33 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         file: 'src/orchestration/close-election.usecase.ts',
         contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },",
       },
-      // Räkningen jämför med roten i röstlängden, en kolumn som den som kan
-      // skriva där kan skriva om. Jämförs den en dag med något utanför
-      // systemet ändras raden, och texten ska ses över.
+      // Räkningen jämför med roten i omröstningens rad i röstlängden, en
+      // kolumn som den som kan skriva där kan skriva om, och spärren läser
+      // roten därifrån och inte ur revisionskedjan. Jämförs den en dag med
+      // kedjan eller med något utanför systemet ändras raderna, och texten ska
+      // ses över.
       { file: 'src/orchestration/tally.usecase.ts', contains: 'if (root !== gate.urnRoot) {' },
+      {
+        file: 'src/orchestration/tally.usecase.ts',
+        contains: 'select: { phase: true, envelopeRoot: true, urnRoot: true, ballots: { select: { id: true } } },',
+      },
       { file: 'prisma/voters/schema.prisma', contains: 'urnRoot String? @map("urn_root")' },
+      // Roten publiceras inte utanför systemet än: observatörens svar om
+      // omröstningen bär bara id, namn, sort och tider. Publicerar uppgift 13
+      // urnroten där ändras raderna, och posten ska flyttas till Klart i den
+      // del som roten stänger (ruling 135).
+      {
+        file: 'src/app/api/observer/election/route.ts',
+        contains: [
+          '    election: {',
+          '      id: election.id,',
+          '      name: election.name,',
+          '      kind: election.kind,',
+          '      opensAt: election.opensAt.toISOString(),',
+          '      closesAt: election.closesAt.toISOString(),',
+          '    },',
+        ].join('\n'),
+      },
       // Räkningen läser urnans chiffer men inte bevisen, så den prövar inte
       // rösternas bevis. Läser den bevisen ändras raden, och texten ovan ska
       // ses över.

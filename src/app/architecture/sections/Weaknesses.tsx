@@ -105,7 +105,9 @@ export function Weaknesses({
           Innan summan öppnas räknas fingeravtrycket om ur urnan utan namn, och stämmer det inte
           öppnas ingenting. Samma prövning görs innan resultatet fastställs. Den som bara kan skriva
           i urnan utan namn kan därför stoppa räkningen, men inte ändra den utan att det syns. Den
-          som kan skriva i båda urnorna kan byta ut fingeravtrycket också.{' '}
+          som kan skriva i båda urnorna behöver bara byta ut fingeravtrycket i urnan med namn, så
+          öppnas summan av det hen har lagt dit. Kontrollen innan resultatet fastställs märker det
+          efteråt, om inte också revisionsloggen skrivs om.{' '}
           <Link href={limitationHref(swapCiphertext)}>Mer om urnan utan namn</Link>
         </li>
         <li style={listItemStyle}>

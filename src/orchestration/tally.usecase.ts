@@ -85,11 +85,14 @@ import { votersDb } from '@/modules/eligibility/db'
  * rot, och då dekrypteras ingenting. Bevisen ingår inte i roten, och räkningen
  * läser dem inte. Se `sumOfUrn` och `requireUrnRoot`.
  *
- * VAD SOM INTE PRÖVAS. Räkningen prövar inte varje rösts bevis igen, eftersom
- * stängningen prövade dem före flytten och urnroten binder raderna sedan dess.
- * Slutkontrollen prövar dem. Den som kan skriva i båda databaserna kan skriva
- * om urnroten så att den stämmer med en annan urna, och då räknas den urnan.
- * Se posten `votes-db-writer-can-swap-ciphertext` i src/lib/known-limitations.ts.
+ * VAD SOM INTE PRÖVAS. Räkningen prövar inte varje rösts bevis igen, och läser
+ * dem inte: summan räknas ur chiffren, och urnroten binder chiffren sedan
+ * stängningen, som prövade bevisen före flytten. Slutkontrollen prövar bevisen.
+ * Spärren jämför med roten i omröstningens rad i röstlängden och läser inte
+ * revisionskedjan. Den som kan skriva i båda databaserna behöver därför bara
+ * skriva om raden så att roten stämmer med en annan urna, och då räknas den
+ * urnan (fixrunda 1 av 12b, granskningens Mindre 1). Se posten
+ * `votes-db-writer-can-swap-ciphertext` i src/lib/known-limitations.ts.
  *
  * FRASEN LAGRAS ALDRIG OCH LOGGAS ALDRIG. Den låser upp andelen i minnet, i
  * `submitPartialDecryption`, och ingenting mer. Den upplåsta andelen sparas

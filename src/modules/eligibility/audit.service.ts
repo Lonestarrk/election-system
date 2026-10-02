@@ -125,6 +125,14 @@ export const AUDIT_EVENTS = {
    * den andra.
    */
   ELECTION_CERTIFIED: 'ELECTION_CERTIFIED',
+  /**
+   * En slutkontroll fann en avvikelse, och fastställandet markerade
+   * omröstningen UNDER_REVIEW (fixrunda 1 av uppgift 12b). Markeringen står i
+   * röstdatabasen, där den som kan skriva kan ta bort den. Posten står här, i
+   * röstlängdens kedja, så att en borttagen markering syns. Posten säger inte
+   * vilken omröstning det gällde, som ingen post i kedjan gör.
+   */
+  ELECTION_UNDER_REVIEW: 'ELECTION_UNDER_REVIEW',
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]
