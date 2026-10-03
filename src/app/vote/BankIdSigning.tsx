@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DemoIdentity } from '../_components/BankIdLogin'
+import { useDemoMode } from '../_components/use-demo-mode'
+import { pendingMessage } from '@/lib/bankid-messages'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 
 /**
@@ -134,6 +136,9 @@ export function BankIdSigning({
   const [qrImage, setQrImage] = useState<string | null>(null)
   const [launchUrls, setLaunchUrls] = useState<{ ios: string; other: string } | null>(null)
   const [scanned, setScanned] = useState(false)
+  // Demopanelen bara i demoläget (uppgift 17c), se use-demo-mode.ts.
+  const demo = useDemoMode()
+  const shownDemoIdentities = demo ? demoIdentities : []
 
   const orderRef = useRef<string | null>(null)
   const timers = useRef<Array<ReturnType<typeof setInterval>>>([])
@@ -167,7 +172,7 @@ export function BankIdSigning({
   )
 
   const startPolling = useCallback(
-    (reference: string) => {
+    (reference: string, autoStarted: boolean) => {
       // Rättelse 3: en fråga i taget. Se BankIdLogin för hur felet såg ut.
       let inFlight = false
 
@@ -205,10 +210,14 @@ export function BankIdSigning({
 
         // Rättelse 1: kö är inte fel, och pollningen får inte stoppas.
         if (data.status === 'pending' || data.status === 'queued') {
+          // BankID:s rekommenderade text för hintCode (uppgift 17c). Bara sidan vet om
+          // väljaren startade appen på samma enhet, och då är outstandingTransaction RFA13.
           setMessage(
             scannedRef.current
               ? 'Väntar på din underskrift i BankID-appen …'
-              : String(data.message ?? 'Väntar på BankID …'),
+              : data.status === 'pending' && typeof data.hintCode === 'string'
+                ? pendingMessage(data.hintCode, { autoStarted })
+                : String(data.message ?? 'Väntar på BankID …'),
           )
           return
         }
@@ -324,7 +333,7 @@ export function BankIdSigning({
     setMessage('Väntar på BankID …')
     setPhase(mode)
 
-    startPolling(reference)
+    startPolling(reference, mode === 'same-device')
     if (mode === 'other-device') startQrRefresh(reference)
 
     // Rättelse 2: appen öppnas inte härifrån. Gesten tog slut vid `await`
@@ -435,13 +444,13 @@ export function BankIdSigning({
             {message}
           </div>
 
-          {demoIdentities.length > 0 && !scanned && (
+          {shownDemoIdentities.length > 0 && !scanned && (
             <div className="notice warning" style={{ marginTop: '0.75rem' }}>
               <strong>Demonstration:</strong> ingen riktig BankID-app finns. Välj vem som skriver
               under. I verkligheten sker det här steget i din telefon, och bara du kan skriva under
               med ditt BankID. Väljer du någon annan än den som är inloggad avvisas rösten.
               <div style={{ marginTop: '0.6rem' }}>
-                {demoIdentities.map((identity) => (
+                {shownDemoIdentities.map((identity) => (
                   <button
                     key={identity.personalNumber}
                     type="button"

@@ -219,10 +219,73 @@ misstag — kompilatorn stoppar det.
 
 ### BankID
 
-`MockBankIdService` implementerar `IBankIdService` och simulerar det riktiga API:ets
-flöde (order startas, klienten pollar `collect`). Implementationen väljs på ett enda
-ställe, `src/modules/eligibility/bankid/index.ts`. Ett byte till skarp BankID kräver en ny
-klass och certifikathantering — ingen annan fil behöver ändras.
+Implementationen av `IBankIdService` väljs på ett enda ställe,
+`src/modules/eligibility/bankid/index.ts`, efter läget:
+
+- **Demoläget** (`DEMO_MODE=true`) använder `MockBankIdService`, som simulerar flödet och
+  utfärdar certifikaten själv.
+- **Skarpt läge** använder `BankIdRpClient` mot BankID:s RP API v6.0 (uppgift 17c), med
+  ömsesidig TLS. `BANKID_ENV=test` går mot BankID:s testmiljö och `BANKID_ENV=production`
+  mot produktionen. Serverroten för varje miljö är förankrad i koden med ett låst
+  SHA-256-fingeravtryck, och systemets CA-lager används aldrig.
+
+#### Skarpt läge mot BankID:s testmiljö
+
+1. Hämta RP-certifikatet för test. Det committas inte. Skriptet hämtar det från BankID
+   och prövar det mot en förankrad SHA-256:
+
+   ```bash
+   npx tsx scripts/fetch-bankid-test-cert.ts
+   ```
+
+   Filerna hamnar i `certs/bankid-test/`, som är git-ignorerad.
+2. Skaffa ett test-BankID. Ett riktigt BankID fungerar inte i testmiljön. Källa:
+   developers.bankid.com/test-portal/bankid-for-test, hämtad 2026-10-03.
+   - **Android:** avinstallera och installera om BankID-appen, slå på flygplansläge, starta
+     appen, gå till Inställningar → Support, håll inne på orden "Error information", skriv
+     `kundtest` och tryck OK. Det ska stå CUST vid versionsnumret. Avsluta appen, slå av
+     flygplansläget och tvångsavsluta appen.
+   - **iOS:** avinstallera och installera om appen, och ange `cavainternal.test.bankid.com` i
+     iOS Inställningar → BankID → Developer → Server. Det ska stå CUST vid versionsnumret
+     under Inställningar → Support.
+   - **Dator:** skapa filen `CavaServerSelector.txt` med ordet `kundtest` i BankID:s
+     Config-katalog (`%appdata%\BankID\Config` i Windows).
+   - Utfärda sedan ett test-BankID på developers.bankid.com/test-portal/testing, som har
+     ersatt demo.bankid.com. Man väljer personnummer och namn. Ta personnummer från
+     Skatteverkets testpersonnummer, eftersom andra kan använda samma nummer samtidigt.
+   - Appen måste installeras om för att fungera mot produktionen igen.
+   - Lägg in test-BankID:ts personnummer i röstlängden för omröstningen.
+3. Rötterna för väljarnas certifikat. Kedjan i en underskrift går till BankID:s rot för
+   kundcertifikat i testmiljön. BankID lämnar ut den på begäran. Den läggs i en PEM-fil som
+   `BANKID_ROOT_CERTIFICATES` pekar ut.
+4. Miljövariablerna:
+
+   ```bash
+   DEMO_MODE=                     # tom: skarpt läge
+   BANKID_ENV=test
+   BANKID_CERT_PATH=certs/bankid-test/FPTestcert5_20240610.p12
+   BANKID_CERT_PASSPHRASE=qwerty123   # BankID:s publika fras för testcertifikatet
+   BANKID_ROOT_CERTIFICATES=/sökväg/till/bankid-test-kundrot.pem
+   COOKIE_SECURE=true
+   APP_ORIGIN=https://...
+   IDENTITY_PEPPER=...            # minst 32 tecken, inte exempelvärdet
+   ```
+
+   Appen vägrar starta med en lista på det som saknas. Adminsidan visar då
+   "Skarpt läge, BankID testmiljö".
+5. Det frivilliga provet mot testmiljön startar en legitimering, frågar efter den och
+   avbryter den. Det behöver ingen människa och ingår inte i den vanliga sviten:
+
+   ```bash
+   BANKID_LIVE_TEST=1 npx vitest run tests/live
+   ```
+
+**Läsaren av BankID:s underskrift är inte prövad mot en riktig underskrift.** En sådan kräver
+en människa med test-BankID. Med `BANKID_CAPTURE_SIGNATURES_DIR=<katalog>` skriver appen varje
+underskrift från testmiljön till en egen fil där, men bara i skarpt läge med
+`BANKID_ENV=test`, aldrig i produktion, och aldrig till loggen. Skarpt läge med
+`BANKID_ENV=production` vägrar starta tills en sådan underskrift har lagts in som testfall
+(kravet `bankid-reader-tested`).
 
 ### Avvikelse från specifikationen
 

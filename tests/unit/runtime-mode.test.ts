@@ -1,4 +1,9 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { authority, encryptedKeyPem, rpCredential } from './bankid/fake-rp-server'
+import { customHierarchy } from './bankid/forged-certificates'
 
 /**
  * Demoläge och skarpt läge (uppgift 17).
@@ -9,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const EXAMPLE_PEPPER = 'byt-ut-mig-detta-ar-bara-for-lokal-utveckling-0000'
 
-/** En miljö där alla krav utom BankID-klienten är uppfyllda. */
+/** En miljö där alla krav utom RP-certifikatet och BankID:s rot är uppfyllda. */
 const SHARP_ENV = {
   DEMO_MODE: '',
   NODE_ENV: 'production',
@@ -18,6 +23,24 @@ const SHARP_ENV = {
   IDENTITY_PEPPER: 'en-riktig-peppar-som-ar-minst-trettiotva-tecken-lang',
   BANKID_ENV: 'test',
   BANKID_ROOT_CERTIFICATES: '',
+  BANKID_CERT_PATH: '',
+  BANKID_CERT_PASSPHRASE: '',
+}
+
+/**
+ * Ett RP-certifikat med krypterad nyckel och en rotfil med en egen rot, som
+ * skarpt läge kräver. Rötterna är inte BankID:s, men kraven prövar bara att de
+ * går att läsa och inte är attrappens.
+ */
+function sharpFiles(): Record<string, string> {
+  const directory = mkdtempSync(join(tmpdir(), 'skarpt-'))
+  const rpCa = authority('rp-ca-skarpt', 'RP-CA för skarpt läge')
+  const rp = rpCredential(rpCa, 'rp-skarpt')
+  const certPath = join(directory, 'rp.pem')
+  writeFileSync(certPath, `${rp.certPem}${encryptedKeyPem(rp, 'qwerty123')}`)
+  const rootsPath = join(directory, 'rotter.pem')
+  writeFileSync(rootsPath, customHierarchy('kundrot för skarpt läge', {}, [{}]).root.toString())
+  return { BANKID_CERT_PATH: certPath, BANKID_CERT_PASSPHRASE: 'qwerty123', BANKID_ROOT_CERTIFICATES: rootsPath }
 }
 
 async function load(env: Record<string, string>) {
@@ -107,9 +130,12 @@ describe('skarpt läge är en checklista, inte en boolean', () => {
     const unmet = sharpModeRequirements().filter((requirement) => !requirement.met)
 
     expect(unmet.map((requirement) => requirement.id).sort()).toEqual([
+      'bankid-client-certificate',
       'bankid-env',
+      'bankid-reader-tested',
       'bankid-real',
       'bankid-root-not-mock',
+      'bankid-server-root',
       'cookie-secure',
       'https-origin',
       'pepper-changed',
@@ -127,12 +153,68 @@ describe('skarpt läge är en checklista, inte en boolean', () => {
     }
   })
 
-  it('BankID-klienten saknas i bygget, och kravet stoppar tills 17c', async () => {
+  it('BankID-klienten finns i bygget (17c), och kravet är uppfyllt när BANKID_ENV pekar ut en miljö', async () => {
     const { sharpModeRequirements } = await load({ ...SHARP_ENV })
     const real = sharpModeRequirements().find((requirement) => requirement.id === 'bankid-real')!
-
-    expect(real.met).toBe(false)
+    expect(real.met).toBe(true)
     expect(real.blocking).toBe(true)
+
+    const none = await load({ ...SHARP_ENV, BANKID_ENV: '' })
+    expect(none.sharpModeRequirements().find((requirement) => requirement.id === 'bankid-real')!.met).toBe(false)
+  })
+
+  it('serverrotens fingeravtryck prövas för den miljö BANKID_ENV pekar ut', async () => {
+    for (const environment of ['test', 'production']) {
+      const { sharpModeRequirements } = await load({ ...SHARP_ENV, BANKID_ENV: environment })
+      const root = sharpModeRequirements().find((requirement) => requirement.id === 'bankid-server-root')!
+      expect(root.met, environment).toBe(true)
+      expect(root.blocking).toBe(true)
+    }
+    const none = await load({ ...SHARP_ENV, BANKID_ENV: '' })
+    expect(none.sharpModeRequirements().find((requirement) => requirement.id === 'bankid-server-root')!.met).toBe(false)
+  })
+
+  it('RP-certifikatet krävs, går att läsa med frasen och vägras i produktion om det är BankID:s publika testcertifikat', async () => {
+    const missing = await load({ ...SHARP_ENV, BANKID_CERT_PATH: '' })
+    const requirement = missing.sharpModeRequirements().find((entry) => entry.id === 'bankid-client-certificate')!
+    expect(requirement.met).toBe(false)
+    expect(requirement.blocking).toBe(true)
+
+    const files = sharpFiles()
+    const wrong = await load({ ...SHARP_ENV, ...files, BANKID_CERT_PASSPHRASE: 'fel' })
+    expect(wrong.sharpModeRequirements().find((entry) => entry.id === 'bankid-client-certificate')!.met).toBe(false)
+
+    const right = await load({ ...SHARP_ENV, ...files })
+    expect(right.sharpModeRequirements().find((entry) => entry.id === 'bankid-client-certificate')!.met).toBe(true)
+  })
+
+  it('skarpt läge med BANKID_ENV=test startar när alla krav är uppfyllda, och säger att det är testmiljön', async () => {
+    const { assertBootable, describeMode, sharpModeRequirements } = await load({ ...SHARP_ENV, ...sharpFiles() })
+
+    expect(sharpModeRequirements().filter((entry) => !entry.met && entry.blocking)).toEqual([])
+    expect(() => assertBootable()).not.toThrow()
+    expect(describeMode().summary).toBe('Skarpt läge, BankID testmiljö')
+    expect(describeMode().bankId).toEqual({ kind: 'test', label: 'BankID testmiljö' })
+  })
+
+  it('läsaren är inte prövad mot en riktig underskrift: en varning i testmiljön, ett stopp i produktion (spec 10)', async () => {
+    const test = await load({ ...SHARP_ENV, BANKID_ENV: 'test' })
+    const warning = test.sharpModeRequirements().find((entry) => entry.id === 'bankid-reader-tested')!
+    expect(warning.met).toBe(false)
+    expect(warning.blocking).toBe(false)
+    expect(warning.detail).toMatch(/riktig underskrift/)
+
+    const production = await load({ ...SHARP_ENV, ...sharpFiles(), BANKID_ENV: 'production' })
+    const stop = production.sharpModeRequirements().find((entry) => entry.id === 'bankid-reader-tested')!
+    expect(stop.met).toBe(false)
+    expect(stop.blocking).toBe(true)
+    expect(() => production.assertBootable()).toThrow(/bankid-reader-tested/)
+  })
+
+  it('demoläget fortsätter med attrappen', async () => {
+    const { describeMode } = await load({ DEMO_MODE: 'true', BANKID_ENV: 'test' })
+    expect(describeMode().bankId.kind).toBe('mock')
+    expect(describeMode().summary).toBe('Demoläge, attrappen')
   })
 
   it('BankID:s testmiljö är en varning och inget stopp', async () => {
@@ -200,11 +282,17 @@ describe('skarpt läge är en checklista, inte en boolean', () => {
     const { assertBootable } = await load({ ...SHARP_ENV, COOKIE_SECURE: 'false' })
 
     expect(() => assertBootable()).toThrow(/cookie-secure/)
-    expect(() => assertBootable()).toThrow(/bankid-real/)
+    expect(() => assertBootable()).toThrow(/bankid-client-certificate/)
   })
 
-  it('vägrar starta skarpt med attrapp-BankID, också när allt annat är rätt', async () => {
+  it('vägrar starta skarpt utan RP-certifikat och BankID:s rot, också när allt annat är rätt', async () => {
     const { assertBootable } = await load({ ...SHARP_ENV })
+    expect(() => assertBootable()).toThrow(/bankid-client-certificate/)
+    expect(() => assertBootable()).toThrow(/bankid-root-not-mock/)
+  })
+
+  it('vägrar starta skarpt utan BANKID_ENV, också med certifikat och rot', async () => {
+    const { assertBootable } = await load({ ...SHARP_ENV, ...sharpFiles(), BANKID_ENV: '' })
     expect(() => assertBootable()).toThrow(/bankid-real/)
   })
 

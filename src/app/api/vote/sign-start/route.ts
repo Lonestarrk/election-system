@@ -9,6 +9,7 @@ import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, signStartSchema } from '@/lib/validation'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { bankIdService } from '@/modules/eligibility/bankid'
+import { startErrorReply } from '@/modules/eligibility/bankid/replies'
 import {
   ciphertextCommitment,
   envelopePayload,
@@ -152,21 +153,29 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_BALLOT', 'Valsedelns hash stämmer inte med chiffret.', 400)
   }
 
-  const order = await bankIdService.sign({
-    endUserIp: clientIp,
-    // Texten visas i BankID-appen innan väljaren skriver sin kod — ett skydd
-    // mot att bli lurad att signera något annat än man tror.
-    userVisibleData: signingText(subject.electionName, subject.ballotKind),
-    // Osynligt fält: valsedeln, åtagandet över chifferhashen och räknaren. Det
-    // som binder signaturen till precis den här rösten och precis det här
-    // tillfället, utan att BankID får något som går att matcha mot urnan.
-    userNonVisibleData: envelopePayload({
-      electionId: session.electionId,
-      ballotId: body.data.ballotId,
-      ciphertextCommitment: commitment,
-      castSequence,
-    }),
-  })
+  // Ett fel från BankID ger BankID:s text för felet (uppgift 17c), och inget läggs i lagret.
+  let order
+  try {
+    order = await bankIdService.sign({
+      endUserIp: clientIp,
+      // Texten visas i BankID-appen innan väljaren skriver sin kod — ett skydd
+      // mot att bli lurad att signera något annat än man tror.
+      userVisibleData: signingText(subject.electionName, subject.ballotKind),
+      // Osynligt fält: valsedeln, åtagandet över chifferhashen och räknaren. Det
+      // som binder signaturen till precis den här rösten och precis det här
+      // tillfället, utan att BankID får något som går att matcha mot urnan.
+      userNonVisibleData: envelopePayload({
+        electionId: session.electionId,
+        ballotId: body.data.ballotId,
+        ciphertextCommitment: commitment,
+        castSequence,
+      }),
+    })
+  } catch (error) {
+    const reply = startErrorReply(error)
+    if (!reply) throw error
+    return reply
+  }
 
   // Lagret är fullt: ordern hos BankID avbryts, så att ingen order ligger kvar
   // som väljaren aldrig får veta något om. Ingenting har signerats ännu.
@@ -176,7 +185,9 @@ export async function POST(request: Request) {
     commitmentSalt,
   })
   if (!stored) {
-    await bankIdService.cancel(order.orderRef)
+    // Avbrottet är en artighet mot BankID. Misslyckas det går ordern ut av sig själv,
+    // och väljaren ska ändå få veta att rösten inte lades.
+    await bankIdService.cancel(order.orderRef).catch(() => undefined)
     return errorResponse(
       'BUSY',
       'Servern har för mycket att göra just nu, och rösten lades inte. Försök igen om en stund.',

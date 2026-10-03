@@ -1,6 +1,7 @@
 import type { KeyObject, X509Certificate } from 'node:crypto'
 import { certificateFromDer, signedAt } from '@/modules/eligibility/bankid/certificate-chain'
 import { buildBankIdSignatureXml } from '@/modules/eligibility/bankid/mock-signature'
+import { MOCK_SERVICE_NAME, parseServiceName } from '@/modules/eligibility/bankid/service-name'
 import { verifyBankIdSignature } from '@/modules/eligibility/bankid/xmldsig'
 import { sealBankIdSignature, sealLegacyCertificateChain } from '@/modules/eligibility/sealed-chain'
 import { MOCK_INTERMEDIATE, MOCK_ROOT, rsaKeys, signPayload, voterLeaf } from './forged-certificates'
@@ -22,6 +23,7 @@ export function verifiedMockSignature(signature: string) {
   const verdict = verifyBankIdSignature(Buffer.from(signature, 'base64'), {
     roots: [MOCK_ROOT],
     signedDuring: signedAt(new Date()),
+    service: parseServiceName(MOCK_SERVICE_NAME)!,
   })
   if (!verdict.ok) throw new Error(`underskriften underkändes: ${verdict.reason}`)
   return verdict

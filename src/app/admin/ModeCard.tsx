@@ -20,6 +20,8 @@ type Requirement = { id: string; met: boolean; detail: string; blocking: boolean
 type ModeResponse = {
   mode: 'DEMO' | 'SHARP'
   title: string
+  /** Läget och BankID i en rad, till exempel "Skarpt läge, BankID testmiljö". */
+  summary: string
   meaning: string
   bankId: { kind: 'mock' | 'test' | 'production' | 'none'; label: string }
   requirements: Requirement[]
@@ -86,6 +88,10 @@ export function ModeCard() {
           BankID: <strong>{data.bankId.label}</strong>
         </span>
       </div>
+
+      <p className="mode-summary">
+        <strong>{data.summary}</strong>
+      </p>
 
       <p>{data.meaning}</p>
 

@@ -13,6 +13,7 @@ import { castEncryptedBallotSchema, parseJsonBody } from '@/lib/validation'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { bankIdService } from '@/modules/eligibility/bankid'
+import { collectErrorReply, failedReply, pendingReply } from '@/modules/eligibility/bankid/replies'
 import { castEncryptedBallot, type CastOutcome } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
 
@@ -143,22 +144,31 @@ export async function POST(request: Request) {
    */
   let completion = held.completion
   if (!completion) {
-    const collected = await bankIdService.collect(orderRef)
+    /**
+     * Ett fel från BankID (uppgift 17c) avslutar ordern här: BankID säger att samma
+     * anrop inte ska göras igen, utom vid maintenance, som klienten redan prövat
+     * igen. Valsedeln släpps, och väljaren får BankID:s text för felet. Andra fel
+     * kastas vidare, som förut.
+     */
+    let collected
+    try {
+      collected = await bankIdService.collect(orderRef)
+    } catch (error) {
+      const reply = collectErrorReply(error)
+      if (!reply) throw error
+      takeOrder(orderRef, sessionId)
+      return reply
+    }
 
+    // BankID:s rekommenderade texter för varje hintCode, se src/lib/bankid-messages.ts.
     if (collected.status === 'pending') {
-      return jsonResponse({ status: 'pending', message: 'Väntar på BankID …' })
+      return jsonResponse(pendingReply(collected.hintCode))
     }
 
     if (collected.status === 'failed') {
       // Ordern är förbrukad hos BankID, och valsedeln hålls inte längre.
       takeOrder(orderRef, sessionId)
-      return jsonResponse({
-        status: 'failed',
-        message:
-          collected.hintCode === 'userCancel'
-            ? 'Signeringen avbröts.'
-            : 'Signeringen misslyckades. Försök igen.',
-      })
+      return jsonResponse(failedReply(collected.hintCode))
     }
 
     // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.

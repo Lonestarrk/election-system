@@ -66,6 +66,8 @@ test.describe('lägeskortet på adminsidan', () => {
     await expect(card).toBeVisible({ timeout: 30_000 })
     await expect(card).toContainText('Demoläge')
     await expect(card).toContainText('BankID: attrappen')
+    // Läget och BankID i en rad (uppgift 17c). I skarpt läge mot testmiljön: "Skarpt läge, BankID testmiljö".
+    await expect(card).toContainText('Demoläge, attrappen')
     await expect(card).toContainText('bankid-real')
 
     // Varningsraden säger "Ingen varning" när BANKID_ENV inte är test, och inte "Uppfyllt".

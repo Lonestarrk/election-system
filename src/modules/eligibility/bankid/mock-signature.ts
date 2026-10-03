@@ -1,4 +1,5 @@
 import { createHash, createSign, type KeyObject, randomBytes, type X509Certificate } from 'node:crypto'
+import { MOCK_SERVICE_NAME } from './service-name'
 import { BANKID_NAMESPACE, canonicalize, parseXml, serializeXml, XMLDSIG_NAMESPACE, type XmlElement } from './xmldsig'
 
 /**
@@ -54,7 +55,7 @@ export function buildBankIdSignatureXml(request: MockSignatureRequest): string {
     `<bankIdSignedData xmlns="${BANKID_NAMESPACE}" Id="bidSignedData">` +
     `<usrVisibleData charset="UTF-8" visible="wysiwys">${b64(request.userVisibleData)}</usrVisibleData>` +
     `<usrNonVisibleData>${b64(request.userNonVisibleData)}</usrNonVisibleData>` +
-    `<srvInfo><name>${b64('name=Valsystemet (attrapp),serialNumber=0000000000')}</name>` +
+    `<srvInfo><name>${b64(MOCK_SERVICE_NAME)}</name>` +
     `<nonce>${randomBytes(32).toString('base64')}</nonce>` +
     `<displayName>${b64('Valsystemet')}</displayName></srvInfo>` +
     `<clientInfo><funcId>Signing</funcId><version>${b64('Attrapp=17b')}</version>` +

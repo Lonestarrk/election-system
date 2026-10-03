@@ -5,6 +5,7 @@ import {
   type ChainFailure,
   type SigningWindow,
 } from './certificate-chain'
+import { parseServiceName, sameServiceName, type ServiceName } from './service-name'
 
 /**
  * BANKID:S UNDERSKRIFT, PRÖVAD I BANKID:S EGET FORMAT (uppgift 17b).
@@ -135,6 +136,7 @@ export type XmlDsigFailure =
   | 'digest'
   | 'signature'
   | 'weak_key'
+  | 'service_name'
 
 /**
  * Ett element ur dokumentet. Antingen barn eller text, aldrig båda: blandat
@@ -390,6 +392,8 @@ type Structure = {
   signedData: XmlElement
   usrVisibleData: string
   usrNonVisibleData: string
+  /** srvInfo/name, avkodat. Prövas mot den egna tjänstens namn, se ./service-name.ts. */
+  serviceName: string
 }
 
 function attributesOf(element: XmlElement, allowed: Record<string, 'required' | 'optional'>): Map<string, string> {
@@ -521,8 +525,13 @@ function readStructure(root: XmlElement): Structure {
   attributesOf(keyInfo, { Id: 'required' })
   const [x509Data] = childrenInOrder(keyInfo, ['X509Data']) as [XmlElement]
   attributesOf(x509Data, {})
-  // Ett löv och en till tre mellannivåer, som kedjeprövningen tar.
-  if (x509Data.children.length < 2 || x509Data.children.length > 4) throw new Reject('unexpected_structure')
+  /**
+   * Ett löv och en till tre mellannivåer, som kedjeprövningen tar, och möjligen
+   * roten sist (uppgift 17c, antagande 9). Profilen säger att kedjan står "excluding
+   * the trusted root", men skulle BankID ändå skicka den tas den bort i
+   * `verifyBankIdSignature`, och bara om den är identisk med en betrodd rot.
+   */
+  if (x509Data.children.length < 2 || x509Data.children.length > 5) throw new Reject('unexpected_structure')
   const certificates = x509Data.children.map((child) => {
     if (child.name !== 'X509Certificate') throw new Reject('unexpected_structure')
     return base64Element(child)
@@ -550,6 +559,7 @@ function readStructure(root: XmlElement): Structure {
 
   const server = childSet(srvInfo, { name: 'required', nonce: 'required', displayName: 'optional' })
   for (const field of server.values()) base64Element(field)
+  const serviceName = decodeText(textElement(server.get('name')!))
 
   const client = childSet(clientInfo, {
     funcId: 'required',
@@ -592,6 +602,7 @@ function readStructure(root: XmlElement): Structure {
     signedData,
     usrVisibleData,
     usrNonVisibleData,
+    serviceName,
   }
 }
 
@@ -661,7 +672,12 @@ export type BankIdSignatureVerdict =
  */
 export function verifyBankIdSignature(
   xml: Uint8Array,
-  options: { roots: readonly X509Certificate[]; signedDuring: SigningWindow },
+  options: {
+    roots: readonly X509Certificate[]
+    signedDuring: SigningWindow
+    /** Den egna tjänstens namn, ur RP-certifikatet. Se `expectedServiceName` i ./service-name.ts. */
+    service: ServiceName
+  },
 ): BankIdSignatureVerdict {
   if (xml.length > MAX_SIGNATURE_XML_BYTES) return { ok: false, reason: 'too_large' }
   const text = strictUtf8(xml)
@@ -712,6 +728,16 @@ export function verifyBankIdSignature(
     chain.push(certificate)
   }
 
+  /**
+   * EN BETRODD ROT SIST I KEDJAN TAS BORT (uppgift 17c, antagande 9). Jämförelsen
+   * gäller hela certifikatet, på fingeravtrycket: en rot med samma namn men en
+   * annan nyckel tas inte bort, och kedjeprövningen underkänner den sedan som en
+   * självsignerad mellannivå. KeyInfo-digesten är redan prövad över alla certifikat
+   * som stod där, så det som tas bort är ett certifikat underskriften täcker.
+   */
+  const last = chain[chain.length - 1]!
+  if (options.roots.some((root) => root.fingerprint256 === last.fingerprint256)) chain.pop()
+
   const certificate = verifyCertificateChain(chain, { roots: options.roots, signedDuring: options.signedDuring })
   if (!certificate.ok) return certificate
 
@@ -734,6 +760,13 @@ export function verifyBankIdSignature(
     }
   })()
   if (!holds) return { ok: false, reason: 'signature' }
+
+  /**
+   * DEN EGNA TJÄNSTEN BAD OM UNDERSKRIFTEN (uppgift 17c, antagande 13). Prövas sist,
+   * på ett dokument som i övrigt håller, så att skälet bara säger det här.
+   */
+  const service = parseServiceName(structure.serviceName)
+  if (!service || !sameServiceName(service, options.service)) return { ok: false, reason: 'service_name' }
 
   return {
     ok: true,

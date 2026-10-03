@@ -21,6 +21,9 @@ import {
   rsaKeys,
   voterLeaf,
 } from './bankid/forged-certificates'
+import { MOCK_SERVICE_NAME, parseServiceName } from '@/modules/eligibility/bankid/service-name'
+
+const MOCK_SERVICE = parseServiceName(MOCK_SERVICE_NAME)!
 
 /**
  * BANKID:S UNDERSKRIFT PRÖVAS I BANKID:S EGET FORMAT (uppgift 17b).
@@ -50,7 +53,7 @@ function genuine(nonVisible = SIGNED, certificates: X509Certificate[] = chain, k
 }
 
 function verify(xml: string, roots = [MOCK_ROOT]) {
-  return verifyBankIdSignature(Buffer.from(xml, 'utf8'), { roots, signedDuring: signedAt(new Date()) })
+  return verifyBankIdSignature(Buffer.from(xml, 'utf8'), { roots, signedDuring: signedAt(new Date()), service: MOCK_SERVICE })
 }
 
 const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64')
@@ -436,7 +439,7 @@ describe('det läsaren i övrigt avvisar', () => {
 
   it('ogiltig UTF-8', () => {
     const bytes = Buffer.concat([Buffer.from(genuine(), 'utf8'), Buffer.from([0xff])])
-    expect(verifyBankIdSignature(bytes, { roots: [MOCK_ROOT], signedDuring: signedAt(new Date()) })).toEqual({
+    expect(verifyBankIdSignature(bytes, { roots: [MOCK_ROOT], signedDuring: signedAt(new Date()), service: MOCK_SERVICE })).toEqual({
       ok: false,
       reason: 'malformed',
     })
@@ -480,7 +483,7 @@ describe('fasta testvektorer som .NET:s SignedXml har godkänt', () => {
 
   for (const name of ['dotnet-exc-c14n.xml', 'dotnet-inc-c14n.xml', 'dotnet-redundant-xmlns.xml']) {
     it(`${name} godtas, med det signerade och texten som .NET prövade`, () => {
-      const verdict = verifyBankIdSignature(readFileSync(join(FIXTURES, name)), { roots: [MOCK_ROOT], signedDuring })
+      const verdict = verifyBankIdSignature(readFileSync(join(FIXTURES, name)), { roots: [MOCK_ROOT], signedDuring, service: MOCK_SERVICE })
 
       expect(verdict).toMatchObject({
         ok: true,
@@ -496,7 +499,7 @@ describe('fasta testvektorer som .NET:s SignedXml har godkänt', () => {
     const changed = xml.replace(b64(SIGNED), b64(SIGNED.replace('1:1', '1:2')))
 
     expect(changed).not.toBe(xml)
-    expect(verifyBankIdSignature(Buffer.from(changed), { roots: [MOCK_ROOT], signedDuring })).toEqual({
+    expect(verifyBankIdSignature(Buffer.from(changed), { roots: [MOCK_ROOT], signedDuring, service: MOCK_SERVICE })).toEqual({
       ok: false,
       reason: 'digest',
     })

@@ -30,3 +30,10 @@ playwright-report/
 
 # Arbetsyta för subagent-driven exekvering. Scratch, inte projektfil.
 .superpowers/
+
+# BankID:s RP-certifikat (uppgift 17c). Testcertifikatet hämtas av
+# scripts/fetch-bankid-test-cert.ts och committas inte, och ett eget certifikat
+# för produktion hör aldrig hemma i repot.
+certs/
+*.p12
+*.pfx

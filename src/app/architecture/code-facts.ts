@@ -1139,7 +1139,7 @@ export const CURRENTLY = {
       },
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
-        contains: 'const signed = verifyBankIdSignature(sealed.xml, { roots, signedDuring: signedOnDay(vote.updatedAt) })',
+        contains: 'const signed = verifyBankIdSignature(sealed.xml, { roots, signedDuring: signedOnDay(vote.updatedAt), service })',
       },
       {
         file: 'src/modules/eligibility/bankid/xmldsig.ts',
@@ -1755,7 +1755,7 @@ export const CURRENTLY = {
       { file: 'infra/azure/README.md', contains: 'Med MockBankID är appen i demoläge' },
       {
         file: 'src/modules/eligibility/bankid/index.ts',
-        contains: "runtimeMode() === 'DEMO' ? new MockBankIdService() : new UnavailableBankIdService()",
+        contains: "runtimeMode() === 'DEMO' ? new MockBankIdService() : realBankIdService()",
       },
       { file: 'src/lib/mode-flag.ts', contains: "? 'DEMO' : 'SHARP'" },
       ...DEMO_PASSPHRASES_SEEDED,

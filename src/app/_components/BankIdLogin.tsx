@@ -1,6 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { failedMessage, pendingMessage } from '@/lib/bankid-messages'
+import { useDemoMode } from './use-demo-mode'
 
 /**
  * BANKID-LEGITIMERING ENLIGT V6 (SECURE START)
@@ -95,6 +97,12 @@ export function BankIdLogin({
 
   const orderRef = useRef<string | null>(null)
   const timers = useRef<Array<ReturnType<typeof setInterval>>>([])
+  /**
+   * Demopanelen visas bara när servern säger demoläge (uppgift 17c). I skarpt läge
+   * finns ingen genväg, och rutten den anropar svarar 404.
+   */
+  const demo = useDemoMode()
+  const shownDemoIdentities = demo ? demoIdentities : []
 
   const stopTimers = useCallback(() => {
     for (const timer of timers.current) clearInterval(timer)
@@ -105,7 +113,7 @@ export function BankIdLogin({
 
   /** Frågar efter status. Startas av båda flödena. */
   const startPolling = useCallback(
-    (reference: string) => {
+    (reference: string, autoStarted: boolean) => {
       /**
        * EN PÅGÅENDE FRÅGA I TAGET.
        *
@@ -137,16 +145,17 @@ export function BankIdLogin({
         )
 
         if (data.status === 'pending') {
-          // hintCode berättar var i flödet personen är. Att visa det gör
-          // väntan begriplig i stället för bara långsam.
-          const hints: Record<string, string> = {
-            outstandingTransaction: 'Starta BankID-appen och skanna koden.',
-            noClient: 'Starta BankID-appen.',
-            started: 'Söker efter BankID …',
-            userSign: 'Skriv din säkerhetskod i BankID-appen.',
-            userMrtd: 'Läs av ditt pass eller nationella id-kort i appen.',
-          }
-          setMessage(hints[String(data.hintCode)] ?? 'Väntar på BankID …')
+          /**
+           * hintCode berättar var i flödet personen är, och texten är BankID:s
+           * rekommenderade (uppgift 17c). Den väljs här och inte på servern, eftersom
+           * bara sidan vet om väljaren startade appen på samma enhet: då är
+           * outstandingTransaction RFA13, annars RFA1.
+           */
+          setMessage(
+            typeof data.hintCode === 'string'
+              ? pendingMessage(data.hintCode, { autoStarted })
+              : String(data.message ?? pendingMessage('', { autoStarted })),
+          )
           return
         }
 
@@ -191,16 +200,10 @@ export function BankIdLogin({
         }
 
         setPhase('failed')
-        const failures: Record<string, string> = {
-          userCancel: 'Du avbröt legitimeringen.',
-          cancelled: 'Legitimeringen avbröts.',
-          expiredTransaction: 'Legitimeringen tog för lång tid. Försök igen.',
-          certificateErr: 'Ditt BankID gick inte att använda.',
-          startFailed: 'BankID-appen kunde inte startas.',
-        }
         setMessage(
-          failures[String(data.hintCode)] ??
-            String(data.message ?? 'Legitimeringen misslyckades.'),
+          typeof data.hintCode === 'string'
+            ? failedMessage(data.hintCode)
+            : String(data.message ?? failedMessage('')),
         )
       }, COLLECT_INTERVAL_MS)
 
@@ -260,7 +263,7 @@ export function BankIdLogin({
     setQrImage(data.qrImage ? String(data.qrImage) : null)
     setPhase(mode)
 
-    startPolling(reference)
+    startPolling(reference, mode === 'same-device')
 
     if (mode === 'other-device') {
       startQrRefresh(reference)
@@ -365,7 +368,7 @@ export function BankIdLogin({
                   Öppna BankID
                 </button>
               </div>
-              {demoIdentities.length > 0 && (
+              {shownDemoIdentities.length > 0 && (
                 <p className="muted small">
                   I demoläget finns ingen order registrerad hos BankID, så appen avvisar token om
                   den öppnas. Välj i stället en identitet nedan.
@@ -378,13 +381,13 @@ export function BankIdLogin({
             {message}
           </div>
 
-          {demoIdentities.length > 0 && !scanned && (
+          {shownDemoIdentities.length > 0 && !scanned && (
             <div className="notice warning" style={{ marginTop: '1rem' }}>
               <strong>Demonstration:</strong> ingen riktig BankID-app finns. Välj vem som{' '}
               {phase === 'other-device' ? '"skannar koden"' : 'legitimerar sig'} — i verkligheten
               sker det här steget i din telefon.
               <div style={{ marginTop: '0.75rem' }}>
-                {demoIdentities.map((identity) => (
+                {shownDemoIdentities.map((identity) => (
                   <button
                     key={identity.personalNumber}
                     type="button"

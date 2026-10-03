@@ -16,6 +16,8 @@ import {
   signingText,
 } from '@/modules/eligibility/bankid/envelope-signature'
 import fixture from './crypto/fixtures/ballot-26-14d.json'
+import { RFA } from '@/lib/bankid-messages'
+import { BankIdRequestError } from '@/modules/eligibility/bankid/BankIdRpClient'
 
 /**
  * SIGNERINGENS TVÅ RUTTER, med BankID, databaserna och sessionen utbytta
@@ -600,5 +602,65 @@ describe('kön reserveras först när BankID är klart (fixrunda 1)', () => {
     expect(getOrder(ORDER, 'session-a')?.completion).toBeDefined()
 
     expect((await (await encrypted(poll())).json()).status).toBe('recorded')
+  })
+})
+
+/**
+ * BANKID:S MEDDELANDEN OCH FELKODER (uppgift 17c).
+ *
+ * Pollningen ger BankID:s rekommenderade text för varje hintCode, och ett fel
+ * från BankID ger BankID:s text för felet, aldrig BankID:s egna detaljer.
+ */
+describe('BankID:s meddelanden och felkoder i signeringen', () => {
+  it('en väntande order ger hintCode och BankID:s text', async () => {
+    await signStart(post('/api/vote/sign-start', startBody()))
+    state.collect.mockResolvedValue({ status: 'pending', hintCode: 'userSign' })
+
+    expect(await (await encrypted(poll())).json()).toEqual({
+      status: 'pending',
+      hintCode: 'userSign',
+      message: RFA.RFA9,
+    })
+  })
+
+  it('en misslyckad order ger BankID:s text för koden', async () => {
+    await signStart(post('/api/vote/sign-start', startBody()))
+    state.collect.mockResolvedValue({ status: 'failed', hintCode: 'certificateErr' })
+
+    expect(await (await encrypted(poll())).json()).toMatchObject({ status: 'failed', message: RFA.RFA16 })
+  })
+
+  it('ett fel från BankID i pollningen tar bort ordern och ger BankID:s text', async () => {
+    await signStart(post('/api/vote/sign-start', startBody()))
+    state.collect.mockRejectedValue(new BankIdRequestError('internalError', 500))
+
+    const response = await encrypted(poll())
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({ status: 'failed', message: RFA.RFA5 })
+    expect(getOrder(ORDER, 'session-a')).toBeNull()
+    expect(verificationReservations()).toBe(0)
+  })
+
+  it('ett fel från BankID när ordern startas ger BankID:s text, och inget läggs i lagret', async () => {
+    state.sign.mockRejectedValue(new BankIdRequestError('alreadyInProgress', 400))
+
+    const response = await signStart(post('/api/vote/sign-start', startBody()))
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({ error: { code: 'BANKID_ERROR', message: RFA.RFA4 } })
+    expect(orderCount()).toBe(0)
+  })
+
+  it('ett avbrott som misslyckas när lagret är fullt hindrar inte beskedet till väljaren', async () => {
+    for (let index = 0; index < 500; index += 1) {
+      putOrder(`fylld-${index}`, `annan-${index}`, {
+        ballotId: BALLOT_ID,
+        ballot: BALLOT as never,
+        commitmentSalt: '01'.repeat(32),
+      })
+    }
+    state.cancel.mockRejectedValue(new BankIdRequestError('maintenance', 503))
+
+    const response = await signStart(post('/api/vote/sign-start', startBody()))
+    expect(response.status).toBe(503)
   })
 })

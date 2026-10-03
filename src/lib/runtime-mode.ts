@@ -1,7 +1,15 @@
 import { env } from '@/lib/env'
 import { logger } from '@/lib/logger'
 import { runtimeMode, type RuntimeMode } from '@/lib/mode-flag'
-import { bankIdKind, configuredBankIdEnvironment, type BankIdKind } from '@/modules/eligibility/bankid/kind'
+import {
+  bankIdKind,
+  configuredBankIdEnvironment,
+  READER_TESTED_AGAINST_REAL_SIGNATURE,
+  type BankIdKind,
+} from '@/modules/eligibility/bankid/kind'
+import { signatureCaptureDirectory } from '@/modules/eligibility/bankid/signature-capture'
+import { serverRootProblem } from '@/modules/eligibility/bankid/bankid-environment'
+import { rpCredentialProblem, rpCredentialsFromEnv } from '@/modules/eligibility/bankid/rp-certificate'
 import { isMockBankIdRoot, trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
 
 /**
@@ -65,6 +73,19 @@ function rootsAreNotTheMock(): boolean {
   }
 }
 
+/**
+ * RP-certifikatet går att läsa med frasen, gäller nu och passar miljön. Utan
+ * miljö är kravet ouppfyllt: det finns inget att pröva certifikatet mot.
+ */
+function rpCertificateProblem(environment: 'test' | 'production' | null): string | null {
+  if (environment === null) return 'BANKID_ENV saknas.'
+  try {
+    return rpCredentialProblem(environment, rpCredentialsFromEnv().certificate)
+  } catch (error) {
+    return (error as Error).message
+  }
+}
+
 function pepperIsReal(): boolean {
   const pepper = process.env.IDENTITY_PEPPER ?? ''
   return pepper.length >= 32 && pepper !== EXAMPLE_PEPPER
@@ -86,6 +107,7 @@ function originsAreHttps(): boolean {
 export function sharpModeRequirements(): Requirement[] {
   const kind = bankIdKind('SHARP')
   const bankIdEnvironment = configuredBankIdEnvironment()
+  const certificateProblem = rpCertificateProblem(bankIdEnvironment)
 
   return [
     {
@@ -93,8 +115,8 @@ export function sharpModeRequirements(): Requirement[] {
       met: kind === 'test' || kind === 'production',
       blocking: true,
       detail:
-        'Bygget har ingen klient för riktig BankID. Attrappen används aldrig utanför demoläget, ' +
-        'så ingen kan legitimera sig eller skriva under förrän klienten finns.',
+        'Skarpt läge använder klienten mot BankID:s RP API v6.0, och den kräver att BANKID_ENV pekar ut ' +
+        'en miljö. Attrappen används aldrig utanför demoläget.',
     },
     {
       id: 'bankid-env',
@@ -108,6 +130,36 @@ export function sharpModeRequirements(): Requirement[] {
       blocking: false,
       detail:
         'BANKID_ENV=test: inloggningarna är riktiga BankID-flöden med test-BankID, inte med riktiga personer.',
+    },
+    {
+      id: 'bankid-server-root',
+      met: bankIdEnvironment !== null && serverRootProblem(bankIdEnvironment) === null,
+      blocking: true,
+      detail:
+        'Klienten litar bara på BankID:s serverrot för den miljö BANKID_ENV pekar ut, och rotens ' +
+        'SHA-256-fingeravtryck är låst i koden per miljö. Produktion vägrar testroten och testmiljön ' +
+        'produktionsroten.',
+    },
+    {
+      id: 'bankid-client-certificate',
+      met: certificateProblem === null,
+      blocking: true,
+      detail:
+        'BANKID_CERT_PATH och BANKID_CERT_PASSPHRASE måste ge ett RP-certifikat som går att läsa, med ' +
+        'en nyckel som hör till det, och som gäller nu. I produktion vägras BankID:s publika ' +
+        'testcertifikat.' +
+        (certificateProblem ? ` Just nu: ${certificateProblem}` : ''),
+    },
+    {
+      id: 'bankid-reader-tested',
+      met: READER_TESTED_AGAINST_REAL_SIGNATURE,
+      // Spec 10: skarpt läge släpps inte på utan en riktig underskrift som testfall. I
+      // testmiljön är det en varning, så att underskriften kan fångas där.
+      blocking: bankIdEnvironment !== 'test',
+      detail:
+        'Läsaren av BankID:s underskrift är inte prövad mot en riktig underskrift från BankID, bara mot ' +
+        'attrappen och mot dokument som en oberoende implementation godkände. Ett antagande som inte ' +
+        'håller får varje röst att avvisas. I testmiljön är det en varning, och i produktion ett stopp.',
     },
     {
       id: 'bankid-root-not-mock',
@@ -171,6 +223,8 @@ const BANKID_LABELS: Record<BankIdKind, string> = {
 export function describeMode(): {
   mode: RuntimeMode
   title: string
+  /** Läget och BankID i en rad, till exempel "Skarpt läge, BankID testmiljö". */
+  summary: string
   meaning: string
   bankId: { kind: BankIdKind; label: string }
 } {
@@ -180,10 +234,11 @@ export function describeMode(): {
   return {
     mode,
     title: mode === 'DEMO' ? 'Demoläge' : 'Skarpt läge',
+    summary: `${mode === 'DEMO' ? 'Demoläge' : 'Skarpt läge'}, ${BANKID_LABELS[kind]}`,
     meaning:
       mode === 'DEMO'
         ? 'BankID är en attrapp, och vem som helst kan legitimera sig som en demoperson. Ett demoval är inget riktigt val.'
-        : 'Demogenvägarna finns inte och attrappen används aldrig. Legitimering och underskrift kräver en riktig BankID-klient. Skarpt läge är förvalt, och bara DEMO_MODE=true ger demoläge.',
+        : 'Demogenvägarna finns inte och attrappen används aldrig. Legitimering och underskrift går till BankID, i den miljö BANKID_ENV pekar ut. Skarpt läge är förvalt, och bara DEMO_MODE=true ger demoläge.',
     bankId: { kind, label: BANKID_LABELS[kind] },
   }
 }
@@ -204,6 +259,11 @@ export function logModeAtStartup(): void {
   }
 
   logger.info(`${title}, ${bankId.label}.`)
+  if (signatureCaptureDirectory()) {
+    logger.warn(
+      'BANKID_CAPTURE_SIGNATURES_DIR är satt: varje BankID-underskrift från testmiljön skrivs till en fil där.',
+    )
+  }
   for (const requirement of sharpModeRequirements()) {
     if (!requirement.met && !requirement.blocking) logger.warn(requirement.detail)
   }

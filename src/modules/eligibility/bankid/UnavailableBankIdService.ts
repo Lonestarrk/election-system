@@ -6,7 +6,8 @@ import type {
 } from './IBankIdService'
 
 /**
- * Tjänsten skarpt läge får tills en riktig BankID-klient finns (uppgift 17).
+ * Tjänsten skarpt läge får när BANKID_ENV inte pekar ut någon BankID-miljö
+ * (uppgift 17, och sedan 17c bara det fallet).
  *
  * Varje anrop kastar. Skarpt läge ska aldrig falla tillbaka på attrappen, och
  * en process som ändå startats i skarpt läge utan klient (uppstartsvakten
@@ -14,13 +15,13 @@ import type {
  * Att kasta är ett fel som syns, och att svara "misslyckad" vore ett som
  * ser ut som en väljare som tryckte avbryt.
  *
- * Uppgift 17c ersätter den med klienten mot RP API v6.
+ * Med BANKID_ENV satt används klienten mot RP API v6.0 i stället, se ./index.ts.
  */
 export class UnavailableBankIdService implements IBankIdService {
   private unavailable(): never {
     throw new Error(
-      'Skarpt läge saknar en BankID-klient. Attrappen används aldrig utanför demoläget, ' +
-        'och ingen legitimering eller underskrift kan göras förrän en riktig klient finns.',
+      'Skarpt läge saknar en BankID-klient: BANKID_ENV pekar inte ut någon miljö. Attrappen används ' +
+        'aldrig utanför demoläget, och ingen legitimering eller underskrift kan göras.',
     )
   }
 

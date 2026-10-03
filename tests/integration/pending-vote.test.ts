@@ -46,6 +46,7 @@ import { createBlindedCredential } from '@/lib/blind-client'
 import { issueCredential } from '@/modules/eligibility/credential.service'
 import { closeElection as closeAndStrip } from '@/orchestration/close-election.usecase'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
+import { MOCK_SERVICE_NAME, parseServiceName } from '@/modules/eligibility/bankid/service-name'
 
 /**
  * Låter testet ge upp i precis rätt ögonblick (fixrunda 1, uppgift 14b).
@@ -488,7 +489,11 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
         voterStatusId: voter,
         ballotId: stored.ballotId,
       })
-      const verdict = verifyBankIdSignature(opened!.xml, { roots: [MOCK_ROOT], signedDuring: signedAt(new Date()) })
+      const verdict = verifyBankIdSignature(opened!.xml, {
+        roots: [MOCK_ROOT],
+        signedDuring: signedAt(new Date()),
+        service: parseServiceName(MOCK_SERVICE_NAME)!,
+      })
       expect(verdict).toMatchObject({ ok: true, personalNumber: VOTER_PN })
       // Kuvertroten läser underskriften ur bankid_signature, och den är dokumentets.
       expect(verdict.ok && verdict.signatureValue).toBe(stored.bankIdSignature)

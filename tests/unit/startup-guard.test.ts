@@ -30,7 +30,7 @@ describe('uppstartsvakten', () => {
     )
   })
 
-  it('stoppar skarpt läge när klienten för riktig BankID saknas', async () => {
+  it('stoppar skarpt läge när RP-certifikatet för BankID saknas', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => undefined)
     await expect(
       register({
@@ -39,8 +39,9 @@ describe('uppstartsvakten', () => {
         APP_ORIGIN: 'https://val.example',
         IDENTITY_PEPPER: 'en-riktig-peppar-som-ar-minst-trettiotva-tecken-lang',
         BANKID_ENV: 'test',
+        BANKID_CERT_PATH: '',
       }),
-    ).rejects.toThrow(/bankid-real/)
+    ).rejects.toThrow(/bankid-client-certificate/)
   })
 
   it('släpper igenom demoläget, också i ett produktionsbygge, och loggar läget', async () => {

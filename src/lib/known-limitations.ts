@@ -501,10 +501,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     ],
   },
   /**
-   * OMSKRIVEN I UPPGIFT 17b. Posten hette `bankid-xmldsig-adapter-missing` och
-   * sa att läsaren av XML-signaturen saknades. Läsaren finns nu, och attrappen
-   * skriver samma format. Kvar är att ingen riktig underskrift från BankID har
-   * prövats, och att klienten mot BankID saknas. Båda hör till uppgift 17c.
+   * OMSKRIVEN I UPPGIFT 17b OCH 17c. Posten hette `bankid-xmldsig-adapter-missing`
+   * och sa att läsaren av XML-signaturen saknades. Läsaren finns sedan 17b, och
+   * klienten mot BankID sedan 17c. Kvar är att ingen riktig underskrift från BankID
+   * har prövats, eftersom en sådan kräver en människa med test-BankID.
    */
   {
     id: 'bankid-reader-untested-against-bankid',
@@ -512,23 +512,30 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     why:
       'BankID lämnar underskriften som en XML-signatur, XMLDSig, med det signerade innehållet och ' +
       'certifikatkedjan inbäddade. Läsaren som prövar den är byggd efter BankID:s beskrivning av ' +
-      'formatet och godtar bara exakt den strukturen och de algoritmerna. Men BankID publicerar inget ' +
-      'fullständigt exempel på en sådan underskrift, och ingen del av systemet har prövats mot en ' +
-      'underskrift från BankID:s testmiljö. Attrappen skriver samma format, så att varje test går ' +
-      'genom läsaren, men det är attrappens tolkning av beskrivningen. Avviker en riktig underskrift ' +
-      'från den, till exempel i ett elementnamn, en algoritm eller ett fält som BankID lägger till, ' +
-      'avvisar läsaren underskriften, och rösten läggs inte. Läsaren prövar inte heller vem som bad ' +
-      'om underskriften: srvInfo/name, den förlitande partens namn ur dess certifikat, jämförs inte med ' +
-      'systemets eget. Texten väljaren såg prövas, så en underskrift som gjordes under en annan text ' +
-      'godtas inte. Klienten mot BankID finns inte heller ännu, och skarpt läge kan inte starta utan den.',
+      'formatet och godtar bara exakt den strukturen och de algoritmerna. Klienten mot BankID:s ' +
+      'RP-API finns, och den är prövad mot BankID:s testmiljö för att starta en legitimering, fråga ' +
+      'efter den och avbryta den. Men BankID publicerar inget fullständigt exempel på en underskrift, ' +
+      'och ingen underskrift från testmiljön finns bland testfallen: en sådan kräver en människa med ' +
+      'test-BankID. Attrappen skriver samma format, så att varje test går genom läsaren, men det är ' +
+      'attrappens tolkning av beskrivningen. Avviker en riktig underskrift från den, till exempel i ' +
+      'ett elementnamn, en algoritm eller ett fält som BankID lägger till, avvisar läsaren ' +
+      'underskriften, och rösten läggs inte. Läsaren kräver att srvInfo/name, den förlitande partens ' +
+      'namn ur dess certifikat, är systemets eget, och att texten väljaren såg är den appen visade. ' +
+      'Skarpt läge mot BankID:s testmiljö kan starta, med en varning om det här, men skarpt läge mot ' +
+      'produktionen vägrar starta tills en riktig underskrift har lagts in som testfall.',
     stillTrueIf: [
-      // Attrappen är den enda implementationen av gränssnittet.
+      // Ingen riktig underskrift är prövad. Konstanten byts när en läggs in som testfall.
+      {
+        file: 'src/modules/eligibility/bankid/kind.ts',
+        contains: 'export const READER_TESTED_AGAINST_REAL_SIGNATURE = false',
+      },
+      // Kravet stoppar produktion och varnar i testmiljön.
+      { file: 'src/lib/runtime-mode.ts', contains: "blocking: bankIdEnvironment !== 'test'," },
+      // Klienten finns och väljs i skarpt läge.
       {
         file: 'src/modules/eligibility/bankid/index.ts',
-        contains: "runtimeMode() === 'DEMO' ? new MockBankIdService() : new UnavailableBankIdService()",
+        contains: "runtimeMode() === 'DEMO' ? new MockBankIdService() : realBankIdService()",
       },
-      // Bygget har ingen klient mot BankID. Uppgift 17c byter konstanten när klienten finns.
-      { file: 'src/modules/eligibility/bankid/kind.ts', contains: 'export const REAL_BANKID_CLIENT_BUILT = false' },
     ],
   },
   {

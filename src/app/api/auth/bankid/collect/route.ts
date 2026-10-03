@@ -3,6 +3,7 @@ import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { collectAuthSchema, parseJsonBody } from '@/lib/validation'
 import { bankIdService } from '@/modules/eligibility/bankid'
+import { collectErrorReply, failedReply, pendingReply } from '@/modules/eligibility/bankid/replies'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { AdmissionQueueFull, admissionStats } from '@/lib/admission-queue'
 import { evaluateEligibility } from '@/modules/eligibility/voter-status.service'
@@ -41,21 +42,25 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }
 
-  const result = await bankIdService.collect(body.data.orderRef)
+  // Ett fel från BankID ger BankID:s text för felet (uppgift 17c). Andra fel kastas vidare.
+  let result
+  try {
+    result = await bankIdService.collect(body.data.orderRef)
+  } catch (error) {
+    const reply = collectErrorReply(error)
+    if (!reply) throw error
+    await recordAuditEvent(AUDIT_EVENTS.AUTH_FAILED)
+    return reply
+  }
 
+  // BankID:s rekommenderade texter för varje hintCode, se src/lib/bankid-messages.ts.
   if (result.status === 'pending') {
-    return jsonResponse({ status: 'pending', message: 'Väntar på BankID …' })
+    return jsonResponse(pendingReply(result.hintCode))
   }
 
   if (result.status === 'failed') {
     await recordAuditEvent(AUDIT_EVENTS.AUTH_FAILED)
-    return jsonResponse({
-      status: 'failed',
-      message:
-        result.hintCode === 'userCancel'
-          ? 'Legitimeringen avbröts.'
-          : 'Legitimeringen misslyckades. Försök igen.',
-    })
+    return jsonResponse(failedReply(result.hintCode))
   }
 
   /**

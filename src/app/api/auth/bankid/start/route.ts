@@ -3,6 +3,7 @@ import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, startAuthSchema } from '@/lib/validation'
 import { bankIdService } from '@/modules/eligibility/bankid'
+import { startErrorReply } from '@/modules/eligibility/bankid/replies'
 import { launchUrl, renderQrPng } from '@/modules/eligibility/bankid/qr'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 
@@ -73,17 +74,29 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }
 
-  const order = await bankIdService.auth({
-    endUserIp: clientIp,
-    /**
-     * Texten visas i BankID-appen innan personen skriver sin kod.
-     *
-     * Att den säger vad legitimeringen gäller är ett skydd mot att någon blir
-     * lurad att signera något annat: den som ringts upp och ombetts "verifiera
-     * sig" ser här att det handlar om att rösta.
-     */
-    userVisibleData: USER_VISIBLE_TEXT[body.data.purpose ?? 'vote'],
-  })
+  /**
+   * endUserIp är adressen från de betrodda proxyleden, som BankID kräver. Den
+   * lagras inte och loggas inte. Ett fel från BankID ger BankID:s text för felet
+   * (uppgift 17c), och andra fel kastas vidare.
+   */
+  let order
+  try {
+    order = await bankIdService.auth({
+      endUserIp: clientIp,
+      /**
+       * Texten visas i BankID-appen innan personen skriver sin kod.
+       *
+       * Att den säger vad legitimeringen gäller är ett skydd mot att någon blir
+       * lurad att signera något annat: den som ringts upp och ombetts "verifiera
+       * sig" ser här att det handlar om att rösta.
+       */
+      userVisibleData: USER_VISIBLE_TEXT[body.data.purpose ?? 'vote'],
+    })
+  } catch (error) {
+    const reply = startErrorReply(error)
+    if (!reply) throw error
+    return reply
+  }
 
   await recordAuditEvent(AUDIT_EVENTS.AUTH_STARTED)
 

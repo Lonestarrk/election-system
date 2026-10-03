@@ -10,6 +10,7 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
 import { signedAt } from './bankid/certificate-chain'
 import { ciphertextCommitment, envelopePayload, parseEnvelopePayload, signingText } from './bankid/envelope-signature'
+import { expectedServiceName } from './bankid/service-name'
 import { trustedBankIdRoots } from './bankid/trusted-roots'
 import { MAX_SIGNATURE_XML_BYTES, strictBase64, verifyBankIdSignature } from './bankid/xmldsig'
 import { signingSubject } from './election.service'
@@ -241,6 +242,8 @@ export async function castEncryptedBallot(
   const signed = verifyBankIdSignature(signatureXml, {
     roots: trustedBankIdRoots(),
     signedDuring: signedAt(new Date()),
+    // Den egna tjänsten ska ha bett om underskriften (uppgift 17c). Kastar som rötterna.
+    service: expectedServiceName(),
   })
   // Läsarens tak för djup och antal element är också ett tak.
   if (!signed.ok && signed.reason === 'too_large') {

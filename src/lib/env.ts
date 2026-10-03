@@ -111,6 +111,23 @@ export const env = {
     return value ? value : null
   },
 
+  /**
+   * RP-certifikatet som klienten mot BankID legitimerar sig med i TLS (uppgift
+   * 17c): en PKCS #12-fil (.p12) eller en PEM-fil med certifikatet och den
+   * krypterade nyckeln. För testmiljön är det BankID:s publika testcertifikat,
+   * som scripts/fetch-bankid-test-cert.ts hämtar, och för produktion ett eget,
+   * beställt genom en bank. Läses bara i skarpt läge.
+   */
+  get bankIdCertPath(): string | null {
+    const value = process.env.BANKID_CERT_PATH?.trim()
+    return value ? value : null
+  },
+
+  /** Frasen som låser upp nyckeln i BANKID_CERT_PATH. Inte trimmad: en fras kan börja med ett blanksteg. */
+  get bankIdCertPassphrase(): string {
+    return process.env.BANKID_CERT_PASSPHRASE ?? ''
+  },
+
   get mockBankIdPollsUntilComplete(): number {
     const raw = process.env.MOCK_BANKID_POLLS_UNTIL_COMPLETE
     const parsed = raw ? Number.parseInt(raw, 10) : 2

@@ -16,6 +16,7 @@ import {
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
 import { logger } from '@/lib/logger'
+import { expectedServiceName, type ServiceName } from '@/modules/eligibility/bankid/service-name'
 import { trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
 import { verifyBankIdSignature, type XmlDsigFailure } from '@/modules/eligibility/bankid/xmldsig'
 import { hashPersonalNumber } from '@/modules/eligibility/identity'
@@ -463,6 +464,8 @@ async function judgeSignature(
   /** `signingText` för omröstningen och radens valsedel, den text väljaren ska ha sett. */
   expectedVisibleText: string,
   roots: X509Certificate[],
+  /** Den egna tjänstens namn, som srvInfo/name ska vara (uppgift 17c). */
+  service: ServiceName,
   identityHashOf: (personalNumber: string) => Promise<string>,
   staleProbeBudget: { remaining: number },
 ): Promise<SignatureJudgement> {
@@ -491,7 +494,7 @@ async function judgeSignature(
    * BankID:s OCSP-svar hade stängt det. Svaret ligger förseglat i raden sedan
    * uppgift 17b, men prövas inte.
    */
-  const signed = verifyBankIdSignature(sealed.xml, { roots, signedDuring: signedOnDay(vote.updatedAt) })
+  const signed = verifyBankIdSignature(sealed.xml, { roots, signedDuring: signedOnDay(vote.updatedAt), service })
   if (!signed.ok) {
     /**
      * Ett tak i läsaren ska synas som ett tak och inte bara som en förfalskning
@@ -834,6 +837,8 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
    * ett angrepp på varje väljare.
    */
   const roots = trustedBankIdRoots()
+  // Tjänstens namn ur RP-certifikatet, på samma villkor som rötterna (uppgift 17c).
+  const service = expectedServiceName()
 
   /**
    * EN HASHNING PER VÄLJARE OCH KÖRNING, INTE PER KUVERT.
@@ -879,7 +884,7 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
     // WRONG_BALLOT redan träffade.
     // En valsedel som inte finns ger en text som ingen underskrift har, och raden är redan WRONG_BALLOT.
     const expectedVisibleText = signingText(electionName, ballot?.kind ?? '')
-    const signature = await judgeSignature(electionId, vote, expectedVisibleText, roots, identityHashOf, staleProbeBudget)
+    const signature = await judgeSignature(electionId, vote, expectedVisibleText, roots, service, identityHashOf, staleProbeBudget)
     if (signature.verdict === 'stale') {
       anomalies.push(anomaly('STALE_SEQUENCE'))
     }

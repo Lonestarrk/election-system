@@ -41,7 +41,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <html lang="sv">
-      <body>
+      {/* Läget för klientkomponenterna, som inte kan fråga isDemoMode() själva (uppgift 17c). */}
+      <body data-mode={demo ? 'DEMO' : 'SHARP'}>
         {demo && (
           <div className="mode-banner" role="note" data-testid="mode-banner">
             Demo, inte ett riktigt val. BankID är en attrapp.
