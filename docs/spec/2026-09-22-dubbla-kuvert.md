@@ -394,8 +394,8 @@ inte röstat. Den relationella kontrollen i avsnitt 7 fångar inte det, eftersom
 
 | Fält | Innehåll |
 |---|---|
-| `userVisibleData` | "Rösta i Valet 2026 — Riksdagen". Det väljaren ser och godkänner i appen. |
-| `userNonVisibleData` | `electionId \| ballotId \| ciphertextHash \| castSequence` |
+| `userVisibleData` | Valets namn och valsedelns slag på svenska, utan hash. Det väljaren ser och godkänner i appen. |
+| `userNonVisibleData` | Längdprefixat `valsystem/kuvert/v2 \| electionId \| ballotId \| åtagande \| castSequence`, där åtagandet är det saltade värdet i 6, steg 4. Chifferhashen står inte där. |
 
 BankID returnerar en XML-signatur ställd med väljarens eget certifikat. Raden lagrar
 signaturen och certifikatkedjan, krypterad, och valideringen vid stängning kontrollerar
@@ -913,10 +913,11 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   lära sig något om den väljarens röst. Det kräver chiffret, som aldrig publiceras, och många
   medverkande. Att avvisa kopior skulle i stället ge en köpare ett orakel (5).
 - **BankID vet vem som röstade, när och hur många gånger.** Sedan uppgift 11e signerar
-  väljaren ett saltat åtagande i stället för chifferhashen (4.6). BankID:s kopia går därför
-  inte att matcha mot en röst efter stängningen, eftersom saltet raderas med kuvertet. Men
-  varje signering är en order med väljarens identitet och en tidpunkt, så BankID ser
-  deltagandet och varje omröstning.
+  väljaren ett saltat åtagande i stället för chifferhashen (4.6). Saltet raderas med kuvertet,
+  så BankID:s kopia går inte att matcha mot en enskild rad i urnan efter stängningen. Men varje
+  signering är en order med väljarens identitet, valsedelns id och en tidpunkt. BankID ser alltså
+  deltagandet per valsedel och varje omröstning. När en valsedel har så få röster att summan
+  visar dem, ger BankID:s kopia tillsammans med den publicerade summan väljarens röst (ruling 138).
 - **Den som driver systemet kan ta bort ett kuvert eller återställa en väljares tidigare
   äkta röst.** Kedjevalideringen (4.6) hindrar att nya underskrifter förfalskas, men inte
   att äkta tas bort eller spelas upp igen, eftersom räknaren för den senaste underskriften
