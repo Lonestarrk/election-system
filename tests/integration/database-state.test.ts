@@ -193,8 +193,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
       ballot,
       {
         signature: result.completionData.signature,
-        certificateChain: result.completionData.certificateChain,
-        signedData: result.completionData.signedData,
+        ocspResponse: result.completionData.ocspResponse,
         commitmentSalt,
       },
       await getEncryptedBallotShape(ballotId),

@@ -16,6 +16,8 @@ export const VALIDATION_REASONS: Record<string, string> = {
   OLD_PROOF_FORMAT: 'Kuvertet har det gamla bevisformatet och kan inte räknas.',
   OLD_SIGNATURE_FORMAT:
     'Kuvertet är äkta men underskrivet i det gamla formatet, där BankID-ordern bar chifferhashen, och kan inte räknas.',
+  OLD_BANKID_FORMAT:
+    'Kuvertet är äkta men har attrappens underskrift från före BankID:s format, och kan inte räknas. I demon tar återställningen av demovalet bort det.',
 }
 
 function Mono({ children }: { children: string }) {

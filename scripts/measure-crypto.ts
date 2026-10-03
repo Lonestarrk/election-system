@@ -479,8 +479,7 @@ async function measureValidation(voterCount: number): Promise<void> {
           sealed,
           {
             signature: collected.completionData.signature,
-            certificateChain: collected.completionData.certificateChain,
-            signedData: collected.completionData.signedData,
+            ocspResponse: collected.completionData.ocspResponse,
             commitmentSalt,
           },
           ballot.wireShape,

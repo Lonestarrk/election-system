@@ -54,10 +54,10 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
  * BankID:s svar när ordern är klar. Hålls bara om verifieringskön var full när
  * svaret kom, så att nästa pollning kan lägga rösten utan att fråga BankID igen:
  * ordern är förbrukad hos BankID, och väljaren ska inte behöva skriva under på nytt.
- * Innehåller en signatur och en certifikatkedja med väljarens personnummer, och
- * loggas därför aldrig.
+ * Innehåller BankID:s underskrift, med certifikatkedjan och väljarens personnummer
+ * inbäddade, och loggas därför aldrig.
  */
-export type Completion = { signature: string; certificateChain: string[]; signedData: string }
+export type Completion = { signature: string; ocspResponse: string }
 
 /** Det servern håller för en order. */
 export type OrderState = {

@@ -60,8 +60,10 @@ import {
  * Båda avvek från OpenSSL och RFC 5280. Rotens tid prövas här, mot tiden för
  * underskriften, och inte när rötterna läses in, se ./trusted-roots.ts.
  *
- * Här prövas bara kedjan. Att signaturen över kuvertet håller mot lövets nyckel
- * prövar `verifySignedPayload`, och att personnumret är väljarens prövas mot
+ * Här prövas bara kedjan. Att BankID:s underskrift håller mot lövets nyckel
+ * prövar `verifyBankIdSignature` i ./xmldsig.ts, som också läser kedjan ur
+ * underskriften och anropar den här prövningen. För kuvert från före uppgift
+ * 17b gör `verifySignedPayload` det. Att personnumret är väljarens prövas mot
  * röstlängdens identitetshash av anroparen, som äger hashningen.
  *
  * INGENTING HÄR KASTAR. Kedjan kan komma ur databasen, förbi varje schema, och

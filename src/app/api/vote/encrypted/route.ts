@@ -44,10 +44,11 @@ export const dynamic = 'force-dynamic'
  * okända fält som standard, så de försvinner redan vid valideringen om en
  * klient ändå skickar med dem.
  *
- * Servern hämtar i stället `signature`, `certificateChain` OCH `signedData` ur
- * sitt eget `bankIdService.collect(orderRef)` — svaret BankID gav för just
- * den order `/api/vote/sign-start` startade. `castSequence` läses ur
- * `signedData` av `castEncryptedBallot` självt (se `SignedEnvelope`s
+ * Servern hämtar i stället `signature` OCH `ocspResponse` ur sitt eget
+ * `bankIdService.collect(orderRef)` — svaret BankID gav för just den order
+ * `/api/vote/sign-start` startade. Underskriften är BankID:s XML-dokument, med
+ * kedjan och det signerade inbäddade (uppgift 17b). `castSequence` läses ur det
+ * signerade av `castEncryptedBallot` självt (se `SignedEnvelope`s
  * dokumentation för varför den INTE räknas fram på nytt här — det var
  * precis den bugg fixrunda 1 av granskningen fångade), och
  * `electionId`/`voterStatusId` kommer från röstsessionen. Ingenting som
@@ -163,8 +164,7 @@ export async function POST(request: Request) {
     // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
     completion = {
       signature: collected.completionData.signature,
-      certificateChain: collected.completionData.certificateChain,
-      signedData: collected.completionData.signedData,
+      ocspResponse: collected.completionData.ocspResponse,
     }
   }
 

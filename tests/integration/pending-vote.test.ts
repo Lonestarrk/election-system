@@ -1,3 +1,4 @@
+import type { X509Certificate } from 'node:crypto'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
@@ -27,14 +28,15 @@ import {
   type CastOutcome,
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
-import { openCertificateChain } from '@/modules/eligibility/sealed-chain'
+import { openBankIdSignature } from '@/modules/eligibility/sealed-chain'
+import { verifyBankIdSignature } from '@/modules/eligibility/bankid/xmldsig'
+import { signedAt } from '@/modules/eligibility/bankid/certificate-chain'
+import { bankIdSignature, signedContentIn } from '../unit/bankid/bankid-xml'
 import {
   lookalikeHierarchy,
   MOCK_INTERMEDIATE,
   MOCK_ROOT,
-  pemChain,
   rsaKeys,
-  signPayload,
   voterLeaf,
   type KeyPair,
 } from '../unit/bankid/forged-certificates'
@@ -214,10 +216,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
 
     return {
       signature: result.completionData.signature,
-      certificateChain: result.completionData.certificateChain,
-      // Ordagrant det som skrevs under — inte castSequence vid sidan av. Se
-      // SignedEnvelope.signedData för varför (fixrunda 1, fynd 1).
-      signedData: result.completionData.signedData,
+      ocspResponse: result.completionData.ocspResponse,
       commitmentSalt,
     }
   }
@@ -231,7 +230,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
   async function castRaw(
     voterStatusId: string,
     ballot: EncryptedBallot,
-    envelope: SignedEnvelope = { signature: '', certificateChain: [], signedData: '', commitmentSalt: '' },
+    envelope: SignedEnvelope = { signature: '', ocspResponse: '', commitmentSalt: '' },
   ): Promise<CastOutcome> {
     const shape = await getEncryptedBallotShape(ballotId)
     return castEncryptedBallot(voterStatusId, electionId, ballotId, ballot, envelope, shape)
@@ -402,7 +401,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
      * begärans kropp, men prövningen ska hålla också om den gjorde det, och
      * den prövas därför direkt mot `castEncryptedBallot`.
      */
-    async function forgedEnvelope(ballot: EncryptedBallot, chainFor: (pair: KeyPair) => string[]) {
+    async function forgedEnvelope(ballot: EncryptedBallot, chainFor: (pair: KeyPair) => X509Certificate[]) {
       const forger = rsaKeys('förfalskaren')
       const commitmentSalt = newCommitmentSalt()
       const signedData = envelopePayload({
@@ -412,9 +411,12 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
         castSequence: 1,
       })
       return {
-        signature: signPayload(forger.privateKey, signedData),
-        certificateChain: chainFor(forger),
-        signedData,
+        signature: bankIdSignature({
+          userNonVisibleData: signedData,
+          certificates: chainFor(forger),
+          privateKey: forger.privateKey,
+        }),
+        ocspResponse: '',
         commitmentSalt,
       }
     }
@@ -423,7 +425,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       const ballot = await buildBallot('bp-s')
       const lookalike = lookalikeHierarchy()
       const envelope = await forgedEnvelope(ballot, (pair) =>
-        pemChain(voterLeaf(pair, { personalNumber: VOTER_PN, issuer: lookalike.issuer }), lookalike.intermediate),
+        [voterLeaf(pair, { personalNumber: VOTER_PN, issuer: lookalike.issuer }), lookalike.intermediate],
       )
 
       expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
@@ -433,14 +435,14 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     it('ett utgånget certifikat avvisas', async () => {
       const ballot = await buildBallot('bp-s')
       const envelope = await forgedEnvelope(ballot, (pair) =>
-        pemChain(
+        [
           voterLeaf(pair, {
             personalNumber: VOTER_PN,
             notBefore: new Date(Date.now() - 30 * 86_400_000),
             notAfter: new Date(Date.now() - 86_400_000),
           }),
           MOCK_INTERMEDIATE,
-        ),
+        ],
       )
 
       expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
@@ -451,7 +453,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       // begränsningen i demoläget: mellannivåns nyckel är incheckad.
       const ballot = await buildBallot('bp-s')
       const envelope = await forgedEnvelope(ballot, (pair) =>
-        pemChain(voterLeaf(pair, { personalNumber: VOTER_PN }), MOCK_INTERMEDIATE),
+        [voterLeaf(pair, { personalNumber: VOTER_PN }), MOCK_INTERMEDIATE],
       )
 
       expect((await castRaw(voter, ballot, envelope)).status).toBe('recorded')
@@ -461,30 +463,71 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       // Roten får aldrig komma ur svaret. Här är den dessutom inte lövets utfärdare.
       const ballot = await buildBallot('bp-s')
       const envelope = await forgedEnvelope(ballot, (pair) =>
-        pemChain(voterLeaf(pair, { personalNumber: VOTER_PN }), MOCK_ROOT),
+        [voterLeaf(pair, { personalNumber: VOTER_PN }), MOCK_ROOT],
       )
 
       expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
     })
 
-    it('kedjan lagras krypterad, utan personnummer eller namn, och går bara att öppna för sin rad', async () => {
+    it('hela underskriften lagras förseglad, utan personnummer eller namn, och går bara att öppna för sin rad', async () => {
       await cast(voter, 'bp-s')
 
       const stored = await votersDb.pendingVote.findFirstOrThrow({
         where: { voterStatusId: voter },
-        select: { bankIdCertificateChain: true, ballotId: true },
+        select: { bankIdCertificateChain: true, bankIdSignature: true, ballotId: true },
       })
 
       expect(stored.bankIdCertificateChain).not.toContain(VOTER_PN)
       expect(stored.bankIdCertificateChain).not.toContain('Lindqvist')
-      expect(stored.bankIdCertificateChain).not.toContain('CERTIFICATE')
+      expect(stored.bankIdCertificateChain).not.toContain('Signature')
 
-      const opened = openCertificateChain(stored.bankIdCertificateChain, {
+      const opened = openBankIdSignature(stored.bankIdCertificateChain, {
         voterStatusId: voter,
         ballotId: stored.ballotId,
       })
-      expect(opened?.[0]?.toLegacyObject().subject).toMatchObject({ serialNumber: VOTER_PN })
-      expect(openCertificateChain(stored.bankIdCertificateChain, { voterStatusId: kim, ballotId })).toBeNull()
+      const verdict = verifyBankIdSignature(opened!.xml, { roots: [MOCK_ROOT], signedDuring: signedAt(new Date()) })
+      expect(verdict).toMatchObject({ ok: true, personalNumber: VOTER_PN })
+      // Kuvertroten läser underskriften ur bankid_signature, och den är dokumentets.
+      expect(verdict.ok && verdict.signatureValue).toBe(stored.bankIdSignature)
+      expect(openBankIdSignature(stored.bankIdCertificateChain, { voterStatusId: kim, ballotId })).toBeNull()
+    })
+
+    it('BankID:s spärrsvar förseglas med underskriften', async () => {
+      const ballot = await buildBallot('bp-s')
+      const ocsp = Buffer.from('ett OCSP-svar från BankID')
+      const envelope = { ...(await signAs(voter, ballot, 1)), ocspResponse: ocsp.toString('base64') }
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('recorded')
+
+      const stored = await votersDb.pendingVote.findFirstOrThrow({
+        where: { voterStatusId: voter },
+        select: { bankIdCertificateChain: true },
+      })
+      expect(stored.bankIdCertificateChain).not.toContain(ocsp.toString('base64'))
+      const opened = openBankIdSignature(stored.bankIdCertificateChain, { voterStatusId: voter, ballotId })
+      expect(opened?.ocspResponse.equals(ocsp)).toBe(true)
+    })
+
+    it('ett spärrsvar som inte är base64 avvisas, och ingenting lagras', async () => {
+      const ballot = await buildBallot('bp-s')
+      const envelope = { ...(await signAs(voter, ballot, 1)), ocspResponse: 'inte base64!' }
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+
+    it('en underskrift som läsaren avvisar läggs inte, också med äkta digest och signatur', async () => {
+      // En kommentar mitt i det signerade ändrar inte digesten under kanonisering
+      // utan kommentarer. Läsaren avvisar den, se tests/unit/bankid-xmldsig.test.ts.
+      const ballot = await buildBallot('bp-s')
+      const envelope = await signAs(voter, ballot, 1)
+      const xml = Buffer.from(envelope.signature, 'base64').toString('utf8')
+      const commented = xml.replace('<usrNonVisibleData>', '<usrNonVisibleData><!---->')
+
+      expect(commented).not.toBe(xml)
+      expect(
+        (await castRaw(voter, ballot, { ...envelope, signature: Buffer.from(commented).toString('base64') })).status,
+      ).toBe('invalid_signature')
     })
   })
 
@@ -516,8 +559,8 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       const ballot = await buildBallot('bp-s')
       const envelope = await signAs(voter, ballot, 1)
 
-      expect(envelope.signedData).not.toContain(ballot.ciphertextHash)
-      expect(envelope.signedData).not.toContain(envelope.commitmentSalt)
+      expect(signedContentIn(envelope.signature)).not.toContain(ballot.ciphertextHash)
+      expect(signedContentIn(envelope.signature)).not.toContain(envelope.commitmentSalt)
       expect((await castRaw(voter, ballot, envelope)).status).toBe('recorded')
 
       const stored = await votersDb.pendingVote.findFirstOrThrow({
@@ -648,8 +691,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
 
     expect(routeSource).not.toMatch(/body\.data\.(signature|certificate|castSequence|signedData)/)
     expect(routeSource).toMatch(/collected\.completionData\.signature/)
-    expect(routeSource).toMatch(/collected\.completionData\.certificateChain/)
-    expect(routeSource).toMatch(/collected\.completionData\.signedData/)
+    expect(routeSource).toMatch(/collected\.completionData\.ocspResponse/)
     // castSequence får inte räknas om av rutten längre — se fixrunda 1, fynd 1.
     expect(routeSource).not.toMatch(/nextCastSequence/)
   })

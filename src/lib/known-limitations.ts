@@ -390,6 +390,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
           "    | 'BAD_PROOF'",
           "    | 'OLD_PROOF_FORMAT'",
           "    | 'OLD_SIGNATURE_FORMAT'",
+          "    | 'OLD_BANKID_FORMAT'",
           '  pendingVoteId: string',
         ].join('\n'),
       },
@@ -459,8 +460,9 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'certifikatet har spärrats. Ett BankID som spärrats, till exempel för att telefonen stulits, ' +
       'godkänns alltså så länge certifikatet gäller i tid. Riktig BankID skickar med ett OCSP-svar ' +
       'som visar certifikatets status vid underskriften, och det är det som ska prövas, både när ' +
-      'rösten läggs och i valideringen före stängningen. Attrappen har inget sådant svar, och ' +
-      'kedjeprövningen tar inte emot något. Dessutom kommer tiden för underskriften i valideringen ' +
+      'rösten läggs och i valideringen före stängningen. Sedan uppgift 17b sparas BankID:s svar ' +
+      'förseglat tillsammans med underskriften, men ingenting prövar det: attrappen har inget sådant ' +
+      'svar, och kedjeprövningen tar inte emot något. Dessutom kommer tiden för underskriften i valideringen ' +
       'ur kuvertets updatedAt, som den som kan skriva i databasen kan ändra. Ett certifikat som ' +
       'gått ut godkänns därför om raden bakdateras till en dag då det gällde. Det kräver ett äkta ' +
       'certifikat och dess privata nyckel, och tidpunkten i OCSP-svaret hade stängt också det.',
@@ -498,42 +500,48 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       },
     ],
   },
+  /**
+   * OMSKRIVEN I UPPGIFT 17b. Posten hette `bankid-xmldsig-adapter-missing` och
+   * sa att läsaren av XML-signaturen saknades. Läsaren finns nu, och attrappen
+   * skriver samma format. Kvar är att ingen riktig underskrift från BankID har
+   * prövats, och att klienten mot BankID saknas. Båda hör till uppgift 17c.
+   */
   {
-    id: 'bankid-xmldsig-adapter-missing',
-    title: 'Riktig BankID kräver en adapter för XML-signaturen',
+    id: 'bankid-reader-untested-against-bankid',
+    title: 'Läsaren av BankID:s underskrift är inte prövad mot en riktig underskrift',
     why:
-      'BankID v6 returnerar underskriften som en XML-signatur, XMLDSig, med certifikatkedjan ' +
-      'inbäddad. Kedjeprövningen är oberoende av formatet: den tar certifikaten och det signerade ' +
-      'innehållet som de är. Men att läsa ut kedjan, signaturvärdet och den signerade texten ur ' +
-      'XML-signaturen, och att pröva XML-signaturen själv, är inte byggt och kan inte provas utan ' +
-      'BankID:s testmiljö. Tills adaptern finns är attrappen den enda implementationen, och ingen ' +
-      'del av systemet har prövats mot ett riktigt BankID-svar. Adaptern får inte heller lagra ' +
-      'BankID:s signature som den är. Eftersom kedjan är inbäddad bär den lövet, med namn och ' +
-      'personnummer i klartext, och i bankid_signature bredvid kuvertet hade den gjort varje ' +
-      'liggande kuvert till en namngiven rad, också för den som saknar pepparn. Den ska förseglas ' +
-      'som kedjan.',
+      'BankID lämnar underskriften som en XML-signatur, XMLDSig, med det signerade innehållet och ' +
+      'certifikatkedjan inbäddade. Läsaren som prövar den är byggd efter BankID:s beskrivning av ' +
+      'formatet och godtar bara exakt den strukturen och de algoritmerna. Men BankID publicerar inget ' +
+      'fullständigt exempel på en sådan underskrift, och ingen del av systemet har prövats mot en ' +
+      'underskrift från BankID:s testmiljö. Attrappen skriver samma format, så att varje test går ' +
+      'genom läsaren, men det är attrappens tolkning av beskrivningen. Avviker en riktig underskrift ' +
+      'från den, till exempel i ett elementnamn, en algoritm eller ett fält som BankID lägger till, ' +
+      'avvisar läsaren underskriften, och rösten läggs inte. Klienten mot BankID finns inte heller ' +
+      'ännu, och skarpt läge kan inte starta utan den.',
     stillTrueIf: [
       // Attrappen är den enda implementationen av gränssnittet.
       {
         file: 'src/modules/eligibility/bankid/index.ts',
         contains: "runtimeMode() === 'DEMO' ? new MockBankIdService() : new UnavailableBankIdService()",
       },
-      // Underskriften lagras som den kommer. Med en adapter som förseglar den ändras raden.
-      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'bankIdSignature: envelope.signature,' },
+      // Bygget har ingen klient mot BankID. Uppgift 17c byter konstanten när klienten finns.
+      { file: 'src/modules/eligibility/bankid/kind.ts', contains: 'export const REAL_BANKID_CLIENT_BUILT = false' },
     ],
   },
   {
     id: 'pepper-holder-reads-voter-names',
     title: 'Den som har pepparn kan läsa namn och personnummer för varje liggande kuvert',
     why:
-      'Varje liggande kuvert bär väljarens BankID-certifikat, med personnummer och namn i klartext, ' +
-      'krypterat med en nyckel som härleds ur IDENTITY_PEPPER och utfyllt till en fast längd, så ' +
-      'att inte heller längden säger något om namnet eller banken. Nyckeln måste finnas hos ' +
-      'servern, eftersom valideringen före stängningen öppnar varje kedja. En databasdump utan ' +
-      'pepparn avslöjar därför ingenting nytt om kedjan. Underskriften bredvid den lagras däremot ' +
-      'som den är, och med riktig BankID följer dess längd lövets nyckeltyp, som kan skilja sig ' +
-      'mellan bankerna och alltså peka ut vem som utfärdat certifikatet. Den som har både databasen ' +
-      'och pepparn öppnar varje kedja och får namn och personnummer för alla som har röstat och ' +
+      'Varje liggande kuvert bär väljarens BankID-underskrift, med certifikatet, personnumret och ' +
+      'namnet i klartext, krypterad med en nyckel som härleds ur IDENTITY_PEPPER och utfylld till en ' +
+      'fast längd, så att inte heller längden säger något om namnet eller banken. Nyckeln måste ' +
+      'finnas hos servern, eftersom valideringen före stängningen öppnar varje underskrift. En ' +
+      'databasdump utan pepparn avslöjar därför ingenting nytt om den. Underskriftens värde, ' +
+      'SignatureValue, lagras däremot också för sig, som det är, och med riktig BankID följer dess ' +
+      'längd lövets nyckelstorlek, som kan skilja sig mellan bankerna och alltså peka ut vem som ' +
+      'utfärdat certifikatet. Den som har både databasen och pepparn öppnar varje underskrift och ' +
+      'får namn och personnummer för alla som har röstat och ' +
       'ännu inte fått sitt kuvert skalat, utan en enda hashning. Det är mer än röstlängden ger i ' +
       'dag. Där går identitetshasharna visserligen också att vända med pepparn, genom att alla ' +
       'tänkbara personnummer prövas, omkring 4·10⁷ à 37 ms eller ungefär 17 processordygn, som går ' +
@@ -541,15 +549,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'underskrifterna får namnen: för att pröva kedjorna mot BankID:s rot behöver granskaren ' +
       'pepparn, och får då också veta vem som röstat. I Azure ligger pepparn i Key Vault, och den ' +
       'som får läsa valvet får den. Appen får den som miljövariabel när containern startar och har ' +
-      'den i minnet så länge den kör, så den som tagit sig in i appen har den också. Kedjan raderas ' +
-      'med raden vid skalningen, men en säkerhetskopia från före stängningen har den kvar, och ' +
+      'den i minnet så länge den kör, så den som tagit sig in i appen har den också. Underskriften ' +
+      'raderas med raden vid skalningen, men en säkerhetskopia från före stängningen har den kvar, och ' +
       'pepparn, som distributionen bara skriver när den saknas i valvet, öppnar den också där.',
     stillTrueIf: [
       // Kedjans nyckel härleds ur pepparn. Kom den i stället från något som
       // servern inte bär, till exempel förtroendemännens andelar, ändrades raden.
       { file: 'src/modules/eligibility/sealed-chain.ts', contains: "hkdfSync('sha256', env.identityPepper," },
-      // Underskriften lagras som den är, utan försegling.
-      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'bankIdSignature: envelope.signature,' },
+      // Underskriftens värde lagras också för sig, som det är, utan försegling.
+      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'bankIdSignature: signed.signatureValue,' },
       // I Azure kommer pepparn ur valvet och blir en miljövariabel i appen.
       // Stannade den i en HSM, som räknade åt appen, ändrades raden.
       { file: 'infra/azure/app.bicep', contains: "{ name: 'IDENTITY_PEPPER', secretRef: 'identity-pepper' }" },

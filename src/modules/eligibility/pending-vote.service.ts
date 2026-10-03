@@ -8,19 +8,12 @@ import {
 } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
-import {
-  parseCertificateChain,
-  signedAt,
-  verifyCertificateChain,
-} from './bankid/certificate-chain'
-import {
-  ciphertextCommitment,
-  parseEnvelopePayload,
-  verifySignedPayload,
-} from './bankid/envelope-signature'
+import { signedAt } from './bankid/certificate-chain'
+import { ciphertextCommitment, envelopePayload, parseEnvelopePayload } from './bankid/envelope-signature'
 import { trustedBankIdRoots } from './bankid/trusted-roots'
+import { strictBase64, verifyBankIdSignature } from './bankid/xmldsig'
 import { votersDb } from './db'
-import { sealCertificateChain } from './sealed-chain'
+import { MAX_OCSP_RESPONSE_BYTES, sealBankIdSignature } from './sealed-chain'
 import { holdVoterBooksForEnvelope, votedInOldFlow } from './voter-status.service'
 
 /**
@@ -45,20 +38,13 @@ import { holdVoterBooksForEnvelope, votedInOldFlow } from './voter-status.servic
  */
 
 export type SignedEnvelope = {
-  signature: string
-
   /**
-   * Certifikatkedjan ur BankID:s svar, lövet först, i PEM. Se
-   * `completionData.certificateChain` i `IBankIdService.ts`.
-   */
-  certificateChain: readonly string[]
-
-  /**
-   * Det faktiskt signerade innehållet, ordagrant — BankID:s eget
-   * `completionData.signedData`.
+   * BankID:s eget `completionData.signature`, base64 av XMLDSig-dokumentet med
+   * det signerade och certifikatkedjan inbäddade (uppgift 17b). Se
+   * `IBankIdService.ts` och ./bankid/xmldsig.ts.
    *
-   * INTE ETT SEPARAT `castSequence`-FÄLT, OCH DET ÄR AVSIKTLIGT (fixrunda 1
-   * av uppgift 9:s granskning, fynd 1).
+   * INGET SEPARAT `castSequence`-FÄLT, OCH INGET SEPARAT SIGNERAT INNEHÅLL, OCH
+   * DET ÄR AVSIKTLIGT (fixrunda 1 av uppgift 9:s granskning, fynd 1).
    *
    * Ett tidigare utkast lät anroparen skicka med `castSequence` vid sidan av
    * signaturen, och `castEncryptedBallot` räknade fram sin egen färska
@@ -66,23 +52,22 @@ export type SignedEnvelope = {
    * medskickade talet. Två uträkningar av samma sak, gjorda vid olika
    * tillfällen, kan ge olika svar — det vanliga fallet är en väljare som har
    * en signering stående i en flik medan hon röstar klart i en annan.
-   * Följden var ett missvisande `invalid_signature` i stället för
-   * `stale_sequence`, och `stale_sequence`-grenen var i praktiken otestad i
-   * sin verkliga form.
    *
-   * `castSequence` läses i stället ut ur `signedData` (via
-   * `parseEnvelopePayload`), EFTER att signaturen verifierats mot exakt den
-   * strängen. Talet som prövas mot dubbelröstningsspärren är därmed
-   * garanterat samma tal som väljarens BankID-app en gång skrev under —
-   * aldrig ett nytt, oberoende räknat.
+   * `castSequence` läses i stället ut ur `usrNonVisibleData` i det element vars
+   * digest och underskrift har prövats. Talet som prövas mot
+   * dubbelröstningsspärren är därmed garanterat samma tal som väljarens
+   * BankID-app en gång skrev under — aldrig ett nytt, oberoende räknat.
    */
-  signedData: string
+  signature: string
+
+  /** BankID:s `completionData.ocspResponse`, base64. Förseglas med underskriften, men prövas inte. */
+  ocspResponse: string
 
   /**
    * Saltet i åtagandet som det signerade bär (uppgift 11e), ur orderlagret och
    * INTE ur BankID:s svar eller begäran. Sign-start skapade det och höll det med
    * ordern. Läggningen räknar `ciphertextCommitment(chifferhash, salt)` och
-   * kräver att det är åtagandet i `signedData`, och sparar sedan saltet i raden,
+   * kräver att det är åtagandet i det signerade, och sparar sedan saltet i raden,
    * så att valideringen före stängningen kan räkna om det.
    */
   commitmentSalt: string
@@ -210,25 +195,60 @@ export async function castEncryptedBallot(
   }
 
   /**
-   * DET SIGNERADE INNEHÅLLET AVKODAS FÖRST — RÄKNAREN KOMMER DÄRIFRÅN, INTE
-   * FRÅN EN NY UTRÄKNING (fixrunda 1 av uppgift 9:s granskning, fynd 1).
+   * BANKID:S UNDERSKRIFT PRÖVAS I BANKID:S EGET FORMAT (uppgift 17b).
    *
-   * `envelope.signedData` är BankID:s eget `completionData.signedData` —
-   * ordagrant det väljarens app skrev under. `parseEnvelopePayload` läser ut
-   * `electionId`, `ballotId`, `ciphertextCommitment` och `castSequence` ur den
-   * strängen. Åtagandet räknas här ur valsedelns chifferhash och saltet ur
-   * ordern (uppgift 11e), och ett kuvert i det gamla formatet, med chifferhashen
-   * i det signerade, går inte att läsa alls. Alla fyra måste stämma mot den här
-   * begäran; annars är kuvertet
-   * antingen trasigt eller en signatur som egentligen gäller en ANNAN röst
-   * — och en sådan signatur ska aldrig kunna återanvändas här bara för att
-   * den råkar verifiera kryptografiskt mot sitt eget, avvikande innehåll.
+   * `envelope.signature` är BankID:s eget `completionData.signature`, base64 av
+   * ett XMLDSig-dokument med det signerade innehållet och certifikatkedjan
+   * inbäddade. `verifyBankIdSignature` prövar strukturen, digesterna, kedjan mot
+   * BankID:s rot och underskriften med lövets nyckel, och lämnar ut det signerade
+   * ur just det element som prövats. Se ./bankid/xmldsig.ts för varje kontroll.
+   *
+   * KEDJAN PRÖVAS MOT BANKID:S ROT (uppgift 14f). Signaturen är bara värd vad
+   * nyckeln bakom den är värd, och nyckeln är bara värd något om BankID står för
+   * den. Rötterna läses ur konfigurationen. Går de inte att fastställa kastar
+   * `trustedBankIdRoots`, och rösten läggs inte, i stället för att prövas mot
+   * något annat än det som konfigurerats. Certifikaten ska ha gällt nu, när
+   * BankID just svarade.
+   *
+   * Spärrsvaret prövas inte, bara dess form och storlek, se posten
+   * `no-revocation-check` i src/lib/known-limitations.ts. Det förseglas med
+   * underskriften längre ned.
    */
-  const signedPayload = parseEnvelopePayload(envelope.signedData)
+  const signatureXml = strictBase64(envelope.signature)
+  const ocspResponse = strictBase64(envelope.ocspResponse)
+  if (!signatureXml || !ocspResponse || ocspResponse.length > MAX_OCSP_RESPONSE_BYTES) {
+    return { status: 'invalid_signature' }
+  }
+
+  const signed = verifyBankIdSignature(signatureXml, {
+    roots: trustedBankIdRoots(),
+    signedDuring: signedAt(new Date()),
+  })
+  if (!signed.ok) return { status: 'invalid_signature' }
+
+  /**
+   * DET SIGNERADE INNEHÅLLET AVKODAS UR DET PRÖVADE ELEMENTET — RÄKNAREN KOMMER
+   * DÄRIFRÅN, INTE FRÅN EN NY UTRÄKNING (fixrunda 1 av uppgift 9:s granskning,
+   * fynd 1).
+   *
+   * `signed.usrNonVisibleData` är ordagrant det väljarens app skrev under.
+   * `parseEnvelopePayload` läser ut `electionId`, `ballotId`,
+   * `ciphertextCommitment` och `castSequence` ur den strängen. Åtagandet räknas
+   * här ur valsedelns chifferhash och saltet ur ordern (uppgift 11e), och ett
+   * kuvert i det gamla formatet, med chifferhashen i det signerade, går inte att
+   * läsa alls. Alla fyra måste stämma mot den här begäran; annars är kuvertet
+   * antingen trasigt eller en signatur som egentligen gäller en ANNAN röst.
+   *
+   * Strängen ska dessutom vara exakt den kodning `envelopePayload` ger för
+   * fälten. Valideringen före stängningen bygger om den ur radens kolumner och
+   * jämför, och en räknare skriven "01" hade godtagits här men underkänts där.
+   */
+  const signedPayload = parseEnvelopePayload(signed.usrNonVisibleData)
   const commitment = ciphertextCommitment(ballot.ciphertextHash, envelope.commitmentSalt)
 
   if (
     !signedPayload ||
+    envelopePayload(signedPayload) !== signed.usrNonVisibleData ||
     commitment === null ||
     signedPayload.electionId !== electionId ||
     signedPayload.ballotId !== ballotId ||
@@ -247,11 +267,9 @@ export async function castEncryptedBallot(
    *
    * Den som fångat väljarens första signerade kuvert kan annars skicka in det
    * igen efter att hon ändrat sig, och rösten återgår till den köpta — ett
-   * röstköp som överlever hela ändringsmöjligheten. Talet som jämförs är nu
+   * röstköp som överlever hela ändringsmöjligheten. Talet som jämförs är
    * garanterat det som faktiskt signerades (se `signedPayload` ovan), inte en
-   * uträkning gjord vid det här anropet — annars kan den avgörande jämförelsen
-   * göras mot fel tal utan att någon signatur någonsin behöver förfalskas,
-   * exakt det granskningen fångade.
+   * uträkning gjord vid det här anropet.
    *
    * Prövningen här sparar bara arbete, som fasens prövning överst. Den som
    * avgör är villkoret i skrivningen, i transaktionen längst ned (fixrunda 1
@@ -264,51 +282,15 @@ export async function castEncryptedBallot(
   }
 
   /**
-   * KEDJAN PRÖVAS MOT BANKID:S ROT INNAN NÅGOT ANNAT I SIGNATUREN (uppgift 14f).
-   *
-   * Signaturen är bara värd vad nyckeln bakom den är värd, och nyckeln är
-   * bara värd något om BankID står för den. Kedjan ska därför gå från lövet
-   * genom en till tre mellannivåer med CA-rätt till en betrodd rot, lövet ska
-   * få användas till underskrifter, och alla ska ha gällt nu, när BankID just
-   * svarade. Först då lämnas lövets nyckel ut, och den är den enda signaturen
-   * prövas mot. Se `verifyCertificateChain` för varje kontroll.
-   *
-   * Rötterna läses ur konfigurationen. Går de inte att fastställa kastar
-   * `trustedBankIdRoots`, och rösten läggs inte, i stället för att prövas mot
-   * något annat än det som konfigurerats.
-   */
-  const chain = parseCertificateChain(envelope.certificateChain)
-  const certificate = chain
-    ? verifyCertificateChain(chain, { roots: trustedBankIdRoots(), signedDuring: signedAt(new Date()) })
-    : null
-
-  if (!chain || !certificate?.ok) return { status: 'invalid_signature' }
-
-  /**
-   * SIGNATUREN VERIFIERAS MOT DET FAKTISKT SIGNERADE INNEHÅLLET.
-   *
-   * Inte mot en nyttolast som byggs om här — se `SignedEnvelope.signedData`
-   * och `verifySignedPayload` för hela resonemanget.
-   */
-  if (!verifySignedPayload(envelope.signature, certificate.signingKey, envelope.signedData)) {
-    return { status: 'invalid_signature' }
-  }
-
-  /**
    * TVÅ SKILDA KONTROLLER, OCH DE FÅR INTE SLÅS IHOP (fixrunda 1 av uppgift
    * 9:s granskning, fynd 2).
    *
-   * 1. Ovan: är signaturen giltig för exakt det signerade innehållet, med en
+   * 1. Ovan: är underskriften giltig för exakt det signerade innehållet, med en
    *    nyckel som BankID står för? Kryptografiskt, ingen väljare inblandad.
    * 2. Nedan: tillhör lövet SAMMA person som väljarraden? Det avgörs genom att
    *    HASHA personnumret i lövet och jämföra med röstlängdens identitetshash.
-   *    Personnumret är nu ett påstående som kedjan styrker, inte något som
+   *    Personnumret är ett påstående som kedjan styrker, inte något som
    *    certifikatet säger om sig självt.
-   *
-   * Granskningen av uppgift 8 fångade dessutom att ett tidigare utkast
-   * skickade `voter.externalIdentityHash` direkt som förväntat personnummer
-   * till signaturverifieringen, som jämför mot KLARTEXTSIFFROR — en hash
-   * hade aldrig matchat, och varje giltig röst hade avvisats.
    */
   const voter = await votersDb.voterStatus.findUnique({
     where: { id: voterStatusId },
@@ -326,10 +308,7 @@ export async function castEncryptedBallot(
    * och ett billigt sätt att belasta antagningskön utan en enda giltig
    * signatur.
    */
-  const signerIsTheVoter = safeEqual(
-    await hashPersonalNumber(certificate.personalNumber),
-    voter.externalIdentityHash,
-  )
+  const signerIsTheVoter = safeEqual(await hashPersonalNumber(signed.personalNumber), voter.externalIdentityHash)
 
   if (!signerIsTheVoter) {
     return { status: 'invalid_signature' }
@@ -347,15 +326,16 @@ export async function castEncryptedBallot(
   if (signal?.aborted) throw new VerificationAborted()
 
   /**
-   * KEDJAN LAGRAS, KRYPTERAD OCH BUNDEN TILL RADEN.
+   * HELA UNDERSKRIFTEN LAGRAS, FÖRSEGLAD OCH BUNDEN TILL RADEN (uppgift 17b).
    *
-   * Valideringen före stängningen prövar kedjan en gång till, och det är den
-   * prövningen som, med riktig BankID, stoppar den som skriver direkt i
-   * röstlängden, eftersom den aldrig passerar läggningen. Nyckeln för sig
-   * räckte inte: den kunde bytas mot en egen. Kedjan bär personnummer och namn
-   * i klartext och krypteras därför, se `sealed-chain.ts`.
+   * Valideringen före stängningen prövar underskriften en gång till, och det är
+   * den prövningen som, med riktig BankID, stoppar den som skriver direkt i
+   * röstlängden, eftersom den aldrig passerar läggningen. Dokumentet bär
+   * personnummer och namn i klartext och förseglas därför, med spärrsvaret, se
+   * `sealed-chain.ts`. SignatureValue lagras för sig i bankid_signature, där
+   * kuvertroten läser den.
    */
-  const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })
+  const bankIdCertificateChain = sealBankIdSignature({ xml: signatureXml, ocspResponse }, { voterStatusId, ballotId })
 
   /**
    * FASEN PRÖVAS EN GÅNG TILL, I SAMMA TRANSAKTION SOM SKRIVNINGEN (uppgift 11d).
@@ -405,7 +385,7 @@ export async function castEncryptedBallot(
     proofs: ballot.proofs,
     ciphertextHash: ballot.ciphertextHash,
     castSequence: signedPayload.castSequence,
-    bankIdSignature: envelope.signature,
+    bankIdSignature: signed.signatureValue,
     bankIdCertificateChain,
     // Raderas med raden vid skalningen. Följer aldrig med till votes_db.
     commitmentSalt: envelope.commitmentSalt,
@@ -486,9 +466,9 @@ function isUniqueViolation(error: unknown): boolean {
  * Fram till fixrunda 1 av uppgift 9:s granskning anropades den här funktionen
  * på nytt av `/api/vote/encrypted` också, för att jämföra mot i stället för
  * att lita på det tal som faktiskt signerats. Två uträkningar av samma sak
- * vid olika tillfällen kan ge olika svar — se `SignedEnvelope.signedData` för
+ * vid olika tillfällen kan ge olika svar — se `SignedEnvelope.signature` för
  * hela felet det orsakade. `castEncryptedBallot` läser numera räknaren ur
- * `envelope.signedData` (via `parseEnvelopePayload`) i stället, och anropar
+ * det signerade i underskriften (via `parseEnvelopePayload`) i stället, och anropar
  * aldrig den här funktionen.
  *
  * Kvar att komma ihåg: startas TVÅ signeringar för samma väljare och valsedel

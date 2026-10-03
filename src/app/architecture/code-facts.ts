@@ -1114,9 +1114,10 @@ export const CURRENTLY = {
     text:
       'Byggt: stängningen läser kuverten en gång, validerar just den läsningen och stoppar vid en ' +
       'avvikelse, och flyttar och raderar sedan exakt de kuvert som validerats. Varje ' +
-      'underskrift prövas mot BankID:s rotcertifikat och varje certifikat mot väljarens ' +
-      'identitetshash, både när rösten läggs och i valideringen, och kedjan lagras krypterad i ' +
-      'pending_vote. I demoläget är roten attrappens egen, och attrappen utfärdar certifikaten själv.',
+      'underskrift prövas i BankID:s format, med kedjan mot BankID:s rotcertifikat, och varje ' +
+      'certifikat mot väljarens identitetshash, både när rösten läggs och i valideringen, och hela ' +
+      'underskriften lagras krypterad i pending_vote. I demoläget är roten attrappens egen, och ' +
+      'attrappen utfärdar certifikaten själv.',
     holdsWhile: [
       {
         file: 'src/orchestration/close-election.usecase.ts',
@@ -1131,28 +1132,31 @@ export const CURRENTLY = {
         file: 'src/orchestration/validate-before-close.usecase.ts',
         contains: 'const { electionId, ballots, envelopes: pendingVotes } = snapshot',
       },
-      // Valideringen öppnar kedjan, prövar den mot rötterna och jämför lövet med väljaren.
+      // Valideringen öppnar underskriften, prövar den med kedjan mot rötterna och jämför lövet med väljaren.
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
-        contains: 'const chain = openCertificateChain(vote.bankIdCertificateChain, {',
+        contains: 'const sealed = openBankIdSignature(vote.bankIdCertificateChain, {',
       },
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
-        contains: 'const certificate = verifyCertificateChain(chain, {',
+        contains: 'const signed = verifyBankIdSignature(sealed.xml, { roots, signedDuring: signedOnDay(vote.updatedAt) })',
+      },
+      {
+        file: 'src/modules/eligibility/bankid/xmldsig.ts',
+        contains: 'const certificate = verifyCertificateChain(chain, { roots: options.roots, signedDuring: options.signedDuring })',
       },
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
         contains: 'if (!safeEqual(identityHash, vote.voterStatus.externalIdentityHash)) {',
       },
-      // Läggningen prövar samma kedja, och lagrar den krypterad.
+      // Läggningen prövar underskriften på samma sätt, och lagrar den krypterad.
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
-        contains:
-          'verifyCertificateChain(chain, { roots: trustedBankIdRoots(), signedDuring: signedAt(new Date()) })',
+        contains: 'const signed = verifyBankIdSignature(signatureXml, {\n    roots: trustedBankIdRoots(),',
       },
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
-        contains: 'const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })',
+        contains: 'const bankIdCertificateChain = sealBankIdSignature({ xml: signatureXml, ocspResponse }, { voterStatusId, ballotId })',
       },
       // I demoläget är attrappens rot den som kedjan prövas mot.
       {
@@ -1444,8 +1448,9 @@ export const CURRENTLY = {
     text:
       'Blir IDENTITY_PEPPER i appen. Pepparn är saltet i identitetshashen, scrypt av personnumret, ' +
       'vid inloggningen och när certifikatet bakom en underskrift knyts till väljaren. Ur den ' +
-      'härleds med HKDF nyckeln som krypterar certifikatkedjan i pending_vote, när rösten läggs, och ' +
-      'valideringen före stängningen öppnar kedjan med samma nyckel och hashar personnumret i lövet.',
+      'härleds med HKDF nyckeln som krypterar BankID-underskriften, med certifikatkedjan, i ' +
+      'pending_vote, när rösten läggs, och valideringen före stängningen öppnar underskriften med ' +
+      'samma nyckel och hashar personnumret i lövet.',
     holdsWhile: [
       ...PEPPER_FROM_VAULT,
       { file: 'src/modules/eligibility/identity.ts', contains: 'scryptHex(normalised, env.identityPepper)' },
@@ -1455,16 +1460,16 @@ export const CURRENTLY = {
       },
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
-        contains: 'await hashPersonalNumber(certificate.personalNumber),',
+        contains: 'await hashPersonalNumber(signed.personalNumber)',
       },
       { file: 'src/modules/eligibility/sealed-chain.ts', contains: "hkdfSync('sha256', env.identityPepper," },
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
-        contains: 'const bankIdCertificateChain = sealCertificateChain(chain, { voterStatusId, ballotId })',
+        contains: 'const bankIdCertificateChain = sealBankIdSignature({ xml: signatureXml, ocspResponse }, { voterStatusId, ballotId })',
       },
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
-        contains: 'const chain = openCertificateChain(vote.bankIdCertificateChain, {',
+        contains: 'const sealed = openBankIdSignature(vote.bankIdCertificateChain, {',
       },
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
@@ -2227,7 +2232,7 @@ export type OutOfScopeItem = {
  * specen. Till det kommer sådant som bara ett riktigt val har: ett avtal med
  * en bank för BankID i produktion, och förtroendepersoner som räknar på egna
  * enheter. En begränsning som en uppgift i planen åtgärdar (som BankID-ordern
- * eller XML-adaptern) hör till "Kommer att implementeras" i stället, inte hit.
+ * eller provet av BankID:s underskrift mot testmiljön) hör till "Kommer att implementeras" i stället, inte hit.
  */
 export const OUT_OF_SCOPE: OutOfScopeItem[] = [
   {
@@ -2292,7 +2297,7 @@ export const LIMITATION_STATUS: Record<string, Status> = {
   'signing-keys-in-database': statusPlanned('15'),
   'no-guaranteed-anonymity-set': statusPlanned('15'),
   'no-revocation-check': STATUS_OUT_OF_SCOPE,
-  'bankid-xmldsig-adapter-missing': statusPlanned('17b'),
+  'bankid-reader-untested-against-bankid': statusPlanned('17c'),
   // Uppgift 11d stängde bytet före infogningen med återläsningen, och uppgift
   // 12b bytet efter stängningen för den som bara kan skriva i röstdatabasen:
   // räkningen och slutkontrollen prövar urnroten. Kvar är att den kan stoppa

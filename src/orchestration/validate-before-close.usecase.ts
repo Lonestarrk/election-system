@@ -11,11 +11,17 @@ import {
   ciphertextCommitment,
   envelopePayload,
   legacyEnvelopePayload,
+  parseEnvelopePayload,
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
 import { trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
+import { verifyBankIdSignature, type XmlDsigFailure } from '@/modules/eligibility/bankid/xmldsig'
 import { hashPersonalNumber } from '@/modules/eligibility/identity'
-import { openCertificateChain } from '@/modules/eligibility/sealed-chain'
+import {
+  openBankIdSignature,
+  openLegacyCertificateChain,
+  sealedFormatOf,
+} from '@/modules/eligibility/sealed-chain'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
 import { isOldProofFormat, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
@@ -54,15 +60,22 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  * när rösten läggs hade inte räckt, eftersom den som skriver direkt i
  * databasen aldrig passerar läggningen.
  *
- * Nu bär raden BankID-kedjan, krypterad, och valideringen prövar den HÄR, för
- * varje rad:
+ * Nu bär raden BankID:s hela underskrift, förseglad, och valideringen prövar den
+ * HÄR, för varje rad (uppgift 17b):
  *
- *   1. kedjan går att öppna för just den här raden, se `sealed-chain.ts`
- *   2. kedjan går till en betrodd rot, med de kontroller som
- *      `verifyCertificateChain` gör, och gällde den dag kuvertet lades
- *   3. signaturen håller mot lövets nyckel, för nuvarande eller en äldre räknare
+ *   1. underskriften går att öppna för just den här raden, se `sealed-chain.ts`
+ *   2. den håller i BankID:s format, se `verifyBankIdSignature` i
+ *      bankid/xmldsig.ts: strukturen, digesterna, kedjan till en betrodd rot den
+ *      dag kuvertet lades, och underskriften med lövets nyckel
+ *   3. SignatureValue i dokumentet är den som står i bankid_signature, och det
+ *      signerade i det prövade elementet är radens kuvert, med nuvarande eller
+ *      en äldre räknare
  *   4. personnumret i lövet är väljarens: hashat med samma peppar som
  *      röstlängden ska det ge radens identitetshash
+ *
+ * En rad med kedjan i det gamla formatet, från före uppgift 17b, prövas som
+ * förut, med attrappens tidigare underskrift över det signerade. Är den äkta
+ * blir kuvertet OLD_BANKID_FORMAT, se `judgeLegacySignature`.
  *
  * Med riktig BankID, där nyckeln som utfärdar certifikaten finns hos BankID,
  * kan den som bara kan skriva i röstlängden därmed inte längre lägga in en röst
@@ -101,14 +114,16 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
 
 /**
  * Vilken del av signaturkontrollen en rad föll på. Kedjans egna skäl kommer ur
- * `verifyCertificateChain`, och därtill:
+ * `verifyCertificateChain`, dokumentets ur `verifyBankIdSignature`, och därtill:
  *
- *   unreadable   kedjan går inte att öppna för raden: trasig, ändrad, flyttad
- *                från en annan rad, eller aldrig förseglad
- *   signature    signaturen håller inte mot lövets nyckel för någon räknare
+ *   unreadable   underskriften går inte att öppna för raden: trasig, ändrad,
+ *                flyttad från en annan rad, eller aldrig förseglad
+ *   signature    underskriften håller inte mot lövets nyckel, SignatureValue är
+ *                inte den i bankid_signature, eller det signerade är inte radens
+ *                kuvert för någon räknare
  *   other_voter  kedjan och signaturen håller, men lövet tillhör någon annan
  */
-export type SignatureFault = ChainFailure | 'unreadable' | 'signature' | 'other_voter'
+export type SignatureFault = ChainFailure | XmlDsigFailure | 'unreadable' | 'signature' | 'other_voter'
 
 export type Anomaly = {
   /**
@@ -132,6 +147,16 @@ export type Anomaly = {
    * annan avvikelse. En rad utan salt vars underskrift inte håller för det gamla
    * formatet är BAD_SIGNATURE, så kategorin skiljer ett gammalt kuvert från en
    * förfalskning.
+   *
+   * OLD_BANKID_FORMAT är ett äkta kuvert som lades före uppgift 17b, då
+   * attrappens underskrift var en RSA-signatur direkt över det signerade och
+   * raden bara bar kedjan. Det prövas som förut, med kedjan till roten och
+   * väljarens eget personnummer, men det är inte prövat i BankID:s format, och
+   * det stoppar stängningen som varje annan avvikelse. Ingenting raderas.
+   * Demoåterställningen tar bort det. En rad i det gamla formatet vars
+   * underskrift inte håller är BAD_SIGNATURE, så kategorin skiljer ett gammalt
+   * kuvert från en förfalskning. Ett kuvert från före uppgift 11e har både det
+   * gamla signerade och den gamla kedjan och får båda kategorierna.
    */
   kind:
     | 'BAD_SIGNATURE'
@@ -140,6 +165,7 @@ export type Anomaly = {
     | 'BAD_PROOF'
     | 'OLD_PROOF_FORMAT'
     | 'OLD_SIGNATURE_FORMAT'
+    | 'OLD_BANKID_FORMAT'
   pendingVoteId: string
   /** Bara för administratörens utredning. Publiceras aldrig. */
   voterStatusId: string
@@ -184,12 +210,17 @@ export type ValidationReport = {
 export function oldFormatNote(summary: ValidationReport['summary']): string {
   const proofs = summary.byKind.OLD_PROOF_FORMAT ?? 0
   const signatures = summary.byKind.OLD_SIGNATURE_FORMAT ?? 0
+  const bankId = summary.byKind.OLD_BANKID_FORMAT ?? 0
   return [
     proofs === 0 ? '' : `${proofs} kuvert har det gamla bevisformatet och kan inte räknas.`,
     signatures === 0
       ? ''
       : `${signatures} kuvert är underskrivna i det gamla formatet, där BankID-ordern bar ` +
         'chifferhashen, och kan inte räknas.',
+    bankId === 0
+      ? ''
+      : `${bankId} kuvert har attrappens underskrift från före BankID:s format och kan inte ` +
+        'räknas. I demon tar återställningen av demovalet bort dem.',
   ]
     .filter((sentence) => sentence !== '')
     .join(' ')
@@ -244,41 +275,80 @@ const MAX_TOTAL_STALE_PROBES = 5000
 type SignatureVerdict = 'ok' | 'stale' | 'bad'
 
 /**
- * Avgör om den lagrade signaturen bevisar nuvarande innehåll, ett äldre
- * innehåll (återuppspelning), eller ingetdera.
+ * Det som signeringskontrollen läser ur en rad.
+ */
+type SignedRow = {
+  voterStatusId: string
+  ballotId: string
+  ciphertextHash: string
+  commitmentSalt: string | null
+  castSequence: number
+  bankIdSignature: string
+  bankIdCertificateChain: string
+  updatedAt: Date
+  voterStatus: { externalIdentityHash: string }
+}
+
+/**
+ * Avgör om det signerade i BankID:s dokument är radens nuvarande kuvert, ett
+ * äldre kuvert för samma rad (återuppspelning), eller ingetdera (uppgift 17b).
+ *
+ * Det signerade står i dokumentet, i det element vars digest och underskrift
+ * just har prövats, så här behövs ingen kryptografi: radens nuvarande kuvert
+ * byggs ur kolumnerna och jämförs med det. Är det inte det, men samma val,
+ * valsedel och åtagande med en lägre räknare, är det ett äldre äkta kuvert. Det
+ * bevisar underskriften, för räknaren står inuti det signerade.
+ *
+ * En rad utan salt kan inte ha ett kuvert i BankID:s format, för varje sådant
+ * kuvert lades efter uppgift 11e, och då är det 'bad'.
+ */
+function classifySignedContent(
+  electionId: string,
+  vote: Pick<SignedRow, 'ballotId' | 'ciphertextHash' | 'commitmentSalt' | 'castSequence'>,
+  signedContent: string,
+): SignatureVerdict {
+  if (vote.commitmentSalt === null) return 'bad'
+
+  const current = signedContentOf(electionId, vote)
+  if (current === null) return 'bad'
+  if (signedContent === current) return 'ok'
+
+  const signed = parseEnvelopePayload(signedContent)
+  if (
+    signed !== null &&
+    envelopePayload(signed) === signedContent &&
+    signed.electionId === electionId &&
+    signed.ballotId === vote.ballotId &&
+    signed.ciphertextCommitment === ciphertextCommitment(vote.ciphertextHash, vote.commitmentSalt) &&
+    signed.castSequence < vote.castSequence
+  ) {
+    return 'stale'
+  }
+
+  return 'bad'
+}
+
+/**
+ * DET GAMLA FORMATET: avgör om attrappens tidigare signatur bevisar nuvarande
+ * innehåll, ett äldre innehåll (återuppspelning), eller ingetdera.
  *
  * Nyckeln är lövets, ur en kedja som just prövats mot en betrodd rot, och
- * aldrig något som raden själv påstår. Se `judgeSignature`.
+ * aldrig något som raden själv påstår. Se `judgeLegacySignature`.
  *
  * Bygger om det signerade innehållet ur radens EGNA lagrade fält —
- * `ciphertextHash`, `commitmentSalt` och `castSequence` — i stället för att
- * förvänta sig `signedData` bevarat ordagrant. Det finns ingen sådan kolumn:
- * kolumnerna som SKREVS av `castEncryptedBallot` kommer själva ur
- * `signedData` och ur ordern vid läggningstillfället, och `envelopePayload`
- * och åtagandet är entydiga kodningar — samma fält ger alltid samma sträng.
- * Återuppbyggnaden är alltså inte en gissning utan en exakt återskapning av det
- * som en gång verkligen signerades, förutsatt att fälten inte ändrats var för
- * sig sedan dess. Se `signedContentOf` för raden utan salt.
+ * `ciphertextHash`, `commitmentSalt` och `castSequence` — eftersom det gamla
+ * formatet inte bar det signerade, bara en signatur över det.
+ * `envelopePayload` och åtagandet är entydiga kodningar, så samma fält ger
+ * alltid samma sträng. Se `signedContentOf` för raden utan salt.
  */
-function classifySignature(
+function classifyLegacySignature(
   electionId: string,
-  vote: {
-    ballotId: string
-    ciphertextHash: string
-    commitmentSalt: string | null
-    castSequence: number
-    bankIdSignature: string
-  },
+  vote: Pick<SignedRow, 'ballotId' | 'ciphertextHash' | 'commitmentSalt' | 'castSequence' | 'bankIdSignature'>,
   signingKey: KeyObject,
   /** Delad mellan alla rader i körningen — se `MAX_TOTAL_STALE_PROBES`. */
   staleProbeBudget: { remaining: number },
 ): SignatureVerdict {
-  const current = signedContentOf(electionId, {
-    ballotId: vote.ballotId,
-    ciphertextHash: vote.ciphertextHash,
-    commitmentSalt: vote.commitmentSalt,
-    castSequence: vote.castSequence,
-  })
+  const current = signedContentOf(electionId, vote)
 
   // En hash eller ett salt som inte går att tolka ger inget åtagande, och då
   // finns inget som en underskrift kan hålla för.
@@ -295,12 +365,7 @@ function classifySignature(
   ) {
     staleProbeBudget.remaining -= 1
 
-    const older = signedContentOf(electionId, {
-      ballotId: vote.ballotId,
-      ciphertextHash: vote.ciphertextHash,
-      commitmentSalt: vote.commitmentSalt,
-      castSequence: candidate,
-    })
+    const older = signedContentOf(electionId, { ...vote, castSequence: candidate })
 
     if (older !== null && verifySignedPayload(vote.bankIdSignature, signingKey, older)) return 'stale'
   }
@@ -348,16 +413,17 @@ function signedContentOf(
 }
 
 /**
- * `legacy` betyder att underskriften höll för det gamla formatet, med
- * chifferhashen i det signerade, se `signedContentOf`.
+ * `legacy` betyder att det signerade har det gamla formatet, med chifferhashen,
+ * se `signedContentOf`. `legacyContainer` betyder att underskriften är
+ * attrappens från före BankID:s format, se `judgeLegacySignature`.
  */
 type SignatureJudgement =
-  | { verdict: 'ok'; legacy: boolean }
-  | { verdict: 'stale'; legacy: boolean }
+  | { verdict: 'ok' | 'stale'; legacy: boolean; legacyContainer: boolean }
   | { verdict: 'bad'; reason: SignatureFault }
 
 /**
- * Hela signaturkontrollen för en rad: kedjan, signaturen och vem lövet tillhör.
+ * Hela signaturkontrollen för en rad: underskriften, det signerade och vem lövet
+ * tillhör.
  *
  * I DEN ORDNINGEN, OCH AV ETT SKÄL. Utan en kedja till roten finns ingen
  * nyckel som BankID står för, och då säger en signatur ingenting. Utan en
@@ -375,29 +441,27 @@ type SignatureJudgement =
  * STALE_SEQUENCE bara om det är väljarens eget. Bär det en annan väljares äkta
  * underskrift är det en annans röst i hennes namn, och det väger tyngre än att
  * räknaren är gammal.
+ *
+ * Formatet läses ur versionen först i den förseglade texten. Påståendet är inte
+ * prövat, men det avgör bara vilken prövning som körs: en text som påstår det
+ * gamla formatet men inte är det går inte att öppna och blir BAD_SIGNATURE.
  */
 async function judgeSignature(
   electionId: string,
-  vote: {
-    voterStatusId: string
-    ballotId: string
-    ciphertextHash: string
-    commitmentSalt: string | null
-    castSequence: number
-    bankIdSignature: string
-    bankIdCertificateChain: string
-    updatedAt: Date
-    voterStatus: { externalIdentityHash: string }
-  },
+  vote: SignedRow,
   roots: X509Certificate[],
   identityHashOf: (personalNumber: string) => Promise<string>,
   staleProbeBudget: { remaining: number },
 ): Promise<SignatureJudgement> {
-  const chain = openCertificateChain(vote.bankIdCertificateChain, {
+  if (sealedFormatOf(vote.bankIdCertificateChain) === 'legacy_chain') {
+    return judgeLegacySignature(electionId, vote, roots, identityHashOf, staleProbeBudget)
+  }
+
+  const sealed = openBankIdSignature(vote.bankIdCertificateChain, {
     voterStatusId: vote.voterStatusId,
     ballotId: vote.ballotId,
   })
-  if (!chain) return { verdict: 'bad', reason: 'unreadable' }
+  if (!sealed) return { verdict: 'bad', reason: 'unreadable' }
 
   /**
    * Giltighetstiden prövas mot dagen då kuvertet lades. Det är den enda
@@ -411,15 +475,54 @@ async function judgeSignature(
    * bakdateras till en dag då det gällde (granskningen av uppgift 14f, M4). Det
    * kräver ett äkta certifikat och dess privata nyckel, och står i posten
    * `no-revocation-check` i src/lib/known-limitations.ts, eftersom tidpunkten i
-   * BankID:s OCSP-svar hade stängt det.
+   * BankID:s OCSP-svar hade stängt det. Svaret ligger förseglat i raden sedan
+   * uppgift 17b, men prövas inte.
    */
-  const certificate = verifyCertificateChain(chain, {
-    roots,
-    signedDuring: signedOnDay(vote.updatedAt),
+  const signed = verifyBankIdSignature(sealed.xml, { roots, signedDuring: signedOnDay(vote.updatedAt) })
+  if (!signed.ok) return { verdict: 'bad', reason: signed.reason }
+
+  // Kuvertroten läser underskriften ur bankid_signature. Den ska vara dokumentets.
+  if (vote.bankIdSignature !== signed.signatureValue) return { verdict: 'bad', reason: 'signature' }
+
+  const verdict = classifySignedContent(electionId, vote, signed.usrNonVisibleData)
+  if (verdict === 'bad') return { verdict: 'bad', reason: 'signature' }
+
+  const identityHash = await identityHashOf(signed.personalNumber)
+  if (!safeEqual(identityHash, vote.voterStatus.externalIdentityHash)) {
+    return { verdict: 'bad', reason: 'other_voter' }
+  }
+
+  return { verdict, legacy: false, legacyContainer: false }
+}
+
+/**
+ * EN RAD FRÅN FÖRE UPPGIFT 17b: kedjan i det gamla formatet och attrappens
+ * tidigare underskrift, en RSA-signatur direkt över det signerade.
+ *
+ * Den prövas som förut, så att ett äkta gammalt kuvert skiljs från en
+ * förfalskning: kedjan till en betrodd rot den dag kuvertet lades, signaturen
+ * mot lövets nyckel för nuvarande eller en äldre räknare, och personnumret mot
+ * väljarens identitetshash. Håller allt blir kuvertet OLD_BANKID_FORMAT, och
+ * stängningen stannar. Det godkänns aldrig, eftersom det inte är prövat i
+ * BankID:s format.
+ */
+async function judgeLegacySignature(
+  electionId: string,
+  vote: SignedRow,
+  roots: X509Certificate[],
+  identityHashOf: (personalNumber: string) => Promise<string>,
+  staleProbeBudget: { remaining: number },
+): Promise<SignatureJudgement> {
+  const chain = openLegacyCertificateChain(vote.bankIdCertificateChain, {
+    voterStatusId: vote.voterStatusId,
+    ballotId: vote.ballotId,
   })
+  if (!chain) return { verdict: 'bad', reason: 'unreadable' }
+
+  const certificate = verifyCertificateChain(chain, { roots, signedDuring: signedOnDay(vote.updatedAt) })
   if (!certificate.ok) return { verdict: 'bad', reason: certificate.reason }
 
-  const verdict = classifySignature(electionId, vote, certificate.signingKey, staleProbeBudget)
+  const verdict = classifyLegacySignature(electionId, vote, certificate.signingKey, staleProbeBudget)
   if (verdict === 'bad') return { verdict: 'bad', reason: 'signature' }
 
   const identityHash = await identityHashOf(certificate.personalNumber)
@@ -427,7 +530,7 @@ async function judgeSignature(
     return { verdict: 'bad', reason: 'other_voter' }
   }
 
-  return { verdict, legacy: vote.commitmentSalt === null }
+  return { verdict, legacy: vote.commitmentSalt === null, legacyContainer: true }
 }
 
 /**
@@ -560,14 +663,15 @@ async function proofHoldsSafely(
  * skriver CLOSED först.
  *
  * TAKET ÄR NU PROCESSENS MINNE (fixrunda 1 av 11d, M6). Hela läsningen hålls
- * i minnet medan stängningen pågår, med kedjan, utfylld till 32 829 tecken, i
- * varje kuvert. Granskningen uppskattade ett kuvert till 45–52 kB vid två eller
- * tre alternativ och till omkring 200 kB vid 26. Med 1 GiB heap, som
- * granskningen räknade med för containerns 2 GiB i Azure, blir taket omkring
- * 20 000 kuvert vid tre alternativ och 5 000 vid 26, och det följer heapen i
- * proportion. Tar minnet slut kraschar processen i stället för att svara.
+ * i minnet medan stängningen pågår, med den förseglade underskriften, utfylld
+ * till 43 753 tecken sedan uppgift 17b, i varje kuvert. Granskningen uppskattade
+ * ett kuvert till 45–52 kB vid två eller tre alternativ och till omkring 200 kB
+ * vid 26, med kedjan på 32 829 tecken. Underskriften lägger till omkring 11 kB,
+ * alltså omkring 56–63 kB och 211 kB. Med 1 GiB heap, som granskningen räknade
+ * med för containerns 2 GiB i Azure, blir taket omkring 16 000 kuvert vid tre
+ * alternativ och 4 800 vid 26, och det följer heapen i proportion. Tar minnet slut kraschar processen i stället för att svara.
  * Kopplingen är då orörd, eftersom inget raderats, och låset släpps med
- * anslutningen, men administratören får inget besked. Kedjan släpps inte
+ * anslutningen, men administratören får inget besked. Underskriften släpps inte
  * efter varje validerad omgång. Läsningen blir färdig innan valideringen
  * börjar, så att släppa kedjan under valideringen sänker inte toppen, och att
  * validera omgång för omgång kräver att läsningen och valideringen vävs ihop,
@@ -598,7 +702,7 @@ export async function readEnvelopes(electionId: string) {
  * Hur många kuvert som läses per fråga.
  *
  * Ett kuvert är chiffret och bevisen, uppmätt omkring 6 300 tecken per
- * alternativ, och kedjan, som är utfylld till 32 829 tecken. Vid 200
+ * alternativ, och den förseglade underskriften, som är utfylld till 43 753 tecken. Vid 200
  * alternativ, det mesta läggningen tar emot, är det omkring 1,3 miljoner tecken
  * per kuvert, och hundra kuvert blir omkring 130 miljoner, en fjärdedel av
  * Prismas tak. En rad som skrivits förbi läggningen kan vara större än så, och
@@ -750,6 +854,10 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
     // stängningen stannar med kopplingen kvar, som vid varje avvikelse.
     if (signature.verdict !== 'bad' && signature.legacy) {
       anomalies.push(anomaly('OLD_SIGNATURE_FORMAT'))
+    }
+    // Äkta, men underskrivet med attrappens gamla underskrift, före BankID:s format.
+    if (signature.verdict !== 'bad' && signature.legacyContainer) {
+      anomalies.push(anomaly('OLD_BANKID_FORMAT'))
     }
 
     // 4. OLD_PROOF_FORMAT eller BAD_PROOF — dyrast, men körs ändå: en rad kan

@@ -224,6 +224,14 @@ export function parseEnvelopePayload(payload: string): EnvelopePayload | null {
 }
 
 /**
+ * DET GAMLA FORMATETS KONTROLL, FRÅN FÖRE UPPGIFT 17b.
+ *
+ * Attrappens underskrift var då en RSA-signatur direkt över det signerade. Sedan
+ * uppgift 17b är underskriften BankID:s XML-dokument, och den prövas av
+ * `verifyBankIdSignature` i ./xmldsig.ts. Funktionen här används bara av
+ * valideringen före stängningen, för att skilja ett äkta gammalt kuvert från en
+ * förfalskning, se `OLD_BANKID_FORMAT` i validate-before-close.usecase.ts.
+ *
  * Verifierar ENBART att signaturen kryptografiskt håller ihop med nyckeln,
  * för exakt det innehåll som påstås signerat.
  *
@@ -240,15 +248,8 @@ export function parseEnvelopePayload(payload: string): EnvelopePayload | null {
  * som den här funktionen sedan godkände. Därför tar den emot en `KeyObject`,
  * som bara kedjeprövningen lämnar ut, och ingen text ur en rad.
  *
- * `signedData` ska vara det FAKTISKT signerade innehållet, hämtat ordagrant
- * ur BankID:s eget svar (`completionData.signedData`) — aldrig återskapat
- * genom att bygga en ny `envelopePayload`. Anroparen läser ut de enskilda
- * fälten (bland dem `castSequence`) ur `signedData` med
- * `parseEnvelopePayload`. Ordningen mellan avkodningen och det här anropet
- * spelar ingen roll för säkerheten — `signedData` kommer aldrig från
- * begärans kropp, bara från BankID:s eget svar — men
- * `pending-vote.service.ts` avkodar och stämmer av innehållet FÖRST, som en
- * billig kontroll innan den dyrare kryptografiska verifieringen görs.
+ * `signedData` är det som en gång signerades. Det gamla formatet bar det inte,
+ * så valideringen bygger om det ur radens kolumner, som är entydiga kodningar.
  */
 export function verifySignedPayload(
   signature: string,

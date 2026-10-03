@@ -40,7 +40,7 @@ export type PageLimitations = {
   /** Det underskriften inte skyddar mot sedan uppgift 14f: att äkta kuvert tas bort eller läggs tillbaka. */
   removal: KnownLimitation
   revocation: KnownLimitation
-  xmlAdapter: KnownLimitation
+  bankIdUntested: KnownLimitation
   dealer: KnownLimitation
   /** Den som har pepparn, som i Azure ligger i valvet, läser namnen i de liggande kuverten. */
   pepperHolder: KnownLimitation
@@ -59,7 +59,7 @@ export function pageLimitations(): PageLimitations {
     bankIdKnows: limitation('bankid-knows-who-voted'),
     removal: limitation('operator-can-remove-or-restore-envelope'),
     revocation: limitation('no-revocation-check'),
-    xmlAdapter: limitation('bankid-xmldsig-adapter-missing'),
+    bankIdUntested: limitation('bankid-reader-untested-against-bankid'),
     dealer: limitation('trusted-dealer'),
     pepperHolder: limitation('pepper-holder-reads-voter-names'),
     demoIssuer: limitation('mock-issues-certificates-in-demo'),

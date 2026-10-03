@@ -26,6 +26,9 @@ export type MockOrder = {
    */
   userNonVisibleData: string | null
 
+  /** Texten väljaren ser vid en signering. Följer med i underskriften, som hos BankID. */
+  userVisibleData: string | null
+
   /** När ordern förfaller, se `sweepExpiredMockOrders`. */
   expiresAt: number
 }

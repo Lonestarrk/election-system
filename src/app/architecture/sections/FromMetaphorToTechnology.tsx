@@ -32,12 +32,14 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
     metaphor: 'Det yttre kuvertet med ditt namn',
     technology:
       'En rad i pending_vote i röstlängden, voters_db: väljarens id, chiffret, chifferhashen, ' +
-      'räknaren, BankID-signaturen och certifikatkedjan bakom den, krypterad (spec 5).',
+      'räknaren, BankID-signaturens värde och hela underskriften från BankID, med certifikatkedjan, ' +
+      'krypterad (spec 5).',
   },
   {
     metaphor: 'Märket i hörnet, ditt intyg inlåst',
     technology:
-      'Certifikatkedjan från BankID, krypterad med AES-256-GCM under en nyckel som HKDF härleder ur ' +
+      'BankID:s underskrift, ett XML-dokument med certifikatkedjan och det signerade, och BankID:s ' +
+      'svar på spärrfrågan, krypterade med AES-256-GCM under en nyckel som HKDF härleder ur ' +
       'IDENTITY_PEPPER, med väljarens och valsedelns id som autentiserad data och utfylld till en ' +
       'fast storlek. Den raderas med raden vid skalningen (spec 4.6 punkt 3).',
   },
@@ -65,8 +67,8 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
   {
     metaphor: 'Kontrollen',
     technology:
-      'Valideringen före stängningen, medan kopplingen finns: signaturen och kedjan mot BankID:s ' +
-      'rot, räknaren, att väljaren finns i röstlängden och att certifikatet är hennes, att ' +
+      'Valideringen före stängningen, medan kopplingen finns: signaturen i BankID:s format och ' +
+      'kedjan mot BankID:s rot, räknaren, att väljaren finns i röstlängden och att certifikatet är hennes, att ' +
       'valsedeln gäller henne, dubbletter och bevis. Den är en spärr och ' +
       'inte en rapport (spec 7 och 7.1). Att hon fick rösta visar signaturen från när rösten lades, ' +
       'inte röstlängden i efterhand (spec 7.4).',

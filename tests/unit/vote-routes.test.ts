@@ -95,7 +95,7 @@ const ORDER = '5a0f3c1e-8f2d-4b6a-9c11-0d2e4f6a8b10'
 const ORIGIN = 'http://localhost:3000'
 const COMPLETE = {
   status: 'complete',
-  completionData: { signature: 'sig', certificateChain: ['kedja'], signedData: 'signerat' },
+  completionData: { signature: 'sig', ocspResponse: 'spärrsvar' },
 }
 
 function post(path: string, body: unknown, signal?: AbortSignal): Request {

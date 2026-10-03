@@ -79,74 +79,42 @@ export type BankIdCollectComplete = {
     surname: string
 
     /**
-     * Signaturen över `userNonVisibleData`, satt endast av `sign`-ordrar.
+     * BankID:s underskrift: base64 av ett XMLDSig-dokument enligt "Signature
+     * profile for BankID" (developers.bankid.com/assets/signature-profile.pdf).
+     * Tom för `auth`-ordrar, som inte skriver under något.
      *
-     * Det som gör en röst oförfalskbar: en verifierare kan bevisa att just den
-     * här personen godkände just det signerade innehållet, utan att behöva
-     * lita på vad servern påstår.
+     * DOKUMENTET BÄR ALLT SOM SKA PRÖVAS. Det signerade innehållet ligger i
+     * `bankIdSignedData`, med `usrNonVisibleData` som base64 av det som skickades
+     * i `userNonVisibleData`, och certifikatkedjan, lövet först och utan rot,
+     * ligger i `KeyInfo`. Ingenting av det får läsas på något annat sätt än genom
+     * `verifyBankIdSignature` i xmldsig.ts, som läser det signerade ur just det
+     * element vars digest har prövats. Fram till uppgift 17b låg kedjan och det
+     * signerade i egna fält här, i attrappens eget format.
+     *
+     * BÄR SAMMA SKYDDSVÄRDA UPPGIFT SOM `personalNumber`, I KLARTEXT, OCH
+     * DESSUTOM NAMNET. Lövets subject har personnumret som `serialNumber` och
+     * namnet som `commonName`, `givenName` och `surname`, i attrappen som i ett
+     * riktigt BankID-certifikat. Får därför, precis som `personalNumber`, aldrig
+     * lämna eligibility-modulen eller lagras i klartext. Rösten lagrar dokumentet
+     * förseglat, se `sealed-chain.ts`.
+     *
+     * Det signerade innehållet är SANNINGSKÄLLAN FÖR VAD SOM FAKTISKT SIGNERADES
+     * (fixrunda 1 av uppgift 9:s granskning). Det får aldrig återskapas genom att
+     * anta att det är samma sträng som servern skulle ha byggt: en färsk
+     * uträkning av räknaren kan skilja sig från den väljarens app skrev under.
      */
     signature: string
 
     /**
-     * Certifikatkedjan signaturen verifieras mot, i PEM: lövet först och sedan
-     * de mellannivåer som utfärdat det, uppåt mot roten. Attrappen har en,
-     * prövningen tar en till tre. Tom för `auth`-ordrar.
+     * BankID:s svar på spärrfrågan för lövets certifikat, base64 av ett
+     * OCSP-svar. Tomt för `auth`-ordrar och i attrappen, som inte har någon
+     * spärrtjänst.
      *
-     * ROTEN INGÅR INTE, OCH FÅR INTE GÖRA DET. Kedjan prövas mot rötter som är
-     * konfigurerade (se `trusted-roots.ts`). En rot som följde med svaret vore
-     * en rot som den som skrev svaret själv valt, och då vore prövningen
-     * ingenting värd.
-     *
-     * I attrappen utfärdar attrappens mellannivå ett nytt löv vid varje
-     * underskrift. I skarpt BankID ligger kedjan i XML-signaturens `KeyInfo`,
-     * och att läsa ut den därifrån är inte byggt (se begränsningen
-     * `bankid-xmldsig-adapter-missing` i src/lib/known-limitations.ts).
-     *
-     * BÄR SAMMA SKYDDSVÄRDA UPPGIFT SOM `personalNumber`, I KLARTEXT, OCH
-     * DESSUTOM NAMNET.
-     *
-     * Lövets subject har personnumret som `serialNumber` och namnet som
-     * `commonName`, `givenName` och `surname`, i attrappen som i ett riktigt
-     * BankID-certifikat. Kedjan är med andra ord inte en ofarlig nyckel med ett
-     * bevis bifogat; den ÄR personnumret och namnet, plus ett bevis.
-     *
-     * Får därför, precis som `personalNumber`, aldrig lämna eligibility-modulen
-     * eller lagras i klartext. Rösten lagrar kedjan krypterad, se
-     * `sealed-chain.ts`.
+     * Förseglas med underskriften, så att en senare uppgift kan pröva det.
+     * Ingenting prövar det i dag, se posten `no-revocation-check` i
+     * src/lib/known-limitations.ts.
      */
-    certificateChain: string[]
-
-    /**
-     * Det signerade innehållet, ordagrant — samma sträng som skickades in i
-     * `userNonVisibleData` vid `sign`. Tomt för `auth`-ordrar, som inte
-     * signerar något.
-     *
-     * SANNINGSKÄLLAN FÖR VAD SOM FAKTISKT SIGNERADES.
-     *
-     * Fixrunda 1 av uppgift 9:s granskning fångade att `/api/vote/encrypted`
-     * byggde OM nyttolasten vid varje anrop (en färsk `nextCastSequence()`)
-     * i stället för att verifiera mot det som faktiskt signerades. Effekten:
-     * `castSequence` i den återuppbyggda nyttolasten kunde skilja sig från
-     * den som väljarens BankID-app faktiskt skrev under — det vanliga fallet
-     * är två flikar, där väljaren röstar klart i den ena medan den andra
-     * fortfarande väntar på en signering som påbörjades tidigare. Symptomet
-     * var ett missvisande `invalid_signature` i stället för `stale_sequence`,
-     * och ingen test övade den riktiga vägen eftersom testhjälparna skickade
-     * `castSequence` vid sidan av signaturen i stället för att läsa det ur
-     * den.
-     *
-     * Det signerade innehållet finns redan hos BankID — det behöver aldrig
-     * gissas eller räknas om. Attrappen har det i `order.userNonVisibleData`.
-     *
-     * BYTET TILL SKARPT BANKID: det signerade innehållet ligger inte som ett
-     * eget fält i BankID:s svar, utan inuti XML-signaturen
-     * (`ocspResponse`/`signature`, base64-kodad XML enligt BankID:s
-     * signaturformat). Den som byter implementation måste packa upp XML:en
-     * och läsa ut `userNonVisibleData` därifrån — det får INTE återskapas
-     * genom att anta att det är samma sträng som servern skulle ha byggt,
-     * det är precis den gissningen som orsakade fixrunda 1:s fynd.
-     */
-    signedData: string
+    ocspResponse: string
   }
 }
 

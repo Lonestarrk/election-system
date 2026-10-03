@@ -172,8 +172,7 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
       ballot,
       {
         signature: result.completionData.signature,
-        certificateChain: result.completionData.certificateChain,
-        signedData: result.completionData.signedData,
+        ocspResponse: result.completionData.ocspResponse,
         commitmentSalt,
       },
       await getEncryptedBallotShape(ballotId),

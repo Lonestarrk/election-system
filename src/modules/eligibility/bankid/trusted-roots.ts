@@ -8,6 +8,19 @@ import { MOCK_BANKID_ROOT_CERTIFICATE } from './mock-ca/root-certificate'
 /**
  * DE ROTCERTIFIKAT SOM VARJE BANKID-KEDJA PRÖVAS MOT.
  *
+ * VILKEN ROT FÖR VILKEN MILJÖ (uppgift 17b). Kedjan i BankID:s underskrift går
+ * till BankID:s rot för kundcertifikat. För BANKID_ENV=test är det BankID:s
+ * testrot och för BANKID_ENV=production produktionsroten, och i demoläget
+ * attrappens rot. BankID publicerar inte de två rötterna: de lämnas ut på
+ * begäran, enligt developers.bankid.com/how-to-guides/verifying-signatures
+ * (hämtad 2026-10-03). Därför kan ingen av dem checkas in här, och den som
+ * driftsätter lägger den rot som hör till BANKID_ENV i filen som
+ * BANKID_ROOT_CERTIFICATES pekar ut. Rotcertifikatet som developers.bankid.com
+ * publicerar under "Environments", "BankID SSL Root CA v1", är roten för
+ * BankID:s servercertifikat i TLS och inte för väljarnas certifikat. Ligger det
+ * i filen av misstag går ingen kedja till det, och varje underskrift avvisas.
+ * Uppgift 17c prövar rötterna mot testmiljön.
+ *
  * Rötterna är konfiguration och aldrig data. De lagras inte med kuvertet och
  * kan inte komma ur BankID:s svar: en rot som följde med kedjan vore en rot
  * som den som skrev kedjan själv valt. De läses ur den fil som

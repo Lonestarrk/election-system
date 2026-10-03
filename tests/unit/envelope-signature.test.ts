@@ -8,11 +8,6 @@ import {
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
 import {
-  parseCertificateChain,
-  signedAt,
-  verifyCertificateChain,
-} from '@/modules/eligibility/bankid/certificate-chain'
-import {
   ciphertextCommitment,
   envelopePayload,
   legacyEnvelopePayload,
@@ -21,7 +16,8 @@ import {
   signingText,
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
-import { MOCK_ROOT } from './bankid/forged-certificates'
+import { certificatesIn, signatureXml, verifiedMockSignature } from './bankid/bankid-xml'
+import { rsaKeys, signPayload } from './bankid/forged-certificates'
 
 const PAYLOAD = {
   electionId: 'val-1',
@@ -49,32 +45,22 @@ async function signAs(personalNumber: string, payload = PAYLOAD) {
   return result.completionData
 }
 
-/** Lövets nyckel, ur en kedja som prövats mot attrappens rot. */
-function signingKeyOf(certificateChain: readonly string[]) {
-  const chain = parseCertificateChain(certificateChain)
-  if (!chain) throw new Error('kedjan gick inte att läsa')
-
-  const verdict = verifyCertificateChain(chain, { roots: [MOCK_ROOT], signedDuring: signedAt(new Date()) })
-  if (!verdict.ok) throw new Error(`kedjan underkändes: ${verdict.reason}`)
-  return verdict
-}
-
 describe('attrappen är en certifikatutfärdare', () => {
   it('ger varje underskrift en kedja till attrappens rot, med väljarens personnummer', async () => {
     const data = await signAs('199001011234')
 
-    expect(data.certificateChain).toHaveLength(2)
-    expect(signingKeyOf(data.certificateChain).personalNumber).toBe('199001011234')
+    expect(certificatesIn(data.signature)).toHaveLength(2)
+    expect(verifiedMockSignature(data.signature).personalNumber).toBe('199001011234')
   })
 
   it('skriver väljarens namn i certifikatet, som BankID gör', async () => {
     /**
-     * Namnet och personnumret i klartext är skälet till att kedjan lagras
-     * krypterad (src/modules/eligibility/sealed-chain.ts). Attrappen ska bära
+     * Namnet och personnumret i klartext är skälet till att underskriften lagras
+     * förseglad (src/modules/eligibility/sealed-chain.ts). Attrappen ska bära
      * dem som ett riktigt BankID-certifikat gör, annars prövas inte det skälet.
      */
     const data = await signAs('199001011234')
-    const [leaf] = parseCertificateChain(data.certificateChain)!
+    const [leaf] = certificatesIn(data.signature)
 
     expect(leaf!.toLegacyObject().subject).toMatchObject({
       C: 'SE',
@@ -87,19 +73,19 @@ describe('attrappen är en certifikatutfärdare', () => {
 
   it('certifikatets giltighetstid säger vilken dag, men inte när, väljaren skrev under', async () => {
     /**
-     * Attrappen utfärdar ett certifikat per underskrift, och kedjan lagras i
-     * röstlängden, där all tidsdata är avrundad till dygn. En giltighetstid från
+     * Attrappen utfärdar ett certifikat per underskrift, och underskriften lagras
+     * i röstlängden, där all tidsdata är avrundad till dygn. En giltighetstid från
      * sekunden för utfärdandet hade varit underskriftens tidpunkt.
      */
     const data = await signAs('199001011234')
-    const [leaf] = parseCertificateChain(data.certificateChain)!
+    const [leaf] = certificatesIn(data.signature)
     const validFrom = leaf!.validFromDate
 
     expect([validFrom.getUTCHours(), validFrom.getUTCMinutes(), validFrom.getUTCSeconds()]).toEqual([0, 0, 0])
     expect(Date.now() - validFrom.getTime()).toBeLessThan(86_400_000)
   })
 
-  it('en legitimering bär ingen kedja, eftersom ingenting skrivs under', async () => {
+  it('en legitimering bär ingen underskrift, eftersom ingenting skrivs under', async () => {
     const service = new MockBankIdService()
     const order = await service.auth({ endUserIp: '127.0.0.1' })
     selectDemoIdentity(order.orderRef, '199001011234')
@@ -108,89 +94,77 @@ describe('attrappen är en certifikatutfärdare', () => {
     while (result.status === 'pending') result = await service.collect(order.orderRef)
     if (result.status !== 'complete') throw new Error('legitimeringen blev inte klar')
 
-    expect(result.completionData.certificateChain).toEqual([])
     expect(result.completionData.signature).toBe('')
+    expect(result.completionData.ocspResponse).toBe('')
   })
 })
 
 /**
- * `verifySignedPayload` prövar bara att signaturen håller ihop med nyckeln,
- * för exakt det innehåll som påstås signerat. Att nyckeln är BankID:s prövas
- * av kedjan, och att den tillhör rätt väljare av identitetshashen, var för sig.
+ * ATTRAPPENS UNDERSKRIFT ÄR BANKID:S FORMAT (uppgift 17b).
+ *
+ * Läsaren prövas för sig i tests/unit/bankid-xmldsig.test.ts. Här visas att det
+ * attrappen lämnar i `completionData.signature` är ett sådant dokument, och att
+ * det signerade i det är exakt det som skickades in.
  */
-describe('verifySignedPayload — den rena kryptografiska kontrollen', () => {
-  it('en ärlig signatur håller mot sitt eget innehåll', async () => {
+describe('attrappens underskrift i BankID:s format', () => {
+  it('är base64 av ett XMLDSig-dokument', async () => {
     const data = await signAs('199001011234')
-    const { signingKey } = signingKeyOf(data.certificateChain)
 
-    expect(verifySignedPayload(data.signature, signingKey, envelopePayload(PAYLOAD))).toBe(true)
+    expect(signatureXml(data.signature)).toMatch(/^<\?xml [^>]+\?><Signature xmlns="http:\/\/www\.w3\.org\/2000\/09\/xmldsig#">/)
   })
 
-  it('en signatur håller kryptografiskt även när certifikatet tillhör fel person', async () => {
+  it('det signerade i det prövade elementet är exakt det som skickades in', async () => {
     /**
-     * Poängen med uppdelningen: den här funktionen kontrollerar bara att
-     * signaturen och innehållet hör ihop, aldrig vem. Kims signatur över exakt
-     * samma innehåll är fullt giltig kryptografiskt. Vem certifikatet tillhör
-     * avgör identitetshashen, i pending-vote.service.ts och i valideringen.
+     * Grunden för fixrunda 1:s fix av uppgift 9. `/api/vote/encrypted` litar på
+     * att det signerade är ordagrant — inte en approximation — annars vore hela
+     * poängen med att sluta räkna om `castSequence` meningslös.
      */
+    const data = await signAs('199001011234')
+
+    expect(verifiedMockSignature(data.signature)).toMatchObject({
+      usrNonVisibleData: envelopePayload(PAYLOAD),
+      usrVisibleData: 'Rösta i Valet 2026',
+    })
+  })
+
+  it('en annan väljares underskrift bär hennes personnummer, och vem det är avgörs av identitetshashen', async () => {
     const data = await signAs('198505152345')
-    const { signingKey } = signingKeyOf(data.certificateChain)
 
-    expect(verifySignedPayload(data.signature, signingKey, envelopePayload(PAYLOAD))).toBe(true)
+    expect(verifiedMockSignature(data.signature)).toMatchObject({
+      usrNonVisibleData: envelopePayload(PAYLOAD),
+      personalNumber: '198505152345',
+    })
+  })
+})
+
+/**
+ * `verifySignedPayload` är det gamla formatets kontroll, en RSA-signatur direkt
+ * över det signerade. Den finns kvar för att valideringen ska känna igen kuvert
+ * från före uppgift 17b, och prövar bara att signaturen håller ihop med nyckeln.
+ */
+describe('verifySignedPayload — det gamla formatets kryptografiska kontroll', () => {
+  const keys = rsaKeys('väljaren i det gamla formatet')
+
+  it('en ärlig signatur håller mot sitt eget innehåll', () => {
+    const signature = signPayload(keys.privateKey, envelopePayload(PAYLOAD))
+
+    expect(verifySignedPayload(signature, keys.publicKey, envelopePayload(PAYLOAD))).toBe(true)
   })
 
-  it('en signatur håller inte mot en annan väljares nyckel', async () => {
-    const anna = await signAs('199001011234')
-    const kim = await signAs('198505152345')
+  it('en signatur håller inte mot en annan nyckel', () => {
+    const signature = signPayload(keys.privateKey, envelopePayload(PAYLOAD))
 
-    expect(
-      verifySignedPayload(anna.signature, signingKeyOf(kim.certificateChain).signingKey, envelopePayload(PAYLOAD)),
-    ).toBe(false)
+    expect(verifySignedPayload(signature, rsaKeys('någon annan').publicKey, envelopePayload(PAYLOAD))).toBe(false)
   })
 
-  it('en signatur för ett annat innehåll avvisas', async () => {
-    const data = await signAs('199001011234')
-    const { signingKey } = signingKeyOf(data.certificateChain)
+  it('en signatur för en annan räknare avvisas', () => {
+    const signature = signPayload(keys.privateKey, envelopePayload(PAYLOAD))
 
-    expect(
-      verifySignedPayload(data.signature, signingKey, envelopePayload({ ...PAYLOAD, ballotId: 'vs-9' })),
-    ).toBe(false)
+    expect(verifySignedPayload(signature, keys.publicKey, envelopePayload({ ...PAYLOAD, castSequence: 2 }))).toBe(false)
   })
 
-  it('en signatur för ett annat chiffer avvisas', async () => {
-    const data = await signAs('199001011234')
-    const { signingKey } = signingKeyOf(data.certificateChain)
-
-    expect(
-      verifySignedPayload(
-        data.signature,
-        signingKey,
-        envelopePayload({ ...PAYLOAD, ciphertextCommitment: 'b'.repeat(64) }),
-      ),
-    ).toBe(false)
-  })
-
-  it('en signatur för en annan räknare avvisas', async () => {
-    /**
-     * ÅTERUPPSPELNINGEN.
-     *
-     * Den som fångat väljarens FÖRSTA signerade kuvert kan annars skicka in
-     * det igen efter att hon ändrat sig, och rösten återgår till den köpta.
-     * Räknaren måste ligga INUTI det signerade — annars byts den bara ut.
-     */
-    const data = await signAs('199001011234', { ...PAYLOAD, castSequence: 1 })
-    const { signingKey } = signingKeyOf(data.certificateChain)
-
-    expect(
-      verifySignedPayload(data.signature, signingKey, envelopePayload({ ...PAYLOAD, castSequence: 2 })),
-    ).toBe(false)
-  })
-
-  it('en trasig signatur avvisas utan att kasta', async () => {
-    const data = await signAs('199001011234')
-    const { signingKey } = signingKeyOf(data.certificateChain)
-
-    expect(verifySignedPayload('inte-base64!!', signingKey, envelopePayload(PAYLOAD))).toBe(false)
+  it('en trasig signatur avvisas utan att kasta', () => {
+    expect(verifySignedPayload('inte-base64!!', keys.publicKey, envelopePayload(PAYLOAD))).toBe(false)
   })
 })
 
@@ -218,19 +192,6 @@ describe('envelopePayload / parseEnvelopePayload', () => {
     expect(parseEnvelopePayload(envelopePayload(PAYLOAD) + 'extra')).toBeNull()
     // Ett fält avklippt mitt i.
     expect(parseEnvelopePayload(envelopePayload(PAYLOAD).slice(0, -5))).toBeNull()
-  })
-})
-
-describe('BankID:s eget signerade innehåll', () => {
-  it('completionData.signedData är exakt det som skickades in', async () => {
-    /**
-     * Grunden för fixrunda 1:s fix. `/api/vote/encrypted` litar på att det
-     * här fältet är ordagrant — inte en approximation — annars vore hela
-     * poängen med att sluta räkna om `castSequence` meningslös.
-     */
-    const data = await signAs('199001011234')
-
-    expect(data.signedData).toBe(envelopePayload(PAYLOAD))
   })
 })
 

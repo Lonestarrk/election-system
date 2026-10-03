@@ -1,6 +1,5 @@
 import {
   createPrivateKey,
-  createSign,
   generateKeyPairSync,
   type KeyObject,
   randomBytes,
@@ -22,6 +21,7 @@ import {
   resetMockOrders,
   sweepExpiredMockOrders,
 } from './mock-orders'
+import { buildBankIdSignatureXml } from './mock-signature'
 import { computeQrData, QR_ORDER_LIFETIME_SECONDS } from './qr'
 import type {
   BankIdAuthOrder,
@@ -60,6 +60,11 @@ import type {
  * rutt som anropar den kompilerar bara så länge mocken är aktiv. Byts den mot
  * en riktig implementation faller anropet vid kompilering i stället för att
  * tyst bli en väg att legitimera sig som vem som helst.
+ *
+ * UNDERSKRIFTEN ÄR I BANKID:S FORMAT (uppgift 17b). `collect` lämnar ett
+ * XMLDSig-dokument, base64-kodat, med det signerade och kedjan inbäddade, som en
+ * riktig BankID. Det byggs i ./mock-signature.ts, och läggningen och valideringen
+ * prövar det med samma läsare som en riktig underskrift, se ./xmldsig.ts.
  *
  * Ordertillståndet ligger i processminne. Rätt avvägning för en POC, fel för
  * drift: en omstart tappar alla pågående legitimeringar, och med flera
@@ -119,7 +124,7 @@ const issuer = issuerFrom(issuingCertificate, createPrivateKey(MOCK_BANKID_INTER
 /** Ett år, som ungefär ett riktigt BankID, men aldrig längre än mellannivån gäller. */
 const CERTIFICATE_LIFETIME_MS = 365 * 86_400_000
 
-function issueVoterChain(personalNumber: string, publicKey: KeyObject): string[] {
+function issueVoterChain(personalNumber: string, publicKey: KeyObject): X509Certificate[] {
   const { name, givenName, surname } = demoName(personalNumber)
 
   /**
@@ -148,7 +153,7 @@ function issueVoterChain(personalNumber: string, publicKey: KeyObject): string[]
   })
 
   // Lövet först och sedan mellannivån, utan roten, som BankID:s svar.
-  return [leaf.toString(), issuingCertificate.toString()]
+  return [leaf, issuingCertificate]
 }
 
 function demoName(personalNumber: string): { name: string; givenName: string; surname: string } {
@@ -196,6 +201,7 @@ export class MockBankIdService implements IBankIdService {
       demoPersonalNumber: null,
       pollsRemaining: env.mockBankIdPollsUntilComplete,
       cancelled: false,
+      userVisibleData: null,
       userNonVisibleData: null,
       expiresAt: mockOrderExpiry(now),
     })
@@ -219,6 +225,7 @@ export class MockBankIdService implements IBankIdService {
       // Det som faktiskt signeras. Ligger kvar på ordern tills `collect`
       // avslutar den, precis som skarpt BankID håller kvar begäran under
       // hela legitimeringen.
+      userVisibleData: request.userVisibleData,
       userNonVisibleData: request.userNonVisibleData,
       expiresAt: mockOrderExpiry(now),
     })
@@ -266,7 +273,7 @@ export class MockBankIdService implements IBankIdService {
     }
 
     const personalNumber = order.demoPersonalNumber
-    const { userNonVisibleData } = order
+    const { userVisibleData, userNonVisibleData } = order
     orders.delete(orderRef)
 
     // Auth-ordrar signerar ingenting — det finns inget innehåll att binda en
@@ -274,11 +281,20 @@ export class MockBankIdService implements IBankIdService {
     // onödan. Fälten är ändå obligatoriska i typen, så att den som konsumerar
     // en sign-order aldrig behöver hantera att de saknas.
     let signature = ''
-    let certificateChain: string[] = []
     if (userNonVisibleData) {
       const { privateKey, publicKey } = this.keysFor(personalNumber)
-      signature = createSign('sha256').update(userNonVisibleData).end().sign(privateKey, 'base64')
-      certificateChain = issueVoterChain(personalNumber, publicKey)
+      /**
+       * I BANKID:S FORMAT (uppgift 17b): ett XMLDSig-dokument med det signerade
+       * och kedjan inbäddade, base64-kodat som i BankID:s svar. Se
+       * ./mock-signature.ts. Texten väljaren ser följer med, som hos BankID.
+       */
+      const xml = buildBankIdSignatureXml({
+        userVisibleData: userVisibleData ?? '',
+        userNonVisibleData,
+        certificates: issueVoterChain(personalNumber, publicKey),
+        privateKey,
+      })
+      signature = Buffer.from(xml, 'utf8').toString('base64')
     }
 
     return {
@@ -287,10 +303,8 @@ export class MockBankIdService implements IBankIdService {
         personalNumber,
         ...demoName(personalNumber),
         signature,
-        certificateChain,
-        // Ordagrant vad som signerades — se dokumentationen på fältet i
-        // IBankIdService.ts för varför anroparen inte får bygga om det.
-        signedData: userNonVisibleData ?? '',
+        // Attrappen har ingen spärrtjänst. En riktig BankID skickar ett OCSP-svar här.
+        ocspResponse: '',
       },
     }
   }

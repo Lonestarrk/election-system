@@ -243,8 +243,7 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
         ballot,
         {
           signature: result.completionData.signature,
-          certificateChain: result.completionData.certificateChain,
-          signedData: result.completionData.signedData,
+          ocspResponse: result.completionData.ocspResponse,
           commitmentSalt,
         },
         await getEncryptedBallotShape(ballotId),

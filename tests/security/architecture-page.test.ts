@@ -1276,7 +1276,7 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       'signing-keys-in-database',
       'no-guaranteed-anonymity-set',
       'no-revocation-check',
-      'bankid-xmldsig-adapter-missing',
+      'bankid-reader-untested-against-bankid',
       'votes-db-writer-can-swap-ciphertext',
     ]
 
@@ -1407,7 +1407,7 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
        */
       const fixableIds = [
         'no-revocation-check',
-        'bankid-xmldsig-adapter-missing',
+        'bankid-reader-untested-against-bankid',
         'votes-db-writer-can-swap-ciphertext',
       ]
       const kinds = fixableIds.map((id) => LIMITATION_STATUS[id]?.kind)

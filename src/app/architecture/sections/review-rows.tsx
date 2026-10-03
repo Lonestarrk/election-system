@@ -34,7 +34,8 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
         <>
           Varje rad bär väljarens BankID-signatur över en saltad hash av chifferhashen och
           räknaren, och
-          certifikatkedjan bakom den. Valideringen före stängningen prövar kedjan mot BankID:s rot,
+          hela underskriften från BankID med certifikatkedjan. Valideringen före stängningen prövar
+          underskriften i BankID:s format och kedjan mot BankID:s rot,
           att certifikatet är väljarens, signatur, räknare, valsedel och bevis medan kopplingen
           finns, och stoppar skalningen vid en avvikelse. Röstningen förblir stängd, och ingenting
           raderas.

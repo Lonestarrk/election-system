@@ -130,7 +130,7 @@ describe.skipIf(!databaseAvailable)('omröstningens läge', () => {
         election.id,
         ballot,
         {} as never,
-        { signature: '', certificateChain: [], signedData: '' } as never,
+        { signature: '', ocspResponse: '' } as never,
         null,
       )
       expect(cast).toEqual({ status: 'wrong_mode' })
@@ -153,7 +153,7 @@ describe.skipIf(!databaseAvailable)('omröstningens läge', () => {
         election.id,
         election.ballotIds[0]!.id,
         {} as never,
-        { signature: '', certificateChain: [], signedData: '' } as never,
+        { signature: '', ocspResponse: '' } as never,
         null,
       )
       expect(cast).toEqual({ status: 'wrong_mode' })

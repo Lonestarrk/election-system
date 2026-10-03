@@ -564,8 +564,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       ballot,
       envelope: {
         signature: result.completionData.signature,
-        certificateChain: result.completionData.certificateChain,
-        signedData: result.completionData.signedData,
+        ocspResponse: result.completionData.ocspResponse,
         commitmentSalt,
       },
       shape: await getEncryptedBallotShape(target.ballotId),

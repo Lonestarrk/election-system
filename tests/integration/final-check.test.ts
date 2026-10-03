@@ -251,8 +251,7 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
 
     return {
       signature: result.completionData.signature,
-      certificateChain: result.completionData.certificateChain,
-      signedData: result.completionData.signedData,
+      ocspResponse: result.completionData.ocspResponse,
       commitmentSalt,
     }
   }

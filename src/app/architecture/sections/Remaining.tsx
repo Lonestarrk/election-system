@@ -9,8 +9,9 @@ import { StatusBadge } from './StatusBadge'
  *
  * Varje punkt bär markörer och stryks när det den beskriver byggs, så listan
  * kan inte påstå att något återstår som redan finns. Därtill tre kända
- * begränsningar i kuvertmodellen, med länk till listan: adaptern för
- * XML-signaturen har specen redan en åtgärd för (spec 4.6 och 10), liksom den
+ * begränsningar i kuvertmodellen, med länk till listan: läsaren av BankID:s
+ * underskrift, som uppgift 17b byggde, prövas mot BankID:s testmiljö i uppgift
+ * 17c (spec 4.6 och 10), och specen har en åtgärd för den
  * som kan skriva i röstdatabasen och byta ut ett chiffer
  * (spec 4.6, förbehåll 4, granskningen av 11g). Uppgift 11d stängde bytet före
  * infogningen, och uppgift 12b bytet efter stängningen för den som bara kan

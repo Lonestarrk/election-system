@@ -150,7 +150,7 @@ describe('kapacitetskontrollen går före ersättningen (fixrunda 1)', () => {
 })
 
 describe('det insamlade resultatet hålls med ordern (fixrunda 1)', () => {
-  const completion = { signature: 'sig', certificateChain: ['kedja'], signedData: 'signerat' }
+  const completion = { signature: 'sig', ocspResponse: 'spärrsvar' }
 
   it('läggs på ordern, bunden till sessionen, och följer med get och take', () => {
     putOrder(ORDER, 'session-a', state())

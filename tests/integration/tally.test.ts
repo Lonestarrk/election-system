@@ -288,8 +288,7 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
 
     return {
       signature: result.completionData.signature,
-      certificateChain: result.completionData.certificateChain,
-      signedData: result.completionData.signedData,
+      ocspResponse: result.completionData.ocspResponse,
       commitmentSalt,
     }
   }

@@ -208,8 +208,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
       encrypted,
       {
         signature: result.completionData.signature,
-        certificateChain: result.completionData.certificateChain,
-        signedData: result.completionData.signedData,
+        ocspResponse: result.completionData.ocspResponse,
         commitmentSalt,
       },
       shape,
