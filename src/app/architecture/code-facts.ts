@@ -896,7 +896,9 @@ export const CURRENTLY = {
     text:
       'Byggt: när omröstningen är räknad publicerar observatörsgränssnittet per valsedel summan per ' +
       'alternativ, varje förtroendepersons partiella dekryptering med bevis och resultatet. Ingenting ' +
-      'publiceras per röst. Före publiceringen räknas varje valsedel om ur urnan och de prövade ' +
+      'publiceras per röst, utom på en valsedel med en enda rad i urnan, där summan är den radens ' +
+      'chiffer, och utom i livevyn i demoläget, som visar början av chifferhashen och dagen för varje ' +
+      'liggande kuvert. Före publiceringen räknas varje valsedel om ur urnan och de prövade ' +
       'bidragen, och stämmer omräkningen inte med de sparade räkneverken publiceras ingenting. Ett ' +
       'fristående verktyg, tools/verify-election.mjs, prövar bevisen och kombinationen utan appens ' +
       'kod. Det kan inte pröva att summan består av exakt de giltiga rösterna: det vilar på ' +
@@ -916,6 +918,12 @@ export const CURRENTLY = {
         contains:
           "abort('valsedelns sparade räkneverk stämmer inte med en omräkning ur urnan och bidragen. Ingenting publiceras.')",
       },
+      // Förbehållen: summan publiceras som den räknades, också för en valsedel
+      // med en enda rad (ruling 138), och livevyn visar början av hashen och
+      // dagen för varje liggande kuvert.
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'c1: sum.c1.toString(),' },
+      { file: 'src/app/api/demo/database-state/route.ts', contains: 'ciphertextHash: shorten(pending.ciphertextHash),' },
+      { file: 'src/app/api/demo/database-state/route.ts', contains: 'updatedAt: day(pending.updatedAt),' },
       // Ingenting per röst: varken publiceringen eller observatörsrutterna läser urnans rader själva.
       { nowhereIn: 'src/orchestration/publish-results.usecase.ts', matches: /ciphertextHash|encryptedVote|\bproofs\b/ },
       { nowhereIn: 'src/app/api/observer', matches: /ciphertextHash|encryptedVote|votesDb|votersDb/ },
@@ -999,9 +1007,11 @@ export const CURRENTLY = {
    */
   noLiveResults: {
     text:
-      'Byggt: inga löpande resultat. Medan röstningen pågår visar observatörsgränssnittet och ' +
-      'adminvyn bara valdeltagandet per valsedel, och resultatet visas först när omröstningen är ' +
-      'räknad. Rutten som lämnade ut det gamla flödets röster en och en, med innehåll, finns inte ' +
+      'Byggt: inga löpande resultat medan röstningen pågår. Då visar observatörsgränssnittet och ' +
+      'adminvyn bara valdeltagandet per valsedel. Efter stängningen ser administratören varje ' +
+      'valsedel när den räknas, och offentligt publiceras resultatet först när omröstningen är ' +
+      'räknad. I demon kan den som driver systemet dekryptera när som helst, eftersom fraserna är ' +
+      'kända. Rutten som lämnade ut det gamla flödets röster en och en, med innehåll, finns inte ' +
       'längre. Livevyn i demon visar räkneverken först när resultatet är publicerat. Det gamla ' +
       'flödets tabell vote finns kvar tills flödet tas bort, och den som kan läsa röstdatabasen kan ' +
       'räkna i den.',

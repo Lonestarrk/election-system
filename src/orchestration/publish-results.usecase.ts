@@ -1,11 +1,14 @@
-import { G, P, Q } from '@/lib/crypto/group'
+import { canonicalOptions } from '@/lib/crypto/ballot-encoding'
+import { G, P, Q, parseElement } from '@/lib/crypto/group'
+// Ur serverns ingång, som räkningen: kombinationen och undergruppskontrollen
+// räknas i OpenSSL. Se src/lib/crypto/server.ts.
+import { combine, isInSubgroup } from '@/lib/crypto/server'
 import { serialisePartialDecryptionProof, TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '@/lib/crypto/threshold'
 import { logger } from '@/lib/logger'
-import { getEncryptedBallotShape } from '@/modules/ballot-box'
+import { getBallotChoices, getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
 import { turnoutByBallot } from '@/modules/eligibility/participation.service'
-import { optionLabelsOf } from './election-overview.usecase'
 import { recountForPublication, TallyAbortedError, type RecountedBallot } from './tally.usecase'
 
 /**
@@ -16,15 +19,19 @@ import { recountForPublication, TallyAbortedError, type RecountedBallot } from '
  *   – varje förtroendepersons partiella dekryptering med sitt bevis
  *   – resultatet per alternativ
  *   – antalet rader i urnan och antalet markeringar "har röstat"
- * och per omröstning kuvertroten, urnroten, antalet kuvert som skalades, valets
+ * och per omröstning kuvertroten, urnroten, summan av markeringarna, valets
  * publika nyckel och förtroendepersonernas publika andelar. Allt som behövs
  * för att räkna utmaningen i spec 4.5 står med: valets och valsedelns id,
  * alternativens och förtroendepersonernas index och talen.
  *
- * INGENTING PER RÖST. Enskilda chiffer, deras hashar och deras bevis
- * publiceras inte, och inte heller något om en väljare. Allt publicerat per röst
- * är ett handtag som en köpare kan matcha mot (spec 3.1). Har en valsedel bara
- * en röst är summan den rösten, och det går inte att undvika.
+ * INGENTING PER RÖST, UTOM PÅ EN VALSEDEL MED EN ENDA RAD. Enskilda chiffer,
+ * deras hashar och deras bevis publiceras inte, och inte heller något om en
+ * väljare. Allt publicerat per röst är ett handtag som en köpare kan matcha mot
+ * (spec 3.1). Har en valsedel bara en rad i urnan är summan den radens chiffer,
+ * och då går dess chifferhash att räkna ur det publicerade (ruling 138, posten
+ * `single-row-ballot-publishes-the-vote`). Talet avslöjar redan rösten, så
+ * chiffret lägger bara till att den som sett just det chiffret kan se att det
+ * räknades. Inget skydd byggs.
  *
  * FÖRST I TALLIED ELLER CERTIFIED. Före det publiceras ingenting, inte heller
  * för en valsedel som redan är räknad: fasen säger att varje valsedel är det.
@@ -76,7 +83,7 @@ export type Publication = {
   encryptionPublicKey: string
   envelopeRoot: string
   urnRoot: string
-  envelopeCount: number
+  markedAsVotedTotal: number
   ballots: PublishedBallot[]
   notCheckable: string[]
   howToVerify: string
@@ -95,9 +102,46 @@ export const NOT_CHECKABLE: readonly string[] = [
     'och på slutkontrollen.',
   'Kuvertroten och urnroten kan inte räknas om utan de enskilda kuverten och chiffren. De är ' +
     'åtaganden: den som sparade dem vid stängningen kan jämföra med dem här.',
-  'Att antalet rader i urnan, markeringarna och antalet kuvert är riktiga. De går att jämföra med ' +
-    'varandra och med räkneverken, inte med något utanför systemet.',
+  'Att antalet rader i urnan och markeringarna är riktiga. De går att jämföra med varandra och med ' +
+    'räkneverken, inte med något utanför systemet. Antalet kuvert som skalades publiceras inte för sig.',
+  'Vilka valsedlar omröstningen har. En valsedel som saknas i publiceringen syns inte här.',
 ]
+
+/**
+ * ANDELARNA SKA HÖRA TILL VALETS NYCKEL (fixrunda 1, Mindre 2).
+ *
+ * Omräkningen prövar bara andelarna för de förtroendepersoner som bidrog, och
+ * aldrig nyckeln. Publiceringen gick därför ut med status 200 trots en ändrad
+ * andel för en som inte bidrog, eller en ändrad nyckel, och först verktyget
+ * underkände den. Här prövas samma sak som verktyget prövar: alla tre andelar
+ * ligger i undergruppen, och varje par kombineras med Lagrange till nyckeln.
+ */
+function sharesBelongToKey(
+  key: string,
+  shares: ReadonlyArray<{ trusteeIndex: number; publicShare: string }>,
+): boolean {
+  const publicKey = parseElement(key)
+  if (publicKey === null || !isInSubgroup(publicKey)) return false
+  if (shares.length !== TRUSTEE_COUNT) return false
+
+  const parsed = shares.map((share) => ({ index: share.trusteeIndex, value: parseElement(share.publicShare) }))
+  if (parsed.some((share) => share.value === null || !isInSubgroup(share.value))) return false
+
+  // `combine` ger c2 delat med Lagrange-kombinationen av värdena. Med c2 = 1 och
+  // andelarna som värden är det inversen av kombinationen, som ska vara nyckeln.
+  // Beviset läses inte av kombinationen.
+  const unusedProof = { a: 1n, b: 1n, challenge: 0n, response: 0n }
+  for (const [position, first] of parsed.entries()) {
+    for (const second of parsed.slice(position + 1)) {
+      const inverse = combine({ c1: 1n, c2: 1n }, [
+        { trusteeIndex: first.index, value: first.value!, proof: unusedProof },
+        { trusteeIndex: second.index, value: second.value!, proof: unusedProof },
+      ])
+      if ((inverse * publicKey) % P !== 1n) return false
+    }
+  }
+  return true
+}
 
 const HOW_TO_VERIFY =
   'Spara svaret som en fil, eller ange adressen direkt, och kör node tools/verify-election.mjs ' +
@@ -136,6 +180,9 @@ export async function publishedResults(electionId: string): Promise<PublicationO
     },
   })
   if (!votes?.encryptionPublicKey) return mismatch('valets publika nyckel saknas i röstdatabasen')
+  if (!sharesBelongToKey(votes.encryptionPublicKey, votes.trusteeShares)) {
+    return mismatch('förtroendepersonernas publika andelar hör inte till valets publika nyckel')
+  }
 
   const turnout = await turnoutByBallot(electionId)
   if (!turnout) return { status: 'unknown_election' }
@@ -200,11 +247,85 @@ export async function publishedResults(electionId: string): Promise<PublicationO
       encryptionPublicKey: votes.encryptionPublicKey,
       envelopeRoot: election.envelopeRoot,
       urnRoot: election.urnRoot,
-      // En markering per skalat kuvert: skalningen kräver att antalen är lika före COMMIT.
-      envelopeCount: turnout.ballots.reduce((total, ballot) => total + ballot.voted, 0),
+      // Summan av markeringarna. Skalningen skriver en per flyttat kuvert, men
+      // antalet kuvert lagras inte för sig, så fältet heter efter vad det är
+      // (fixrunda 1, Mindre 3).
+      markedAsVotedTotal: turnout.ballots.reduce((total, ballot) => total + ballot.voted, 0),
       ballots,
       notCheckable: [...NOT_CHECKABLE],
       howToVerify: HOW_TO_VERIFY,
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Adminsidans resultat (12c, omräknat sedan fixrunda 1 av uppgift 13)
+// ---------------------------------------------------------------------------
+
+export type BallotResult = {
+  ballotId: string
+  label: string
+  kind: string
+  /** Alternativen i valsedelns kanoniska ordning, blankt först. */
+  options: Array<{ label: string; count: number }>
+  total: number
+}
+
+export type ElectionResultOutcome =
+  | { status: 'ok'; phase: string; ballots: BallotResult[] }
+  | { status: 'not_tallied'; phase: string }
+  | { status: 'result_mismatch'; phase: string }
+  | { status: 'unknown_election' }
+
+/**
+ * Resultatet per valsedel för adminsidan, efter TALLIED och CERTIFIED.
+ *
+ * SAMMA TAL SOM PUBLICERINGEN (fixrunda 1, Mindre 6). Förut läste rutten de
+ * sparade räkneverken direkt, så ett räkneverk som ändrats efter räkningen
+ * visades för administratören som valsedelns resultat. Nu är det publiceringens
+ * omräkning, och stämmer den inte svarar funktionen `result_mismatch` utan tal.
+ */
+export async function getElectionTallyResults(electionId: string): Promise<ElectionResultOutcome> {
+  const outcome = await publishedResults(electionId)
+  if (outcome.status === 'unknown_election') return outcome
+  if (outcome.status === 'not_published') return { status: 'not_tallied', phase: outcome.phase }
+  if (outcome.status === 'result_mismatch') return outcome
+
+  return {
+    status: 'ok',
+    phase: outcome.publication.election.phase,
+    ballots: outcome.publication.ballots.map((ballot) => ({
+      ballotId: ballot.ballotId,
+      label: ballot.label,
+      kind: ballot.kind,
+      options: ballot.options.map((option) => ({ label: option.label, count: option.count })),
+      total: ballot.options.reduce((sum, option) => sum + option.count, 0),
+    })),
+  }
+}
+
+/**
+ * Alternativens namn i den kanoniska ordning räkningen använder (blankt,
+ * partierna, sedan kandidaterna), som `getEncryptedBallotShape` bygger den.
+ */
+export async function optionLabelsOf(ballotId: string): Promise<string[]> {
+  const choices = await getBallotChoices(ballotId)
+  if (!choices || choices.kind !== 'PARTY') return []
+
+  const parties = choices.parties.map((party) => ({
+    id: party.ballotPartyId,
+    displayOrder: party.displayOrder,
+    candidates: party.candidates.map((candidate) => ({ id: candidate.id, displayOrder: candidate.displayOrder })),
+  }))
+  const partyById = new Map(choices.parties.map((party) => [party.ballotPartyId, party]))
+  const candidateById = new Map(
+    choices.parties.flatMap((party) => party.candidates.map((candidate) => [candidate.id, candidate.name] as const)),
+  )
+
+  return canonicalOptions({ allowsCandidateVote: choices.allowsCandidateVote, parties }).map((option) => {
+    if (option.kind === 'BLANK') return 'Blankt'
+    const party = partyById.get(option.ballotPartyId)
+    if (option.kind === 'PARTY') return party?.name ?? 'Okänt parti'
+    return `${candidateById.get(option.candidateId) ?? 'Okänd kandidat'} (${party?.abbreviation ?? '?'})`
+  })
 }

@@ -40,7 +40,10 @@ type Tool = {
     binding: { electionId: string; ballotId: string; optionIndex: number; trusteeIndex: number },
     values: bigint[],
   ) => bigint
-  verifyPublication: (publication: unknown) => { ok: boolean; lines: string[] }
+  verifyPublication: (publication: unknown, options?: { electionId?: string }) => { ok: boolean; lines: string[] }
+  expectedElectionIdFrom: (source: string) => string | undefined
+  modPow: (base: bigint, exponent: bigint, modulus: bigint) => bigint
+  bigintModPow: (base: bigint, exponent: bigint, modulus: bigint) => bigint
 }
 
 let tool: Tool
@@ -62,7 +65,7 @@ type Publication = {
   encryptionPublicKey: string
   envelopeRoot: string
   urnRoot: string
-  envelopeCount: number
+  markedAsVotedTotal: number
   ballots: Array<{
     ballotId: string
     label: string
@@ -136,7 +139,7 @@ function publicationFor(
     encryptionPublicKey: keys.publicKey.toString(),
     envelopeRoot: 'a'.repeat(64),
     urnRoot: 'b'.repeat(64),
-    envelopeCount: rows,
+    markedAsVotedTotal: rows,
     ballots: [
       {
         ballotId: BALLOT_ID,
@@ -164,11 +167,11 @@ function copy<T>(value: T): T {
 }
 
 /** Kör verktyget som en egen process mot en fil, som en granskare gör. */
-function runTool(publication: unknown): { status: number | null; output: string } {
+function runTool(publication: unknown, ...extra: string[]): { status: number | null; output: string } {
   const directory = mkdtempSync(join(tmpdir(), 'verify-election-'))
   const file = join(directory, 'publicering.json')
   writeFileSync(file, JSON.stringify(publication))
-  const result = spawnSync(process.execPath, [TOOL, file], { encoding: 'utf8' })
+  const result = spawnSync(process.execPath, [TOOL, file, ...extra], { encoding: 'utf8' })
   return { status: result.status, output: `${result.stdout}${result.stderr}` }
 }
 
@@ -199,6 +202,26 @@ describe('verktyget är oberoende av appen', () => {
       expect(specifier, `verktyget importerar ${specifier}`).toMatch(/^node:/)
     }
     expect(source).not.toMatch(/['"](?:@\/|\.\.?\/|src\/)/)
+  })
+
+  it('räknar potenser i OpenSSL med samma svar som i BigInt, också i kantfallen (fixrunda 1)', () => {
+    const cases: Array<[bigint, bigint]> = [
+      [0n, 5n],
+      [1n, 5n],
+      [2n, 0n],
+      [2n, 1n],
+      [P - 1n, 2n],
+      [P - 1n, 3n],
+      [4n, Q],
+      [4n, Q - 1n],
+      [P + 7n, 3n],
+    ]
+    for (let round = 0; round < 8; round += 1) cases.push([randomScalar() % P, randomScalar()])
+    for (const [base, exponent] of cases) {
+      expect(tool.modPow(base, exponent, P), `${base} ^ ${exponent}`).toBe(tool.bigintModPow(base, exponent, P))
+      expect(tool.modPow(base, exponent, P)).toBe(modPow(((base % P) + P) % P, exponent, P))
+    }
+    expect(() => tool.modPow(2n, -1n, P)).toThrow()
   })
 
   it('har gruppen ur RFC 3526 på egen hand, och den är appens', () => {
@@ -310,15 +333,15 @@ describe('verktyget underkänner', () => {
     const forged = copy(honest)
     forged.ballots[0]!.rows = 4
     forged.ballots[0]!.markedAsVoted = 4
-    forged.envelopeCount = 4
+    forged.markedAsVotedTotal = 4
 
     expect(failed(tool.verifyPublication(forged)).join('\n')).toMatch(/summerar/)
   })
 
-  it('ett antal kuvert som inte stämmer med antalet röster', () => {
+  it('en summa av markeringarna som inte stämmer med antalet röster', () => {
     const forged = copy(honest)
-    forged.envelopeCount = 4
-    expect(failed(tool.verifyPublication(forged)).join('\n')).toMatch(/kuvert/)
+    forged.markedAsVotedTotal = 4
+    expect(failed(tool.verifyPublication(forged)).join('\n')).toMatch(/markeringarna/)
 
     const markers = copy(honest)
     markers.ballots[0]!.markedAsVoted = 2
@@ -557,6 +580,81 @@ describe('varje del av prövningen behövs', () => {
         /summan för alternativ 0 — c1 är inte ett kanoniskt skrivet decimaltal/,
       )
     }
+  })
+})
+
+/**
+ * FIXRUNDA 1 AV UPPGIFT 13.
+ *
+ * Granskningens förfalskning 07f, samma valsedel publicerad två gånger med
+ * antalet dubblat, godkändes: inget resultat per valsedel ändrades, men antalet
+ * röster blåstes upp förbi kontrollen av antalen (Viktigt 3). Slutsatsen skrevs
+ * dessutom ut också när något annat underkändes (Mindre 1), och verktyget
+ * jämförde inte omröstningens id med det som efterfrågades (Mindre 4).
+ */
+describe('fixrunda 1', () => {
+  /** Granskningens fil, med fältet för antalet döpt om som publiceringen nu gör. */
+  function forgery07f(): Publication {
+    const raw = JSON.parse(readFileSync(join(process.cwd(), 'tests/unit/fixtures/publication-07f-ballot-twice.json'), 'utf8'))
+    raw.markedAsVotedTotal = raw.envelopeCount
+    delete raw.envelopeCount
+    return raw as Publication
+  }
+
+  it('underkänner granskningens 07f: samma valsedel två gånger, med antalet dubblat', () => {
+    const publication = forgery07f()
+    expect(publication.ballots.map((ballot) => ballot.ballotId)).toEqual([BALLOT_ID, BALLOT_ID])
+
+    const result = runTool(publication)
+    expect(result.status, result.output).toBe(1)
+    expect(result.output).toMatch(/FEL.*valsedeln 5e2f7a10-3c4d-4e8f-9b1a-2d3c4e5f6a7b står två gånger/)
+    expect(result.output).not.toContain('ALLT SOM VERKTYGET KAN KONTROLLERA STÄMMER')
+    expect(result.output).not.toContain('dekrypteringen stämmer')
+  })
+
+  it('underkänner samma dubblett byggd här, och bara den', () => {
+    const publication = copy(honest)
+    publication.ballots.push(copy(publication.ballots[0]!))
+    publication.markedAsVotedTotal *= 2
+    expect(failed(tool.verifyPublication(publication))).toEqual([expect.stringMatching(/valsedeln .* står två gånger/)])
+  })
+
+  it('säger att det inte vet vilka valsedlar omröstningen har', () => {
+    expect(tool.verifyPublication(honest).lines.join('\n')).toMatch(/vilka valsedlar omröstningen har/i)
+  })
+
+  it('skriver slutsatsen bara när ingenting har underkänts', () => {
+    // Granskningens 09: en annan nyckel. Varje bevis och varje kombination
+    // håller, men andelarna hör inte till nyckeln.
+    const key = copy(honest)
+    key.encryptionPublicKey = modPow(G, randomScalar(), P).toString()
+    const keyResult = tool.verifyPublication(key)
+    expect(keyResult.ok).toBe(false)
+    expect(keyResult.lines.join('\n')).not.toContain('dekrypteringen stämmer')
+
+    // Granskningens 09b: en rot som inte har formen av en.
+    const root = copy(honest)
+    root.urnRoot = 'inte en rot'
+    expect(tool.verifyPublication(root).lines.join('\n')).not.toContain('dekrypteringen stämmer')
+
+    expect(tool.verifyPublication(honest).lines.join('\n')).toContain('dekrypteringen stämmer')
+  })
+
+  it('underkänner en publicering för en annan omröstning än den som efterfrågades', () => {
+    const other = '9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a'
+    expect(failed(tool.verifyPublication(honest, { electionId: other })).join('\n')).toMatch(
+      /gäller omröstningen 0b9d1c8e-8a43-4e0b-9a59-0f3c2d7b6a11, men 9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a efterfrågades/,
+    )
+    expect(failed(tool.verifyPublication(honest, { electionId: ELECTION_ID }))).toEqual([])
+
+    // Som program: omröstningens id som andra argument, för en fil.
+    expect(runTool(honest, other).status).toBe(1)
+    expect(runTool(honest, ELECTION_ID).status).toBe(0)
+  })
+
+  it('läser omröstningens id ur adressen, när underlaget är en adress', () => {
+    expect(tool.expectedElectionIdFrom('https://val.example/api/observer/results?electionId=abc-123')).toBe('abc-123')
+    expect(tool.expectedElectionIdFrom('publicering.json')).toBeUndefined()
   })
 })
 

@@ -1,4 +1,5 @@
-import type { ElectionOverview, BallotResult } from '@/orchestration/election-overview.usecase'
+import type { ElectionOverview } from '@/orchestration/election-overview.usecase'
+import type { BallotResult } from '@/orchestration/publish-results.usecase'
 import type { FinalCheckReport } from '@/orchestration/final-check.usecase'
 
 /** Bara typer, som raderas i bygget. Sidan importerar ingen serverkod. */

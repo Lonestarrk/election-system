@@ -17,7 +17,9 @@ export const dynamic = 'force-dynamic'
  *   1. FASEN, som röstlängden står i (spec 6.1).
  *   2. VALDELTAGANDET per valsedel, alltså hur många som röstat. Det är det
  *      enda som publiceras medan röstningen pågår (spec 6.2).
- *   3. KUVERTROTEN, URNROTEN OCH ANTALET KUVERT, från skalningen (ruling 135).
+ *   3. KUVERTROTEN, URNROTEN OCH SUMMAN AV MARKERINGARNA, från skalningen
+ *      (ruling 135). Antalet kuvert som skalades lagras inte för sig, så
+ *      summan av markeringarna "har röstat" står i stället.
  *      De visas före räkningen, så att den som vill kan spara dem innan något
  *      dekrypteras och jämföra med publiceringen efteråt.
  *   4. VAR RESULTATET FINNS, när omröstningen är räknad. Själva resultatet,
@@ -73,7 +75,7 @@ export async function POST(request: Request) {
     turnoutBasis: overview.turnoutBasis,
     envelopeRoot: overview.envelopeRoot,
     urnRoot: overview.urnRoot,
-    envelopeCount: overview.envelopeCount,
+    markedAsVotedTotal: overview.markedAsVotedTotal,
     publishedResults: overview.resultsAvailable ? resultsPath : null,
     howToVerify: overview.resultsAvailable
       ? `Hämta ${resultsPath} och kör node tools/verify-election.mjs med adressen eller den sparade filen.`

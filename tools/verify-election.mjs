@@ -11,9 +11,10 @@
  *   3. att Lagrange-kombinationen av bidragen ger g^antal = c2 / kombinationen,
  *      för varje alternativ och med det publicerade antalet
  *   4. att räkneverken summerar till antalet rader i urnan, och att antalet
- *      rader, markeringarna "har röstat" och antalet kuvert stämmer med
- *      varandra
+ *      rader och markeringarna "har röstat" stämmer med varandra
  *   5. att kuvertroten och urnroten finns och har formen av en rot
+ *   6. att varje valsedel står en gång, och att publiceringen gäller den
+ *      omröstning som efterfrågades
  *
  * VERKTYGET ÄR AVSIKTLIGT FRISTÅENDE. Det importerar bara Nodes inbyggda
  * moduler och ingenting ur src. Transkriptet, tolkningen av talen och
@@ -35,17 +36,18 @@
  * chiffren publiceras aldrig (spec 3.1), så summan går inte att räkna om här.
  *
  * Använd:
- *   node tools/verify-election.mjs <URL eller fil>
+ *   node tools/verify-election.mjs <URL eller fil> [omröstningens id]
  *
  * URL:en är den offentliga rutten, till exempel
  *   https://<värd>/api/observer/results?electionId=<omröstningens id>
- * och filen en JSON-fil med samma innehåll. Ingen inloggning krävs.
+ * och filen en JSON-fil med samma innehåll. Ingen inloggning krävs. Publiceringen
+ * ska gälla omröstningen i adressen, eller den i det andra argumentet.
  *
  * Utfallet: 0 när allt som går att kontrollera stämmer, 1 när något inte gör
  * det, 2 när underlaget inte gick att läsa.
  */
 
-import { createHash, getDiffieHellman } from 'node:crypto'
+import { createDiffieHellman, createHash, getDiffieHellman } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -76,7 +78,49 @@ const ELEMENT_BYTES = 256
 /** Ett fel i underlaget. Fångas per kontroll och blir en rad i utskriften. */
 class Invalid extends Error {}
 
-function modPow(base, exponent, modulus) {
+/**
+ * Potensen mod p, räknad i OpenSSL genom Nodes Diffie–Hellman, som är omkring
+ * tjugo gånger snabbare än BigInt. Faller tillbaka på `bigintModPow` för allt
+ * OpenSSL inte räknar: en bas som är 0, 1 eller p − 1, en exponent under 2, och
+ * ett svar som är 1, som OpenSSL vägrar lämna ut (fixrunda 1: sviten med
+ * verktyget i samma process tog över åttio sekunder, och testkörarens
+ * hjärtslag hann gå ut). Det är samma räkneoperation och samma bibliotek som
+ * Node, inte appens kod: verktyget importerar fortfarande bara node:.
+ */
+let engine = null
+const PRIME_BYTES = ELEMENT_BYTES
+
+function toBytes(value) {
+  const hex = value.toString(16)
+  return Buffer.from(hex.length % 2 === 0 ? hex : '0' + hex, 'hex')
+}
+
+function opensslModPow(base, exponent) {
+  if (base <= 1n || base >= P - 1n || exponent < 2n) return null
+  engine ??= createDiffieHellman(toBytes(P), toBytes(G))
+  try {
+    engine.setPrivateKey(toBytes(exponent))
+    const shared = engine.computeSecret(toBytes(base))
+    if (shared.length === 0 || shared.length > PRIME_BYTES) return null
+    const value = BigInt('0x' + shared.toString('hex'))
+    return value > 0n && value < P ? value : null
+  } catch {
+    return null
+  }
+}
+
+export function modPow(base, exponent, modulus) {
+  if (exponent < 0n) throw new Invalid('en negativ exponent')
+  if (modulus === P) {
+    const reduced = ((base % P) + P) % P
+    const fast = opensslModPow(reduced, exponent)
+    if (fast !== null) return fast
+  }
+  return bigintModPow(base, exponent, modulus)
+}
+
+/** Kvadrera och multiplicera i BigInt. Referensen, och vägen för det OpenSSL inte räknar. */
+export function bigintModPow(base, exponent, modulus) {
   if (exponent < 0n) throw new Invalid('en negativ exponent')
   let result = 1n
   let square = ((base % modulus) + modulus) % modulus
@@ -125,7 +169,9 @@ function parseResidue(value, what) {
 
 /** I undergruppen av ordning q, och inte 1: 1 < y < p och y^q ≡ 1 (mod p). */
 function inSubgroup(value) {
-  return value > 1n && value < P && modPow(value, Q, P) === 1n
+  // y^q räknas som y^(q−1) · y: samma tal, men OpenSSL lämnar aldrig ut svaret 1,
+  // och y^(q−1) är 1 bara för y = 1, som redan är utesluten.
+  return value > 1n && value < P && (modPow(value, Q - 1n, P) * value) % P === 1n
 }
 
 /** Ett gruppelement som ska ligga i undergruppen. */
@@ -271,7 +317,7 @@ function combineAt(values) {
  * Prövar en publicering och ger raderna som ska skrivas ut. `ok` är sant när
  * ingen kontroll underkändes.
  */
-export function verifyPublication(publication) {
+export function verifyPublication(publication, options = {}) {
   const lines = []
   let failures = 0
   let decryptionHolds = true
@@ -323,6 +369,13 @@ export function verifyPublication(publication) {
 
   const electionId = attempt('Omröstningens id', () => parseId(publication.election?.id, 'omröstningens id'))
   if (electionId === null) return finish()
+
+  // Publiceringen ska gälla den omröstning som efterfrågades (fixrunda 1, Mindre
+  // 4). Ett svar för en annan omröstning hade annars godkänts som det rätta.
+  if (options.electionId !== undefined) {
+    if (electionId === options.electionId) pass('Publiceringen gäller den efterfrågade omröstningen', electionId)
+    else fail(`Publiceringen gäller omröstningen ${electionId}, men ${options.electionId} efterfrågades`)
+  }
 
   // --- Rötterna ------------------------------------------------------------------
   for (const [key, name] of [
@@ -382,6 +435,19 @@ export function verifyPublication(publication) {
   if (ballots === null || ballots.length === 0) {
     fail('Publiceringen har inga valsedlar')
     return finish()
+  }
+
+  // Samma valsedel två gånger blåser upp antalet röster utan att något resultat
+  // per valsedel ändras, och alla andra kontroller håller då (granskningens 07f,
+  // fixrunda 1). Varje valsedel ska därför stå en gång. Vilka valsedlar
+  // omröstningen har kan verktyget inte veta, se utskriften.
+  const seen = new Map()
+  for (const ballot of ballots) {
+    const id = ballot?.ballotId
+    seen.set(id, (seen.get(id) ?? 0) + 1)
+  }
+  for (const [id, times] of seen) {
+    if (times > 1) fail(`Publiceringen är fel: valsedeln ${String(id)} står ${times === 2 ? 'två' : times} gånger`)
   }
 
   let totalRows = 0
@@ -543,22 +609,28 @@ export function verifyPublication(publication) {
     else fail(`${name}: urnan har ${rows} rader, men ${markers} markeringar "har röstat"`)
   }
 
-  // --- Antalet kuvert ------------------------------------------------------------------
-  const envelopeCount = publication.envelopeCount
-  if (!Number.isSafeInteger(envelopeCount) || envelopeCount < 0) {
-    fail('Antalet kuvert saknas eller är inte ett heltal från 0')
+  // --- Summan av markeringarna ------------------------------------------------------------
+  // Fältet är summan av markeringarna "har röstat" över omröstningens valsedlar
+  // (fixrunda 1, Mindre 3). Skalningen skriver en markering per flyttat kuvert,
+  // men antalet kuvert lagras inte för sig, så det här är inget oberoende tal.
+  const markedTotal = publication.markedAsVotedTotal
+  if (!Number.isSafeInteger(markedTotal) || markedTotal < 0) {
+    fail('Summan av markeringarna "har röstat" saknas eller är inte ett heltal från 0')
   } else if (!countsKnown) {
-    fail('Antalet kuvert går inte att jämföra med antalet röster, eftersom ett räkneverk inte gick att läsa')
-  } else if (envelopeCount === totalRows && envelopeCount === totalMarkers) {
-    pass('Antalet kuvert som skalades stämmer med antalet röster och markeringar', `${envelopeCount}`)
+    fail('Summan av markeringarna går inte att jämföra med antalet röster, eftersom ett räkneverk inte gick att läsa')
+  } else if (markedTotal === totalRows && markedTotal === totalMarkers) {
+    pass('Summan av markeringarna stämmer med antalet rader i urnorna och valsedlarnas markeringar', `${markedTotal}`)
   } else {
     fail(
-      `Antalet kuvert som skalades är ${envelopeCount}, men urnan har ${totalRows} rader och röstlängden ` +
+      `Summan av markeringarna är ${markedTotal}, men urnorna har ${totalRows} rader och valsedlarna ` +
         `${totalMarkers} markeringar`,
     )
   }
 
-  if (decryptionHolds) {
+  // Slutsatsen skrivs bara när ingenting har underkänts (fixrunda 1, Mindre 1).
+  // Förut stod den också när nyckeln, en rot eller antalen underkändes, och den
+  // som letade efter raden kunde luras.
+  if (decryptionHolds && failures === 0) {
     lines.push('', '  Slutsats: dekrypteringen stämmer för varje valsedel.')
   }
 
@@ -578,8 +650,10 @@ export function verifyPublication(publication) {
       '  – Kuvertroten och urnroten kan inte räknas om, eftersom de enskilda kuverten och chiffren inte',
       '    publiceras. De är åtaganden: den som sparade dem vid stängningen kan jämföra dem med de',
       '    publicerade. Ändras urnan och rötterna tillsammans syns det inte här.',
-      '  – Att antalet rader, markeringarna och antalet kuvert är riktiga. Verktyget prövar bara att de',
-      '    stämmer med varandra och med räkneverken.',
+      '  – Att antalet rader och markeringarna är riktiga. Verktyget prövar bara att de stämmer med',
+      '    varandra och med räkneverken. Antalet kuvert som skalades publiceras inte för sig.',
+      '  – Vilka valsedlar omröstningen har. Verktyget prövar de valsedlar som publiceringen tar med',
+      '    och underkänner en valsedel som står två gånger, men ser inte om en valsedel saknas.',
       '  – Att valets publika nyckel och förtroendepersonernas andelar är de som fanns när rösterna',
       '    krypterades. Den som sparade nyckeln medan röstningen pågick kan jämföra med den.',
       '',
@@ -593,12 +667,21 @@ export function verifyPublication(publication) {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-  'Använd: node tools/verify-election.mjs <URL eller fil>',
+  'Använd: node tools/verify-election.mjs <URL eller fil> [omröstningens id]',
   '',
   '  URL:en är den offentliga rutten, till exempel',
   '    https://<värd>/api/observer/results?electionId=<omröstningens id>',
   '  och filen en JSON-fil med samma innehåll.',
+  '',
+  '  Publiceringen ska gälla omröstningen i adressen, eller den som anges som andra',
+  '  argument. För en fil utan andra argument prövas inte vilken omröstning den gäller.',
 ].join('\n')
+
+/** Omröstningens id i adressen, när underlaget är en adress med `electionId`. */
+export function expectedElectionIdFrom(source) {
+  if (!/^https?:\/\//i.test(source)) return undefined
+  return new URL(source).searchParams.get('electionId') ?? undefined
+}
 
 async function load(source) {
   if (/^https?:\/\//i.test(source)) {
@@ -615,7 +698,7 @@ async function load(source) {
 
 async function main(argv) {
   const source = argv[2]
-  if (!source || argv.length > 3) {
+  if (!source || argv.length > 4) {
     console.error(USAGE)
     return 2
   }
@@ -633,7 +716,7 @@ async function main(argv) {
   if (typeof publication?.election?.phase === 'string') console.log(`Fas: ${publication.election.phase}`)
   console.log('')
 
-  const { ok, lines } = verifyPublication(publication)
+  const { ok, lines } = verifyPublication(publication, { electionId: argv[3] ?? expectedElectionIdFrom(source) })
   for (const line of lines) console.log(line)
   return ok ? 0 : 1
 }

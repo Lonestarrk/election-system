@@ -249,7 +249,8 @@ function Answer({ participation, onOther }: { participation: Participation; onOt
             <p>
               Resultatet är publicerat tillsammans med bevisen för hur det räknades fram: summan av
               rösterna i krypterad form, och förtroendepersonernas bidrag till att öppna den. Ingenting
-              om en enskild röst är publicerat.
+              om en enskild röst är publicerat, utom på en valsedel med en enda röst. Där är summan
+              den rösten, och både talet och den krypterade summan visar den.
             </p>
             <p>
               <a href={resultsPath(electionId)}>Det publicerade resultatet</a>
@@ -258,8 +259,8 @@ function Answer({ participation, onOther }: { participation: Participation; onOt
         ) : (
           <p>
             När omröstningen är räknad publiceras resultatet här, tillsammans med bevisen för hur det
-            räknades fram. Innan dess finns inget resultat att se, inte heller för den som driver
-            systemet.
+            räknades fram. Innan dess publiceras inget resultat. Efter stängningen ser administratören
+            varje valsedel när den räknas, och i demon kan den som driver systemet dekryptera.
           </p>
         )}
         <p className="small">

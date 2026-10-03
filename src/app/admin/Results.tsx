@@ -6,10 +6,10 @@ import type { ResultsView } from './types'
  * kvar efter en omladdning.
  *
  * Det här är summor, inte röster: ingenting säger vem som röstat på vad, och
- * inget är per väljare. Talen här är de sparade räkneverken, som den
- * inloggade administratören ser. Offentligt publiceras resultatet med bevis i
- * /api/observer/results, och först efter en omräkning ur urnan och bidragen
- * (uppgift 13).
+ * inget är per väljare. Talen är publiceringens omräkning ur urnan och
+ * bidragen, samma som /api/observer/results publicerar med bevis (fixrunda 1
+ * av uppgift 13). Stämmer omräkningen inte med de sparade räkneverken visas
+ * inget resultat alls.
  */
 export function Results({ view, certified }: { view: ResultsView; certified: boolean }) {
   return (
@@ -19,9 +19,8 @@ export function Results({ view, certified }: { view: ResultsView; certified: boo
         {certified
           ? 'Resultatet är fastställt av servern (fasen är CERTIFIED).'
           : 'Resultatet är räknat men inte fastställt. Slutkontrollen kan ännu hitta en avvikelse som stoppar fastställandet.'}{' '}
-        Talen här är de sparade räkneverken. Offentligt publiceras resultatet med bevis, och bara om en
-        omräkning ur urnan och förtroendepersonernas bidrag ger samma tal. Räkneverken ligger i
-        röstdatabasen, så den som kan läsa den ser dem också.
+        Talen är räknade om ur urnan och förtroendepersonernas bidrag, och samma tal publiceras med bevis.
+        Räkneverken ligger i röstdatabasen, så den som kan läsa den ser dem också.
       </p>
 
       {view.ballots.map((ballot) => (

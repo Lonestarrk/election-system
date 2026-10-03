@@ -23,6 +23,7 @@ import { createVotingSession } from '@/modules/eligibility/voting-session.servic
 import { GET as resultsRoute } from '@/app/api/observer/results/route'
 import { POST as observerRoute } from '@/app/api/observer/election/route'
 import { POST as statsRoute } from '@/app/api/admin/stats/route'
+import { POST as adminResultsRoute } from '@/app/api/admin/elections/results/route'
 import { POST as participationRoute } from '@/app/api/vote/participation/route'
 import { GET as databaseStateRoute } from '@/app/api/demo/database-state/route'
 import type { DatabaseState } from '@/app/api/demo/database-state/route'
@@ -291,7 +292,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     const { body } = await published()
     expect(body.envelopeRoot).toBe(election.envelopeRoot)
     expect(body.urnRoot).toBe(election.urnRoot)
-    expect(body.envelopeCount).toBe(5)
+    expect(body.markedAsVotedTotal).toBe(5)
     expect((body.ballots as Array<{ rows: number; markedAsVoted: number }>).map((b) => [b.rows, b.markedAsVoted])).toEqual([
       [3, 3],
       [2, 2],
@@ -378,6 +379,64 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     const { status, body } = await published()
     expect(status).toBe(409)
     expect(body.status).toBe('result_mismatch')
+  })
+
+  it('fältet för antalet heter efter vad det är: markeringarna, inte kuverten (fixrunda 1, Mindre 3)', async () => {
+    await castTheVotes()
+    await closeAndTally()
+
+    const { body } = await published()
+    expect(body).not.toHaveProperty('envelopeCount')
+    expect(body.markedAsVotedTotal).toBe(5)
+    expect((await observed()).markedAsVotedTotal).toBe(5)
+  })
+
+  it('en publik andel för en förtroendeperson som inte bidrog, ändrad i databasen, ger ingen publicering (Mindre 2)', async () => {
+    await castTheVotes()
+    await closeAndTally()
+
+    // Förtroendeperson 2 bidrog inte, så omräkningen läser aldrig hennes andel.
+    // Publiceringen prövar ändå att alla tre hör till valets nyckel.
+    const share = await votesDb.trusteeShare.findFirstOrThrow({ where: { electionId, trusteeIndex: 2 } })
+    await votesDb.trusteeShare.update({ where: { id: share.id }, data: { publicShare: '16' } })
+
+    const { status, body } = await published()
+    expect(status).toBe(409)
+    expect(body.status).toBe('result_mismatch')
+  })
+
+  it('en annan publik nyckel för valet i databasen ger ingen publicering (Mindre 2)', async () => {
+    await castTheVotes()
+    await closeAndTally()
+
+    await votesDb.election.update({ where: { id: electionId }, data: { encryptionPublicKey: '16' } })
+
+    const { status, body } = await published()
+    expect(status).toBe(409)
+    expect(body.status).toBe('result_mismatch')
+  })
+
+  it('adminsidans resultat är omräkningens, och ett ändrat räkneverk visas inte där heller (Mindre 6)', async () => {
+    await castTheVotes()
+    await closeAndTally()
+
+    const admin = await createVoter(ADMIN_PN, { isAdmin: true })
+    cookieJar.admin = (await createAdminSession(admin)).id
+
+    const honest = await post(adminResultsRoute, '/api/admin/elections/results', { electionId })
+    expect(honest.status).toBe(200)
+    const honestBody = (await honest.json()) as { ballots: Array<{ options: Array<{ count: number }>; total: number }> }
+    expect(honestBody.ballots.map((ballot) => ballot.options.map((option) => option.count))).toEqual([
+      [0, 2, 1],
+      [0, 0, 2],
+    ])
+
+    await votesDb.ballotTally.updateMany({ where: { ballotId: first.id, optionIndex: 1 }, data: { count: 77 } })
+    const changed = await post(adminResultsRoute, '/api/admin/elections/results', { electionId })
+    expect(changed.status).toBe(409)
+    const changedBody = await changed.json()
+    expect(changedBody.status).toBe('result_mismatch')
+    expect(JSON.stringify(changedBody)).not.toMatch(/77/)
   })
 
   it('ingenting publiceras före TALLIED, inte heller när en valsedel redan är räknad', async () => {
@@ -479,7 +538,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
       election: { phase: 'STRIPPED' },
       envelopeRoot: election.envelopeRoot,
       urnRoot: election.urnRoot,
-      envelopeCount: 5,
+      markedAsVotedTotal: 5,
     })
     expect(JSON.stringify(observedNow)).not.toMatch(/counts|"results"/)
   })

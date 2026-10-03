@@ -50,8 +50,8 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   /**
    * KUVERTMODELLENS BEGRÄNSNINGAR.
    *
-   * De tolv första posterna gäller modellen med dubbla kuvert och är sanna i
-   * koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
+   * Posterna till och med `client-code-from-server` gäller modellen med dubbla
+   * kuvert och är sanna i koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
    * med röstintyg och blinda signaturer, som ingen sida lägger röster i sedan
    * uppgift 14 men vars rutter och tabeller finns kvar, eller gäller oavsett
    * modell. Det gamla flödets poster står kvar tills flödet tas bort, och testet
@@ -273,8 +273,9 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'utom en har känt innehåll. Slutkontrollen märker det efteråt, eftersom posten LINK_CLEARED bär ' +
       'roten som stängningen skrev, om inte revisionskedjan också räknas om. Då är rösten redan öppnad. ' +
       'Sedan uppgift 13 publiceras roten i observatörsgränssnittet från skalningen, före räkningen, och ' +
-      'i det publicerade resultatet. Den som sparar den vid stängningen kan alltså se att den skrivits ' +
-      'om, men ingenting i systemet stannar för det, och det syns bara om någon sparade den: varken ' +
+      'i det publicerade resultatet. Den som sparar den kan alltså se om den skrivs om efter att hen ' +
+      'sparade den, men inte en rot som skrevs om före den första hämtningen. Ingenting i systemet ' +
+      'stannar för det, och det syns bara om någon sparade den: varken ' +
       'räkningen eller publiceringen jämför med något utanför systemet. Räkningen ' +
       'prövar inte rösternas bevis igen, det gör slutkontrollen. Före stängningen kan den som skriver ' +
       'i röstdatabasen lägga en rad på ett äkta kuverts plats i urnan, dess id, men med ett annat ' +
@@ -361,7 +362,8 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'har valsedeln kunde då fråga, ända fram till stängningen, om den fortfarande är väljarens ' +
       'liggande röst. Priset är att den som har en annans chiffer och får många väljare att lägga ' +
       'kopior av det förskjuter summan för det alternativet, och kan därmed lära sig något om den ' +
-      'väljarens röst. Det kräver chiffret, som aldrig publiceras, och många medverkande.',
+      'väljarens röst. Det kräver chiffret med sina bevis före stängningen, och många medverkande. ' +
+      'Bevisen publiceras aldrig, och ett chiffer publiceras bara som summa, efter stängningen.',
     stillTrueIf: [
       // Chifferhashen är unik varken bland kuverten eller i urnan. Ett unikt
       // index på någondera gör en kopia omöjlig att lägga eller att flytta.
@@ -402,6 +404,30 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         contains:
           "  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF' | 'OLD_PROOF_FORMAT'\n  pendingVoteId: string",
       },
+    ],
+  },
+  /**
+   * NY I FIXRUNDA 1 AV UPPGIFT 13 (ruling 138). Granskningen fann att en
+   * valsedel med en enda rad i urnan publicerar den radens chiffer som summa,
+   * medan texterna sa att ingenting publicerades per röst.
+   */
+  {
+    id: 'single-row-ballot-publishes-the-vote',
+    title: 'En valsedel med en enda röst publicerar den rösten som chiffer',
+    why:
+      'Resultatet publiceras per valsedel, med den krypterade summan per alternativ. Har valsedeln ' +
+      'bara en rad i urnan är summan exakt den radens chiffer, och vem som helst kan räkna dess ' +
+      'chifferhash ur det publicerade. Den som såg chiffret eller hashen när rösten lades, till ' +
+      'exempel en köpare som såg skärmen, kan då se att just den rösten räknades och att väljaren ' +
+      'inte ändrade sig, utan läsrätt i röstdatabasen. Vad rösten innehöll avslöjar redan talen: en ' +
+      'valsedel med en röst visar den rösten, och det gäller varje system som publicerar summor, ' +
+      'därför döljer riktiga val små tal. Chiffret lägger bara till frågan om just den rösten ' +
+      'räknades. Inget skydd byggs: publiceringen spärrar inte valsedlar med få rader, och summan ' +
+      'slumpas inte om före räkningen.',
+    stillTrueIf: [
+      // Summan publiceras som den räknades ur urnan, för varje valsedel.
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'c1: sum.c1.toString(),' },
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'options: recounted.sums.map((sum, optionIndex) => ({' },
     ],
   },
   {

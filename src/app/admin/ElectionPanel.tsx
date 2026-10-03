@@ -61,8 +61,13 @@ export function ElectionPanel({ electionId }: { electionId: string }) {
       })
     } else {
       setResultsView(null)
+      // Omräkningen stämmer inte med de sparade räkneverken (fixrunda 1 av
+      // uppgift 13). Inga tal visas, men avvikelsen ska synas.
+      if (result.data.status === 'result_mismatch') {
+        say({ tone: 'danger', text: String(result.data.message) })
+      }
     }
-  }, [])
+  }, [say])
 
   const refresh = useCallback(async (): Promise<ElectionOverview | null> => {
     const id = electionId

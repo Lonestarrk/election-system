@@ -1,6 +1,5 @@
-import { canonicalOptions } from '@/lib/crypto/ballot-encoding'
 import { TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '@/lib/crypto/threshold'
-import { getBallotChoices, getEncryptedBallotShape } from '@/modules/ballot-box'
+import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
 import { turnoutByBallot } from '@/modules/eligibility/participation.service'
@@ -142,104 +141,6 @@ export async function getElectionOverview(electionId: string): Promise<ElectionO
 }
 
 // ---------------------------------------------------------------------------
-// Resultatet (7c)
-// ---------------------------------------------------------------------------
-
-export type BallotResult = {
-  ballotId: string
-  label: string
-  kind: string
-  /** Alternativen i valsedelns kanoniska ordning, blankt först. */
-  options: Array<{ label: string; count: number }>
-  total: number
-}
-
-export type ElectionResultOutcome =
-  | { status: 'ok'; phase: string; ballots: BallotResult[] }
-  | { status: 'not_tallied'; phase: string }
-  | { status: 'unknown_election' }
-
-/**
- * Räkneverken per valsedel, efter TALLIED och CERTIFIED.
- *
- * Räkningens rutt vägrar efter TALLIED, och ingen annan rutt lämnar ut
- * räkneverken igen. Det här är läsvägen för adminsidan, också efter en
- * omladdning. Den ligger bakom adminsessionen och är inte offentlig. Det
- * offentliga resultatet, med bevis och efter en omräkning, är
- * `publishedResults` i publish-results.usecase.ts (uppgift 13).
- *
- * Före TALLIED svarar den `not_tallied` och lämnar inget ur räkneverken, också
- * om några valsedlar redan är räknade. Fasen är det som säger att varje
- * valsedel är det.
- */
-export async function getElectionTallyResults(electionId: string): Promise<ElectionResultOutcome> {
-  const election = await votersDb.election.findUnique({
-    where: { id: electionId },
-    select: {
-      phase: true,
-      ballots: { select: { id: true, label: true, kind: true }, orderBy: { displayOrder: 'asc' } },
-    },
-  })
-  if (!election) return { status: 'unknown_election' }
-  if (election.phase !== 'TALLIED' && election.phase !== 'CERTIFIED') {
-    return { status: 'not_tallied', phase: election.phase }
-  }
-
-  const ballots: BallotResult[] = []
-  for (const ballot of election.ballots) {
-    const shape = await getEncryptedBallotShape(ballot.id)
-    if (!shape) continue
-
-    const rows = await votesDb.ballotTally.findMany({
-      where: { ballotId: ballot.id },
-      select: { optionIndex: true, count: true },
-      orderBy: { optionIndex: 'asc' },
-    })
-    const labels = await optionLabelsOf(ballot.id)
-
-    const options = rows.map((row) => ({
-      label: labels[row.optionIndex] ?? `Alternativ ${row.optionIndex + 1}`,
-      count: row.count,
-    }))
-    ballots.push({
-      ballotId: ballot.id,
-      label: ballot.label,
-      kind: ballot.kind,
-      options,
-      total: options.reduce((sum, option) => sum + option.count, 0),
-    })
-  }
-
-  return { status: 'ok', phase: election.phase, ballots }
-}
-
-/**
- * Alternativens namn i den kanoniska ordning räkningen använder (blankt,
- * partierna, sedan kandidaterna), som `getEncryptedBallotShape` bygger den.
- */
-export async function optionLabelsOf(ballotId: string): Promise<string[]> {
-  const choices = await getBallotChoices(ballotId)
-  if (!choices || choices.kind !== 'PARTY') return []
-
-  const parties = choices.parties.map((party) => ({
-    id: party.ballotPartyId,
-    displayOrder: party.displayOrder,
-    candidates: party.candidates.map((candidate) => ({ id: candidate.id, displayOrder: candidate.displayOrder })),
-  }))
-  const partyById = new Map(choices.parties.map((party) => [party.ballotPartyId, party]))
-  const candidateById = new Map(
-    choices.parties.flatMap((party) => party.candidates.map((candidate) => [candidate.id, candidate.name] as const)),
-  )
-
-  return canonicalOptions({ allowsCandidateVote: choices.allowsCandidateVote, parties }).map((option) => {
-    if (option.kind === 'BLANK') return 'Blankt'
-    const party = partyById.get(option.ballotPartyId)
-    if (option.kind === 'PARTY') return party?.name ?? 'Okänt parti'
-    return `${candidateById.get(option.candidateId) ?? 'Okänd kandidat'} (${party?.abbreviation ?? '?'})`
-  })
-}
-
-// ---------------------------------------------------------------------------
 // Observatörens överblick (uppgift 13)
 // ---------------------------------------------------------------------------
 
@@ -252,8 +153,13 @@ export type ObserverOverview = {
   /** Kuvertroten och urnroten, från skalningen. Null före den. */
   envelopeRoot: string | null
   urnRoot: string | null
-  /** Antalet kuvert som skalades, ur markeringarna "har röstat". Null före skalningen. */
-  envelopeCount: number | null
+  /**
+   * Summan av markeringarna "har röstat" över valsedlarna, från skalningen. Null
+   * före den. Skalningen skriver en markering per flyttat kuvert, men antalet
+   * kuvert lagras inte för sig, så fältet heter efter vad det är (fixrunda 1 av
+   * uppgift 13, Mindre 3).
+   */
+  markedAsVotedTotal: number | null
   /** Sant när omröstningen är räknad och resultatet går att hämta med bevis. */
   resultsAvailable: boolean
 }
@@ -308,7 +214,7 @@ export async function getObserverOverview(electionId: string): Promise<ObserverO
     turnoutBasis: turnout.basis,
     envelopeRoot: stripped ? election.envelopeRoot : null,
     urnRoot: stripped ? election.urnRoot : null,
-    envelopeCount: stripped ? turnout.ballots.reduce((total, ballot) => total + ballot.voted, 0) : null,
+    markedAsVotedTotal: stripped ? turnout.ballots.reduce((total, ballot) => total + ballot.voted, 0) : null,
     resultsAvailable: election.phase === 'TALLIED' || election.phase === 'CERTIFIED',
   }
 }

@@ -2,7 +2,7 @@ import { isAdminAuthenticated } from '@/lib/admin-auth'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
-import { getElectionTallyResults } from '@/orchestration/election-overview.usecase'
+import { getElectionTallyResults } from '@/orchestration/publish-results.usecase'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,9 +14,11 @@ export const dynamic = 'force-dynamic'
  * Räkningens rutt vägrar efter TALLIED, och ingen annan rutt lämnar ut
  * räkneverken igen, så adminsidan behöver en läsväg, också efter en omladdning.
  *
- * INTE OFFENTLIG. Rutten kräver den inloggade administratören och lämnar de
- * sparade räkneverken. Offentligt publiceras resultatet med bevis av
- * /api/observer/results, efter en omräkning ur urnan och bidragen (uppgift 13).
+ * INTE OFFENTLIG. Rutten kräver den inloggade administratören. Talen är
+ * publiceringens omräkning ur urnan och bidragen, inte de sparade räkneverken
+ * (fixrunda 1 av uppgift 13), och stämmer de inte svarar rutten 409
+ * `result_mismatch` utan tal. Offentligt publiceras resultatet med bevis av
+ * /api/observer/results.
  * Före TALLIED svarar rutten att omröstningen inte är räknad och lämnar inga
  * räkneverk, också om några valsedlar redan är räknade.
  */
@@ -54,6 +56,21 @@ export async function POST(request: Request) {
         status: 'not_tallied',
         phase: outcome.phase,
         message: `Omröstningen är inte räknad, och fasen står i ${outcome.phase}. Ingen resultat lämnas ut före TALLIED.`,
+      },
+      409,
+    )
+  }
+
+  if (outcome.status === 'result_mismatch') {
+    // Samma besked som publiceringen, och inga tal: varken de sparade eller de
+    // omräknade lämnas ut när de skiljer sig åt (fixrunda 1 av uppgift 13).
+    return jsonResponse(
+      {
+        status: 'result_mismatch',
+        phase: outcome.phase,
+        message:
+          'Resultatet stämmer inte. En omräkning ur urnan och förtroendepersonernas bidrag ger inte de ' +
+          'sparade räkneverken, eller går inte att göra. Ingenting visas, och det ska utredas.',
       },
       409,
     )
