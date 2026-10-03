@@ -397,10 +397,26 @@ inte röstat. Den relationella kontrollen i avsnitt 7 fångar inte det, eftersom
 | `userVisibleData` | Valets namn och valsedelns slag på svenska, utan hash. Det väljaren ser och godkänner i appen. |
 | `userNonVisibleData` | Längdprefixat `valsystem/kuvert/v2 \| electionId \| ballotId \| åtagande \| castSequence`, där åtagandet är det saltade värdet i 6, steg 4. Chifferhashen står inte där. |
 
-BankID returnerar en XML-signatur ställd med väljarens eget certifikat. Raden lagrar
-signaturen och certifikatkedjan, krypterad, och valideringen vid stängning kontrollerar
-varje signatur mot chifferhashen, varje kedja mot BankID:s rot och varje certifikat mot
-personnumret i röstlängden.
+BankID returnerar en XML-signatur ställd med väljarens eget certifikat. Raden lagrar hela
+XML-dokumentet och BankID:s spärrsvar (`ocspResponse`), förseglade med AES-256-GCM i format v3
+med fast längd (uppgift 17b). Valideringen vid stängning kontrollerar för varje kuvert:
+- att underskriften täcker det signerade åtagandet över chifferhashen och saltet
+- att den synliga texten är den appen visade
+- att kedjan går till BankID:s rot
+- att certifikatet bär väljarens personnummer i röstlängden
+
+**Läsaren är strikt och byggd för just BankID:s profil** (`xmldsig.ts`), efter BankID:s
+signaturprofil:
+- Den godtar exakt profilens struktur och algoritmer och avvisar allt annat. Det gäller
+  DOCTYPE, entiteter, kommentarer, okända element och attribut, dubbla Id, andra algoritmer
+  och oväntade blanktecken.
+- Digesten räknas över det element som läsaren läser `usrNonVisibleData` ur, inte över det
+  Id:t pekar ut. Därför går en underskrift inte att linda in eller flytta (signature
+  wrapping).
+- Inget nytt beroende används.
+
+Ett kuvert i attrappens äldre format blir `OLD_BANKID_FORMAT` när underskriften är äkta, och
+annars `BAD_SIGNATURE`. Båda stoppar stängningen, och ingenting raderas.
 
 Därmed kan en röst inte förfalskas av **en klient**, och inte heller av den som bara kan
 skriva i databasen. Systemet slutar vara betrott att säga att en viss webbläsare talar för
@@ -475,10 +491,10 @@ eftersom räknaren för den senaste underskriften lagras där. Väljaren kan dä
 båda själv: före stängningen svarar jämförelsen på hennes enhet "ändrad" eller "ingen röst",
 och efter stängningen ska markeringen "har röstat" visa att hon röstat (uppgift 11d).
 
-Riktig BankID kräver dessutom en adapter. BankID v6 returnerar en XMLDSig med kedjan
-inbäddad. Prövningen ovan är oberoende av formatet, men att läsa ut kedjan och den
-signerade texten ur XML-signaturen är inte byggt och kan inte provas utan BankID:s
-testmiljö. Begränsningarna står i avsnitt 10.
+Läsaren för BankID:s XMLDSig är byggd (uppgift 17b), men den är prövad bara mot attrappen och
+mot ett dokument som en oberoende implementation godkände, inte mot en underskrift från BankID.
+BankID publicerar inget fullständigt exempel. Antagandena prövas mot testmiljön i uppgift 17c.
+Begränsningarna står i avsnitt 10.
 
 **Återuppspelningen som också måste stoppas.** Utan räknaren i den signerade datan kan
 den som fångat väljarens *första* signerade kuvert skicka in det igen efter att hon ändrat
@@ -937,10 +953,12 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   incheckad, så den som driver en demo kan fortfarande förfalska en underskrift. Skyddet
   gäller med riktig BankID, där nyckeln finns hos BankID. Testerna visar egenskapen mot
   attrappens inbyggda rot, vars privata nyckel kastades.
-- **Riktig BankID kräver en adapter för XML-signaturen.** BankID v6 returnerar en XMLDSig
-  med kedjan inbäddad. Kedjevalideringen är oberoende av formatet, men att läsa ut kedjan
-  och den signerade texten ur XML-signaturen är inte byggt, och kan inte testas utan
-  BankID:s testmiljö.
+- **Läsaren för BankID:s XML-signatur är inte prövad mot BankID.** Den är byggd efter BankID:s
+  signaturprofil, men BankID publicerar inget fullständigt exempel. Ett antagande som inte
+  håller får varje riktig röst att avvisas, men får aldrig en falsk röst att godtas. Antagandena
+  gäller bland annat base64 utan radbrytningar, elementens ordning och att `srvInfo/name` är den
+  egna tjänstens. De prövas mot testmiljön i uppgift 17c, och skarpt läge ska inte släppas på
+  utan en riktig underskrift som testfall.
 - **Den som har pepparn kan läsa namn och personnummer för varje liggande kuvert.** Kedjan
   krypteras med en nyckel ur `IDENTITY_PEPPER`, eftersom valideringen måste kunna öppna
   den.
