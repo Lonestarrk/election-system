@@ -1832,12 +1832,13 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
   try {
     const locked = await withClosingLock(electionId, (lock) => closeUnderLock(electionId, lock, urn))
     if (!locked.taken) return { status: 'in_progress' }
-    await forgetOrdersOf(electionId)
     if (locked.value.kind === 'stripped') return await confirmStripped(electionId, locked.value, urn)
     return withReplacements(locked.value.outcome, urn)
   } catch (error) {
     if (error instanceof CloseAbortedError) error.urnRowsReplaced = [...urn.urnRowsReplaced]
     throw error
+  } finally {
+    await forgetOrdersIfNoLongerOpen(electionId)
   }
 }
 
@@ -1847,17 +1848,26 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
  * En order i orderlagret håller valsedeln och saltet, och attrappens order det
  * signerade och personnumret. En övergiven order för en valsedel vars chiffer
  * ligger i urnan hade efter stängningen låtit den som läser processens minne
- * räkna åtagandet och känna igen BankID:s kopia. Ordrarna tas därför bort när
- * stängningen kört, vad den än kom fram till: efter CLOSED tas ingen röst emot,
- * och en order kan inte längre bli en lagd röst.
+ * räkna åtagandet och känna igen BankID:s kopia. Ordrarna tas därför bort efter
+ * varje stängningsförsök, på varje väg och också när det kastade, men bara när
+ * fasen har lämnat OPEN. Efter CLOSED tas ingen röst emot, och en order kan inte
+ * längre bli en lagd röst. Står fasen kvar i OPEN, som efter `too_early` eller
+ * ett kast före övergången, tas ingenting bort: en väljare som just skrivit under
+ * hade annars förlorat sin order, och rösten hade aldrig lagts (fixrunda 2).
+ *
+ * Fasen läses med en egen fråga, inte ur stängningens utfall, eftersom ett kast
+ * efter att STRIPPED committats inte har något utfall att läsa.
  *
  * Bara i den här processen. Med flera instanser har de andra kvar sina ordrar
  * tills de förfaller, se posten `admission-queue-per-process`. En order som
  * startas efter stängningen avvisas vid läggningen och förfaller med timern.
- * Ett fel här stoppar inte stängningen, som redan är klar, men loggas.
+ * Ett fel i läsningen eller rensningen ändrar aldrig stängningens utfall. Det
+ * loggas, och ordrarna förfaller då med timern.
  */
-async function forgetOrdersOf(electionId: string): Promise<void> {
+async function forgetOrdersIfNoLongerOpen(electionId: string): Promise<void> {
   try {
+    const election = await votersDb.election.findUnique({ where: { id: electionId }, select: { phase: true } })
+    if (!election || election.phase === 'OPEN') return
     const ballots = await votersDb.electionBallot.findMany({ where: { electionId }, select: { id: true } })
     removeOrdersForBallots(ballots.map((ballot) => ballot.id))
     forgetMockOrdersForElection(electionId)

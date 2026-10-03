@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Prisma } from '.prisma/voters'
 import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
@@ -32,7 +32,8 @@ import {
   parseEnvelopePayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
-import { putOrder } from '@/lib/order-state'
+import { putOrder, resetOrders } from '@/lib/order-state'
+import { resetMockOrders } from '@/modules/eligibility/bankid/mock-orders'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -564,6 +565,75 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
   it('vägrar innan closesAt', async () => {
     expect((await closeElection(openElectionId)).status).toBe('too_early')
+  })
+
+  describe('ordrarna tas bara bort när fasen har lämnat OPEN (fixrunda 2 av uppgift 11e)', () => {
+    const orderStore = () =>
+      (globalThis as unknown as { __orderStates: Map<string, unknown> }).__orderStates
+    const mockStore = () =>
+      (globalThis as unknown as { mockBankIdOrders: Map<string, unknown> }).mockBankIdOrders
+
+    // Ordrarna som too_early lämnar kvar ska inte följa med till nästa test.
+    afterEach(() => {
+      resetOrders()
+      resetMockOrders()
+    })
+
+    /** En order som väljaren just skrivit under men som ännu inte hämtats. */
+    async function pendingOrderFor(targetElectionId: string, targetBallotId: string): Promise<string> {
+      const service = new MockBankIdService()
+      const order = await service.sign({
+        endUserIp: '127.0.0.1',
+        userVisibleData: 'Bekräfta din röst',
+        userNonVisibleData: envelopePayload({
+          electionId: targetElectionId,
+          ballotId: targetBallotId,
+          ciphertextCommitment: 'a'.repeat(64),
+          castSequence: 1,
+        }),
+      })
+      selectDemoIdentity(order.orderRef, ANNA_PN)
+      putOrder(order.orderRef, 'session-anna', {
+        ballotId: targetBallotId,
+        ballot: await buildBallot('bp-s'),
+        commitmentSalt: newCommitmentSalt(),
+      })
+      return order.orderRef
+    }
+
+    it('too_early lämnar ordrarna kvar, så att väljaren som just skrivit under får sin röst lagd', async () => {
+      const [openBallot] = await votersDb.electionBallot.findMany({
+        where: { electionId: openElectionId },
+        select: { id: true },
+      })
+      const orderRef = await pendingOrderFor(openElectionId, openBallot!.id)
+
+      expect((await closeElection(openElectionId)).status).toBe('too_early')
+
+      expect(orderStore().has(orderRef)).toBe(true)
+      expect(mockStore().has(orderRef)).toBe(true)
+    })
+
+    it('ett kast efter att STRIPPED committats tar ändå bort ordrarna', async () => {
+      // Efterkontrollens läsning fallerar efter commiten, som i testet om ett
+      // utfall som inte gick att läsa tillbaka längre ned.
+      const orderRef = await pendingOrderFor(electionId, ballotId)
+      await castFor(anna, 'bp-s')
+      electionServiceControl.failCloseStateRead = true
+
+      const error = await closeElection(electionId).then(
+        () => null,
+        (thrown: unknown) => thrown,
+      )
+      electionServiceControl.failCloseStateRead = false
+
+      expect(error).toBeInstanceOf(CloseAbortedError)
+      expect(
+        (await votersDb.election.findUniqueOrThrow({ where: { id: electionId }, select: { phase: true } })).phase,
+      ).toBe('STRIPPED')
+      expect(orderStore().has(orderRef)).toBe(false)
+      expect(mockStore().has(orderRef)).toBe(false)
+    })
   })
 
   it('en omkörning skapar inga dubbletter och tappar inga röster', async () => {
