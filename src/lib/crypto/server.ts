@@ -107,12 +107,68 @@ export class VerificationAborted extends Error {
  * `signal` är begärans egen, `request.signal`, som avbryts när klienten
  * stänger anslutningen.
  */
-export type VerificationRequest = { signal: AbortSignal }
+export type VerificationRequest = {
+  signal: AbortSignal
+  /** Platsen besökaren reserverade vid förkontrollen. Verifieringen tar över den. */
+  reservation?: VerificationReservation
+}
+
+/**
+ * En plats i kön som hållits åt en besökare sedan förkontrollen.
+ *
+ * `release` kan anropas hur många gånger som helst och räknas en gång. Den som
+ * reserverat släpper den i `finally` på varje väg ut, också vid fel och avbrott.
+ */
+export type VerificationReservation = { release: () => void }
 
 type Waiter = { admit: () => void }
 
 let running = 0
 const waiting: Waiter[] = []
+let reserved = 0
+
+/** Platser som besökare kan få: de som pågår och de som väntar. */
+const VISITOR_CAPACITY = MAX_CONCURRENT_VERIFICATIONS + MAX_WAITING_VERIFICATIONS
+
+/**
+ * Reserverar en plats åt en besökare, eller returnerar null när kapaciteten är fylld.
+ *
+ * VARFÖR EN RESERVATION (uppgift 14e, omgranskningen av 14b)
+ *
+ * Förkontrollen frågade bara om kön var full. Men en verifiering räknas först
+ * när den går in i kön, och mellan förkontrollen och det ögonblicket hämtar
+ * rutten BankID-ordern och läser omröstningen: det är I/O, och fönstret är
+ * inte några millisekunder utan så långt som BankID och databasen tar. När en
+ * plats var kvar klarade fem samtidiga röster förkontrollen, och fyra av dem
+ * fick `VerificationQueueFull` först sedan deras BankID-order förbrukats.
+ * Väljarna fick skriva under igen.
+ *
+ * Nu räknas platsen från förkontrollen: pågående, väntande och reserverade
+ * delar kapaciteten, och den som kommer när den är fylld får nej INNAN ordern
+ * hämtas. Verifieringen tar över reservationen när den går in i kön, så en
+ * plats räknas aldrig två gånger.
+ *
+ * Reservationen hålls bara medan begäran lever. Den som reserverat släpper den
+ * i `finally`, och därför läcker ingen väg en plats.
+ */
+export function reserveVerification(): VerificationReservation | null {
+  if (running + waiting.length + reserved >= VISITOR_CAPACITY) return null
+
+  reserved += 1
+  let held = true
+  return {
+    release: () => {
+      if (!held) return
+      held = false
+      reserved -= 1
+    },
+  }
+}
+
+/** Reserverade platser som ännu inte tagits över, för testerna. */
+export function verificationReservations(): number {
+  return reserved
+}
 
 /**
  * Kör uppgiften när det finns en plats, i den ordning uppgifterna kom.
@@ -127,7 +183,14 @@ export async function inVerificationTurn<T>(
   task: () => Promise<T>,
   request?: VerificationRequest,
 ): Promise<T> {
-  if (request?.signal.aborted) throw new VerificationAborted()
+  if (request?.signal.aborted) {
+    request.reservation?.release()
+    throw new VerificationAborted()
+  }
+
+  // Reservationen blir en plats, pågående eller väntande, i samma synkrona steg,
+  // så att platsen aldrig räknas två gånger och aldrig faller mellan.
+  request?.reservation?.release()
 
   if (running >= MAX_CONCURRENT_VERIFICATIONS) {
     if (request && waiting.length >= MAX_WAITING_VERIFICATIONS) throw new VerificationQueueFull()
@@ -174,16 +237,15 @@ function waitForTurn(signal: AbortSignal | undefined): Promise<void> {
 }
 
 /**
- * Om en verifiering åt en besökare skulle avvisas just nu.
+ * Om kapaciteten för besökare är fylld just nu, med reservationerna medräknade.
  *
- * /api/vote/encrypted frågar innan den hämtar BankID-ordern, eftersom ordern
- * förbrukas när den hämtas: avvisades valsedeln först efteråt hade väljaren
- * fått skriva under igen. Kön kan hinna fyllas mellan frågan och
- * verifieringen, och då avvisas den där i stället, men det fönstret är några
- * millisekunder.
+ * Rutten använder `reserveVerification` och inte den här: en fråga utan
+ * reservation säger bara hur det ser ut nu, och mellan frågan och verifieringen
+ * hämtar rutten BankID-ordern, som förbrukas. Den som frågar och sedan
+ * agerar kan därför få fel, och den som reserverar kan inte.
  */
 export function verificationQueueIsFull(): boolean {
-  return running >= MAX_CONCURRENT_VERIFICATIONS && waiting.length >= MAX_WAITING_VERIFICATIONS
+  return running + waiting.length + reserved >= VISITOR_CAPACITY
 }
 
 /** Pågående och väntande verifieringar, för testerna. */

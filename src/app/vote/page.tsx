@@ -15,6 +15,7 @@ import {
   forgetElectionsNotOpen,
   forgetIfVotingEnded,
   hashesToCompare,
+  openElectionIdsFrom,
   readDeviceVotes,
   rememberDeviceVote,
   staleDeviceVotes,
@@ -149,13 +150,14 @@ const closingTime = new Intl.DateTimeFormat('sv-SE', {
  * De öppna omröstningarna ur den offentliga listan, eller null utan svar.
  *
  * Listan frågas utan att berätta vilka omröstningar enheten har uppgifter om.
+ * Den bär också fasen, så en omröstning som stängts före sin tid räknas inte
+ * som öppen (uppgift 14e).
  */
 async function openElectionIds(): Promise<string[] | null> {
   try {
     const response = await fetch('/api/elections')
     if (!response.ok) return null
-    const data = (await response.json()) as { elections?: Array<{ id: string }> }
-    return (data.elections ?? []).map((election) => election.id)
+    return openElectionIdsFrom(await response.json())
   } catch {
     return null
   }
@@ -225,11 +227,13 @@ function VoteContent() {
   /**
    * Frågar igen om röstningen fortfarande tar emot röster.
    *
-   * Med en giltig session svarar sessionsrutten, med fasen. Har sessionen gått
-   * ut svarar den offentliga listan över öppna omröstningar i stället, samma
-   * väg som en sida utan session tar när den laddas (device-vote.ts). Gäller
-   * sessionen en annan omröstning, därför att väljaren legitimerat sig för en
-   * annan i en annan flik, är det också listan som svarar för den här.
+   * Frågan går till den offentliga listan över omröstningar, som bär fasen, och
+   * inte till väljarens session (uppgift 14e). Sessionsrutten delar en gräns på
+   * 60 per minut och adress med allt annat som sessionen gör, och ungefär
+   * trettio synliga flikar bakom en adress fyllde den: då fick en annan väljare
+   * där 429. Fasen är inte hemlig, så listan svarar lika bra. En omröstning som
+   * inte syns i listan, eller vars fas lämnat OPEN, tar inte emot röster, och
+   * det gäller också när sessionen har gått ut eller gäller en annan omröstning.
    */
   const checkPhase = useCallback(async () => {
     const current = electionRef.current
@@ -237,24 +241,6 @@ function VoteContent() {
     checking.current = true
 
     try {
-      const response = await fetch('/api/vote/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-
-      if (response.ok) {
-        const data = (await response.json()) as Record<string, unknown>
-        if (String(data.electionId) === current.id) {
-          const state = {
-            phase: typeof data.phase === 'string' ? data.phase : null,
-            acceptsVotes: data.acceptsVotes === true,
-          }
-          if (votingHasEnded(state)) votingEnded(state.phase, CLOSED_NOTICE)
-          return
-        }
-      }
-
       const open = await openElectionIds()
       if (!open) return
       const storage = browserStorage()

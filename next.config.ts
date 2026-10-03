@@ -27,6 +27,25 @@ const nextConfig: NextConfig = {
   distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
   reactStrictMode: true,
 
+  experimental: {
+    /**
+     * Kroppens gräns gäller hela vägen (uppgift 14e).
+     *
+     * Next klonar varje kropp i middleware, så att den kan läsas både där och i
+     * rutten, och klonar högst så mycket som den här gränsen säger. Förvalet är
+     * 10 MB, och då begränsades minnet per begäran av det och inte av appens
+     * egen gräns på 2 MiB. Gränsen sätts nu till den högsta någon rutt läser,
+     * 8 MiB för administratörens rutt att skapa en omröstning
+     * (MAX_ADMIN_JSON_BODY_BYTES i src/lib/validation.ts). Den kan inte vara
+     * lägre: en kropp som är större än gränsen kapas av klonen, och rutten
+     * läser då en avhuggen kropp.
+     *
+     * Värdet är en sträng och inte konstanten, eftersom konfigurationen inte
+     * kan importera ur src. tests/unit/body-limits.test.ts håller dem lika.
+     */
+    middlewareClientMaxBodySize: '8mb',
+  },
+
   // Låser filspårningens rot till projektmappen i stället för att låta Next
   // leta uppåt i katalogträdet. Gör bygget oberoende av var projektet ligger.
   outputFileTracingRoot: projectRoot,

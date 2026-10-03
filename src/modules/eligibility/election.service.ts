@@ -48,6 +48,28 @@ export async function getMirroredElection(electionId: string): Promise<MirroredE
   return votersDb.election.findUnique({ where: { id: electionId }, select: electionSelect })
 }
 
+/** Id, namn och fas. Ingenting som räknar, och ingenting per väljare. */
+export type ElectionPhase = { id: string; name: string; phase: string }
+
+/** Så många omröstningar fasen listas för, de senast öppnade först. */
+const PHASE_LIST_LIMIT = 50
+
+/**
+ * Fasen för varje omröstning, till den offentliga listan.
+ *
+ * Fasen är inte hemlig (spec 6.1). Det som inte får följa med, så länge
+ * röstningen pågår, är allt som räknar: antal röster, antal väljare, antal
+ * kuvert (spec 6.2). Därför väljs bara de tre fälten ut, och inget av dem är
+ * ett tal.
+ */
+export async function listElectionPhases(): Promise<ElectionPhase[]> {
+  return votersDb.election.findMany({
+    select: { id: true, name: true, phase: true },
+    orderBy: { opensAt: 'desc' },
+    take: PHASE_LIST_LIMIT,
+  })
+}
+
 export async function listOpenMirroredElections(): Promise<MirroredElection[]> {
   const now = new Date()
   return votersDb.election.findMany({

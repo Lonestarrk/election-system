@@ -2,7 +2,7 @@ import { getAdminSession } from '@/lib/admin-auth'
 import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
-import { createElectionSchema, parseJsonBody } from '@/lib/validation'
+import { MAX_ADMIN_JSON_BODY_BYTES, createElectionSchema, parseJsonBody } from '@/lib/validation'
 import { createElection } from '@/orchestration/create-election.usecase'
 import { notifyNewElection } from '@/modules/notifications'
 
@@ -53,7 +53,11 @@ export async function POST(request: Request) {
     return errorResponse('CSRF_FAILED', 'Begäran avvisades.', 403)
   }
 
-  const body = await parseJsonBody(request, createElectionSchema)
+  // Egen gräns: en omröstning med alla sina kandidater är större än vad någon annan
+  // rutt tar emot. Schemat har ett tak som håller den inom gränsen.
+  const body = await parseJsonBody(request, createElectionSchema, {
+    maxBytes: MAX_ADMIN_JSON_BODY_BYTES,
+  })
   if (!body.ok) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }

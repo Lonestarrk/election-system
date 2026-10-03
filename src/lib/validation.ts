@@ -189,10 +189,23 @@ export const encryptedBallotSchema = z.object({
 export const signStartSchema = z.object({
   ballotId: z.string().uuid('Ogiltig valsedel.'),
   ciphertextHash: z.string().regex(/^[0-9a-f]{64}$/, 'Ogiltig hash.'),
+  /**
+   * Valsedeln skickas EN gång, här, och servern håller den med ordern
+   * (src/lib/order-state.ts). Förut bar varje pollning av signeringen den,
+   * omkring 170 kB varannan sekund, och pollningens gräns per minut låg på
+   * pollningstakten.
+   */
+  ballot: encryptedBallotSchema,
 })
 
 /**
  * Inlämning av den signerade, krypterade valsedeln.
+ *
+ * PEKAR BARA UT ORDERN, OCH DET ÄR AVSIKTLIGT (uppgift 14e).
+ *
+ * Valsedeln och valsedelns id kom förut med varje pollning. Nu håller servern
+ * dem med ordern sedan sign-start, och zod stryper det en klient ändå skickar
+ * med: prövningen gäller alltid den valsedel som lades vid starten.
  *
  * INGET SIGNATUR- ELLER CERTIFIKATFÄLT HÄR, OCH DET ÄR AVSIKTLIGT.
  *
@@ -203,9 +216,7 @@ export const signStartSchema = z.object({
  * innan rutten ens ser dem.
  */
 export const castEncryptedBallotSchema = z.object({
-  ballotId: z.string().uuid('Ogiltig valsedel.'),
   orderRef: z.string().uuid('Ogiltig referens.'),
-  ballot: encryptedBallotSchema,
 })
 
 /**
@@ -289,6 +300,13 @@ export const startAuthForElectionSchema = z.object({
   electionId: z.string().uuid('Ogiltig omröstning.'),
 })
 
+/**
+ * Högsta antal kandidater i en omröstning, alla partier och valsedlar
+ * tillsammans. Tre valsedlar med tio partier och tvåhundra kandidater på var
+ * och ett är 6 000, vilket är det största ett riksdagsval behöver.
+ */
+export const MAX_CANDIDATES_PER_ELECTION = 6000
+
 const ballotInputSchema = z
   .object({
     kind: z.enum(['KOMMUN', 'LANDSTING', 'RIKSDAG', 'FRAGA']),
@@ -344,6 +362,19 @@ export const createElectionSchema = z
     ballots: z.array(ballotInputSchema).min(1, 'Minst en valsedel krävs.').max(50),
     trusteePassphrases: trusteePassphrasesSchema,
   })
+  .refine(
+    (value) =>
+      value.ballots.reduce(
+        (total, ballot) =>
+          total +
+          (ballot.parties ?? []).reduce((sum, party) => sum + (party.candidates?.length ?? 0), 0),
+        0,
+      ) <= MAX_CANDIDATES_PER_ELECTION,
+    {
+      message: `En omröstning får ha högst ${MAX_CANDIDATES_PER_ELECTION} kandidater tillsammans.`,
+      path: ['ballots'],
+    },
+  )
   .refine((value) => value.closesAt > value.opensAt, {
     message: 'Omröstningen måste stänga efter att den öppnat.',
   })
@@ -409,6 +440,27 @@ export const adminLoginSchema = z.object({
 export const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 
 /**
+ * Största kropp för att skapa en omröstning, i byte (uppgift 14e).
+ *
+ * VARFÖR EN EGEN GRÄNS. Gränsen på 2 MiB gäller varje rutt, men schemat för en
+ * omröstning släppte i teorin igenom omkring 70 MB: 50 valsedlar, 60 partier
+ * på var och en och 200 kandidater på varje parti, 120 tecken per namn. Rutten
+ * bakom administratörens inloggning får därför en egen gräns, och schemat ett
+ * tak för alla kandidater tillsammans, `MAX_CANDIDATES_PER_ELECTION`.
+ *
+ * VARFÖR JUST 8 MiB. Den största omröstning schemat nu släpper igenom, med
+ * varje tecken skickat som en sexbytes escape-sekvens, är omkring 6,6 MB.
+ * Lösenfraserna har inget tak, eftersom en lång fras aldrig ska avvisas, och
+ * begränsas av den här gränsen i stället; en MiB är avsatt åt dem.
+ * tests/unit/body-limits.test.ts bygger den största omröstningen och håller
+ * schemat och gränsen i samklang.
+ *
+ * Nexts klon av kroppen i middleware har samma gräns, se next.config.ts.
+ * Klonen gäller varje rutt, så den måste vara minst den högsta gränsen.
+ */
+export const MAX_ADMIN_JSON_BODY_BYTES = 8 * 1024 * 1024
+
+/**
  * Kroppen som text, eller null om den är större än gränsen.
  *
  * Content-Length prövas först, så att en för stor kropp inte läses alls. Men
@@ -451,10 +503,11 @@ async function readBodyWithin(request: Request, maxBytes: number): Promise<strin
 export async function parseJsonBody<T>(
   request: Request,
   schema: z.ZodType<T>,
+  options: { maxBytes?: number } = {},
 ): Promise<{ ok: true; data: T } | { ok: false; message: string }> {
   let raw: unknown
   try {
-    const text = await readBodyWithin(request, MAX_JSON_BODY_BYTES)
+    const text = await readBodyWithin(request, options.maxBytes ?? MAX_JSON_BODY_BYTES)
     if (text === null) return { ok: false, message: 'Begäran är för stor.' }
     raw = JSON.parse(text)
   } catch {

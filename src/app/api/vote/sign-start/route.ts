@@ -3,6 +3,7 @@ import { env } from '@/lib/env'
 import { clearVotingCookies, SESSION_COOKIE } from '@/lib/cookies'
 import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
+import { putOrder } from '@/lib/order-state'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, signStartSchema } from '@/lib/validation'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
@@ -24,8 +25,8 @@ export const dynamic = 'force-dynamic'
  *
  * SERVERN BYGGER NYTTOLASTEN SJÄLV, AV EGNA VÄRDEN.
  *
- * Klienten skickar bara `ballotId` och hashen över det chiffer hon just
- * krypterat i webbläsaren — aldrig `castSequence`. Räknaren räknas fram HÄR,
+ * Klienten skickar `ballotId`, den krypterade valsedeln och hashen över den —
+ * aldrig `castSequence`. Räknaren räknas fram HÄR,
  * av `nextCastSequence`, och läggs i `userNonVisibleData` innan BankID-appen
  * någonsin ser den. Fick klienten sätta räknaren kunde den ange ett
  * godtyckligt högt tal och senare spela upp ett äldre, lägre kuvert — hela
@@ -35,6 +36,15 @@ export const dynamic = 'force-dynamic'
  * `electionId` och `voterStatusId` kommer från röstsessionen, aldrig från
  * kroppen — annars kunde vem som helst be servern signera ett kuvert åt en
  * annan väljares session.
+ *
+ * VALSEDELN SKICKAS HIT, EN GÅNG, OCH SERVERN HÅLLER DEN MED ORDERN.
+ *
+ * Förut bar varje pollning av /api/vote/encrypted hela valsedeln, omkring
+ * 170 kB varannan sekund. Nu lägger den här rutten valsedeln i orderlagret
+ * (src/lib/order-state.ts), bunden till väljarens session, och pollningen bär
+ * bara `orderRef`. Hashen i begäran måste vara valsedelns egen: det som
+ * signeras är hashen, och en valsedel med en annan hash hade bara fått rösten
+ * avvisad efter att väljaren skrivit under.
  *
  * Andra halvan, /api/vote/encrypted, hämtar den färdiga signaturen och
  * certifikatkedjan från BankID:s eget svar och verifierar mot exakt den här
@@ -88,6 +98,10 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_BALLOT', 'Valsedeln gäller inte den här omröstningen.', 400)
   }
 
+  if (body.data.ballot.ciphertextHash !== body.data.ciphertextHash) {
+    return errorResponse('INVALID_INPUT', 'Valsedelns hash stämmer inte.', 400)
+  }
+
   const castSequence = await nextCastSequence(session.voterStatusId, body.data.ballotId)
 
   const order = await bankIdService.sign({
@@ -104,6 +118,22 @@ export async function POST(request: Request) {
       castSequence,
     }),
   })
+
+  // Lagret är fullt: ordern hos BankID avbryts, så att ingen order ligger kvar
+  // som väljaren aldrig får veta något om. Ingenting har signerats ännu.
+  const stored = putOrder(order.orderRef, sessionId, {
+    ballotId: body.data.ballotId,
+    ballot: body.data.ballot,
+  })
+  if (!stored) {
+    await bankIdService.cancel(order.orderRef)
+    return errorResponse(
+      'BUSY',
+      'Servern har för mycket att göra just nu, och rösten lades inte. Försök igen om en stund.',
+      503,
+      { 'Retry-After': '5' },
+    )
+  }
 
   const origin = request.headers.get('origin')
   const baseOrigin = origin && env.appOrigins.includes(origin) ? origin : env.appOrigins[0]!

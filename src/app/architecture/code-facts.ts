@@ -1839,8 +1839,8 @@ export const CURRENTLY = {
     text:
       'Inte byggt i Azure: granskningslogg för valvet, rensningsskydd, att pepparn stannar i en HSM ' +
       'och att identitetshashen och kedjornas nyckel räknas där, och fler än en replika. Fler ' +
-      'repliker kräver att attrappens ordrar, hastighetsbegränsningen och antagningskön först flyttar ' +
-      'ur processminnet.',
+      'repliker kräver att attrappens ordrar, orderlagret med valsedlarna under signering, ' +
+      'hastighetsbegränsningen, antagningskön och verifieringskön först flyttar ur processminnet.',
     holdsWhile: [
       NO_VAULT_AUDIT_LOG,
       NO_PURGE_PROTECTION,
@@ -1855,6 +1855,8 @@ export const CURRENTLY = {
         contains: '// MockBankID:s ordrar, hastighetsbegränsningen och antagningskön ligger i',
       },
       { file: 'src/lib/admission-queue.ts', contains: 'const waiting: Waiter[] = []' },
+      { file: 'src/lib/order-state.ts', contains: 'const orders: Map<string, Entry> = globalForOrders.__orderStates' },
+      { file: 'src/lib/crypto/server.ts', contains: 'const waiting: Waiter[] = []' },
     ],
     status: STATUS_OUT_OF_SCOPE,
   },

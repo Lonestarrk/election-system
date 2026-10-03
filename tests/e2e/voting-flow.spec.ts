@@ -286,6 +286,14 @@ test.describe('vad sidorna inte läcker', () => {
     for (const body of bodies) {
       expect(body).not.toMatch(/signature|certificate|castSequence/)
     }
+
+    // Pollningen bär bara orderRef. Valsedeln, omkring 170 kB, skickades förut med
+    // varje fråga; nu lämnas den en gång, till sign-start (uppgift 14e).
+    expect(bodies.length).toBeGreaterThan(0)
+    for (const body of bodies) {
+      expect(Object.keys(JSON.parse(body) as object)).toEqual(['orderRef'])
+      expect(body.length).toBeLessThan(200)
+    }
   })
 
   test('ingen verifikationskod visas och inget slumptal sparas', async ({ page }) => {
@@ -421,11 +429,26 @@ test.describe('när röstningen stänger medan sidan är öppen', () => {
     await voteFor(page, 'Liberalerna')
     expect(await storedKeys(page)).toHaveLength(1)
 
-    // Från och med nu säger sessionen att kopplingen är raderad.
-    await page.route('**/api/vote/session', async (route) => {
+    // Från och med nu säger den offentliga listan att kopplingen är raderad.
+    // Omröstningen står kvar i listan över öppna, eftersom tiden inte gått ut:
+    // det är fasen som säger att den stängt (uppgift 14e).
+    await page.route('**/api/elections', async (route) => {
       const response = await route.fetch()
-      const body = await response.json()
-      await route.fulfill({ response, json: { ...body, phase: 'STRIPPED', acceptsVotes: false } })
+      const body = (await response.json()) as { elections: Array<{ id: string; name: string }> }
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          phases: body.elections.map(({ id, name }) => ({ id, name, phase: 'STRIPPED' })),
+        },
+      })
+    })
+
+    // Bevakningen frågar inte väljarens session, vars gräns delas med andra
+    // väljare bakom samma adress.
+    const sessionRequests: string[] = []
+    page.on('request', (request) => {
+      if (request.url().includes('/api/vote/session')) sessionRequests.push(request.url())
     })
 
     // Väljaren kommer tillbaka till fliken. Sidan frågar då direkt, utan att
@@ -436,6 +459,7 @@ test.describe('när röstningen stänger medan sidan är öppen', () => {
     await expect.poll(() => storedKeys(page)).toEqual([])
     await expect(page.getByText(/din nuvarande röst/i)).toHaveCount(0)
     await expect(page.getByRole('button', { name: /^(Rösta|Ändra din röst)$/ })).toHaveCount(0)
+    expect(sessionRequests).toEqual([])
   })
 
   test('ett svar om att röstningen har stängt raderar också det enheten sparat', async ({ page }) => {

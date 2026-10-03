@@ -217,6 +217,28 @@ export function forgetIfVotingEnded(
   return true
 }
 
+/**
+ * Vilka omröstningar som är öppna, enligt svaret från den offentliga listan
+ * (/api/elections), eller null om svaret inte är en lista.
+ *
+ * Listan väljer på tid och inte på fas, så en omröstning som stängts före sin
+ * tid står kvar i `elections`. `phases` säger då att den stängt, och den
+ * räknas inte som öppen. Saknas fasuppgiften, för en omröstning eller för hela
+ * svaret, räknas den på tid, som före uppgift 14e.
+ */
+export function openElectionIdsFrom(data: unknown): string[] | null {
+  if (typeof data !== 'object' || data === null) return null
+  const { elections, phases } = data as {
+    elections?: Array<{ id: string }>
+    phases?: Array<{ id: string; phase: string }>
+  }
+
+  const phaseOf = new Map((phases ?? []).map((entry) => [entry.id, entry.phase]))
+  return (elections ?? [])
+    .map((election) => election.id)
+    .filter((id) => !phaseOf.has(id) || phaseOf.get(id) === 'OPEN')
+}
+
 /** Omröstningar som enheten har poster om. */
 export function storedElectionIds(storage: DeviceStorage): string[] {
   const ids: string[] = []

@@ -1,0 +1,154 @@
+import { createHash } from 'node:crypto'
+import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
+
+/**
+ * SERVERNS TILLSTÅND PER BANKID-ORDER.
+ *
+ * Underskriften är en pollning. Väljaren startar en order i /api/vote/sign-start
+ * och frågar sedan /api/vote/encrypted var annan sekund tills BankID är klart.
+ * Förut bar varje fråga hela valsedeln, omkring 170 kB, så att servern hade den
+ * när ordern blev klar. Nu lämnar sidan valsedeln en enda gång, vid starten, och
+ * servern håller den här, under orderns referens. Pollningen bär bara
+ * referensen.
+ *
+ * Lagret är det enda stället som håller något mellan de två anropen. Uppgift
+ * 11e lägger saltet för chifferhashen i `OrderState`, så att det skapas i
+ * sign-start och hålls på servern med ordern, utan att något annat behöver
+ * ändras.
+ *
+ * GRÄNSSNITTET ÄR SMALT, PER ORDERREFERENS:
+ *
+ *   putOrder(orderRef, sessionId, state)  lägger ordern, eller returnerar false när lagret är fullt
+ *   getOrder(orderRef, sessionId)         läser utan att förbruka, för en pollning som inte är klar
+ *   takeOrder(orderRef, sessionId)        läser och tar bort, så att en order bara förbrukas en gång
+ *
+ * EN ORDER ÄR BUNDEN TILL VÄLJARENS SESSION. Referensen är en UUID som BankID
+ * ger och som sidan skickar tillbaka, och en annan väljare som kommer över den
+ * ska inte kunna hämta valsedeln. En annan session får därför `null`, och
+ * ordern ligger kvar för sin egen väljare. Sessionen sparas som en hash, inte
+ * som sitt id, så att lagret inte håller något som går att återanvända som
+ * session.
+ *
+ * ORDERN FÖRFALLER. En order som aldrig blir klar, för att väljaren gav upp
+ * eller tappade nätet, ligger inte kvar för alltid: efter `ORDER_LIFETIME_MS`
+ * är den borta. Tiden följer BankID, som låter en order gå ut efter tre
+ * minuter.
+ *
+ * LAGRET LOGGAR ALDRIG. Det har ingen loggning alls, och därmed ingenting som
+ * kan läcka en referens, en session eller en valsedel dit.
+ *
+ * TILLSTÅNDET ÄR PER PROCESS, på samma villkor som inträdeskön
+ * (`admission-queue-per-process` i begränsningslistan): med flera instanser
+ * bakom en lastbalanserare kan pollningen hamna hos en instans som inte har
+ * ordern, och väljaren får då skriva under igen. Det hänger på `globalThis`,
+ * som attrappens ordrar, eftersom Next bygger om en rutt efter en stunds
+ * inaktivitet och då laddar om modulen: en tabell i modulen själv fanns sedan i
+ * flera upplagor, och en order lagd av sign-start fanns inte där
+ * encrypted-rutten läste.
+ */
+
+/** Det servern håller för en order. */
+export type OrderState = {
+  ballotId: string
+  /** Den krypterade valsedeln, med chiffer, bevis och hash. */
+  ballot: EncryptedBallot
+}
+
+/** Hur länge en order som inte blir klar ligger kvar. BankID låter en order gå ut efter tre minuter. */
+export const ORDER_LIFETIME_MS = 3 * 60_000
+
+/**
+ * Högsta antal ordrar samtidigt. En order håller en valsedel, omkring 170 kB för
+ * en riksdagsvalsedel, så taket är minnestaket: 500 ordrar är omkring 85 MB.
+ * Fullt lager avvisar en ny order, och väljaren får försöka igen om en stund.
+ */
+export const MAX_ORDERS = 500
+
+/** Högsta antal ordrar per session. En väljare som startar om får sin äldsta order ersatt. */
+export const MAX_ORDERS_PER_SESSION = 3
+
+type Entry = { sessionKey: string; state: OrderState; expiresAt: number }
+
+const globalForOrders = globalThis as typeof globalThis & { __orderStates?: Map<string, Entry> }
+
+const orders: Map<string, Entry> = globalForOrders.__orderStates ?? new Map<string, Entry>()
+globalForOrders.__orderStates = orders
+
+function sessionKeyOf(sessionId: string): string {
+  return createHash('sha256').update(sessionId).digest('hex')
+}
+
+/** Tar bort det som förfallit. Körs vid varje anrop, så ingen timer behövs. */
+function sweep(now: number): void {
+  for (const [orderRef, entry] of orders) {
+    if (entry.expiresAt <= now) orders.delete(orderRef)
+  }
+}
+
+/**
+ * Lägger en order. Returnerar false när lagret är fullt, och då är ingenting lagt.
+ *
+ * `now` finns för testerna, som inte ska behöva vänta tre minuter.
+ */
+export function putOrder(
+  orderRef: string,
+  sessionId: string,
+  state: OrderState,
+  now: number = Date.now(),
+): boolean {
+  sweep(now)
+  const sessionKey = sessionKeyOf(sessionId)
+
+  // Samma session har redan sina ordrar: den äldsta ersätts. Map håller
+  // insättningsordningen, så den första träffen är den äldsta.
+  const own = [...orders].filter(([, entry]) => entry.sessionKey === sessionKey)
+  for (const [staleRef] of own.slice(0, Math.max(0, own.length - MAX_ORDERS_PER_SESSION + 1))) {
+    orders.delete(staleRef)
+  }
+
+  if (!orders.has(orderRef) && orders.size >= MAX_ORDERS) return false
+
+  orders.delete(orderRef)
+  orders.set(orderRef, { sessionKey, state, expiresAt: now + ORDER_LIFETIME_MS })
+  return true
+}
+
+function lookup(orderRef: string, sessionId: string, now: number): Entry | null {
+  sweep(now)
+  const entry = orders.get(orderRef)
+  if (!entry) return null
+  // Annan session: ordern finns inte för den, och ligger kvar för sin ägare.
+  if (entry.sessionKey !== sessionKeyOf(sessionId)) return null
+  return entry
+}
+
+/** Läser ordern utan att förbruka den. Null om den saknas, har förfallit eller tillhör en annan session. */
+export function getOrder(
+  orderRef: string,
+  sessionId: string,
+  now: number = Date.now(),
+): OrderState | null {
+  return lookup(orderRef, sessionId, now)?.state ?? null
+}
+
+/** Läser ordern och tar bort den, så att den bara kan förbrukas en gång. */
+export function takeOrder(
+  orderRef: string,
+  sessionId: string,
+  now: number = Date.now(),
+): OrderState | null {
+  const entry = lookup(orderRef, sessionId, now)
+  if (!entry) return null
+  orders.delete(orderRef)
+  return entry.state
+}
+
+/** Antal ordrar som ligger kvar, för testerna. */
+export function orderCount(): number {
+  return orders.size
+}
+
+/** Endast för tester. */
+export function resetOrders(): void {
+  orders.clear()
+}

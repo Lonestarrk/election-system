@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { openElectionIdsFrom } from '@/app/vote/device-vote'
 import {
   PHASE_CHECK_INTERVAL_MS,
   watchVotingPhase,
@@ -125,5 +128,70 @@ describe('bevakningen av fasen', () => {
     expect(tab.listeners()).toBe(0)
     tab.set(true)
     expect(checks()).toBe(0)
+  })
+})
+
+/**
+ * BEVAKNINGEN LÄSER DEN OFFENTLIGA LISTAN, INTE VÄLJARENS SESSION (uppgift 14e).
+ *
+ * Sessionsrutten delar en gräns på 60 per minut och adress, och ungefär trettio
+ * synliga flikar bakom en adress fyllde den. Då fick en annan väljare där 429.
+ * Fasen är inte hemlig och ligger i listan över omröstningar.
+ */
+describe('vilka omröstningar som är öppna, enligt den offentliga listan', () => {
+  const list = (phases: Array<{ id: string; phase: string }> | undefined, ids: string[]) => ({
+    elections: ids.map((id) => ({ id })),
+    ...(phases ? { phases: phases.map((entry) => ({ ...entry, name: 'Valet' })) } : {}),
+  })
+
+  it('en omröstning i tid och i fasen OPEN är öppen', () => {
+    expect(openElectionIdsFrom(list([{ id: 'a', phase: 'OPEN' }], ['a']))).toEqual(['a'])
+  })
+
+  it('en omröstning som stängts före sin tid är inte öppen, fast tiden inte gått ut', () => {
+    // Listan väljer på tid, så den står kvar där. Fasen säger att den stängt.
+    expect(openElectionIdsFrom(list([{ id: 'a', phase: 'CLOSED' }], ['a']))).toEqual([])
+  })
+
+  it.each(['CLOSED', 'VALIDATED', 'STRIPPED', 'TALLIED', 'CERTIFIED'])(
+    'fasen %s är inte öppen',
+    (phase) => {
+      expect(openElectionIdsFrom(list([{ id: 'a', phase }], ['a']))).toEqual([])
+    },
+  )
+
+  it('en omröstning som saknas i listan över öppna är inte öppen, vad fasen än säger', () => {
+    expect(openElectionIdsFrom(list([{ id: 'a', phase: 'OPEN' }], []))).toEqual([])
+  })
+
+  it('en lista utan fasuppgift räknas på tid, som före uppgift 14e', () => {
+    expect(openElectionIdsFrom(list(undefined, ['a']))).toEqual(['a'])
+  })
+
+  it('en omröstning vars fas saknas bland faserna räknas på tid', () => {
+    expect(openElectionIdsFrom(list([{ id: 'b', phase: 'CLOSED' }], ['a']))).toEqual(['a'])
+  })
+
+  it('ett svar som inte är en lista ger inget svar alls', () => {
+    expect(openElectionIdsFrom(null)).toBeNull()
+    expect(openElectionIdsFrom('text')).toBeNull()
+    expect(openElectionIdsFrom({})).toEqual([])
+  })
+})
+
+describe('röstsidans bevakning', () => {
+  const page = readFileSync(join(process.cwd(), 'src/app/vote/page.tsx'), 'utf8')
+  const start = page.indexOf('const checkPhase = useCallback')
+  const end = page.indexOf('const watching =', start)
+  const checkPhase = page.slice(start, end)
+
+  it('hittar bevakningens fråga', () => {
+    expect(start).toBeGreaterThan(0)
+    expect(end).toBeGreaterThan(start)
+  })
+
+  it('frågar inte väljarens session, bara den offentliga listan', () => {
+    expect(checkPhase).not.toContain('/api/vote/session')
+    expect(checkPhase).toContain('openElectionIds()')
   })
 })

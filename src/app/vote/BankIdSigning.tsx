@@ -17,11 +17,12 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
  *
  * SIDAN BYGGER INTE DET SOM SIGNERAS.
  *
- * Till /api/vote/sign-start går bara valsedelns id och chifferhashen. Servern
- * räknar själv fram räknaren och bygger texten BankID signerar. Till
- * /api/vote/encrypted går valsedeln och orderreferensen, men aldrig någon
- * signatur, något certifikat eller någon räknare: dem hämtar servern ur
- * BankID:s eget svar. Allt som ändras i det signerade ändras därför på
+ * Till /api/vote/sign-start går valsedelns id, valsedeln och chifferhashen.
+ * Servern räknar själv fram räknaren och bygger texten BankID signerar, och den
+ * håller valsedeln med ordern. Till /api/vote/encrypted går bara
+ * orderreferensen, varannan sekund: valsedeln, omkring 170 kB, skickas en gång
+ * och inte vid varje pollning. Aldrig någon signatur, något certifikat eller
+ * någon räknare: dem hämtar servern ur BankID:s eget svar. Allt som ändras i det signerade ändras därför på
  * serversidan, och den här filen behöver inte följa med.
  *
  * TRE RÄTTELSER FRÅN LEGITIMERINGEN SOM MÅSTE FINNAS HÄR OCKSÅ.
@@ -174,7 +175,7 @@ export function BankIdSigning({
         collecting.current = true
         let reply: Reply | null = null
         try {
-          reply = await post('/api/vote/encrypted', { ballotId, orderRef: reference, ballot })
+          reply = await post('/api/vote/encrypted', { orderRef: reference })
         } catch {
           // Nätet svarade inte. Ordern lever kvar hos BankID, så nästa varv
           // frågar igen, precis som vid `pending`.
@@ -238,7 +239,7 @@ export function BankIdSigning({
 
       timers.current.push(collect)
     },
-    [ballot, ballotId, fail, onClosed, onRecorded, onSessionExpired, stopTimers],
+    [fail, onClosed, onRecorded, onSessionExpired, stopTimers],
   )
 
   const startQrRefresh = useCallback(
@@ -290,8 +291,13 @@ export function BankIdSigning({
 
     let reply: Reply
     try {
-      // Bara valsedeln och hashen. Servern bygger det som signeras.
-      reply = await post('/api/vote/sign-start', { ballotId, ciphertextHash: ballot.ciphertextHash })
+      // Valsedeln skickas här, en gång. Servern håller den med ordern och bygger
+      // det som signeras.
+      reply = await post('/api/vote/sign-start', {
+        ballotId,
+        ciphertextHash: ballot.ciphertextHash,
+        ballot,
+      })
     } catch {
       fail('Kunde inte nå tjänsten. Din röst lades inte. Försök igen.')
       return

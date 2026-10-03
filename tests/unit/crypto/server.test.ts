@@ -13,6 +13,8 @@ import {
   inVerificationTurn,
   partiallyDecrypt,
   publicShare,
+  reserveVerification,
+  verificationReservations,
   splitSecret,
   verificationQueueIsFull,
   verificationQueueState,
@@ -393,5 +395,121 @@ describe('verifieringarna går i tur och ordning', () => {
         ),
       )
     }
+  })
+})
+
+describe('kön reserverar en plats vid förkontrollen (uppgift 14e)', () => {
+  /** Så många platser en besökare kan få: de som pågår och de som väntar. */
+  const CAPACITY = MAX_CONCURRENT_VERIFICATIONS + MAX_WAITING_VERIFICATIONS
+
+  const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+  function heldVisitor(reservation: ReturnType<typeof reserveVerification>) {
+    let release!: () => void
+    const done = new Promise<void>((resolve) => (release = resolve))
+    const promise = inVerificationTurn(
+      async () => {
+        await done
+      },
+      { signal: new AbortController().signal, reservation: reservation ?? undefined },
+    )
+    return { promise, release }
+  }
+
+  it('fem samtidiga mot en plats: en får den, fyra får nej redan vid förkontrollen', () => {
+    // Kapaciteten är fylld utom en plats. Förut räknade förkontrollen bara dem
+    // som redan stod i kön, så alla fem gick igenom den.
+    const held = Array.from({ length: CAPACITY - 1 }, () => reserveVerification())
+    expect(held.every((reservation) => reservation !== null)).toBe(true)
+
+    const five = Array.from({ length: 5 }, () => reserveVerification())
+
+    expect(five.filter((reservation) => reservation !== null)).toHaveLength(1)
+    expect(five.filter((reservation) => reservation === null)).toHaveLength(4)
+
+    for (const reservation of [...held, ...five]) reservation?.release()
+    expect(verificationReservations()).toBe(0)
+  })
+
+  it('en reservation som släpps ger platsen till nästa, och släpps den två gånger räknas det en gång', () => {
+    const held = Array.from({ length: CAPACITY }, () => reserveVerification())
+    expect(reserveVerification()).toBeNull()
+
+    held[0]!.release()
+    held[0]!.release()
+    const next = reserveVerification()
+    expect(next).not.toBeNull()
+    expect(reserveVerification()).toBeNull()
+
+    for (const reservation of [...held, next]) reservation?.release()
+    expect(verificationReservations()).toBe(0)
+  })
+
+  it('verifieringen tar över reservationen: platsen räknas aldrig två gånger', async () => {
+    const reservation = reserveVerification()
+    expect(verificationReservations()).toBe(1)
+
+    const visitor = heldVisitor(reservation)
+    await settle()
+
+    expect(verificationReservations()).toBe(0)
+    expect(verificationQueueState()).toEqual({ running: 1, waiting: 0 })
+
+    visitor.release()
+    await visitor.promise
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
+  })
+
+  it('en full kapacitet avvisar nästa, och de som har en reservation går in', async () => {
+    const running = [reserveVerification(), reserveVerification()].map(heldVisitor)
+    const rest = Array.from({ length: CAPACITY - 2 }, () => reserveVerification())
+    await settle()
+
+    expect(verificationQueueState().running).toBe(MAX_CONCURRENT_VERIFICATIONS)
+    expect(reserveVerification()).toBeNull()
+
+    // De som håller en reservation går in utan att kastas ut: de har sin plats.
+    const entered = rest.map(heldVisitor)
+    await settle()
+    expect(verificationQueueState()).toEqual({
+      running: MAX_CONCURRENT_VERIFICATIONS,
+      waiting: MAX_WAITING_VERIFICATIONS,
+    })
+
+    for (const task of [...running, ...entered]) task.release()
+    await Promise.all([...running, ...entered].map((task) => task.promise))
+    expect(verificationReservations()).toBe(0)
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
+  })
+
+  it('en besökare som redan gett upp släpper sin reservation', async () => {
+    const reservation = reserveVerification()
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      inVerificationTurn(async () => 'prövad', {
+        signal: controller.signal,
+        reservation: reservation!,
+      }),
+    ).rejects.toBeInstanceOf(VerificationAborted)
+
+    expect(verificationReservations()).toBe(0)
+  })
+
+  it('en verifiering som kastar släpper både platsen och reservationen', async () => {
+    const reservation = reserveVerification()
+
+    await expect(
+      inVerificationTurn(
+        async () => {
+          throw new Error('bevisen kraschade')
+        },
+        { signal: new AbortController().signal, reservation: reservation! },
+      ),
+    ).rejects.toThrow('bevisen kraschade')
+
+    expect(verificationReservations()).toBe(0)
+    expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
   })
 })

@@ -4,15 +4,15 @@ import { isValidCsrfToken } from '@/lib/csrf'
 import {
   VerificationAborted,
   VerificationQueueFull,
-  verificationQueueIsFull,
+  reserveVerification,
 } from '@/lib/crypto/server'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
+import { getOrder, takeOrder } from '@/lib/order-state'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { castEncryptedBallotSchema, parseJsonBody } from '@/lib/validation'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { bankIdService } from '@/modules/eligibility/bankid'
-import { ballotBelongsToElection } from '@/modules/eligibility/election.service'
 import { castEncryptedBallot, type CastOutcome } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
 
@@ -22,8 +22,17 @@ export const dynamic = 'force-dynamic'
 /**
  * POST /api/vote/encrypted
  *
- * Andra halvan av det tvådelade signeringsflödet: lämnar in den krypterade
+ * Andra halvan av det tvådelade signeringsflödet: lägger den krypterade
  * valsedeln, med signaturen hämtad från BankID i stället för från begäran.
+ *
+ * KROPPEN ÄR BARA `orderRef` (uppgift 14e).
+ *
+ * Röstsidan frågar den här rutten varannan sekund tills BankID är klart.
+ * Valsedeln lämnades förut med varje fråga, omkring 170 kB. Nu lämnar
+ * /api/vote/sign-start den en gång, och servern håller den med ordern i
+ * orderlagret (src/lib/order-state.ts), bunden till väljarens session. En
+ * order som saknas, har förfallit eller hör till en annan session ger samma
+ * svar, och BankID frågas då inte.
  *
  * SIGNATUREN OCH CERTIFIKATKEDJAN FÅR ALDRIG KOMMA FRÅN BEGÄRANS KROPP.
  *
@@ -97,21 +106,26 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }
 
-  if (!(await ballotBelongsToElection(body.data.ballotId, session.electionId))) {
-    return errorResponse('INVALID_BALLOT', 'Valsedeln gäller inte den här omröstningen.', 400)
-  }
+  const { orderRef } = body.data
 
   /**
-   * KÖN PRÖVAS INNAN BANKID-ORDERN HÄMTAS (granskningen av uppgift 14b,
-   * MINDRE 3).
+   * KÖN RESERVERAR SIN PLATS INNAN BANKID-ORDERN HÄMTAS (uppgift 14e).
    *
    * Ordern förbrukas när den hämtas. Avvisades valsedeln först efteråt, för att
    * verifieringskön var full, hade väljaren fått skriva under en gång till. Här
    * lever ordern kvar, så svaret blir `queued`, som när BankID ännu inte är
    * klart, och röstsidan frågar igen vid nästa varv. 503 säger samma sak till
    * den som bara läser statusraden.
+   *
+   * Det räcker inte att fråga om kön är full. Mellan frågan och verifieringen
+   * hämtas BankID-ordern och omröstningen läses, och när en plats var kvar
+   * klarade fem samtidiga röster frågan: fyra fick kön full först efter att
+   * deras order förbrukats. Platsen RESERVERAS därför här, och verifieringen
+   * tar över den. Reservationen släpps i `finally` på varje väg ut: svar,
+   * fel och avbrott.
    */
-  if (verificationQueueIsFull()) {
+  const reservation = reserveVerification()
+  if (!reservation) {
     return jsonResponse(
       { status: 'queued', message: 'Många röstar just nu. Rösten prövas så fort det finns plats.' },
       503,
@@ -119,66 +133,93 @@ export async function POST(request: Request) {
     )
   }
 
-  const collected = await bankIdService.collect(body.data.orderRef)
-
-  if (collected.status === 'pending') {
-    return jsonResponse({ status: 'pending', message: 'Väntar på BankID …' })
-  }
-
-  if (collected.status === 'failed') {
-    return jsonResponse({
-      status: 'failed',
-      message:
-        collected.hintCode === 'userCancel'
-          ? 'Signeringen avbröts.'
-          : 'Signeringen misslyckades. Försök igen.',
-    })
-  }
-
-  const shape = await getEncryptedBallotShape(body.data.ballotId)
-
-  let outcome: CastOutcome
   try {
-    outcome = await castEncryptedBallot(
-      session.voterStatusId,
-      session.electionId,
-      body.data.ballotId,
-      body.data.ballot,
-      {
-        // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
-        signature: collected.completionData.signature,
-        certificateChain: collected.completionData.certificateChain,
-        signedData: collected.completionData.signedData,
-      },
-      shape,
-      request.signal,
-    )
-  } catch (error) {
     /**
-     * Kön fylldes efter frågan ovan, och ordern är redan förbrukad. Svaret
-     * säger därför rakt ut att rösten inte lades, i stället för `queued`,
-     * som hade fått röstsidan att vänta på en order som inte finns längre.
+     * VALSEDELN HÅLLS AV SERVERN, BUNDEN TILL SESSIONEN.
+     *
+     * Ordern lades av /api/vote/sign-start, med valsedeln. En order som saknas
+     * eller tillhör en annan session ger samma svar, och BankID frågas då inte:
+     * annars hade en annan väljare kunnat förbruka ordern. En order som saknas
+     * har förfallit, eller servern har startat om, och väljaren får skriva under
+     * igen.
      */
-    if (error instanceof VerificationQueueFull) {
-      return errorResponse(
-        'BUSY',
-        'Servern har för mycket att göra just nu, och rösten lades inte. Försök igen om en stund.',
-        503,
-        { 'Retry-After': '5' },
-      )
+    if (!getOrder(orderRef, sessionId)) {
+      return jsonResponse({
+        status: 'failed',
+        message: 'Signeringen gick inte att slutföra, och rösten lades inte. Försök igen.',
+      })
     }
-    /**
-     * Besökaren gav upp, och ingenting lades. Ingen läser svaret, men det ska
-     * inte bli ett serverfel i loggen. 499 är den vedertagna koden för en
-     * begäran som klienten stängde.
-     */
-    if (error instanceof VerificationAborted) {
-      return errorResponse('CLIENT_CLOSED', 'Begäran avbröts innan rösten lades.', 499)
-    }
-    throw error
-  }
 
-  return jsonResponse(outcome, httpStatusFor(outcome.status))
+    const collected = await bankIdService.collect(orderRef)
+
+    if (collected.status === 'pending') {
+      return jsonResponse({ status: 'pending', message: 'Väntar på BankID …' })
+    }
+
+    // Ordern är förbrukad hos BankID, klar eller misslyckad, och valsedeln
+    // hålls inte längre. En order kan bara förbrukas en gång.
+    const order = takeOrder(orderRef, sessionId)
+
+    if (collected.status === 'failed' || !order) {
+      return jsonResponse({
+        status: 'failed',
+        message:
+          collected.status === 'failed' && collected.hintCode === 'userCancel'
+            ? 'Signeringen avbröts.'
+            : 'Signeringen misslyckades. Försök igen.',
+      })
+    }
+
+    const shape = await getEncryptedBallotShape(order.ballotId)
+
+    let outcome: CastOutcome
+    try {
+      outcome = await castEncryptedBallot(
+        session.voterStatusId,
+        session.electionId,
+        order.ballotId,
+        order.ballot,
+        {
+          // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
+          signature: collected.completionData.signature,
+          certificateChain: collected.completionData.certificateChain,
+          signedData: collected.completionData.signedData,
+        },
+        shape,
+        request.signal,
+        reservation,
+      )
+    } catch (error) {
+      /**
+       * Kön fylldes ändå, och ordern är redan förbrukad. Det kan hända när
+       * andra uppgifter än besökare, som valideringen före stängningen, tar
+       * platser. Svaret säger rakt ut att rösten inte lades, i stället för
+       * `queued`, som hade fått röstsidan att vänta på en order som inte finns
+       * längre.
+       */
+      if (error instanceof VerificationQueueFull) {
+        return errorResponse(
+          'BUSY',
+          'Servern har för mycket att göra just nu, och rösten lades inte. Försök igen om en stund.',
+          503,
+          { 'Retry-After': '5' },
+        )
+      }
+      /**
+       * Besökaren gav upp, och ingenting lades. Ingen läser svaret, men det ska
+       * inte bli ett serverfel i loggen. 499 är den vedertagna koden för en
+       * begäran som klienten stängde.
+       */
+      if (error instanceof VerificationAborted) {
+        return errorResponse('CLIENT_CLOSED', 'Begäran avbröts innan rösten lades.', 499)
+      }
+      throw error
+    }
+
+    return jsonResponse(outcome, httpStatusFor(outcome.status))
+  } finally {
+    reservation.release()
+  }
 }
 
 /**

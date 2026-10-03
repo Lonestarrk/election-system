@@ -1,7 +1,11 @@
 import { safeEqual } from '@/lib/crypto'
 import { electionBelongsToThisMode } from '@/lib/mode-flag'
 import { truncateToDay } from '@/lib/time'
-import { VerificationAborted, verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
+import {
+  VerificationAborted,
+  verifyEncryptedBallotOnServer,
+  type VerificationReservation,
+} from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
 import {
@@ -118,6 +122,9 @@ export type EncryptedBallotShape = { publicKey: string; optionCount: number }
  *   gäller verifieringsköns tak, och kastar funktionen `VerificationQueueFull`
  *   när kön är full. Ger besökaren upp kastar den `VerificationAborted`, och
  *   ingenting läggs. Se src/lib/crypto/server.ts.
+ * @param reservation Platsen i verifieringskön som rutten reserverade vid
+ *   förkontrollen. Verifieringen tar över den; rutten släpper den i `finally`
+ *   om verifieringen aldrig nås.
  */
 export async function castEncryptedBallot(
   voterStatusId: string,
@@ -127,6 +134,7 @@ export async function castEncryptedBallot(
   envelope: SignedEnvelope,
   shape: EncryptedBallotShape | null,
   signal?: AbortSignal,
+  reservation?: VerificationReservation,
 ): Promise<CastOutcome> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
@@ -182,7 +190,7 @@ export async function castEncryptedBallot(
       ballotId,
       shape.optionCount,
       ballot,
-      signal ? { signal } : undefined,
+      signal ? { signal, reservation } : undefined,
     ))
   ) {
     return { status: 'invalid_proof' }
