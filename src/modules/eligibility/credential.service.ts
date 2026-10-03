@@ -1,3 +1,4 @@
+import { electionBelongsToThisMode } from '@/lib/mode-flag'
 import { truncateToDay } from '@/lib/time'
 import { signBlinded } from '@/lib/blind-signature'
 import { votersDb } from './db'
@@ -40,6 +41,12 @@ import { holdVoterBooksForOldFlow } from './voter-status.service'
 
 export type IssueCredentialOutcome =
   | { status: 'issued'; blindSignature: string; publicKeyPem: string }
+  /**
+   * Omröstningen skapades i ett annat läge än serverns (uppgift 17, fixrunda 1). Inget intyg
+   * utfärdas och ingen markering skrivs. Det gamla flödet tas bort i uppgift 15, och spärren
+   * står kvar tills dess.
+   */
+  | { status: 'wrong_mode' }
   | { status: 'already_issued' }
   | { status: 'ballot_not_for_voter' }
   | { status: 'unknown_ballot' }
@@ -63,6 +70,11 @@ export async function issueCredential(
   ballotId: string,
   blindedHex: string,
 ): Promise<IssueCredentialOutcome> {
+  // Läget först, före varje läsning av väljaren. Ett intyg som utfärdats i ett läge ska inte
+  // kunna lösas in i en omröstning i det andra.
+  const election = await votersDb.election.findUnique({ where: { id: electionId }, select: { mode: true } })
+  if (election && !electionBelongsToThisMode(election.mode)) return { status: 'wrong_mode' }
+
   // Gäller valsedeln den här personen? En kommunvalsedel gäller bara den som
   // är folkbokförd i kommunen. Kontrollen ligger HÄR och inte vid röstningen,
   // eftersom röstningen är anonym och då inte längre vet vem väljaren är.

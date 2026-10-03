@@ -18,7 +18,8 @@ import {
 } from '@/lib/crypto/threshold'
 import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { merkleRoot } from '@/lib/merkle'
-import { electionBelongsToThisMode, runtimeMode } from '@/lib/mode-flag'
+import { runtimeMode } from '@/lib/mode-flag'
+import { checkElectionMode } from './election-mode'
 import { bankIdKind } from '@/modules/eligibility/bankid/kind'
 import { urnRootOf, type UrnRow } from '@/lib/urn-root'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
@@ -1179,11 +1180,8 @@ export type CertifyOutcome =
 export async function certifyElection(electionId: string): Promise<CertifyOutcome> {
   // En demoomröstning fastställs aldrig av en server i skarpt läge, och en skarp aldrig av en
   // demoserver. Prövas före slutkontrollen, som annars hade markerat omröstningen.
-  const row = await votersDb.election.findUnique({ where: { id: electionId }, select: { mode: true } })
-  const votesRow = await votesDb.election.findUnique({ where: { id: electionId }, select: { mode: true } })
-  if (row && (!electionBelongsToThisMode(row.mode) || (votesRow && !electionBelongsToThisMode(votesRow.mode)))) {
-    return { status: 'wrong_mode' }
-  }
+  // 'unknown' (ingen rad i röstlängden) går vidare till slutkontrollens eget svar för en okänd omröstning.
+  if ((await checkElectionMode(electionId)) === 'wrong') return { status: 'wrong_mode' }
 
   const report = await runFinalCheck(electionId)
   if (!report) return { status: 'unknown_election' }

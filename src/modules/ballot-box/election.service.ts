@@ -498,3 +498,15 @@ export async function getBallotPublicKey(ballotId: string): Promise<string | nul
 export async function deleteElection(electionId: string): Promise<void> {
   await votesDb.election.deleteMany({ where: { id: electionId } })
 }
+
+/**
+ * Läget hos omröstningen som en valsedel hör till (uppgift 17, fixrunda 1), ur röstdatabasen. Null
+ * när valsedeln inte finns.
+ */
+export async function modeOfBallot(ballotId: string): Promise<string | null> {
+  const ballot = await votesDb.electionBallot.findUnique({
+    where: { id: ballotId },
+    select: { election: { select: { mode: true } } },
+  })
+  return ballot?.election.mode ?? null
+}

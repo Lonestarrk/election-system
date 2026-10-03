@@ -72,6 +72,15 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_CREDENTIAL', 'Röstintyget är inte giltigt.', 403)
   }
 
+  if (outcome.status === 'wrong_mode') {
+    // Omröstningen skapades i ett annat läge än serverns (uppgift 17). Intyget är oförbrukat.
+    return errorResponse(
+      'WRONG_MODE',
+      'Omröstningen skapades i ett annat läge än det servern kör i, och rösten lades inte.',
+      409,
+    )
+  }
+
   if (outcome.status === 'invalid_choice') {
     return errorResponse('INVALID_CHOICE', outcome.reason, 400)
   }

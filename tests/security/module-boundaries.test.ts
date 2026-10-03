@@ -126,6 +126,12 @@ describe('modulgränser', () => {
       // väljare eller en röst att koppla ihop.
       'src/orchestration/create-election.usecase.ts',
       'src/orchestration/final-check.usecase.ts',
+      /**
+       * Lägeskontrollen (uppgift 17). Läser bara kolumnen `mode` på omröstningens
+       * rad i båda databaserna, och jämför den med serverns läge. Offentlig
+       * metadata, ingen väljare och ingen röst.
+       */
+      'src/orchestration/election-mode.ts',
       'src/orchestration/validate-before-close.usecase.ts',
       /**
        * Skalningen (uppgift 11). Den ENDA filen som med flit läser kuverten

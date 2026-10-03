@@ -162,7 +162,7 @@ export async function castEncryptedBallot(
     return { status: 'closed' }
   }
 
-  // Läget är oföränderligt, så prövningen här räcker: raden i transaktionen längre ned
+  // Läget ändras inte av appen, så prövningen här räcker: raden i transaktionen längre ned
   // läser samma omröstning, och kolumnen skrivs bara när omröstningen skapas.
   if (!electionBelongsToThisMode(election.mode)) return { status: 'wrong_mode' }
 

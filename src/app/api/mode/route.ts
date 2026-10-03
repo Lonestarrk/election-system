@@ -14,6 +14,11 @@ export const dynamic = 'force-dynamic'
  * adminsessionen.
  *
  * Bara GET. Ingen rutt i appen byter läge, se src/lib/mode-flag.ts.
+ *
+ * VARFÖR RUTTEN FINNS: banderollen läser `isDemoMode()` direkt i layouten och behöver den inte.
+ * Rutten är till för det som inte renderas av servern, en driftkontroll eller en klient som vill veta
+ * läget, och för att E2E-sviten ska kunna se vilket läge den kör mot. Den lämnar ut ett enda ord,
+ * och inget som en driftkontroll inte redan ser på banderollen.
  */
 export async function GET(request: Request) {
   const rate = checkRateLimit('public-mode', getClientIp(request), RATE_LIMITS.publicMode)

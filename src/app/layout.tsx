@@ -6,7 +6,7 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'Digitalt valsystem – proof of concept',
   description:
-    'Teknisk demonstration av ett valsystem där väljarens identitet och röst aldrig kan kopplas ihop.',
+    'Teknisk demonstration av ett valsystem med dubbla kuvert: väljarens namn och röst hålls isär, och kopplingen mellan dem raderas vid stängningen.',
   // Ingen indexering: en demo av ett valsystem som dyker upp i sökresultat kan
   // missförstås som ett riktigt val.
   robots: { index: false, follow: false },

@@ -113,6 +113,8 @@ function responseFor(outcome: TallyOutcome) {
       )
     case 'wrong_phase':
       return jsonResponse({ status: 'wrong_phase', phase: outcome.phase, message: outcome.message }, 409)
+    case 'wrong_mode':
+      return jsonResponse({ status: 'wrong_mode', message: outcome.message }, 409)
     case 'unknown_ballot':
       return jsonResponse(
         { status: 'unknown_ballot', message: 'Valsedeln finns inte, eller räknas inte i kuvertmodellen.' },

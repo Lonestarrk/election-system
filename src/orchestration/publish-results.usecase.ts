@@ -7,6 +7,7 @@ import { serialisePartialDecryptionProof, TRUSTEE_COUNT, TRUSTEE_THRESHOLD } fro
 import { logger } from '@/lib/logger'
 import { getBallotChoices, getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
+import { checkElectionMode } from './election-mode'
 import { votersDb } from '@/modules/eligibility/db'
 import { turnoutByBallot } from '@/modules/eligibility/participation.service'
 import { recountForPublication, TallyAbortedError, type RecountedBallot } from './tally.usecase'
@@ -93,6 +94,8 @@ export type PublicationOutcome =
   | { status: 'published'; publication: Publication }
   | { status: 'not_published'; phase: string }
   | { status: 'result_mismatch'; phase: string }
+  /** Omröstningen skapades i ett annat läge än serverns (uppgift 17). Inget lämnas ut. */
+  | { status: 'wrong_mode' }
   | { status: 'unknown_election' }
 
 /** Det som publiceringen själv säger att ingen utanför kan kontrollera. */
@@ -148,6 +151,9 @@ const HOW_TO_VERIFY =
   '<fil eller adress> ur projektets källkod. Verktyget importerar ingenting ur appen.'
 
 export async function publishedResults(electionId: string): Promise<PublicationOutcome> {
+  // Läget före allt, också före fasen: en omröstning i fel läge publiceras inte av den här servern.
+  if ((await checkElectionMode(electionId)) === 'wrong') return { status: 'wrong_mode' }
+
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
     select: {
@@ -197,6 +203,7 @@ export async function publishedResults(electionId: string): Promise<PublicationO
     try {
       const outcome = await recountForPublication(ballot.id)
       if (outcome.status === 'wrong_phase') return { status: 'not_published', phase: outcome.phase ?? phase }
+      if (outcome.status === 'wrong_mode') return { status: 'wrong_mode' }
       if (outcome.status !== 'recounted') return mismatch('en valsedel finns inte i röstdatabasen')
       recounted = outcome.ballot
     } catch (error) {
@@ -275,6 +282,7 @@ export type ElectionResultOutcome =
   | { status: 'ok'; phase: string; ballots: BallotResult[] }
   | { status: 'not_tallied'; phase: string }
   | { status: 'result_mismatch'; phase: string }
+  | { status: 'wrong_mode' }
   | { status: 'unknown_election' }
 
 /**
@@ -290,6 +298,7 @@ export async function getElectionTallyResults(electionId: string): Promise<Elect
   if (outcome.status === 'unknown_election') return outcome
   if (outcome.status === 'not_published') return { status: 'not_tallied', phase: outcome.phase }
   if (outcome.status === 'result_mismatch') return outcome
+  if (outcome.status === 'wrong_mode') return outcome
 
   return {
     status: 'ok',

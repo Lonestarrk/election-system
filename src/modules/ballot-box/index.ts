@@ -49,6 +49,8 @@ export type CastVoteResult =
   | { status: 'invalid_credential' }
   | { status: 'credential_already_used' }
   | { status: 'invalid_choice'; reason: string }
+  /** Omröstningen skapades i ett annat läge än serverns (uppgift 17, fixrunda 1). */
+  | { status: 'wrong_mode' }
   | { status: 'failed' }
 
 import {
@@ -71,7 +73,9 @@ import {
   listRegisteredParties as listRegisteredPartiesInternal,
   validateBallotChoice,
   BallotValidationError,
+  modeOfBallot,
 } from './election.service'
+import { electionBelongsToThisMode } from '@/lib/mode-flag'
 
 /**
  * Registrerar en anonym röst.
@@ -84,6 +88,11 @@ import {
 export async function castVote(
   input: CastVoteInput,
 ): Promise<CastVoteResult> {
+  // Läget först, före valet och intyget. Det gamla flödet tas bort i uppgift 15, och spärren
+  // står kvar tills dess: en demoröst hamnar aldrig i en skarp omröstning, och tvärtom.
+  const mode = await modeOfBallot(input.ballotId)
+  if (mode !== null && !electionBelongsToThisMode(mode)) return { status: 'wrong_mode' }
+
   // Valet måste passa valsedeln: rätt sorts svar, giltigt parti, kandidat som
   // står för det partiet, och en omröstning som faktiskt är öppen.
   const validation = await validateBallotChoice({

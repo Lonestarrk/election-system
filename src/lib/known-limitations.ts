@@ -560,8 +560,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'summan. Lösenfraserna skyddar alltså ingenting för demovalet. I skarpt läge vägrar skapandet av en ' +
       'omröstning de tre fraserna, och seedningen vägrar köra. Spärren gäller de tre fraserna i repot, ' +
       'inte svaga fraser i allmänhet, och den hänger inte på en miljövariabel. Ett demoval som ' +
-      'redan finns kan inte läggas i, stängas eller fastställas av en server i skarpt läge, eftersom ' +
-      'omröstningen bär sitt läge. Läget står i båda databaserna. Läggningen läser röstlängdens rad, och ' +
+      'redan finns kan inte läggas i, stängas, räknas, publiceras eller fastställas av en server i ' +
+      'skarpt läge, och tvärtom, eftersom omröstningen bär sitt läge. Det gäller kuvertflödet, det ' +
+      'gamla flödets röstintyg och röster, räkningen, dekrypteringen och publiceringen. Gamla ' +
+      'flödet tas bort i uppgift 15, och spärren står kvar tills dess. Inget i en server i det ' +
+      'andra läget blockerar däremot att någon läser databasen direkt. Läget står i båda databaserna. Läggningen läser röstlängdens rad, och ' +
       'stängning och fastställande kräver att båda raderna stämmer. Den som kan skriva i båda kan ' +
       'ändå byta läget, så spärren skyddar mot ett misstag och inte mot en sådan skrivning.',
     stillTrueIf: [

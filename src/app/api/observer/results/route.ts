@@ -60,6 +60,19 @@ export async function GET(request: Request) {
     )
   }
 
+  if (outcome.status === 'wrong_mode') {
+    // 409: omröstningen skapades i ett annat läge än serverns, och inget lämnas ut (uppgift 17).
+    return jsonResponse(
+      {
+        status: 'wrong_mode',
+        message:
+          'Omröstningen skapades i ett annat läge än det servern kör i, så resultatet lämnas inte ut här. ' +
+          'Läget sätts vid driftsättning.',
+      },
+      409,
+    )
+  }
+
   if (outcome.status === 'result_mismatch') {
     return jsonResponse(
       {

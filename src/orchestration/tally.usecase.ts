@@ -27,6 +27,7 @@ import { truncateToHour } from '@/lib/time'
 import { urnRootOf, type UrnRow } from '@/lib/urn-root'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
+import { checkElectionMode } from './election-mode'
 import { AUDIT_EVENTS, recordAuditEvent, type AuditEventType } from '@/modules/eligibility/audit.service'
 import { votersDb } from '@/modules/eligibility/db'
 
@@ -134,12 +135,27 @@ export type SubmittedPartial = { optionIndex: number; value: unknown; proof: unk
  */
 export type WrongPhase = { status: 'wrong_phase'; phase: string | null; message: string }
 
+/**
+ * Omröstningens läge är ett annat än serverns (uppgift 17, fixrunda 1). Ingenting är räknat,
+ * upplåst eller sparat. Spärren prövas före fasen: en omröstning i fel läge räknas inte av en
+ * server i det andra läget, vilken fas den än står i.
+ */
+export type WrongMode = { status: 'wrong_mode'; message: string }
+
+const WRONG_MODE: WrongMode = {
+  status: 'wrong_mode',
+  message:
+    'Omröstningen skapades i ett annat läge än det servern kör i. Ingenting räknas, och ingenting ändras. ' +
+    'Läget sätts vid driftsättning.',
+}
+
 export type PartialDecryptionOutcome =
   | { status: 'accepted' }
   | { status: 'rejected'; message: string }
   | { status: 'duplicate' }
   | { status: 'wrong_passphrase' }
   | WrongPhase
+  | WrongMode
   | { status: 'unknown_ballot' }
   | { status: 'unknown_trustee' }
 
@@ -153,6 +169,7 @@ export type TallyOutcome =
     }
   | { status: 'needs_more_trustees'; have: number; need: number }
   | WrongPhase
+  | WrongMode
   | { status: 'unknown_ballot' }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +187,7 @@ type Gate =
       /** Omröstningens valsedlar, ur röstlängdens lista. */
       ballotIds: string[]
     }
-  | { open: false; outcome: WrongPhase | { status: 'unknown_ballot' } }
+  | { open: false; outcome: WrongPhase | WrongMode | { status: 'unknown_ballot' } }
 
 /** Spärren öppen, med det räkningen behöver ur den. */
 type OpenGate = Extract<Gate, { open: true }>
@@ -246,6 +263,9 @@ async function tallyGate(ballotId: string): Promise<Gate> {
     select: { electionId: true },
   })
   if (!ballot) return { open: false, outcome: { status: 'unknown_ballot' } }
+
+  // Läget före fasen, och före varje läsning av urnan eller någon andel.
+  if ((await checkElectionMode(ballot.electionId)) === 'wrong') return { open: false, outcome: WRONG_MODE }
 
   const election = await votersDb.election.findUnique({
     where: { id: ballot.electionId },
@@ -490,6 +510,10 @@ async function requireUrnRoot(gate: OpenGate, hashes: readonly string[]): Promis
  * fram den själv ur urnan.
  */
 export async function aggregate(ballotId: string): Promise<Ciphertext[]> {
+  const owner = await votesDb.electionBallot.findUnique({ where: { id: ballotId }, select: { electionId: true } })
+  if (owner && (await checkElectionMode(owner.electionId)) === 'wrong') {
+    abort('omröstningen skapades i ett annat läge än det servern kör i, och ingen summa räknas fram.')
+  }
   const shape = await getEncryptedBallotShape(ballotId)
   if (!shape) abort('valsedeln finns inte i kuvertmodellen, och har ingen summa.')
   return (await sumOfUrn(ballotId, shape.optionCount)).sums
@@ -1145,6 +1169,7 @@ export type RecountedBallot = {
 export type RecountOutcome =
   | { status: 'recounted'; ballot: RecountedBallot }
   | WrongPhase
+  | WrongMode
   | { status: 'unknown_ballot' }
 
 /**
@@ -1160,6 +1185,8 @@ async function publicationGate(ballotId: string): Promise<Gate> {
     select: { electionId: true },
   })
   if (!ballot) return { open: false, outcome: { status: 'unknown_ballot' } }
+
+  if ((await checkElectionMode(ballot.electionId)) === 'wrong') return { open: false, outcome: WRONG_MODE }
 
   const election = await votersDb.election.findUnique({
     where: { id: ballot.electionId },

@@ -90,6 +90,15 @@ export async function POST(request: Request) {
     body.data.blinded,
   )
 
+  if (outcome.status === 'wrong_mode') {
+    // Omröstningen skapades i ett annat läge än serverns (uppgift 17). Inget intyg utfärdades.
+    return errorResponse(
+      'WRONG_MODE',
+      'Omröstningen skapades i ett annat läge än det servern kör i, och inget röstintyg utfärdades.',
+      409,
+    )
+  }
+
   if (outcome.status === 'already_issued') {
     await recordAuditEvent(AUDIT_EVENTS.DOUBLE_VOTE_BLOCKED)
     return errorResponse('ALREADY_VOTED', 'Du har redan röstat på den här valsedeln.', 409)

@@ -67,6 +67,12 @@ test.describe('lägeskortet på adminsidan', () => {
     await expect(card).toContainText('Demoläge')
     await expect(card).toContainText('BankID: attrappen')
     await expect(card).toContainText('bankid-real')
+
+    // Varningsraden säger "Ingen varning" när BANKID_ENV inte är test, och inte "Uppfyllt".
+    const warningRow = card.locator('li', { hasText: 'bankid-test-environment' })
+    await expect(warningRow).toContainText('Ingen varning')
+    await expect(warningRow).not.toContainText('Uppfyllt')
+    await expect(card.locator('li', { hasText: 'bankid-real' })).toContainText('Stoppar')
     await expect(card).toContainText('Vad som saknas för skarpt läge')
     await expect(card).toContainText('Läget sätts vid driftsättning och kan inte ändras här.')
 

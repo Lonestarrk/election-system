@@ -109,7 +109,7 @@ export function ModeCard() {
                 requirement.met ? 'status-done' : requirement.blocking ? 'status-planned' : 'status-out-of-scope'
               }`}
             >
-              {requirement.met ? 'Uppfyllt' : requirement.blocking ? 'Stoppar' : 'Varning'}
+              {requirement.met ? (requirement.blocking ? 'Uppfyllt' : 'Ingen varning') : requirement.blocking ? 'Stoppar' : 'Varning'}
             </span>{' '}
             <code>{requirement.id}</code>
             {!requirement.met && <div className="muted small">{requirement.detail}</div>}

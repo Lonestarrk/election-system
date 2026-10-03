@@ -61,6 +61,19 @@ export async function POST(request: Request) {
     )
   }
 
+  if (outcome.status === 'wrong_mode') {
+    // 409: omröstningen skapades i ett annat läge än serverns, och inget lämnas ut (uppgift 17).
+    return jsonResponse(
+      {
+        status: 'wrong_mode',
+        message:
+          'Omröstningen skapades i ett annat läge än det servern kör i, så resultatet lämnas inte ut här. ' +
+          'Läget sätts vid driftsättning.',
+      },
+      409,
+    )
+  }
+
   if (outcome.status === 'result_mismatch') {
     // Samma besked som publiceringen, och inga tal: varken de sparade eller de
     // omräknade lämnas ut när de skiljer sig åt (fixrunda 1 av uppgift 13).
