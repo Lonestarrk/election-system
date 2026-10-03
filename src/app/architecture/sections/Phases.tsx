@@ -60,7 +60,8 @@ export function Phases() {
         &quot;Nej&quot; om kopplingen betyder att raderna är borta ur den levande databasen.
         Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen. BankID:s kopia av det
         väljaren signerade bär inte chifferhashen, utan en saltad hash av den, och saltet raderas
-        med raden.
+        med raden. Den går därför inte att matcha mot urnan, utom när valsedeln har så få röster
+        att summan visar dem.
       </p>
     </section>
   )

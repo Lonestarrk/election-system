@@ -93,18 +93,40 @@ export const MAX_ORDERS = 500
 /** Högsta antal ordrar per session. En väljare som startar om får sin äldsta order ersatt. */
 export const MAX_ORDERS_PER_SESSION = 3
 
+/**
+ * Hur ofta timern städar bort förfallna ordrar (fixrunda 1 av uppgift 11e, ruling
+ * 142). En förfallen order håller valsedeln och saltet, och ska inte ligga kvar
+ * tills nästa väljare råkar anropa lagret.
+ */
+export const ORDER_SWEEP_INTERVAL_MS = 30_000
+
 type Entry = { sessionKey: string; state: OrderState; expiresAt: number }
 
-const globalForOrders = globalThis as typeof globalThis & { __orderStates?: Map<string, Entry> }
+const globalForOrders = globalThis as typeof globalThis & {
+  __orderStates?: Map<string, Entry>
+  __orderSweeper?: ReturnType<typeof setInterval>
+}
 
 const orders: Map<string, Entry> = globalForOrders.__orderStates ?? new Map<string, Entry>()
 globalForOrders.__orderStates = orders
+
+/**
+ * Startar timern första gången en order läggs. unref(), så att timern aldrig
+ * håller processen vid liv. Den hänger på globalThis, som tabellen, så att en
+ * omladdad modul inte startar en till.
+ */
+function ensureSweeper(): void {
+  if (globalForOrders.__orderSweeper) return
+  const sweeper = setInterval(() => sweep(Date.now()), ORDER_SWEEP_INTERVAL_MS)
+  sweeper.unref?.()
+  globalForOrders.__orderSweeper = sweeper
+}
 
 function sessionKeyOf(sessionId: string): string {
   return createHash('sha256').update(sessionId).digest('hex')
 }
 
-/** Tar bort det som förfallit. Körs vid varje anrop, så ingen timer behövs. */
+/** Tar bort det som förfallit. Körs vid varje anrop och av timern. */
 function sweep(now: number): void {
   for (const [orderRef, entry] of orders) {
     if (entry.expiresAt <= now) orders.delete(orderRef)
@@ -123,6 +145,7 @@ export function putOrder(
   now: number = Date.now(),
 ): boolean {
   sweep(now)
+  ensureSweeper()
   const sessionKey = sessionKeyOf(sessionId)
 
   // Kapaciteten prövas FÖRE ersättningen: en avvisad order ska inte kosta sessionen
@@ -192,7 +215,24 @@ export function orderCount(): number {
   return orders.size
 }
 
-/** Endast för tester. */
+/**
+ * Tar bort varje order för valsedlarna, när omröstningen stängs (ruling 142).
+ *
+ * En order håller valsedeln och saltet. En övergiven order för en valsedel vars
+ * chiffer ligger i urnan hade efter stängningen låtit den som läser processens
+ * minne räkna åtagandet och känna igen BankID:s kopia. Stängningen anropar den
+ * här, se close-election.usecase.ts.
+ */
+export function removeOrdersForBallots(ballotIds: readonly string[]): void {
+  const ballots = new Set(ballotIds)
+  for (const [orderRef, entry] of orders) {
+    if (ballots.has(entry.state.ballotId)) orders.delete(orderRef)
+  }
+}
+
+/** Endast för tester. Stoppar också timern, så att nästa order startar en ny med testets klocka. */
 export function resetOrders(): void {
   orders.clear()
+  if (globalForOrders.__orderSweeper) clearInterval(globalForOrders.__orderSweeper)
+  globalForOrders.__orderSweeper = undefined
 }

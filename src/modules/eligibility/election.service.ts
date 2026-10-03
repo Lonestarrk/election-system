@@ -232,18 +232,14 @@ export async function getBallotSigningKey(
 }
 
 /**
- * Hör valsedeln till den här omröstningen?
- *
- * Används för att avvisa en begäran som pekar på en valsedel i en annan
- * omröstning än den sessionen gäller.
- */
-/**
  * Vad väljaren skriver under i BankID: omröstningens namn och valsedelns slag,
  * för texten i appen (uppgift 11e). Null när valsedeln inte hör till
  * omröstningen, så att samma uppslagning också är den prövningen.
  *
  * Slaget och inte etiketten, eftersom etiketten för en kommun- eller
- * regionvalsedel namnger området, och BankID sparar texten.
+ * regionvalsedel namnger området. Det döljer inget för BankID, som har
+ * valsedelns id i det signerade, men texten ska inte säga mer än väljaren
+ * behöver läsa.
  */
 export async function signingSubject(
   ballotId: string,
@@ -256,6 +252,12 @@ export async function signingSubject(
   return ballot ? { electionName: ballot.election.name, ballotKind: ballot.kind } : null
 }
 
+/**
+ * Hör valsedeln till den här omröstningen?
+ *
+ * Används för att avvisa en begäran som pekar på en valsedel i en annan
+ * omröstning än den sessionen gäller.
+ */
 export async function ballotBelongsToElection(
   ballotId: string,
   electionId: string,

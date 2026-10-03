@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ORDER_LIFETIME_MS } from '@/lib/order-state'
+import { ORDER_LIFETIME_MS, ORDER_SWEEP_INTERVAL_MS } from '@/lib/order-state'
+import { forgetMockOrdersForElection } from '@/modules/eligibility/bankid/mock-orders'
 import {
   MockBankIdService,
   resetMockBankIdOrders,
@@ -395,5 +396,50 @@ describe('attrappens ordrar förfaller efter orderns livslängd', () => {
     let result = await service.collect(order.orderRef)
     while (result.status === 'pending') result = await service.collect(order.orderRef)
     expect(result.status).toBe('complete')
+  })
+})
+
+describe('attrappens ordrar städas bort (fixrunda 1 av uppgift 11e, ruling 142)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    resetMockBankIdOrders()
+  })
+
+  const mockOrders = () =>
+    (globalThis as unknown as { mockBankIdOrders: Map<string, unknown> }).mockBankIdOrders
+
+  it('en övergiven order tas bort av timern, utan något nytt anrop', async () => {
+    resetMockBankIdOrders()
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    const service = new MockBankIdService()
+    const order = await service.sign({
+      endUserIp: '127.0.0.1',
+      userVisibleData: 'text',
+      userNonVisibleData: envelopePayload(PAYLOAD),
+    })
+    selectDemoIdentity(order.orderRef, '199001011234')
+
+    vi.advanceTimersByTime(ORDER_LIFETIME_MS + 2 * ORDER_SWEEP_INTERVAL_MS)
+
+    expect(mockOrders().has(order.orderRef)).toBe(false)
+  })
+
+  it('omröstningens signeringsordrar glöms, andra omröstningars och legitimeringar ligger kvar', async () => {
+    const service = new MockBankIdService()
+    const sign = (electionId: string) =>
+      service.sign({
+        endUserIp: '127.0.0.1',
+        userVisibleData: 'text',
+        userNonVisibleData: envelopePayload({ ...PAYLOAD, electionId }),
+      })
+    const closed = await sign('val-1')
+    const other = await sign('val-2')
+    const login = await service.auth({ endUserIp: '127.0.0.1' })
+
+    forgetMockOrdersForElection('val-1')
+
+    expect(mockOrders().has(closed.orderRef)).toBe(false)
+    expect(mockOrders().has(other.orderRef)).toBe(true)
+    expect(mockOrders().has(login.orderRef)).toBe(true)
   })
 })

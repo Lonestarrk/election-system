@@ -32,6 +32,7 @@ import {
   parseEnvelopePayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
+import { putOrder } from '@/lib/order-state'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -791,9 +792,11 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
 
     it('kuvertroten går inte att matcha mot BankID:s underskrifter och urnans hashar', async () => {
       /**
-       * Den som har BankID:s kopior har varje underskrift, och urnans hashar
-       * publiceras. Var bladet bara hashen och underskriften kunde den pröva
-       * varje sätt att para ihop dem tills den publicerade roten stämde. Med
+       * Den som har BankID:s kopior har varje underskrift. Urnans hashar
+       * publiceras inte, men den som kan läsa votes_db har dem, och för en
+       * valsedel med en rad går hashen att räkna ur summan. Var bladet bara
+       * hashen och underskriften kunde den pröva varje sätt att para ihop dem
+       * tills den publicerade roten stämde. Med
        * två röster är det två försök. Saltet i bladet stänger det.
        */
       await castFor(anna, 'bp-s')
@@ -827,6 +830,46 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
           })),
         ),
       ).toBe(envelopeRoot)
+    })
+
+    it('en övergiven order finns inte kvar efter stängningen, varken i orderlagret eller hos attrappen', async () => {
+      /**
+       * Granskningens prob D (fixrunda 1, ruling 142). Väljaren skriver under en
+       * order men hämtar den aldrig, och lägger rösten med en ny order och samma
+       * valsedel. Den övergivna ordern håller valsedeln och saltet, och attrappen
+       * håller det signerade och personnumret. Låg de kvar efter stängningen kunde
+       * den som läser processens minne känna igen BankID:s kopia i urnan.
+       */
+      const ballot = await buildBallot('bp-s')
+      const commitmentSalt = newCommitmentSalt()
+      const service = new MockBankIdService()
+      const abandoned = await service.sign({
+        endUserIp: '127.0.0.1',
+        userVisibleData: 'Bekräfta din röst',
+        userNonVisibleData: envelopePayload({
+          electionId,
+          ballotId,
+          ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
+          castSequence: 1,
+        }),
+      })
+      selectDemoIdentity(abandoned.orderRef, ANNA_PN)
+      putOrder(abandoned.orderRef, 'session-anna', { ballotId, ballot, commitmentSalt })
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+
+      const stores = () => ({
+        orders: (globalThis as unknown as { __orderStates: Map<string, unknown> }).__orderStates,
+        mock: (globalThis as unknown as { mockBankIdOrders: Map<string, unknown> }).mockBankIdOrders,
+      })
+      expect(stores().orders.has(abandoned.orderRef)).toBe(true)
+      expect(stores().mock.has(abandoned.orderRef)).toBe(true)
+
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed' })
+
+      expect(stores().orders.has(abandoned.orderRef)).toBe(false)
+      expect(stores().mock.has(abandoned.orderRef)).toBe(false)
+      expect(JSON.stringify([...stores().mock.values()])).not.toContain(ANNA_PN)
     })
 
     it('kuvert i det gamla underskriftsformatet stoppar stängningen, och ingenting raderas', async () => {

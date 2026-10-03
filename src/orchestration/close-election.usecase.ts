@@ -3,6 +3,8 @@ import type { Prisma as VotersPrisma } from '.prisma/voters'
 import { sha256Hex } from '@/lib/crypto'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
 import { logger } from '@/lib/logger'
+import { removeOrdersForBallots } from '@/lib/order-state'
+import { forgetMockOrdersForElection } from '@/modules/eligibility/bankid/mock-orders'
 import { checkElectionMode } from './election-mode'
 import { urnRootOf } from '@/lib/urn-root'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
@@ -277,9 +279,11 @@ export function abortedMessageFor(error: unknown): string {
  * till.
  *
  * SALTET STÅR OCKSÅ I BLADET (uppgift 11e). BankID har varje väljares
- * underskrift, och urnans chifferhashar publiceras. Var bladet bara hashen och
- * underskriften kunde den som har BankID:s kopior pröva vilken underskrift som
- * hör till vilken hash tills den publicerade roten stämde. I en valsedel med få
+ * underskrift, och kuvertroten publiceras. Urnans chifferhashar publiceras inte,
+ * men den som kan läsa votes_db har dem, och för en valsedel med en enda rad går
+ * hashen att räkna ur den publicerade summan. Var bladet bara hashen och
+ * underskriften kunde den som har BankID:s kopior och hasharna pröva vilken
+ * underskrift som hör till vilken hash tills roten stämde. I en valsedel med få
  * röster är det få försök. Med saltet, som raderas med raden, går bladen inte
  * att räkna efter skalningen. Hash och salt är 64 hextecken vardera och
  * signaturen är base64, så avgränsaren kan inte stå i något av fälten.
@@ -1828,11 +1832,39 @@ export async function closeElection(electionId: string): Promise<CloseOutcome> {
   try {
     const locked = await withClosingLock(electionId, (lock) => closeUnderLock(electionId, lock, urn))
     if (!locked.taken) return { status: 'in_progress' }
+    await forgetOrdersOf(electionId)
     if (locked.value.kind === 'stripped') return await confirmStripped(electionId, locked.value, urn)
     return withReplacements(locked.value.outcome, urn)
   } catch (error) {
     if (error instanceof CloseAbortedError) error.urnRowsReplaced = [...urn.urnRowsReplaced]
     throw error
+  }
+}
+
+/**
+ * ORDRARNA ÖVERLEVER INTE STÄNGNINGEN (fixrunda 1 av uppgift 11e, ruling 142).
+ *
+ * En order i orderlagret håller valsedeln och saltet, och attrappens order det
+ * signerade och personnumret. En övergiven order för en valsedel vars chiffer
+ * ligger i urnan hade efter stängningen låtit den som läser processens minne
+ * räkna åtagandet och känna igen BankID:s kopia. Ordrarna tas därför bort när
+ * stängningen kört, vad den än kom fram till: efter CLOSED tas ingen röst emot,
+ * och en order kan inte längre bli en lagd röst.
+ *
+ * Bara i den här processen. Med flera instanser har de andra kvar sina ordrar
+ * tills de förfaller, se posten `admission-queue-per-process`. En order som
+ * startas efter stängningen avvisas vid läggningen och förfaller med timern.
+ * Ett fel här stoppar inte stängningen, som redan är klar, men loggas.
+ */
+async function forgetOrdersOf(electionId: string): Promise<void> {
+  try {
+    const ballots = await votersDb.electionBallot.findMany({ where: { electionId }, select: { id: true } })
+    removeOrdersForBallots(ballots.map((ballot) => ballot.id))
+    forgetMockOrdersForElection(electionId)
+  } catch (error) {
+    logger.warn('Ordrarna för den stängda omröstningen kunde inte tas bort', {
+      reason: error instanceof Error ? error.message : 'okänt',
+    })
   }
 }
 

@@ -46,6 +46,7 @@ import { limitationHref, listItemStyle, TECHNICAL_PATH } from './shared'
  */
 export function Weaknesses({
   copies,
+  bankIdKnows,
   removal,
   swapCiphertext,
   pepperHolder,
@@ -55,6 +56,8 @@ export function Weaknesses({
 }: {
   /** link-exists-during-voting */
   copies: KnownLimitation
+  /** bankid-knows-who-voted */
+  bankIdKnows: KnownLimitation
   /** operator-can-remove-or-restore-envelope */
   removal: KnownLimitation
   /** votes-db-writer-can-swap-ciphertext */
@@ -80,10 +83,12 @@ export function Weaknesses({
         </li>
         <li style={listItemStyle}>
           <strong>BankID vet att du har röstat.</strong> Ett riktigt BankID sparar det du skriver
-          under, och vet därmed vem som har röstat, när och hur många gånger. Det du skriver under
-          pekar inte ut ditt inre kuvert: det innehåller ett fingeravtryck som bara går att känna
-          igen med en hemlig del i ditt yttre kuvert, och den delen förstörs med kuvertet vid
-          stängningen. En kopia av urnan från före stängningen har den hemliga delen kvar.
+          under, och vet därmed vem som har röstat, på vilken valsedel, när och hur många gånger.
+          Det du skriver under pekar inte ut ditt inre kuvert, utom när valsedeln har så få röster
+          att summan visar dem. Det innehåller ett fingeravtryck som bara går att känna igen med en
+          hemlig del i ditt yttre kuvert, och den delen förstörs med kuvertet vid stängningen. En
+          kopia av urnan från före stängningen har den hemliga delen kvar.{' '}
+          <Link href={limitationHref(bankIdKnows)}>Mer om vad BankID vet</Link>
         </li>
         <li style={listItemStyle}>
           <strong>Den som driver systemet kan ta bort din röst eller lägga tillbaka en tidigare.</strong>{' '}

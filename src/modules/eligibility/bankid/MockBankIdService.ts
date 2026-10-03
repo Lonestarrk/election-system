@@ -8,13 +8,20 @@ import {
   X509Certificate,
 } from 'node:crypto'
 import { env } from '@/lib/env'
-import { ORDER_LIFETIME_MS } from '@/lib/order-state'
 import { truncateToDay } from '@/lib/time'
 import { issueCertificate, issuerFrom } from './mock-ca/issue-certificate'
 import {
   MOCK_BANKID_INTERMEDIATE_CERTIFICATE,
   MOCK_BANKID_INTERMEDIATE_PRIVATE_KEY,
 } from './mock-ca/issuing-ca-test-key'
+import {
+  ensureMockSweeper,
+  mockOrderExpiry,
+  mockOrders,
+  type MockOrder,
+  resetMockOrders,
+  sweepExpiredMockOrders,
+} from './mock-orders'
 import { computeQrData, QR_ORDER_LIFETIME_SECONDS } from './qr'
 import type {
   BankIdAuthOrder,
@@ -58,66 +65,15 @@ import type {
  * drift: en omstart tappar alla pågående legitimeringar, och med flera
  * instanser hamnar polling-anropen på fel process. Ett riktigt system lägger
  * dem i en delad lagring med kort livslängd. En order förfaller efter orderns
- * livslängd, som i orderlagret, se `sweepExpiredOrders`.
+ * livslängd, som i orderlagret, se `sweepExpiredMockOrders` i mock-orders.ts.
  */
 
-type MockOrder = {
-  qrStartToken: string
-  qrStartSecret: string
-  startedAt: number
-  /** Vem som "legitimerar sig". Sätts av demovalet, aldrig av en riktig BankID. */
-  demoPersonalNumber: string | null
-  pollsRemaining: number
-  cancelled: boolean
-
-  /**
-   * Sätts endast av `sign`. Skiljer en legitimeringsorder från en
-   * signeringsorder, så att `collect` vet om den ska signera något vid
-   * avslut.
-   */
-  userNonVisibleData: string | null
-
-  /** När ordern förfaller, se `sweepExpiredOrders`. */
-  expiresAt: number
-}
-
-/**
- * ORDRARNA LIGGER PÅ globalThis, SOM PRISMA-KLIENTERNA I db.ts.
- *
- * Dev-servern bygger en rutt på nytt när den efterfrågas efter att ha stått
- * oanvänd i en minut, och laddar då om modulerna för de rutter som är aktiva
- * just då. En tabell i den här modulen fanns sedan i flera upplagor: en order
- * som /api/auth/bankid/start lagt i den ena fanns inte i den som
- * /api/auth/bankid/collect läste, och legitimeringen misslyckades direkt, utan
- * fel i koden. Det syntes som "Legitimeringen misslyckades" första gången en
- * rutt användes efter en paus, i e2e-sviten och i en körning i webbläsaren.
- *
- * En tabell på globalThis är densamma för varje upplaga av modulen i processen.
- * Med flera processer gäller fortfarande begränsningen ovan.
- */
-const globalForMock = globalThis as unknown as { mockBankIdOrders?: Map<string, MockOrder> }
-
-const orders: Map<string, MockOrder> = globalForMock.mockBankIdOrders ?? new Map<string, MockOrder>()
-globalForMock.mockBankIdOrders = orders
-
-/**
- * EN ORDER FÖRFALLER EFTER ORDERNS LIVSLÄNGD (uppgift 11e).
- *
- * En signeringsorder bär det signerade och, när någon valt identitet, väljarens
- * personnummer. Förut togs den bort först när collect hämtade den, så en order
- * som väljaren övergav låg kvar tills servern startades om. Nu förfaller den
- * efter samma tid som orderlagret (src/lib/order-state.ts), tre minuter, som en
- * riktig BankID-order. Städningen körs vid varje anrop, så ingen timer behövs.
- */
-function sweepExpiredOrders(now: number): void {
-  for (const [orderRef, order] of orders) {
-    if (order.expiresAt <= now) orders.delete(orderRef)
-  }
-}
+/** Tabellen och städningen ligger i mock-orders.ts, så att stängningen når dem utan attrappen. */
+const orders = mockOrders
 
 /** Ordern, om den finns och inte har förfallit. */
 function liveOrder(orderRef: string): MockOrder | undefined {
-  sweepExpiredOrders(Date.now())
+  sweepExpiredMockOrders(Date.now())
   return orders.get(orderRef)
 }
 
@@ -228,7 +184,8 @@ export class MockBankIdService implements IBankIdService {
   async auth(_request: BankIdAuthRequest): Promise<BankIdAuthOrder> {
     const orderRef = randomUUID()
     const now = Date.now()
-    sweepExpiredOrders(now)
+    sweepExpiredMockOrders(now)
+    ensureMockSweeper()
 
     orders.set(orderRef, {
       // Riktiga värden kommer från BankID. Formatet är detsamma: 32 byte som
@@ -240,7 +197,7 @@ export class MockBankIdService implements IBankIdService {
       pollsRemaining: env.mockBankIdPollsUntilComplete,
       cancelled: false,
       userNonVisibleData: null,
-      expiresAt: now + ORDER_LIFETIME_MS,
+      expiresAt: mockOrderExpiry(now),
     })
 
     return { orderRef, autoStartToken: randomUUID() }
@@ -249,7 +206,8 @@ export class MockBankIdService implements IBankIdService {
   async sign(request: SignRequest): Promise<BankIdAuthOrder> {
     const orderRef = randomUUID()
     const now = Date.now()
-    sweepExpiredOrders(now)
+    sweepExpiredMockOrders(now)
+    ensureMockSweeper()
 
     orders.set(orderRef, {
       qrStartToken: randomUUID(),
@@ -262,7 +220,7 @@ export class MockBankIdService implements IBankIdService {
       // avslutar den, precis som skarpt BankID håller kvar begäran under
       // hela legitimeringen.
       userNonVisibleData: request.userNonVisibleData,
-      expiresAt: now + ORDER_LIFETIME_MS,
+      expiresAt: mockOrderExpiry(now),
     })
 
     return { orderRef, autoStartToken: randomUUID() }
@@ -360,5 +318,5 @@ export function selectDemoIdentity(orderRef: string, personalNumber: string): bo
 
 /** Endast för tester. */
 export function resetMockBankIdOrders(): void {
-  orders.clear()
+  resetMockOrders()
 }

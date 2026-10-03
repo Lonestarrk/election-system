@@ -51,7 +51,7 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       question: 'Har något kuvert tillkommit eller försvunnit vid stängningen?',
       design: (
         <>
-          Kuvertroten, en Merklerot över alla par av chifferhash och signatur, binder exakt vilka
+          Kuvertroten, en Merklerot över chifferhash, salt och signatur för varje kuvert, binder exakt vilka
           signerade kuvert som fanns. Den är ett åtagande, inte ett inklusionsbevis, och den
           publiceras med summorna.
         </>

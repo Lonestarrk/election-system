@@ -94,8 +94,11 @@ export function newCommitmentSalt(): string {
  *
  * Den säger vad som skrivs under, och ingenting som pekar ut rösten: varken
  * chifferhashen eller åtagandet, eftersom BankID sparar också den här texten.
- * Valsedeln namnges efter sitt slag och inte efter kommunen eller regionen, så
- * att texten inte säger mer om väljaren än att hon röstar i valet.
+ * Valsedeln namnges efter sitt slag och inte efter sin etikett, som för en
+ * kommun- eller regionvalsedel namnger området. Det tar inte bort något BankID
+ * kan veta: valsedelns id står i det signerade, och vilken valsedel det är går
+ * att slå upp i det publicerade resultatet. Texten ska bara inte säga mer än
+ * väljaren behöver läsa.
  */
 export function signingText(electionName: string, ballotKind: string): string {
   const ballot = BALLOT_KIND_TEXT[ballotKind] ?? 'omröstningen'

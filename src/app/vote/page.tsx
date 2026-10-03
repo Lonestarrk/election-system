@@ -53,7 +53,7 @@ import {
  *   /api/vote/ballot         alternativen och valets publika nyckel
  *   canonicalOptions         samma alternativlista som servern bygger
  *   encryptBallotInSteps     chiffer, bevis och hash, här i webbläsaren
- *   /api/vote/sign-start     BankID-underskrift över hashen, som servern bygger
+ *   /api/vote/sign-start     BankID-underskrift över ett saltat åtagande om hashen, som servern bygger
  *   /api/vote/encrypted      pollas tills underskriften finns och rösten ligger
  *
  * Det gamla flödets rutter, röstintyg och kvittokoder används inte längre.

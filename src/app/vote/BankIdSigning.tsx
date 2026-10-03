@@ -365,7 +365,8 @@ export function BankIdSigning({
           <h3>Skriv under med BankID</h3>
           <p className="small">
             Rösten är låst och klar. Den läggs när du har skrivit under. I BankID-appen står det
-            &quot;Bekräfta din röst&quot;.
+            att du lägger din röst i valet, på den här valsedeln, att rösten är krypterad och att
+            det du skriver under är ett åtagande om den, och det visar inte vad du har röstat på.
           </p>
           <div className="button-row">
             <button type="button" onClick={() => void start('same-device')}>

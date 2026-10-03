@@ -107,7 +107,8 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
     technology:
       'Backuper, läsreplikor och WAL-loggen. Ingen av dem omfattas av raderingen (spec 10). ' +
       'BankID:s kopia av det väljaren signerade bär inte chifferhashen, och saltet som skulle ' +
-      'matcha den finns bara i röstlängden och i sådana kopior av den.',
+      'matcha den finns bara i röstlängden och i sådana kopior av den. Kopian går därför inte att ' +
+      'matcha mot urnan, utom när valsedeln har så få röster att summan visar dem.',
   },
   {
     metaphor: 'Valvet',

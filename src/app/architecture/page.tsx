@@ -49,6 +49,7 @@ export default function ArchitecturePage() {
         <Timeline />
         <Weaknesses
           copies={link}
+          bankIdKnows={limitation('bankid-knows-who-voted')}
           removal={limitation('operator-can-remove-or-restore-envelope')}
           swapCiphertext={limitation('votes-db-writer-can-swap-ciphertext')}
           pepperHolder={limitation('pepper-holder-reads-voter-names')}

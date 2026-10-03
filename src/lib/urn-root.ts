@@ -3,8 +3,8 @@ import { hashLeaf, merkleRoot } from './merkle'
 /**
  * URNROTEN (uppgift 12b, ruling 134).
  *
- * Kuvertroten binder chifferhash och signatur för varje kuvert, men
- * signaturerna raderas vid skalningen, så efter stängningen går den inte att
+ * Kuvertroten binder chifferhash, salt och signatur för varje kuvert, men
+ * salterna och signaturerna raderas vid skalningen, så efter stängningen går den inte att
  * räkna om. Den som kan skriva i röstdatabasen hade då kunnat byta ut en rad i
  * urnan mot en ny, självkonsekvent rad med giltiga bevis, utan att någonting
  * märkte det. Urnroten binder i stället det som finns kvar efter skalningen:

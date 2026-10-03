@@ -6,7 +6,7 @@ import { LimitationReference, listItemStyle, type PageLimitations } from './shar
  * med listans egen rubrik.
  */
 export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitations }) {
-  const { link, removal, swapCiphertext, dealer } = limitations
+  const { link, bankIdKnows, removal, swapCiphertext, dealer } = limitations
 
   return (
     <section className="card" aria-labelledby="inte-ger">
@@ -23,11 +23,13 @@ export function WhatItDoesNotGive({ limitations }: { limitations: PageLimitation
         </li>
         <li style={listItemStyle}>
           <strong>BankID vet vem som har röstat.</strong> Med skarp BankID sparar BankID det
-          väljaren signerar, med hennes identitet, och vet därmed vem som röstat, när och hur många
-          gånger. Det signerade bär inte chifferhashen, utan SHA-256 över den och ett salt som bara
-          finns i pending_vote och raderas med raden vid skalningen, så BankID:s kopia går inte att
-          matcha mot urnan efter stängningen. En backup av röstlängden från före stängningen har
-          saltet kvar, men den har redan kopplingen själv. <LimitationReference entry={link} />
+          väljaren signerar, med hennes identitet, och vet därmed vem som röstat, på vilken
+          valsedel, när och hur många gånger. Det signerade bär inte chifferhashen, utan SHA-256
+          över den och ett salt som bara finns i pending_vote och raderas med raden vid skalningen,
+          så BankID:s kopia går inte att matcha mot urnan efter stängningen, utom när valsedeln har
+          så få röster att summan visar dem. En backup av röstlängden från före stängningen har
+          saltet kvar, men den har redan kopplingen själv. <LimitationReference entry={bankIdKnows} />{' '}
+          <LimitationReference entry={link} />
         </li>
         <li style={listItemStyle}>
           <strong>Signaturen hindrar inte att äkta kuvert tas bort eller läggs tillbaka.</strong>{' '}

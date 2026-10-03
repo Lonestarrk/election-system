@@ -318,7 +318,8 @@ const NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW: Marker[] = [
 
 /**
  * Röstsidan lägger kuvert: krypterar i webbläsaren, låter servern starta en
- * BankID-underskrift över hashen och lämnar in valsedeln när den är klar.
+ * BankID-underskrift över ett saltat åtagande om hashen och lämnar in valsedeln
+ * när den är klar.
  */
 const VOTE_PAGE_LAYS_ENVELOPES: Marker[] = [
   { file: 'src/app/vote/page.tsx', contains: 'await encryptBallotInSteps(' },
@@ -1284,9 +1285,10 @@ export const CURRENTLY = {
   copiesKeepLink: {
     text:
       'Ingenting. Raderingen når bara den levande databasen. Det väljaren signerar i BankID bär ' +
-      'inte chifferhashen, utan en hash av den och ett salt som bara finns i pending_vote. En kopia ' +
-      'av röstlängden från före stängningen har saltet kvar, och med den går också BankID:s kopia ' +
-      'att matcha mot urnan.',
+      'inte chifferhashen, utan en hash av den och ett salt som bara finns i pending_vote, så ' +
+      'BankID:s kopia går inte att matcha mot urnan, utom när valsedeln har så få röster att ' +
+      'summan visar dem. Kopian bär valsedelns id och personnumret. En kopia av röstlängden från ' +
+      'före stängningen har saltet kvar, och med den går BankID:s kopia att matcha på varje valsedel.',
     holdsWhile: [
       { file: 'prisma/voters/schema.prisma', contains: 'model PendingVote' },
       { file: 'prisma/voters/schema.prisma', contains: 'commitmentSalt String? @map("commitment_salt")' },

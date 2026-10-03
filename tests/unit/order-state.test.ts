@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   attachCompletion,
   MAX_ORDERS,
   MAX_ORDERS_PER_SESSION,
   ORDER_LIFETIME_MS,
+  ORDER_SWEEP_INTERVAL_MS,
+  removeOrdersForBallots,
   getOrder,
   orderCount,
   putOrder,
@@ -188,5 +190,47 @@ describe('lagret ligger på globalThis', () => {
 
     const reloaded = await import('@/lib/order-state?omladdad' as string)
     expect(reloaded.getOrder(ORDER, 'session-a')?.ballotId).toBe('valsedel-1')
+  })
+})
+
+/**
+ * ORDRAR ÖVERLEVER INTE STÄNGNINGEN (fixrunda 1 av uppgift 11e, ruling 142).
+ *
+ * En order håller valsedeln och saltet. Låg en övergiven order kvar efter
+ * stängningen kunde den som läser processens minne räkna åtagandet och känna igen
+ * BankID:s kopia. Stängningen tar därför bort omröstningens ordrar, och förfallet
+ * städar på en timer, inte först vid nästa anrop.
+ */
+describe('ordrarna städas bort', () => {
+  const store = () =>
+    (globalThis as unknown as { __orderStates: Map<string, unknown> }).__orderStates
+
+  afterEach(() => {
+    vi.useRealTimers()
+    resetOrders()
+  })
+
+  it('en förfallen order tas bort av timern, utan något nytt anrop', () => {
+    resetOrders()
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    putOrder(ORDER, 'session-a', state())
+
+    vi.advanceTimersByTime(ORDER_LIFETIME_MS - ORDER_SWEEP_INTERVAL_MS)
+    expect(store().has(ORDER)).toBe(true)
+
+    vi.advanceTimersByTime(2 * ORDER_SWEEP_INTERVAL_MS)
+    expect(store().has(ORDER)).toBe(false)
+  })
+
+  it('removeOrdersForBallots tar bort valsedlarnas ordrar och inga andra', () => {
+    putOrder('order-1', 'session-a', state('valsedel-1'))
+    putOrder('order-2', 'session-b', state('valsedel-2'))
+    putOrder('order-3', 'session-c', state('annan-valsedel'))
+
+    removeOrdersForBallots(['valsedel-1', 'valsedel-2'])
+
+    expect(store().has('order-1')).toBe(false)
+    expect(store().has('order-2')).toBe(false)
+    expect(getOrder('order-3', 'session-c')?.ballotId).toBe('annan-valsedel')
   })
 })

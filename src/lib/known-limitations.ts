@@ -419,6 +419,38 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       { file: 'src/orchestration/publish-results.usecase.ts', contains: 'options: recounted.sums.map((sum, optionIndex) => ({' },
     ],
   },
+  /**
+   * NY I FIXRUNDA 1 AV UPPGIFT 11e (ruling 141). Det signerade bär sedan 11e ett
+   * saltat åtagande i stället för chifferhashen, men BankID har fortfarande resten
+   * av det signerade, med väljarens identitet.
+   */
+  {
+    id: 'bankid-knows-who-voted',
+    title: 'BankID vet vem som röstade, på vilken valsedel, när och hur många gånger',
+    why:
+      'Med skarp BankID sparar BankID det väljaren skriver under, med hennes personnummer och ' +
+      'tidpunkten, bland annat för tvister. Det signerade bär omröstningens och valsedelns id och ' +
+      'räknaren, så BankID vet vem som röstade, på vilken valsedel, när och hur många gånger hon ' +
+      'ändrade sig. Chifferhashen står inte där, utan en hash av den och ett salt som bara finns i ' +
+      'kuvertet och raderas vid skalningen, så kopian pekar inte ut rösten i urnan. Det gäller inte ' +
+      'en valsedel med så få röster att summan visar dem: där säger valsedelns id och summan vad ' +
+      'väljaren röstade, salt eller inte, se posten "En valsedel med en enda röst publicerar den ' +
+      'rösten som chiffer". En kopia av röstlängden från före stängningen har saltet kvar, och med ' +
+      'den går BankID:s kopia att matcha, men den kopian har redan kopplingen själv.',
+    stillTrueIf: [
+      // Valsedelns id och räknaren ligger i det signerade. Tas de ut därifrån ändras
+      // raderna, och posten ska ses över.
+      {
+        file: 'src/modules/eligibility/bankid/envelope-signature.ts',
+        contains: [
+          '    payload.ballotId,',
+          '    payload.ciphertextCommitment,',
+          '    String(payload.castSequence),',
+        ].join('\n'),
+      },
+      { file: 'src/app/api/vote/sign-start/route.ts', contains: '    userNonVisibleData: envelopePayload({' },
+    ],
+  },
   {
     id: 'no-revocation-check',
     title: 'Ingen spärrkontroll av BankID-certifikaten',
