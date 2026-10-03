@@ -13,7 +13,11 @@ import {
   signedAt,
   verifyCertificateChain,
 } from './bankid/certificate-chain'
-import { parseEnvelopePayload, verifySignedPayload } from './bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  parseEnvelopePayload,
+  verifySignedPayload,
+} from './bankid/envelope-signature'
 import { trustedBankIdRoots } from './bankid/trusted-roots'
 import { votersDb } from './db'
 import { sealCertificateChain } from './sealed-chain'
@@ -73,6 +77,15 @@ export type SignedEnvelope = {
    * aldrig ett nytt, oberoende räknat.
    */
   signedData: string
+
+  /**
+   * Saltet i åtagandet som det signerade bär (uppgift 11e), ur orderlagret och
+   * INTE ur BankID:s svar eller begäran. Sign-start skapade det och höll det med
+   * ordern. Läggningen räknar `ciphertextCommitment(chifferhash, salt)` och
+   * kräver att det är åtagandet i `signedData`, och sparar sedan saltet i raden,
+   * så att valideringen före stängningen kan räkna om det.
+   */
+  commitmentSalt: string
 }
 
 export type CastOutcome =
@@ -202,19 +215,24 @@ export async function castEncryptedBallot(
    *
    * `envelope.signedData` är BankID:s eget `completionData.signedData` —
    * ordagrant det väljarens app skrev under. `parseEnvelopePayload` läser ut
-   * `electionId`, `ballotId`, `ciphertextHash` och `castSequence` ur den
-   * strängen. Alla fyra måste stämma mot den här begäran; annars är kuvertet
+   * `electionId`, `ballotId`, `ciphertextCommitment` och `castSequence` ur den
+   * strängen. Åtagandet räknas här ur valsedelns chifferhash och saltet ur
+   * ordern (uppgift 11e), och ett kuvert i det gamla formatet, med chifferhashen
+   * i det signerade, går inte att läsa alls. Alla fyra måste stämma mot den här
+   * begäran; annars är kuvertet
    * antingen trasigt eller en signatur som egentligen gäller en ANNAN röst
    * — och en sådan signatur ska aldrig kunna återanvändas här bara för att
    * den råkar verifiera kryptografiskt mot sitt eget, avvikande innehåll.
    */
   const signedPayload = parseEnvelopePayload(envelope.signedData)
+  const commitment = ciphertextCommitment(ballot.ciphertextHash, envelope.commitmentSalt)
 
   if (
     !signedPayload ||
+    commitment === null ||
     signedPayload.electionId !== electionId ||
     signedPayload.ballotId !== ballotId ||
-    signedPayload.ciphertextHash !== ballot.ciphertextHash
+    signedPayload.ciphertextCommitment !== commitment
   ) {
     return { status: 'invalid_signature' }
   }
@@ -389,6 +407,8 @@ export async function castEncryptedBallot(
     castSequence: signedPayload.castSequence,
     bankIdSignature: envelope.signature,
     bankIdCertificateChain,
+    // Raderas med raden vid skalningen. Följer aldrig med till votes_db.
+    commitmentSalt: envelope.commitmentSalt,
     updatedAt: truncateToDay(new Date()),
   }
 

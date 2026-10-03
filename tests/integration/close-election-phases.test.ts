@@ -28,7 +28,11 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -540,13 +544,14 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     target = { electionId, ballotId },
   ): Promise<PreparedCast> {
     const service = new MockBankIdService()
+    const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
       userNonVisibleData: envelopePayload({
         electionId: target.electionId,
         ballotId: target.ballotId,
-        ciphertextHash: ballot.ciphertextHash,
+        ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
         castSequence: castSequence ?? (await nextCastSequence(voterStatusId, target.ballotId)),
       }),
     })
@@ -561,6 +566,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         signature: result.completionData.signature,
         certificateChain: result.completionData.certificateChain,
         signedData: result.completionData.signedData,
+        commitmentSalt,
       },
       shape: await getEncryptedBallotShape(target.ballotId),
       target,
@@ -685,6 +691,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         castSequence: row.castSequence,
         bankIdSignature: row.bankIdSignature,
         bankIdCertificateChain: row.bankIdCertificateChain,
+        commitmentSalt: row.commitmentSalt,
         updatedAt: row.updatedAt,
       },
     })
@@ -1943,6 +1950,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         ciphertext: [['1', '2']],
         proofs,
         ciphertextHash: hash,
+        commitmentSalt: 'ersätts',
         bankIdSignature: 'ersätts',
       })
       const read = [envelope({ x: 2 }), envelope({ x: 1 }), envelope({ x: 1 }), envelope({ x: 1 }, 'valsedel-2')]

@@ -10,6 +10,11 @@ import {
 } from '@/lib/crypto/server'
 import { getOrder, orderCount, putOrder, resetOrders } from '@/lib/order-state'
 import { resetRateLimits } from '@/lib/rate-limit'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  signingText,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import fixture from './crypto/fixtures/ballot-26-14d.json'
 
 /**
@@ -59,6 +64,7 @@ vi.mock('@/modules/eligibility/voting-session.service', () => ({
 }))
 vi.mock('@/modules/eligibility/election.service', () => ({
   ballotBelongsToElection: async () => true,
+  signingSubject: async () => ({ electionName: 'Valet 2026', ballotKind: 'RIKSDAG' }),
 }))
 vi.mock('@/modules/eligibility/pending-vote.service', () => ({
   nextCastSequence: async () => 1,
@@ -197,7 +203,11 @@ describe('servern håller valsedeln med ordern', () => {
 
   it('är lagret fullt avbryts BankID-ordern och väljaren får veta att rösten inte lades', async () => {
     for (let index = 0; index < 500; index += 1) {
-      putOrder(`fylld-${index}`, `annan-${index}`, { ballotId: BALLOT_ID, ballot: BALLOT as never })
+      putOrder(`fylld-${index}`, `annan-${index}`, {
+        ballotId: BALLOT_ID,
+        ballot: BALLOT as never,
+        commitmentSalt: '01'.repeat(32),
+      })
     }
 
     const response = await signStart(post('/api/vote/sign-start', startBody()))
@@ -246,6 +256,117 @@ describe('servern håller valsedeln med ordern', () => {
 
     expect(await (await encrypted(poll())).json()).toMatchObject({ status: 'failed' })
     expect(getOrder(ORDER, 'session-a')).toBeNull()
+  })
+})
+
+/**
+ * BANKID-ORDERN BÄR ETT ÅTAGANDE, OCH SALTET STANNAR PÅ SERVERN (uppgift 11e).
+ *
+ * Det BankID sparar är det signerade och väljarens identitet. Bar det signerade
+ * chifferhashen kunde BankID:s kopia matchas mot urnan efter stängningen.
+ * Saltet skapas här, hålls med ordern och följer med till läggningen, men går
+ * aldrig till klienten, till BankID eller till en logg.
+ */
+describe('det signerade bär åtagandet, och saltet stannar på servern', () => {
+  async function startAndCapture() {
+    const logged: string[] = []
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation((...args) => {
+        logged.push(args.map(String).join(' '))
+      }),
+    )
+    try {
+      const response = await signStart(post('/api/vote/sign-start', startBody()))
+      const body = await response.text()
+      const held = getOrder(ORDER, 'session-a')
+      if (!held) throw new Error('ordern lades inte')
+      // Annars hade sökningarna nedan efter saltet passerat utan att något sökts.
+      expect(held.commitmentSalt).toMatch(/^[0-9a-f]{64}$/)
+      return { response, body, held, logged, spies }
+    } finally {
+      spies.forEach((spy) => spy.mockRestore())
+    }
+  }
+
+  it('sign-start skapar ett salt per order och håller det med ordern', async () => {
+    const { held } = await startAndCapture()
+    expect(held.commitmentSalt).toMatch(/^[0-9a-f]{64}$/)
+
+    resetOrders()
+    resetRateLimits()
+    const second = await startAndCapture()
+    expect(second.held.commitmentSalt).not.toBe(held.commitmentSalt)
+  })
+
+  it('BankID får åtagandet över hashen och saltet, aldrig hashen eller saltet', async () => {
+    const { held } = await startAndCapture()
+    const request = state.sign.mock.calls[0]![0] as {
+      userVisibleData: string
+      userNonVisibleData: string
+    }
+    const commitment = ciphertextCommitment(BALLOT.ciphertextHash, held.commitmentSalt)!
+
+    expect(request.userNonVisibleData).toBe(
+      envelopePayload({
+        electionId: 'val-1',
+        ballotId: BALLOT_ID,
+        ciphertextCommitment: commitment,
+        castSequence: 1,
+      }),
+    )
+    for (const text of [request.userNonVisibleData, request.userVisibleData]) {
+      expect(text).not.toContain(BALLOT.ciphertextHash)
+      expect(text).not.toContain(held.commitmentSalt)
+    }
+  })
+
+  it('texten i BankID-appen säger på svenska vad som skrivs under, utan hashen eller åtagandet', async () => {
+    const { held } = await startAndCapture()
+    const request = state.sign.mock.calls[0]![0] as { userVisibleData: string }
+    const commitment = ciphertextCommitment(BALLOT.ciphertextHash, held.commitmentSalt)!
+
+    expect(request.userVisibleData).toBe(signingText('Valet 2026', 'RIKSDAG'))
+    expect(request.userVisibleData).not.toContain(commitment)
+  })
+
+  it('svaret till klienten bär inte saltet, och ingenting loggas med det', async () => {
+    const { body, held, logged } = await startAndCapture()
+
+    expect(body).not.toContain(held.commitmentSalt)
+    expect(logged.join('\n')).not.toContain(held.commitmentSalt)
+  })
+
+  it('läggningen får saltet ur ordern, och pollningens svar bär det inte', async () => {
+    const { held } = await startAndCapture()
+    state.collect.mockResolvedValue(COMPLETE)
+    const logged: string[] = []
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation((...args) => {
+        logged.push(args.map(String).join(' '))
+      }),
+    )
+
+    const response = await encrypted(poll())
+    spies.forEach((spy) => spy.mockRestore())
+
+    expect((state.cast.mock.calls[0]![4] as { commitmentSalt: string }).commitmentSalt).toBe(
+      held.commitmentSalt,
+    )
+    expect(await response.text()).not.toContain(held.commitmentSalt)
+    expect(logged.join('\n')).not.toContain(held.commitmentSalt)
+  })
+
+  it('ett salt i pollningens kropp ignoreras', async () => {
+    const { held } = await startAndCapture()
+    state.collect.mockResolvedValue(COMPLETE)
+
+    await encrypted(
+      post('/api/vote/encrypted', { orderRef: ORDER, commitmentSalt: 'f'.repeat(64) }),
+    )
+
+    expect((state.cast.mock.calls[0]![4] as { commitmentSalt: string }).commitmentSalt).toBe(
+      held.commitmentSalt,
+    )
   })
 })
 

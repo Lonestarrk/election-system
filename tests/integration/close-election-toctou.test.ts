@@ -20,7 +20,11 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -216,13 +220,14 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
       const castSequence = await nextCastSequence(voterStatusId, ballotId)
 
       const service = new MockBankIdService()
+      const commitmentSalt = newCommitmentSalt()
       const order = await service.sign({
         endUserIp: '127.0.0.1',
         userVisibleData: 'Bekräfta din röst',
         userNonVisibleData: envelopePayload({
           electionId,
           ballotId,
-          ciphertextHash: ballot.ciphertextHash,
+          ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
           castSequence,
         }),
       })
@@ -240,6 +245,7 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
           signature: result.completionData.signature,
           certificateChain: result.completionData.certificateChain,
           signedData: result.completionData.signedData,
+          commitmentSalt,
         },
         await getEncryptedBallotShape(ballotId),
       )
@@ -276,6 +282,7 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
         castSequence: row.castSequence,
         bankIdSignature: row.bankIdSignature,
         bankIdCertificateChain: row.bankIdCertificateChain,
+        commitmentSalt: row.commitmentSalt,
         updatedAt: row.updatedAt,
       },
     })
@@ -294,6 +301,7 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
         castSequence: row.castSequence,
         bankIdSignature: row.bankIdSignature,
         bankIdCertificateChain: row.bankIdCertificateChain,
+        commitmentSalt: row.commitmentSalt,
         updatedAt: row.updatedAt,
       },
     })

@@ -9,10 +9,15 @@ import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, signStartSchema } from '@/lib/validation'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
 import { bankIdService } from '@/modules/eligibility/bankid'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  newCommitmentSalt,
+  signingText,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import { launchUrl, renderQrPng } from '@/modules/eligibility/bankid/qr'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
-import { ballotBelongsToElection } from '@/modules/eligibility/election.service'
+import { signingSubject } from '@/modules/eligibility/election.service'
 import { nextCastSequence } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
 
@@ -54,6 +59,16 @@ export const dynamic = 'force-dynamic'
  * minus bevisen, som kostar en halv sekund. Utan den kunde väljaren skriva under
  * en valsedel som avvisas efteråt, och en order kunde hålla en valsedel större än
  * omröstningens, som lagret räknar minnet efter.
+ *
+ * BANKID FÅR ETT ÅTAGANDE, INTE CHIFFERHASHEN (uppgift 11e). BankID sparar det
+ * väljaren skriver under, med hennes identitet. Bar det chifferhashen hade
+ * kopplingen mellan väljaren och chiffret funnits kvar hos BankID efter
+ * raderingen, eftersom hashen står i urnan. Det signerade bär därför
+ * `ciphertextCommitment(hash, salt)`, med ett salt som skapas här, hålls med
+ * ordern i orderlagret och sparas i `PendingVote` när rösten läggs. Saltet går
+ * aldrig till klienten eller till BankID och loggas inte, och det raderas med
+ * raden vid skalningen. Texten i appen säger vad som skrivs under, utan hashen
+ * och utan åtagandet.
  *
  * Andra halvan, /api/vote/encrypted, hämtar den färdiga signaturen och
  * certifikatkedjan från BankID:s eget svar och verifierar mot exakt den här
@@ -103,7 +118,8 @@ export async function POST(request: Request) {
     return errorResponse('INVALID_INPUT', body.message, 400)
   }
 
-  if (!(await ballotBelongsToElection(body.data.ballotId, session.electionId))) {
+  const subject = await signingSubject(body.data.ballotId, session.electionId)
+  if (!subject) {
     return errorResponse('INVALID_BALLOT', 'Valsedeln gäller inte den här omröstningen.', 400)
   }
 
@@ -129,17 +145,25 @@ export async function POST(request: Request) {
 
   const castSequence = await nextCastSequence(session.voterStatusId, body.data.ballotId)
 
+  // Hashen är prövad ovan, så åtagandet går alltid att räkna här.
+  const commitmentSalt = newCommitmentSalt()
+  const commitment = ciphertextCommitment(body.data.ballot.ciphertextHash, commitmentSalt)
+  if (!commitment) {
+    return errorResponse('INVALID_BALLOT', 'Valsedelns hash stämmer inte med chiffret.', 400)
+  }
+
   const order = await bankIdService.sign({
     endUserIp: clientIp,
     // Texten visas i BankID-appen innan väljaren skriver sin kod — ett skydd
     // mot att bli lurad att signera något annat än man tror.
-    userVisibleData: 'Bekräfta din röst',
-    // Osynligt fält: valsedeln, chifferhashen och räknaren. Det som binder
-    // signaturen till precis den här rösten och precis det här tillfället.
+    userVisibleData: signingText(subject.electionName, subject.ballotKind),
+    // Osynligt fält: valsedeln, åtagandet över chifferhashen och räknaren. Det
+    // som binder signaturen till precis den här rösten och precis det här
+    // tillfället, utan att BankID får något som går att matcha mot urnan.
     userNonVisibleData: envelopePayload({
       electionId: session.electionId,
       ballotId: body.data.ballotId,
-      ciphertextHash: body.data.ciphertextHash,
+      ciphertextCommitment: commitment,
       castSequence,
     }),
   })
@@ -149,6 +173,7 @@ export async function POST(request: Request) {
   const stored = putOrder(order.orderRef, sessionId, {
     ballotId: body.data.ballotId,
     ballot: body.data.ballot,
+    commitmentSalt,
   })
   if (!stored) {
     await bankIdService.cancel(order.orderRef)

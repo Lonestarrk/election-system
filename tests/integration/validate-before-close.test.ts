@@ -8,7 +8,7 @@ import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
-import { oldProofFormatNote, validateBeforeClose } from '@/orchestration/validate-before-close.usecase'
+import { oldFormatNote, validateBeforeClose } from '@/orchestration/validate-before-close.usecase'
 import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encoding'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -17,7 +17,12 @@ import {
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
 import { parseCertificateChain } from '@/modules/eligibility/bankid/certificate-chain'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  legacyEnvelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import { MOCK_BANKID_ROOT_CERTIFICATE } from '@/modules/eligibility/bankid/mock-ca/root-certificate'
 import {
   castEncryptedBallot,
@@ -215,6 +220,8 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     ciphertextHash: string,
     castSequence: number,
   ): Promise<SignedEnvelope> {
+    // Som sign-start: ett nytt salt per order, och åtagandet i det signerade.
+    const commitmentSalt = newCommitmentSalt()
     const service = new MockBankIdService()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
@@ -222,7 +229,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId: targetBallotId,
-        ciphertextHash,
+        ciphertextCommitment: ciphertextCommitment(ciphertextHash, commitmentSalt)!,
         castSequence,
       }),
     })
@@ -237,6 +244,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       signature: result.completionData.signature,
       certificateChain: result.completionData.certificateChain,
       signedData: result.completionData.signedData,
+      commitmentSalt,
     }
   }
 
@@ -298,6 +306,8 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       castSequence: number
       bankIdSignature: string
       bankIdCertificateChain: string
+      /** Null som i ett kuvert från före uppgift 11e. */
+      commitmentSalt: string | null
     },
   ): Promise<void> {
     const row = {
@@ -335,6 +345,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       castSequence: 1,
       bankIdSignature: 'inte-en-äkta-signatur',
       bankIdCertificateChain: 'inte-en-äkta-kedja',
+      commitmentSalt: newCommitmentSalt(),
     })
   }
 
@@ -367,6 +378,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
   ): Promise<void> {
     const ballot = await buildBallot('bp-m')
     const castSequence = 1
+    const commitmentSalt = newCommitmentSalt()
 
     await writeRow(voterStatusId, ballotId, {
       ciphertext: ballot.ciphertext,
@@ -375,9 +387,15 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       castSequence,
       bankIdSignature: signPayload(
         signingKey,
-        envelopePayload({ electionId, ballotId, ciphertextHash: ballot.ciphertextHash, castSequence }),
+        envelopePayload({
+          electionId,
+          ballotId,
+          ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
+          castSequence,
+        }),
       ),
       bankIdCertificateChain: sealCertificateChain(chain, { voterStatusId, ballotId }),
+      commitmentSalt,
     })
   }
 
@@ -423,6 +441,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
         ciphertextHash: old.ciphertextHash,
         bankIdSignature: old.bankIdSignature,
         bankIdCertificateChain: old.bankIdCertificateChain,
+        commitmentSalt: old.commitmentSalt,
         // castSequence lämnas medvetet orörd — se dokumentationen ovan.
       },
     })
@@ -558,6 +577,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
         castSequence: 1,
         bankIdSignature: envelope.signature,
         bankIdCertificateChain: sealedChainOf(envelope, kim, ballotId),
+        commitmentSalt: envelope.commitmentSalt,
       })
 
       expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'other_voter')
@@ -636,6 +656,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
         castSequence: annasRow.castSequence,
         bankIdSignature: annasRow.bankIdSignature,
         bankIdCertificateChain: annasRow.bankIdCertificateChain,
+        commitmentSalt: annasRow.commitmentSalt,
       })
 
       expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'unreadable')
@@ -758,6 +779,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       castSequence,
       bankIdSignature: envelope.signature,
       bankIdCertificateChain: sealedChainOf(envelope, gunvor, kommunBallotId),
+      commitmentSalt: envelope.commitmentSalt,
     })
 
     // Den avgörande skillnaden: detta får inte kasta. Innan fixrunda 2
@@ -796,6 +818,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       castSequence,
       bankIdSignature: envelope.signature,
       bankIdCertificateChain: sealedChainOf(envelope, kim, ballotId),
+      commitmentSalt: envelope.commitmentSalt,
     })
     // En ärlig röst bredvid, som kontrast: den ska inte ge någon avvikelse.
     await castFor(anna, 'bp-s')
@@ -838,6 +861,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       castSequence,
       bankIdSignature: envelope.signature,
       bankIdCertificateChain: sealedChainOf(envelope, kim, ballotId),
+      commitmentSalt: envelope.commitmentSalt,
     })
     await castFor(anna, 'bp-s')
 
@@ -849,7 +873,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       expect.objectContaining({ kind: 'OLD_PROOF_FORMAT', voterStatusId: kim }),
     ])
     // Det beskedet säger, med antalet ur sammanfattningen och ingen väljare.
-    expect(oldProofFormatNote(report.summary)).toBe('1 kuvert har det gamla bevisformatet och kan inte räknas.')
+    expect(oldFormatNote(report.summary)).toBe('1 kuvert har det gamla bevisformatet och kan inte räknas.')
   })
 
   it('ett kuvert med formatmarkören men trasiga bevis är BAD_PROOF och inte det gamla formatet', async () => {
@@ -867,13 +891,133 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       castSequence,
       bankIdSignature: envelope.signature,
       bankIdCertificateChain: sealedChainOf(envelope, kim, ballotId),
+      commitmentSalt: envelope.commitmentSalt,
     })
 
     const report = await validateBeforeClose(electionId)
 
     expect(proofs.format).toBe(2)
     expect(report.summary.byKind).toEqual({ BAD_PROOF: 1 })
-    expect(oldProofFormatNote(report.summary)).toBe('')
+    expect(oldFormatNote(report.summary)).toBe('')
+  })
+
+  /**
+   * KUVERT FRÅN FÖRE UPPGIFT 11e: BANKID-ORDERN BAR CHIFFERHASHEN.
+   *
+   * Sådana kuvert finns i utvecklingsdatabasen och kanske i Azure. Raden saknar
+   * salt, och underskriften är över det gamla formatet. Valideringen ska skilja
+   * ett sådant äkta kuvert från en förfalskning, stoppa stängningen och inte
+   * räkna det, eftersom BankID:s kopia av det går att matcha mot urnan.
+   */
+  describe('kuvert i det gamla underskriftsformatet (uppgift 11e)', () => {
+    /** Kim skriver under det gamla formatet med BankID-attrappen, som före uppgift 11e. */
+    async function signLegacy(ciphertextHash: string, castSequence: number): Promise<SignedEnvelope> {
+      const service = new MockBankIdService()
+      const order = await service.sign({
+        endUserIp: '127.0.0.1',
+        userVisibleData: 'Bekräfta din röst',
+        userNonVisibleData: legacyEnvelopePayload({ electionId, ballotId, ciphertextHash, castSequence }),
+      })
+      selectDemoIdentity(order.orderRef, KIM_PN)
+      let result = await service.collect(order.orderRef)
+      while (result.status === 'pending') result = await service.collect(order.orderRef)
+      if (result.status !== 'complete') throw new Error('Signeringen blev inte klar.')
+      return {
+        signature: result.completionData.signature,
+        certificateChain: result.completionData.certificateChain,
+        signedData: result.completionData.signedData,
+        commitmentSalt: '',
+      }
+    }
+
+    /** Skriver Kims kuvert så som `castEncryptedBallot` skrev det före uppgift 11e. */
+    async function writeKimsRow(
+      ballot: EncryptedBallot,
+      envelope: SignedEnvelope,
+      castSequence: number,
+      commitmentSalt: string | null,
+    ): Promise<void> {
+      await writeRow(kim, ballotId, {
+        ciphertext: ballot.ciphertext,
+        proofs: ballot.proofs,
+        ciphertextHash: ballot.ciphertextHash,
+        castSequence,
+        bankIdSignature: envelope.signature,
+        bankIdCertificateChain: sealedChainOf(envelope, kim, ballotId),
+        commitmentSalt,
+      })
+    }
+
+    it('ett äkta kuvert i det gamla formatet blir OLD_SIGNATURE_FORMAT, och bara det', async () => {
+      const ballot = await buildBallot('bp-m')
+      await writeKimsRow(ballot, await signLegacy(ballot.ciphertextHash, 1), 1, null)
+      await castFor(anna, 'bp-s')
+
+      const report = await validateBeforeClose(electionId)
+
+      expect(report.summary.passed).toBe(false)
+      expect(report.summary.byKind).toEqual({ OLD_SIGNATURE_FORMAT: 1 })
+      expect(report.anomalies).toEqual([
+        expect.objectContaining({ kind: 'OLD_SIGNATURE_FORMAT', voterStatusId: kim }),
+      ])
+      expect(oldFormatNote(report.summary)).toBe(
+        '1 kuvert är underskrivna i det gamla formatet, där BankID-ordern bar chifferhashen, och kan inte räknas.',
+      )
+    })
+
+    it('ett återuppspelat äldre kuvert i det gamla formatet är också STALE_SEQUENCE', async () => {
+      const ballot = await buildBallot('bp-m')
+      await writeKimsRow(ballot, await signLegacy(ballot.ciphertextHash, 1), 2, null)
+
+      const report = await validateBeforeClose(electionId)
+
+      expect(report.anomalies.map((found) => found.kind).sort()).toEqual([
+        'OLD_SIGNATURE_FORMAT',
+        'STALE_SEQUENCE',
+      ])
+    })
+
+    it('en rad utan salt vars underskrift inte håller för det gamla formatet är en förfalskning', async () => {
+      // Underskriften är äkta och Kims, men över det nya formatet. Utan saltet
+      // finns inget som den håller för.
+      const ballot = await buildBallot('bp-m')
+      const envelope = await signAs(kim, ballotId, ballot.ciphertextHash, 1)
+      await writeKimsRow(ballot, envelope, 1, null)
+
+      expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'signature')
+    })
+
+    it('en rad utan salt med en underskrift över ett annat chiffer är en förfalskning', async () => {
+      const ballot = await buildBallot('bp-m')
+      const other = await buildBallot('bp-s')
+      await writeKimsRow(ballot, await signLegacy(other.ciphertextHash, 1), 1, null)
+
+      expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'signature')
+    })
+
+    it('ett annat salt än det som skrevs under fäller kuvertet', async () => {
+      const ballot = await buildBallot('bp-m')
+      const envelope = await signAs(kim, ballotId, ballot.ciphertextHash, 1)
+      await writeKimsRow(ballot, envelope, 1, newCommitmentSalt())
+
+      expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'signature')
+    })
+
+    it('ett salt som inte går att tolka fäller kuvertet utan att kasta', async () => {
+      const ballot = await buildBallot('bp-m')
+      const envelope = await signAs(kim, ballotId, ballot.ciphertextHash, 1)
+      await writeKimsRow(ballot, envelope, 1, envelope.commitmentSalt.toUpperCase())
+
+      expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'signature')
+    })
+
+    it('kontrasten: samma rad med sitt eget salt godkänns', async () => {
+      const ballot = await buildBallot('bp-m')
+      const envelope = await signAs(kim, ballotId, ballot.ciphertextHash, 1)
+      await writeKimsRow(ballot, envelope, 1, envelope.commitmentSalt)
+
+      expect((await validateBeforeClose(electionId)).summary).toMatchObject({ passed: true, byKind: {} })
+    })
   })
 
   it('rapportens sammanfattning namnger ingen väljare', async () => {

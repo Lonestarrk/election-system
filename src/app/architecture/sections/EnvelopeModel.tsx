@@ -38,7 +38,9 @@ export function EnvelopeModel() {
         </div>
         <div className="flow-arrow">↓</div>
         <div className="flow-node identity">Väljaren signerar med BankID</div>
-        <div className="flow-label">över chifferhashen, med en räknare inuti det signerade</div>
+        <div className="flow-label">
+          över en saltad hash av chifferhashen, med en räknare inuti det signerade
+        </div>
         <div className="flow-arrow">↓</div>
         <div className="flow-node identity">Ytterkuvert i pending_vote</div>
         <div className="flow-label">voters_db · väljare och chiffer · ersätts om hon röstar igen</div>

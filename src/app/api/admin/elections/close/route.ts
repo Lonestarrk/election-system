@@ -11,7 +11,7 @@ import {
   linkStateOf,
   urnRowsReplacedOf,
 } from '@/orchestration/close-election.usecase'
-import { oldProofFormatNote, type ValidationReport } from '@/orchestration/validate-before-close.usecase'
+import { oldFormatNote, type ValidationReport } from '@/orchestration/validate-before-close.usecase'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -326,11 +326,11 @@ function replacedNote(urnRowsReplaced: readonly string[]): string {
 }
 
 /**
- * Beskedet, med en mening om det gamla bevisformatet när valideringen hittade
- * sådana kuvert (fixrunda 1 av uppgift 14d). Meningen kommer ur
- * sammanfattningen och säger bara antalet.
+ * Beskedet, med en mening per gammalt format när valideringen hittade sådana
+ * kuvert: bevisen före uppgift 14d och underskriften före uppgift 11e. Meningen
+ * kommer ur sammanfattningen och säger bara antalet.
  */
 function withOldFormatNote(message: string, summary: ValidationReport['summary']): string {
-  const note = oldProofFormatNote(summary)
+  const note = oldFormatNote(summary)
   return note === '' ? message : `${message} ${note}`
 }

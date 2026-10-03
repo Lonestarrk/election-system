@@ -8,6 +8,7 @@ import {
   X509Certificate,
 } from 'node:crypto'
 import { env } from '@/lib/env'
+import { ORDER_LIFETIME_MS } from '@/lib/order-state'
 import { truncateToDay } from '@/lib/time'
 import { issueCertificate, issuerFrom } from './mock-ca/issue-certificate'
 import {
@@ -56,7 +57,8 @@ import type {
  * Ordertillståndet ligger i processminne. Rätt avvägning för en POC, fel för
  * drift: en omstart tappar alla pågående legitimeringar, och med flera
  * instanser hamnar polling-anropen på fel process. Ett riktigt system lägger
- * dem i en delad lagring med kort livslängd.
+ * dem i en delad lagring med kort livslängd. En order förfaller efter orderns
+ * livslängd, som i orderlagret, se `sweepExpiredOrders`.
  */
 
 type MockOrder = {
@@ -74,6 +76,9 @@ type MockOrder = {
    * avslut.
    */
   userNonVisibleData: string | null
+
+  /** När ordern förfaller, se `sweepExpiredOrders`. */
+  expiresAt: number
 }
 
 /**
@@ -94,6 +99,27 @@ const globalForMock = globalThis as unknown as { mockBankIdOrders?: Map<string, 
 
 const orders: Map<string, MockOrder> = globalForMock.mockBankIdOrders ?? new Map<string, MockOrder>()
 globalForMock.mockBankIdOrders = orders
+
+/**
+ * EN ORDER FÖRFALLER EFTER ORDERNS LIVSLÄNGD (uppgift 11e).
+ *
+ * En signeringsorder bär det signerade och, när någon valt identitet, väljarens
+ * personnummer. Förut togs den bort först när collect hämtade den, så en order
+ * som väljaren övergav låg kvar tills servern startades om. Nu förfaller den
+ * efter samma tid som orderlagret (src/lib/order-state.ts), tre minuter, som en
+ * riktig BankID-order. Städningen körs vid varje anrop, så ingen timer behövs.
+ */
+function sweepExpiredOrders(now: number): void {
+  for (const [orderRef, order] of orders) {
+    if (order.expiresAt <= now) orders.delete(orderRef)
+  }
+}
+
+/** Ordern, om den finns och inte har förfallit. */
+function liveOrder(orderRef: string): MockOrder | undefined {
+  sweepExpiredOrders(Date.now())
+  return orders.get(orderRef)
+}
 
 /**
  * Namn för demoändamål. Ett riktigt BankID-svar innehåller personens namn;
@@ -201,17 +227,20 @@ export class MockBankIdService implements IBankIdService {
 
   async auth(_request: BankIdAuthRequest): Promise<BankIdAuthOrder> {
     const orderRef = randomUUID()
+    const now = Date.now()
+    sweepExpiredOrders(now)
 
     orders.set(orderRef, {
       // Riktiga värden kommer från BankID. Formatet är detsamma: 32 byte som
       // base64 respektive hex, beroende på fält.
       qrStartToken: randomUUID(),
       qrStartSecret: randomBytes(32).toString('hex'),
-      startedAt: Date.now(),
+      startedAt: now,
       demoPersonalNumber: null,
       pollsRemaining: env.mockBankIdPollsUntilComplete,
       cancelled: false,
       userNonVisibleData: null,
+      expiresAt: now + ORDER_LIFETIME_MS,
     })
 
     return { orderRef, autoStartToken: randomUUID() }
@@ -219,11 +248,13 @@ export class MockBankIdService implements IBankIdService {
 
   async sign(request: SignRequest): Promise<BankIdAuthOrder> {
     const orderRef = randomUUID()
+    const now = Date.now()
+    sweepExpiredOrders(now)
 
     orders.set(orderRef, {
       qrStartToken: randomUUID(),
       qrStartSecret: randomBytes(32).toString('hex'),
-      startedAt: Date.now(),
+      startedAt: now,
       demoPersonalNumber: null,
       pollsRemaining: env.mockBankIdPollsUntilComplete,
       cancelled: false,
@@ -231,13 +262,14 @@ export class MockBankIdService implements IBankIdService {
       // avslutar den, precis som skarpt BankID håller kvar begäran under
       // hela legitimeringen.
       userNonVisibleData: request.userNonVisibleData,
+      expiresAt: now + ORDER_LIFETIME_MS,
     })
 
     return { orderRef, autoStartToken: randomUUID() }
   }
 
   async qrData(orderRef: string): Promise<BankIdQrData | null> {
-    const order = orders.get(orderRef)
+    const order = liveOrder(orderRef)
     if (!order || order.cancelled) return null
 
     const elapsedSeconds = Math.floor((Date.now() - order.startedAt) / 1000)
@@ -251,7 +283,7 @@ export class MockBankIdService implements IBankIdService {
   }
 
   async collect(orderRef: string): Promise<BankIdCollectResult> {
-    const order = orders.get(orderRef)
+    const order = liveOrder(orderRef)
 
     if (!order) {
       return { status: 'failed', hintCode: 'expiredTransaction' }
@@ -306,7 +338,7 @@ export class MockBankIdService implements IBankIdService {
   }
 
   async cancel(orderRef: string): Promise<void> {
-    const order = orders.get(orderRef)
+    const order = liveOrder(orderRef)
     if (order) order.cancelled = true
   }
 }
@@ -319,7 +351,7 @@ export class MockBankIdService implements IBankIdService {
  * varje anrop till den faller vid kompilering.
  */
 export function selectDemoIdentity(orderRef: string, personalNumber: string): boolean {
-  const order = orders.get(orderRef)
+  const order = liveOrder(orderRef)
   if (!order || order.cancelled) return false
 
   order.demoPersonalNumber = personalNumber.replace(/\D/g, '')

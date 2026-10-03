@@ -35,7 +35,6 @@ export function limitation(id: string): KnownLimitation {
 /** Begränsningarna som sektionerna på Tekniska detaljer och Utvecklingsstatus hänvisar till. */
 export type PageLimitations = {
   link: KnownLimitation
-  bankIdOrder: KnownLimitation
   /** Det underskriften inte skyddar mot sedan uppgift 14f: att äkta kuvert tas bort eller läggs tillbaka. */
   removal: KnownLimitation
   revocation: KnownLimitation
@@ -55,7 +54,6 @@ export type PageLimitations = {
 export function pageLimitations(): PageLimitations {
   return {
     link: limitation('link-exists-during-voting'),
-    bankIdOrder: limitation('bankid-order-carries-link'),
     removal: limitation('operator-can-remove-or-restore-envelope'),
     revocation: limitation('no-revocation-check'),
     xmlAdapter: limitation('bankid-xmldsig-adapter-missing'),

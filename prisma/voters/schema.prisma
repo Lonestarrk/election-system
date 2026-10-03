@@ -480,6 +480,20 @@ model PendingVote {
   /// Raderas med raden vid skalningen.
   bankIdCertificateChain String @map("bankid_certificate_chain")
 
+  /// Saltet i åtagandet som BankID-ordern bär, 32 byte som 64 gemena hextecken
+  /// (uppgift 11e).
+  ///
+  /// Det väljaren skriver under bär SHA-256 över chifferhashen och det här
+  /// saltet, inte chifferhashen. BankID sparar det signerade med väljarens
+  /// identitet, och utan saltet går BankID:s kopia inte att matcha mot hashen i
+  /// urnan. Saltet skapas i sign-start, lämnar aldrig servern och raderas med
+  /// raden vid skalningen. Det följer aldrig med till votes_db.
+  ///
+  /// NULL bara i kuvert som lades före uppgift 11e. De är underskrivna över
+  /// chifferhashen, och valideringen före stängningen underkänner dem som
+  /// OLD_SIGNATURE_FORMAT.
+  commitmentSalt String? @map("commitment_salt")
+
   /// Dygnsupplöst, som all annan tidsdata i röstlängden.
   updatedAt DateTime @map("updated_at")
 

@@ -58,8 +58,9 @@ export function Phases() {
       </p>
       <p className="muted small">
         &quot;Nej&quot; om kopplingen betyder att raderna är borta ur den levande databasen.
-        Backuper, läsreplikor, WAL-loggen och BankID:s kopia av det väljaren signerade omfattas
-        inte av raderingen.
+        Backuper, läsreplikor och WAL-loggen omfattas inte av raderingen. BankID:s kopia av det
+        väljaren signerade bär inte chifferhashen, utan en saltad hash av den, och saltet raderas
+        med raden.
       </p>
     </section>
   )

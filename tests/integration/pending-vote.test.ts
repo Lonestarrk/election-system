@@ -13,7 +13,12 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  legacyEnvelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   clearPendingVotes,
@@ -180,20 +185,25 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     voterStatusId: string,
     ballot: EncryptedBallot,
     castSequence: number,
+    signedContent?: (commitmentSalt: string) => string,
   ): Promise<SignedEnvelope> {
     const personalNumber = personalNumberByVoter.get(voterStatusId)
     if (!personalNumber) throw new Error('Okänd testväljare.')
 
+    // Som sign-start: ett nytt salt per order, och åtagandet i det signerade.
+    const commitmentSalt = newCommitmentSalt()
     const service = new MockBankIdService()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
-      userNonVisibleData: envelopePayload({
-        electionId,
-        ballotId,
-        ciphertextHash: ballot.ciphertextHash,
-        castSequence,
-      }),
+      userNonVisibleData:
+        signedContent?.(commitmentSalt) ??
+        envelopePayload({
+          electionId,
+          ballotId,
+          ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
+          castSequence,
+        }),
     })
     // Motsvarar att väljaren skannar QR-koden med sin BankID-app.
     selectDemoIdentity(order.orderRef, personalNumber)
@@ -208,6 +218,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       // Ordagrant det som skrevs under — inte castSequence vid sidan av. Se
       // SignedEnvelope.signedData för varför (fixrunda 1, fynd 1).
       signedData: result.completionData.signedData,
+      commitmentSalt,
     }
   }
 
@@ -220,7 +231,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
   async function castRaw(
     voterStatusId: string,
     ballot: EncryptedBallot,
-    envelope: SignedEnvelope = { signature: '', certificateChain: [], signedData: '' },
+    envelope: SignedEnvelope = { signature: '', certificateChain: [], signedData: '', commitmentSalt: '' },
   ): Promise<CastOutcome> {
     const shape = await getEncryptedBallotShape(ballotId)
     return castEncryptedBallot(voterStatusId, electionId, ballotId, ballot, envelope, shape)
@@ -393,16 +404,18 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
      */
     async function forgedEnvelope(ballot: EncryptedBallot, chainFor: (pair: KeyPair) => string[]) {
       const forger = rsaKeys('förfalskaren')
+      const commitmentSalt = newCommitmentSalt()
       const signedData = envelopePayload({
         electionId,
         ballotId,
-        ciphertextHash: ballot.ciphertextHash,
+        ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
         castSequence: 1,
       })
       return {
         signature: signPayload(forger.privateKey, signedData),
         certificateChain: chainFor(forger),
         signedData,
+        commitmentSalt,
       }
     }
 
@@ -489,6 +502,67 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     const envelopeForS = await signAs(voter, forS, 1)
 
     expect((await castRaw(voter, forM, envelopeForS)).status).toBe('invalid_signature')
+  })
+
+  /**
+   * BANKID-ORDERN BÄR ETT ÅTAGANDE, INTE CHIFFERHASHEN (uppgift 11e).
+   *
+   * Det signerade bär SHA-256 över chifferhashen och ett salt. Läggningen
+   * räknar åtagandet ur valsedelns hash och saltet ur ordern och kräver att det
+   * är det signerade, och sparar saltet i raden.
+   */
+  describe('det signerade bär åtagandet, och saltet följer med kuvertet', () => {
+    it('det BankID skrev under innehåller inte chifferhashen, och saltet sparas i raden', async () => {
+      const ballot = await buildBallot('bp-s')
+      const envelope = await signAs(voter, ballot, 1)
+
+      expect(envelope.signedData).not.toContain(ballot.ciphertextHash)
+      expect(envelope.signedData).not.toContain(envelope.commitmentSalt)
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('recorded')
+
+      const stored = await votersDb.pendingVote.findFirstOrThrow({
+        where: { voterStatusId: voter },
+        select: { commitmentSalt: true },
+      })
+      expect(stored.commitmentSalt).toBe(envelope.commitmentSalt)
+    })
+
+    it('ett annat salt än det som skrevs under avvisas', async () => {
+      const ballot = await buildBallot('bp-s')
+      const envelope = await signAs(voter, ballot, 1)
+
+      const outcome = await castRaw(voter, ballot, { ...envelope, commitmentSalt: newCommitmentSalt() })
+      expect(outcome.status).toBe('invalid_signature')
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+
+    it('ett salt som inte är 64 hextecken avvisas utan att kasta', async () => {
+      const ballot = await buildBallot('bp-s')
+      const envelope = await signAs(voter, ballot, 1)
+
+      for (const commitmentSalt of ['', 'x'.repeat(64), envelope.commitmentSalt.toUpperCase()]) {
+        expect((await castRaw(voter, ballot, { ...envelope, commitmentSalt })).status).toBe('invalid_signature')
+      }
+    })
+
+    it('en underskrift i det gamla formatet, över chifferhashen, tas inte emot', async () => {
+      const ballot = await buildBallot('bp-s')
+      const envelope = await signAs(voter, ballot, 1, () =>
+        legacyEnvelopePayload({ electionId, ballotId, ciphertextHash: ballot.ciphertextHash, castSequence: 1 }),
+      )
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
+    })
+
+    it('en ändrad röst får ett nytt salt i raden', async () => {
+      await cast(voter, 'bp-s')
+      const first = await votersDb.pendingVote.findFirstOrThrow({ select: { commitmentSalt: true } })
+      await cast(voter, 'bp-m')
+      const second = await votersDb.pendingVote.findFirstOrThrow({ select: { commitmentSalt: true } })
+
+      expect(second.commitmentSalt).toMatch(/^[0-9a-f]{64}$/)
+      expect(second.commitmentSalt).not.toBe(first.commitmentSalt)
+    })
   })
 
   it('ett återuppspelat äldre kuvert avvisas — den riktiga vägen', async () => {

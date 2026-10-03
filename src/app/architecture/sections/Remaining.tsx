@@ -8,10 +8,10 @@ import { StatusBadge } from './StatusBadge'
  * Vad som återstår, läst ur REMAINING i code-facts.ts.
  *
  * Varje punkt bär markörer och stryks när det den beskriver byggs, så listan
- * kan inte påstå att något återstår som redan finns. Därtill fyra kända
- * begränsningar i kuvertmodellen, med länk till listan: BankID-ordern och
- * adaptern för XML-signaturen har specen redan en åtgärd för (spec 4.6 och
- * 10), liksom den som kan skriva i röstdatabasen och byta ut ett chiffer
+ * kan inte påstå att något återstår som redan finns. Därtill tre kända
+ * begränsningar i kuvertmodellen, med länk till listan: adaptern för
+ * XML-signaturen har specen redan en åtgärd för (spec 4.6 och 10), liksom den
+ * som kan skriva i röstdatabasen och byta ut ett chiffer
  * (spec 4.6, förbehåll 4, granskningen av 11g). Uppgift 11d stängde bytet före
  * infogningen, och uppgift 12b bytet efter stängningen för den som bara kan
  * skriva i röstdatabasen. Kvar är den som kan skriva i båda databaserna. Uppgift
@@ -21,8 +21,9 @@ import { StatusBadge } from './StatusBadge'
  * planen prövar svaret — bara uppgift 17b sparar det förseglat — så den
  * punkten är märkt "ingår inte", inte "kommer" (fixrunda 1 av uppgift 11h).
  * Meningen ovanför länklistan får därför inte påstå att specen redan anger
- * åtgärden för alla fyra. Certifikatkedjan stod här fram till uppgift 14f,
- * som byggde prövningen.
+ * åtgärden för alla tre. Certifikatkedjan stod här fram till uppgift 14f,
+ * som byggde prövningen, och BankID-ordern som bar chifferhashen fram till
+ * uppgift 11e.
  */
 export function Remaining({ fixable }: { fixable: KnownLimitation[] }) {
   return (

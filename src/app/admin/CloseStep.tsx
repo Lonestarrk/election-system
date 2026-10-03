@@ -14,6 +14,8 @@ export const VALIDATION_REASONS: Record<string, string> = {
     'Kuvertet ligger på en valsedel som inte hör till omröstningen eller som inte gäller väljarens område.',
   BAD_PROOF: 'Beviset i kuvertet håller inte, eller så går kuvertet inte att tolka.',
   OLD_PROOF_FORMAT: 'Kuvertet har det gamla bevisformatet och kan inte räknas.',
+  OLD_SIGNATURE_FORMAT:
+    'Kuvertet är äkta men underskrivet i det gamla formatet, där BankID-ordern bar chifferhashen, och kan inte räknas.',
 }
 
 function Mono({ children }: { children: string }) {

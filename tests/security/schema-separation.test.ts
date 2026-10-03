@@ -229,6 +229,19 @@ describe('databasseparation', () => {
     }
   })
 
+  it('saltet i BankID-åtagandet finns bara i röstlängden, aldrig i röstdatabasen (uppgift 11e)', () => {
+    /**
+     * Med saltet och hashen i urnan går BankID:s kopia av det signerade att
+     * matcha mot chiffret. Saltet ska därför bara finnas i det yttre kuvertet,
+     * som raderas vid skalningen.
+     */
+    const pendingVote = votersFields.match(/model PendingVote \{[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(pendingVote).toContain('commitmentSalt String? @map("commitment_salt")')
+
+    expect(votesFields).not.toMatch(/commitment_?salt|\bsalt\b/i)
+    expect(votesMigrations).not.toMatch(/commitment_?salt|\bsalt\b/i)
+  })
+
   it('kopplingen har en unik nyckel per väljare och valsedel', () => {
     // Utan den kan en väljare få två liggande röster på samma valsedel, och
     // skalningen skulle flytta båda.

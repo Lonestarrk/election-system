@@ -196,7 +196,8 @@ export async function POST(request: Request) {
         session.electionId,
         order.ballotId,
         order.ballot,
-        completion,
+        // Saltet ur ordern, aldrig ur begäran: det har aldrig lämnat servern.
+        { ...completion, commitmentSalt: order.commitmentSalt },
         shape,
         request.signal,
         reservation,

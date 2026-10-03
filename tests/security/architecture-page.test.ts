@@ -1275,7 +1275,6 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       'receipt-proves-choice',
       'signing-keys-in-database',
       'no-guaranteed-anonymity-set',
-      'bankid-order-carries-link',
       'no-revocation-check',
       'bankid-xmldsig-adapter-missing',
       'votes-db-writer-can-swap-ciphertext',
@@ -1399,15 +1398,14 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
 
     it('Remaining.tsx lovar inte att specen anger åtgärden för alla fyra "fixable"-begränsningar (fixrunda 1)', () => {
       /**
-       * Granskningen av fixrunda 1: status/page.tsx skickar fyra kända
+       * Granskningen av fixrunda 1: status/page.tsx skickar kända
        * begränsningar som `fixable` till Remaining. En av dem
        * (no-revocation-check) är märkt "ingår inte", inte "kommer" — ingen
        * uppgift i planen prövar OCSP-svaret. Meningen ovanför länklistan i
        * Remaining.tsx får då inte påstå att specen redan anger åtgärden för
-       * alla fyra.
+       * alla. Uppgift 11e tog bort BankID-orderns post, och tre är kvar.
        */
       const fixableIds = [
-        'bankid-order-carries-link',
         'no-revocation-check',
         'bankid-xmldsig-adapter-missing',
         'votes-db-writer-can-swap-ciphertext',

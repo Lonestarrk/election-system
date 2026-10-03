@@ -237,6 +237,25 @@ export async function getBallotSigningKey(
  * Används för att avvisa en begäran som pekar på en valsedel i en annan
  * omröstning än den sessionen gäller.
  */
+/**
+ * Vad väljaren skriver under i BankID: omröstningens namn och valsedelns slag,
+ * för texten i appen (uppgift 11e). Null när valsedeln inte hör till
+ * omröstningen, så att samma uppslagning också är den prövningen.
+ *
+ * Slaget och inte etiketten, eftersom etiketten för en kommun- eller
+ * regionvalsedel namnger området, och BankID sparar texten.
+ */
+export async function signingSubject(
+  ballotId: string,
+  electionId: string,
+): Promise<{ electionName: string; ballotKind: string } | null> {
+  const ballot = await votersDb.electionBallot.findFirst({
+    where: { id: ballotId, electionId },
+    select: { kind: true, election: { select: { name: true } } },
+  })
+  return ballot ? { electionName: ballot.election.name, ballotKind: ballot.kind } : null
+}
+
 export async function ballotBelongsToElection(
   ballotId: string,
   electionId: string,

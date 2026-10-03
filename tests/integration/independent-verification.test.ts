@@ -17,7 +17,11 @@ import { encryptBallot } from '@/lib/encrypt-client'
 import { resetRateLimits } from '@/lib/rate-limit'
 import { createAdminSession } from '@/modules/eligibility/admin-session.service'
 import { MockBankIdService, selectDemoIdentity } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import { castEncryptedBallot, nextCastSequence } from '@/modules/eligibility/pending-vote.service'
 import { createVotingSession } from '@/modules/eligibility/voting-session.service'
 import { GET as resultsRoute } from '@/app/api/observer/results/route'
@@ -180,13 +184,14 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     const castSequence = await nextCastSequence(voterStatusId, ballot.id)
 
     const service = new MockBankIdService()
+    const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId: ballot.id,
-        ciphertextHash: encrypted.ciphertextHash,
+        ciphertextCommitment: ciphertextCommitment(encrypted.ciphertextHash, commitmentSalt)!,
         castSequence,
       }),
     })
@@ -205,6 +210,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
         signature: result.completionData.signature,
         certificateChain: result.completionData.certificateChain,
         signedData: result.completionData.signedData,
+        commitmentSalt,
       },
       shape,
     )

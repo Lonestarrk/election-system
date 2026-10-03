@@ -21,7 +21,11 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
  */
 
 const BALLOT = { ciphertext: [], ciphertextHash: 'a'.repeat(64) } as unknown as EncryptedBallot
-const state = (ballotId = 'valsedel-1'): OrderState => ({ ballotId, ballot: BALLOT })
+const state = (ballotId = 'valsedel-1'): OrderState => ({
+  ballotId,
+  ballot: BALLOT,
+  commitmentSalt: '01'.repeat(32),
+})
 
 const ORDER = '11111111-1111-4111-8111-111111111111'
 

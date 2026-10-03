@@ -229,6 +229,7 @@ test.describe('arkitektursidan', () => {
       follow.getByText('Livevyn är en insiders vy, och den som antecknar ur den har kopplingen.'),
     ).toBeVisible()
     await expect(follow.getByText(/BankID:s kopia av det väljaren signerade/)).toBeVisible()
+    await expect(follow.getByText(/utan saltet ur pending_vote går den inte att matcha/)).toBeVisible()
   })
 
   test('sidan skrollar inte i sidled på en telefon', async ({ page }) => {

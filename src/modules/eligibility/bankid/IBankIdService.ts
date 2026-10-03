@@ -204,9 +204,13 @@ export type SignRequest = {
   userVisibleData: string
 
   /**
-   * Signeras men visas inte. Här ligger chifferhashen, valsedelns id och
-   * räknaren — sådant som måste vara bundet men som ingen människa kan granska
-   * på en telefonskärm.
+   * Signeras men visas inte. Här ligger åtagandet över chifferhashen,
+   * valsedelns id och räknaren — sådant som måste vara bundet men som ingen
+   * människa kan granska på en telefonskärm.
+   *
+   * INTE CHIFFERHASHEN SJÄLV (uppgift 11e). BankID sparar det som signeras,
+   * med väljarens identitet, och hashen står i urnan efter stängningen. Se
+   * `ciphertextCommitment` i envelope-signature.ts.
    */
   userNonVisibleData: string
 }

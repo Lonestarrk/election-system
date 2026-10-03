@@ -24,7 +24,14 @@ import {
 import { AUDIT_EVENTS, recordAuditEvent, verifyAuditChain } from '@/modules/eligibility/audit.service'
 import { urnRootOf } from '@/lib/urn-root'
 import { parseCertificateChain } from '@/modules/eligibility/bankid/certificate-chain'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  legacyEnvelopePayload,
+  newCommitmentSalt,
+  parseEnvelopePayload,
+} from '@/modules/eligibility/bankid/envelope-signature'
+import { hashLeaf, merkleRoot } from '@/lib/merkle'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -327,13 +334,14 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     if (!personalNumber) throw new Error('Okänd testväljare.')
 
     const service = new MockBankIdService()
+    const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId,
-        ciphertextHash,
+        ciphertextCommitment: ciphertextCommitment(ciphertextHash, commitmentSalt)!,
         castSequence,
       }),
     })
@@ -348,6 +356,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       signature: result.completionData.signature,
       certificateChain: result.completionData.certificateChain,
       signedData: result.completionData.signedData,
+      commitmentSalt,
     }
   }
 
@@ -357,6 +366,34 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
    * Klockan öppnas bara så länge kuvertet läggs och ställs tillbaka direkt
    * efteråt — se kommentaren i `beforeEach`.
    */
+  /**
+   * Det BankID har sparat för varje ärlig läggning i testet: underskriften och
+   * det signerade, med väljarens identitet. Hashen står bredvid bara för att
+   * testet ska veta svaret. Den som har BankID:s kopia har inte hashen.
+   */
+  const bankIdCopies: Array<{ ciphertextHash: string; envelope: SignedEnvelope }> = []
+  beforeEach(() => {
+    bankIdCopies.length = 0
+  })
+
+  /** Allt innehåll i en databas, som text, för att söka efter ett värde i varje tabell. */
+  async function dumpOf(db: typeof votersDb | typeof votesDb): Promise<string> {
+    const client = db as unknown as {
+      $queryRawUnsafe: <T>(query: string) => Promise<T>
+    }
+    const tables = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+    )
+    const parts: string[] = []
+    for (const { table_name } of tables) {
+      const [row] = await client.$queryRawUnsafe<Array<{ rows: string | null }>>(
+        `SELECT json_agg(t)::text AS rows FROM "${table_name}" t`,
+      )
+      parts.push(`${table_name}: ${row?.rows ?? ''}`)
+    }
+    return parts.join('\n')
+  }
+
   async function castFor(voterStatusId: string, party: 'bp-s' | 'bp-m'): Promise<string> {
     await setClosesAt(electionId, new Date(Date.now() + 3_600_000))
 
@@ -364,6 +401,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       const ballot = await buildBallot(party)
       const castSequence = await nextCastSequence(voterStatusId, ballotId)
       const envelope = await signAs(voterStatusId, ballot.ciphertextHash, castSequence)
+      bankIdCopies.push({ ciphertextHash: ballot.ciphertextHash, envelope })
       const shape = await getEncryptedBallotShape(ballotId)
 
       const outcome = await castEncryptedBallot(
@@ -437,6 +475,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       castSequence,
       bankIdSignature: envelope.signature,
       bankIdCertificateChain: sealCertificateChain(chain, { voterStatusId, ballotId }),
+      commitmentSalt: envelope.commitmentSalt,
       updatedAt: new Date(),
     }
 
@@ -476,6 +515,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       castSequence,
       bankIdSignature: envelope.signature,
       bankIdCertificateChain: sealCertificateChain(chain, { voterStatusId, ballotId }),
+      commitmentSalt: envelope.commitmentSalt,
       updatedAt: new Date(),
     }
 
@@ -710,6 +750,140 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
         select: { phase: true, envelopeRoot: true, linkClearedAt: true },
       }),
     ).toEqual({ phase: 'CLOSED', envelopeRoot: null, linkClearedAt: null })
+  })
+
+  /**
+   * BANKID:S KOPIA GÅR INTE ATT MATCHA EFTER STÄNGNINGEN (uppgift 11e).
+   *
+   * BankID sparar det väljaren skriver under, med hennes identitet. Det
+   * signerade bär ett åtagande över chifferhashen och ett salt, och saltet
+   * finns bara i kuvertet, som raderas vid skalningen.
+   */
+  describe('BankID:s kopia efter stängningen (uppgift 11e)', () => {
+    it('det BankID sparat bär inte chifferhashen, och saltet finns inte kvar i någon databas', async () => {
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+      const salts = (await votersDb.pendingVote.findMany({ select: { commitmentSalt: true } })).map(
+        (row) => row.commitmentSalt!,
+      )
+      expect(salts).toHaveLength(2)
+      for (const salt of salts) expect(salt).toMatch(/^[0-9a-f]{64}$/)
+      // Kontrasten: före skalningen finns saltet i röstlängden, så sökningen hittar det.
+      expect(await dumpOf(votersDb)).toContain(salts[0])
+
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 2 })
+
+      const voters = await dumpOf(votersDb)
+      const votes = await dumpOf(votesDb)
+      for (const salt of salts) {
+        expect(voters).not.toContain(salt)
+        expect(votes).not.toContain(salt)
+      }
+      for (const { ciphertextHash, envelope } of bankIdCopies) {
+        expect(envelope.signedData).not.toContain(ciphertextHash)
+        // Hashen står i urnan, men åtagandet i BankID:s kopia står ingenstans.
+        expect(votes).toContain(ciphertextHash)
+        const commitment = parseEnvelopePayload(envelope.signedData)!.ciphertextCommitment
+        expect(voters).not.toContain(commitment)
+        expect(votes).not.toContain(commitment)
+      }
+    })
+
+    it('kuvertroten går inte att matcha mot BankID:s underskrifter och urnans hashar', async () => {
+      /**
+       * Den som har BankID:s kopior har varje underskrift, och urnans hashar
+       * publiceras. Var bladet bara hashen och underskriften kunde den pröva
+       * varje sätt att para ihop dem tills den publicerade roten stämde. Med
+       * två röster är det två försök. Saltet i bladet stänger det.
+       */
+      await castFor(anna, 'bp-s')
+      await castFor(kim, 'bp-m')
+      expect(await closeElection(electionId)).toMatchObject({ status: 'closed' })
+
+      const { envelopeRoot } = await votersDb.election.findUniqueOrThrow({
+        where: { id: electionId },
+        select: { envelopeRoot: true },
+      })
+      const hashes = (await votesDb.encryptedVote.findMany({ select: { ciphertextHash: true } })).map(
+        (row) => row.ciphertextHash,
+      )
+      const signatures = bankIdCopies.map((copy) => copy.envelope.signature)
+      const pairings = [
+        [0, 1],
+        [1, 0],
+      ].map((order) =>
+        merkleRoot(order.map((index, position) => hashLeaf(`${hashes[position]}|${signatures[index]}`))),
+      )
+
+      expect(envelopeRoot).toMatch(/^[0-9a-f]{64}$/)
+      expect(pairings).not.toContain(envelopeRoot)
+      // Kontrasten: med saltet, som bara fanns i kuverten, är roten rätt.
+      expect(
+        envelopeRootOf(
+          bankIdCopies.map((copy) => ({
+            ciphertextHash: copy.ciphertextHash,
+            commitmentSalt: copy.envelope.commitmentSalt,
+            bankIdSignature: copy.envelope.signature,
+          })),
+        ),
+      ).toBe(envelopeRoot)
+    })
+
+    it('kuvert i det gamla underskriftsformatet stoppar stängningen, och ingenting raderas', async () => {
+      /**
+       * Kuverten som låg i demons databaser när uppgift 11e kom. Underskriften
+       * är äkta men över chifferhashen, och BankID:s kopia går att matcha mot
+       * urnan. Kuvertet räknas inte, och det går inte att göra om utan väljaren.
+       */
+      await castFor(anna, 'bp-s')
+      const ballot = await buildBallot('bp-m')
+      const castSequence = await nextCastSequence(kim, ballotId)
+      const service = new MockBankIdService()
+      const order = await service.sign({
+        endUserIp: '127.0.0.1',
+        userVisibleData: 'Bekräfta din röst',
+        userNonVisibleData: legacyEnvelopePayload({
+          electionId,
+          ballotId,
+          ciphertextHash: ballot.ciphertextHash,
+          castSequence,
+        }),
+      })
+      selectDemoIdentity(order.orderRef, KIM_PN)
+      let result = await service.collect(order.orderRef)
+      while (result.status === 'pending') result = await service.collect(order.orderRef)
+      if (result.status !== 'complete') throw new Error('Signeringen blev inte klar.')
+      const chain = parseCertificateChain(result.completionData.certificateChain)!
+      await votersDb.pendingVote.create({
+        data: {
+          voterStatusId: kim,
+          ballotId,
+          ciphertext: ballot.ciphertext as unknown as Prisma.InputJsonValue,
+          proofs: ballot.proofs as unknown as Prisma.InputJsonValue,
+          ciphertextHash: ballot.ciphertextHash,
+          castSequence,
+          bankIdSignature: result.completionData.signature,
+          bankIdCertificateChain: sealCertificateChain(chain, { voterStatusId: kim, ballotId }),
+          updatedAt: new Date(),
+        },
+      })
+
+      const outcome = await closeElection(electionId)
+
+      expect(outcome).toEqual({
+        status: 'validation_failed',
+        summary: { votes: 2, voters: 2, rejected: 1, byKind: { OLD_SIGNATURE_FORMAT: 1 }, passed: false },
+      })
+      expect(await votersDb.pendingVote.count()).toBe(2)
+      expect(await votesDb.encryptedVote.count()).toBe(0)
+      expect(await votersDb.votedMarker.count()).toBe(0)
+      expect(
+        await votersDb.election.findUniqueOrThrow({
+          where: { id: electionId },
+          select: { phase: true, envelopeRoot: true, linkClearedAt: true },
+        }),
+      ).toEqual({ phase: 'CLOSED', envelopeRoot: null, linkClearedAt: null })
+    })
   })
 
   it('omverifieringen stoppar förfalskningen också när valideringen har släppt igenom den', async () => {

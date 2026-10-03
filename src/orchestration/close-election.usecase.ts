@@ -275,9 +275,21 @@ export function abortedMessageFor(error: unknown): string {
  * Bladet binder BÅDE hashen och signaturen: bara hashen hade låtit en signatur
  * bytas ut obemärkt, bara signaturen hade inte pekat ut vilken röst den hörde
  * till.
+ *
+ * SALTET STÅR OCKSÅ I BLADET (uppgift 11e). BankID har varje väljares
+ * underskrift, och urnans chifferhashar publiceras. Var bladet bara hashen och
+ * underskriften kunde den som har BankID:s kopior pröva vilken underskrift som
+ * hör till vilken hash tills den publicerade roten stämde. I en valsedel med få
+ * röster är det få försök. Med saltet, som raderas med raden, går bladen inte
+ * att räkna efter skalningen. Hash och salt är 64 hextecken vardera och
+ * signaturen är base64, så avgränsaren kan inte stå i något av fälten.
  */
-export function envelopeLeaf(envelope: { ciphertextHash: string; bankIdSignature: string }): string {
-  return hashLeaf(`${envelope.ciphertextHash}|${envelope.bankIdSignature}`)
+export function envelopeLeaf(envelope: {
+  ciphertextHash: string
+  commitmentSalt: string
+  bankIdSignature: string
+}): string {
+  return hashLeaf(`${envelope.ciphertextHash}|${envelope.commitmentSalt}|${envelope.bankIdSignature}`)
 }
 
 /**
@@ -298,9 +310,16 @@ export function envelopeLeaf(envelope: { ciphertextHash: string; bankIdSignature
  * poängen: roten säger ingenting om i vilken ordning väljarna röstade.
  */
 export function envelopeRootOf(
-  envelopes: ReadonlyArray<{ ciphertextHash: string; bankIdSignature: string }>,
+  envelopes: ReadonlyArray<{ ciphertextHash: string; commitmentSalt: string | null; bankIdSignature: string }>,
 ): string {
-  return merkleRoot(envelopes.map(envelopeLeaf))
+  return merkleRoot(
+    envelopes.map(({ ciphertextHash, commitmentSalt, bankIdSignature }) => {
+      // Valideringen underkänner ett kuvert utan salt, så hit kommer det inte.
+      // Kommer det ändå avbryts stängningen här, före varje radering.
+      if (commitmentSalt === null) throw new Error('Ett kuvert utan salt nådde kuvertroten.')
+      return envelopeLeaf({ ciphertextHash, commitmentSalt, bankIdSignature })
+    }),
+  )
 }
 
 /**
@@ -313,6 +332,7 @@ type Envelope = {
   ciphertext: unknown
   proofs: unknown
   ciphertextHash: string
+  commitmentSalt: string | null
   bankIdSignature: string
 }
 

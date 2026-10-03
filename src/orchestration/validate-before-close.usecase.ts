@@ -8,7 +8,9 @@ import {
   type ChainFailure,
 } from '@/modules/eligibility/bankid/certificate-chain'
 import {
+  ciphertextCommitment,
   envelopePayload,
+  legacyEnvelopePayload,
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
 import { trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
@@ -121,8 +123,23 @@ export type Anomaly = {
    * som varje annan avvikelse. Kategorin skiljer det från BAD_PROOF, som är
    * allt annat som inte håller: ett bevis i det nuvarande formatet, en annan
    * markör eller ett kuvert som inte går att tolka.
+   *
+   * OLD_SIGNATURE_FORMAT är ett äkta kuvert som lades före uppgift 11e, då
+   * BankID-ordern bar chifferhashen i stället för åtagandet. Raden saknar salt,
+   * och underskriften håller för det gamla formatet, med en kedja till roten och
+   * väljarens eget personnummer. Kuvertet kan inte räknas, eftersom BankID:s
+   * kopia av det går att matcha mot urnan, och det stoppar stängningen som varje
+   * annan avvikelse. En rad utan salt vars underskrift inte håller för det gamla
+   * formatet är BAD_SIGNATURE, så kategorin skiljer ett gammalt kuvert från en
+   * förfalskning.
    */
-  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF' | 'OLD_PROOF_FORMAT'
+  kind:
+    | 'BAD_SIGNATURE'
+    | 'STALE_SEQUENCE'
+    | 'WRONG_BALLOT'
+    | 'BAD_PROOF'
+    | 'OLD_PROOF_FORMAT'
+    | 'OLD_SIGNATURE_FORMAT'
   pendingVoteId: string
   /** Bara för administratörens utredning. Publiceras aldrig. */
   voterStatusId: string
@@ -153,19 +170,29 @@ export type ValidationReport = {
 }
 
 /**
- * Vad sammanfattningen säger om det gamla bevisformatet, som en mening till
- * administratören, eller en tom sträng när inget kuvert har det.
+ * Vad sammanfattningen säger om de gamla formaten, en mening per format till
+ * administratören, eller en tom sträng när inget kuvert har något av dem.
  *
  * Bara antalet ur sammanfattningen, och ingen väljare. Stängningens besked
- * lägger meningen till sitt eget, så att administratören ser att avvikelserna
- * är kuvert i det gamla formatet och inte bevis i det nuvarande som inte
- * håller (granskningen av uppgift 14d, Mindre 2). Markören är inte
- * underskriven, så kategorin säger vad kuvertet påstår om sitt format, och
- * ingenting om vem som skrev det.
+ * lägger meningarna till sitt eget, så att administratören ser att avvikelserna
+ * är kuvert i ett gammalt format och inte förfalskningar (granskningen av
+ * uppgift 14d, Mindre 2, och uppgift 11e). Bevisens formatmarkör är inte
+ * underskriven, så OLD_PROOF_FORMAT säger vad kuvertet påstår om sitt format,
+ * och ingenting om vem som skrev det. OLD_SIGNATURE_FORMAT ges däremot bara när
+ * underskriften håller för det gamla formatet.
  */
-export function oldProofFormatNote(summary: ValidationReport['summary']): string {
-  const count = summary.byKind.OLD_PROOF_FORMAT ?? 0
-  return count === 0 ? '' : `${count} kuvert har det gamla bevisformatet och kan inte räknas.`
+export function oldFormatNote(summary: ValidationReport['summary']): string {
+  const proofs = summary.byKind.OLD_PROOF_FORMAT ?? 0
+  const signatures = summary.byKind.OLD_SIGNATURE_FORMAT ?? 0
+  return [
+    proofs === 0 ? '' : `${proofs} kuvert har det gamla bevisformatet och kan inte räknas.`,
+    signatures === 0
+      ? ''
+      : `${signatures} kuvert är underskrivna i det gamla formatet, där BankID-ordern bar ` +
+        'chifferhashen, och kan inte räknas.',
+  ]
+    .filter((sentence) => sentence !== '')
+    .join(' ')
 }
 
 /**
@@ -224,19 +251,21 @@ type SignatureVerdict = 'ok' | 'stale' | 'bad'
  * aldrig något som raden själv påstår. Se `judgeSignature`.
  *
  * Bygger om det signerade innehållet ur radens EGNA lagrade fält —
- * `ciphertextHash` och `castSequence` — i stället för att förvänta sig
- * `signedData` bevarat ordagrant. Det finns ingen sådan kolumn: kolumnerna som
- * SKREVS av `castEncryptedBallot` kommer själva ur `signedData` vid
- * läggningstillfället, och `envelopePayload` är en entydig, längdprefixerad
- * kodning — samma fält ger alltid samma sträng. Återuppbyggnaden är alltså
- * inte en gissning utan en exakt återskapning av det som en gång verkligen
- * signerades, förutsatt att fälten inte ändrats var för sig sedan dess.
+ * `ciphertextHash`, `commitmentSalt` och `castSequence` — i stället för att
+ * förvänta sig `signedData` bevarat ordagrant. Det finns ingen sådan kolumn:
+ * kolumnerna som SKREVS av `castEncryptedBallot` kommer själva ur
+ * `signedData` och ur ordern vid läggningstillfället, och `envelopePayload`
+ * och åtagandet är entydiga kodningar — samma fält ger alltid samma sträng.
+ * Återuppbyggnaden är alltså inte en gissning utan en exakt återskapning av det
+ * som en gång verkligen signerades, förutsatt att fälten inte ändrats var för
+ * sig sedan dess. Se `signedContentOf` för raden utan salt.
  */
 function classifySignature(
   electionId: string,
   vote: {
     ballotId: string
     ciphertextHash: string
+    commitmentSalt: string | null
     castSequence: number
     bankIdSignature: string
   },
@@ -244,12 +273,16 @@ function classifySignature(
   /** Delad mellan alla rader i körningen — se `MAX_TOTAL_STALE_PROBES`. */
   staleProbeBudget: { remaining: number },
 ): SignatureVerdict {
-  const current = envelopePayload({
-    electionId,
+  const current = signedContentOf(electionId, {
     ballotId: vote.ballotId,
     ciphertextHash: vote.ciphertextHash,
+    commitmentSalt: vote.commitmentSalt,
     castSequence: vote.castSequence,
   })
+
+  // En hash eller ett salt som inte går att tolka ger inget åtagande, och då
+  // finns inget som en underskrift kan hålla för.
+  if (current === null) return 'bad'
 
   if (verifySignedPayload(vote.bankIdSignature, signingKey, current)) return 'ok'
 
@@ -262,22 +295,65 @@ function classifySignature(
   ) {
     staleProbeBudget.remaining -= 1
 
-    const older = envelopePayload({
-      electionId,
+    const older = signedContentOf(electionId, {
       ballotId: vote.ballotId,
       ciphertextHash: vote.ciphertextHash,
+      commitmentSalt: vote.commitmentSalt,
       castSequence: candidate,
     })
 
-    if (verifySignedPayload(vote.bankIdSignature, signingKey, older)) return 'stale'
+    if (older !== null && verifySignedPayload(vote.bankIdSignature, signingKey, older)) return 'stale'
   }
 
   return 'bad'
 }
 
+/**
+ * Det som signerades för en rad och en räknare.
+ *
+ * MED SALT (uppgift 11e) är det `envelopePayload` över åtagandet, räknat ur
+ * radens chifferhash och salt. Null när hashen eller saltet inte går att tolka.
+ *
+ * UTAN SALT är det det gamla formatet, där BankID-ordern bar chifferhashen.
+ * Varje kuvert som läggs i dag har ett salt, så en rad utan salt är antingen
+ * ett äkta kuvert från före uppgift 11e eller skriven förbi läggningen. Vilket
+ * avgör underskriften: håller den för det gamla formatet, med en kedja till
+ * roten och väljarens eget personnummer, är kuvertet äkta och blir
+ * OLD_SIGNATURE_FORMAT, och annars BAD_SIGNATURE. Den som tar bort saltet ur ett
+ * nytt kuvert får inte det gamla formatet, eftersom underskriften är över
+ * åtagandet.
+ */
+function signedContentOf(
+  electionId: string,
+  vote: { ballotId: string; ciphertextHash: string; commitmentSalt: string | null; castSequence: number },
+): string | null {
+  if (vote.commitmentSalt === null) {
+    return legacyEnvelopePayload({
+      electionId,
+      ballotId: vote.ballotId,
+      ciphertextHash: vote.ciphertextHash,
+      castSequence: vote.castSequence,
+    })
+  }
+
+  const commitment = ciphertextCommitment(vote.ciphertextHash, vote.commitmentSalt)
+  if (commitment === null) return null
+
+  return envelopePayload({
+    electionId,
+    ballotId: vote.ballotId,
+    ciphertextCommitment: commitment,
+    castSequence: vote.castSequence,
+  })
+}
+
+/**
+ * `legacy` betyder att underskriften höll för det gamla formatet, med
+ * chifferhashen i det signerade, se `signedContentOf`.
+ */
 type SignatureJudgement =
-  | { verdict: 'ok' }
-  | { verdict: 'stale' }
+  | { verdict: 'ok'; legacy: boolean }
+  | { verdict: 'stale'; legacy: boolean }
   | { verdict: 'bad'; reason: SignatureFault }
 
 /**
@@ -306,6 +382,7 @@ async function judgeSignature(
     voterStatusId: string
     ballotId: string
     ciphertextHash: string
+    commitmentSalt: string | null
     castSequence: number
     bankIdSignature: string
     bankIdCertificateChain: string
@@ -350,7 +427,7 @@ async function judgeSignature(
     return { verdict: 'bad', reason: 'other_voter' }
   }
 
-  return { verdict }
+  return { verdict, legacy: vote.commitmentSalt === null }
 }
 
 /**
@@ -545,6 +622,7 @@ function readEnvelopeBatch(ballotIds: string[], after: string | null) {
       castSequence: true,
       bankIdSignature: true,
       bankIdCertificateChain: true,
+      commitmentSalt: true,
       updatedAt: true,
       voterStatus: {
         select: { municipalityCode: true, regionCode: true, externalIdentityHash: true },
@@ -579,6 +657,8 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
  *   2. STALE_SEQUENCE  — kryptografisk: kedjan mot roten och en `verify` av
  *   3. BAD_SIGNATURE      signaturen i det vanliga fallet (bara en avvikande
  *                        rad kostar flera), och en identitetshash per väljare.
+ *                        Ett äkta kuvert i det gamla formatet, från före
+ *                        uppgift 11e, blir OLD_SIGNATURE_FORMAT.
  *   4. BAD_PROOF       — dyrast: en handfull modulär exponentiering per
  *                        alternativ på valsedeln. Är kuvertet helt men
  *                        saknar bevisen formatmarkören blir raden
@@ -665,6 +745,11 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
     }
     if (signature.verdict === 'bad') {
       anomalies.push(anomaly('BAD_SIGNATURE', signature.reason))
+    }
+    // Äkta, men underskrivet i det gamla formatet. Kuvertet raderas inte, och
+    // stängningen stannar med kopplingen kvar, som vid varje avvikelse.
+    if (signature.verdict !== 'bad' && signature.legacy) {
+      anomalies.push(anomaly('OLD_SIGNATURE_FORMAT'))
     }
 
     // 4. OLD_PROOF_FORMAT eller BAD_PROOF — dyrast, men körs ändå: en rad kan

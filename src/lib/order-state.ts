@@ -11,10 +11,10 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
  * servern håller den här, under orderns referens. Pollningen bär bara
  * referensen.
  *
- * Lagret är det enda stället som håller något mellan de två anropen. Uppgift
- * 11e lägger saltet för chifferhashen i `OrderState`, så att det skapas i
- * sign-start och hålls på servern med ordern, utan att något annat behöver
- * ändras.
+ * Lagret är det enda stället som håller något mellan de två anropen. Där
+ * ligger också saltet för åtagandet över chifferhashen (uppgift 11e), som
+ * skapas i sign-start och hålls på servern med ordern, så att det aldrig
+ * behöver gå via klienten.
  *
  * GRÄNSSNITTET ÄR SMALT, PER ORDERREFERENS:
  *
@@ -64,6 +64,14 @@ export type OrderState = {
   ballotId: string
   /** Den krypterade valsedeln, med chiffer, bevis och hash. */
   ballot: EncryptedBallot
+  /**
+   * Saltet i åtagandet som BankID-ordern bär, se `ciphertextCommitment` i
+   * src/modules/eligibility/bankid/envelope-signature.ts. Lämnar servern aldrig:
+   * det skickas inte till klienten eller till BankID, och loggas inte.
+   * Läggningen sparar det i `PendingVote`, och det raderas med raden vid
+   * skalningen.
+   */
+  commitmentSalt: string
   /** BankID:s insamlade svar, när ordern är klar men rösten ännu inte lagd. */
   completion?: Completion
 }

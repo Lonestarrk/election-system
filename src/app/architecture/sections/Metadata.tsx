@@ -8,7 +8,7 @@ import { LimitationReference, type PageLimitations } from './shared'
  * säger det.
  */
 export function Metadata({ limitations }: { limitations: PageLimitations }) {
-  const { link, bankIdOrder } = limitations
+  const { link } = limitations
 
   return (
     <section className="card" aria-labelledby="metadata">
@@ -32,8 +32,7 @@ export function Metadata({ limitations }: { limitations: PageLimitations }) {
               risk="Kopior utanför den levande databasen"
               reveals="En backup, en läsreplik eller WAL-loggen från före stängningen innehåller pending_vote, med väljare och chifferhash, och BankID sparar det väljaren signerade tillsammans med hennes identitet"
             >
-              {CURRENTLY.copiesKeepLink.text} <LimitationReference entry={link} />{' '}
-              <LimitationReference entry={bankIdOrder} />
+              {CURRENTLY.copiesKeepLink.text} <LimitationReference entry={link} />
             </MetadataRow>
             <MetadataRow risk="Exakta tidsstämplar" reveals="Rad matchas mot rad på tid">
               {CURRENTLY.timestamps.text}

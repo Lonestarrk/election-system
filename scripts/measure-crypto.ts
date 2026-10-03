@@ -345,7 +345,9 @@ async function measureValidation(voterCount: number): Promise<void> {
   const { MockBankIdService, selectDemoIdentity } = await import(
     '../src/modules/eligibility/bankid/MockBankIdService'
   )
-  const { envelopePayload } = await import('../src/modules/eligibility/bankid/envelope-signature')
+  const { ciphertextCommitment, envelopePayload, newCommitmentSalt } = await import(
+    '../src/modules/eligibility/bankid/envelope-signature'
+  )
   const { castEncryptedBallot } = await import('../src/modules/eligibility/pending-vote.service')
 
   const tag = `m14b-${Date.now()}`
@@ -455,13 +457,14 @@ async function measureValidation(voterCount: number): Promise<void> {
       for (const ballot of ballots) {
         const choice = ballot.options[1 + (voter % (ballot.options.length - 1))]!
         const sealed = encryptBallot(encryptionPublicKey!, electionId, ballot.id, ballot.options, choice)
+        const commitmentSalt = newCommitmentSalt()
         const order = await bankId.sign({
           endUserIp: '127.0.0.1',
           userVisibleData: 'Bekräfta din röst',
           userNonVisibleData: envelopePayload({
             electionId,
             ballotId: ballot.id,
-            ciphertextHash: sealed.ciphertextHash,
+            ciphertextCommitment: ciphertextCommitment(sealed.ciphertextHash, commitmentSalt)!,
             castSequence: 1,
           }),
         })
@@ -478,6 +481,7 @@ async function measureValidation(voterCount: number): Promise<void> {
             signature: collected.completionData.signature,
             certificateChain: collected.completionData.certificateChain,
             signedData: collected.completionData.signedData,
+            commitmentSalt,
           },
           ballot.wireShape,
         )

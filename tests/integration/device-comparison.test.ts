@@ -11,7 +11,11 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -144,13 +148,14 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
     })
 
     const service = new MockBankIdService()
+    const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId,
-        ciphertextHash: ballot.ciphertextHash,
+        ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
         castSequence: await nextCastSequence(voter.id, ballotId),
       }),
     })
@@ -169,6 +174,7 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
         signature: result.completionData.signature,
         certificateChain: result.completionData.certificateChain,
         signedData: result.completionData.signedData,
+        commitmentSalt,
       },
       await getEncryptedBallotShape(ballotId),
     )

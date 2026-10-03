@@ -44,7 +44,8 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
   {
     metaphor: 'Underskriften',
     technology:
-      'BankID /sign över chifferhashen, med räknaren och valsedelns id i det signerade. Kedjan ' +
+      'BankID /sign över SHA-256 av chifferhashen och ett salt som bara finns i pending_vote, med ' +
+      'räknaren och valsedelns id i det signerade. Kedjan ' +
       'bakom signaturen prövas mot BankID:s rotcertifikat, och personnumret i certifikatet mot ' +
       'väljarens identitetshash (spec 4.6).',
   },
@@ -104,8 +105,9 @@ const ROWS: Array<{ metaphor: string; technology: string }> = [
   {
     metaphor: 'En kopia av urnan',
     technology:
-      'Backuper, läsreplikor, WAL-loggen och BankID:s kopia av det väljaren signerade. Ingen av ' +
-      'dem omfattas av raderingen (spec 10).',
+      'Backuper, läsreplikor och WAL-loggen. Ingen av dem omfattas av raderingen (spec 10). ' +
+      'BankID:s kopia av det väljaren signerade bär inte chifferhashen, och saltet som skulle ' +
+      'matcha den finns bara i röstlängden och i sådana kopior av den.',
   },
   {
     metaphor: 'Valvet',

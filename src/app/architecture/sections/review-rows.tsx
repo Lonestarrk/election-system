@@ -32,7 +32,8 @@ export function reviewQuestions({ removal }: PageLimitations): ReviewQuestion[] 
       question: 'Är varje kuvert lagt av väljaren själv?',
       design: (
         <>
-          Varje rad bär väljarens BankID-signatur över chifferhashen och räknaren, och
+          Varje rad bär väljarens BankID-signatur över en saltad hash av chifferhashen och
+          räknaren, och
           certifikatkedjan bakom den. Valideringen före stängningen prövar kedjan mot BankID:s rot,
           att certifikatet är väljarens, signatur, räknare, valsedel och bevis medan kopplingen
           finns, och stoppar skalningen vid en avvikelse. Röstningen förblir stängd, och ingenting

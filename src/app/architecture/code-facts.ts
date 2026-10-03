@@ -1283,11 +1283,14 @@ export const CURRENTLY = {
 
   copiesKeepLink: {
     text:
-      'Ingenting. Raderingen når bara den levande databasen, och det väljaren signerar i BankID ' +
-      'bär chifferhashen bredvid hennes identitet.',
+      'Ingenting. Raderingen når bara den levande databasen. Det väljaren signerar i BankID bär ' +
+      'inte chifferhashen, utan en hash av den och ett salt som bara finns i pending_vote. En kopia ' +
+      'av röstlängden från före stängningen har saltet kvar, och med den går också BankID:s kopia ' +
+      'att matcha mot urnan.',
     holdsWhile: [
       { file: 'prisma/voters/schema.prisma', contains: 'model PendingVote' },
-      { file: 'src/app/api/vote/sign-start/route.ts', contains: 'ciphertextHash: body.data.ciphertextHash' },
+      { file: 'prisma/voters/schema.prisma', contains: 'commitmentSalt String? @map("commitment_salt")' },
+      { file: 'src/app/api/vote/sign-start/route.ts', contains: 'ciphertextCommitment: commitment,' },
     ],
   },
 
@@ -2275,8 +2278,9 @@ export const OUT_OF_SCOPE: OutOfScopeItem[] = [
  * är den enda källan för vilken status de har på Utvecklingsstatus: tre hör
  * till det gamla flödet och försvinner när det tas bort (uppgift 15). En
  * fjärde, `live-results-in-old-flow`, stängde uppgift 13 genom att skriva om
- * observatörsrutterna, och den är borta ur listan. Fyra är kuvertmodellens
- * egna, i Remaining.tsx. Ingen
+ * observatörsrutterna, och den är borta ur listan. Tre är kuvertmodellens
+ * egna, i Remaining.tsx. Uppgift 11e stängde en fjärde, att BankID-ordern bar
+ * chifferhashen, och den är också borta ur listan. Ingen
  * uppgift i planen prövar spärrfrågan (OCSP) fullt ut — uppgift 17b förseglar
  * bara svaret för en senare uppgift — så `no-revocation-check` är "ingår
  * inte", inte "kommer".
@@ -2285,7 +2289,6 @@ export const LIMITATION_STATUS: Record<string, Status> = {
   'receipt-proves-choice': statusPlanned('15'),
   'signing-keys-in-database': statusPlanned('15'),
   'no-guaranteed-anonymity-set': statusPlanned('15'),
-  'bankid-order-carries-link': statusPlanned('11e'),
   'no-revocation-check': STATUS_OUT_OF_SCOPE,
   'bankid-xmldsig-adapter-missing': statusPlanned('17b'),
   // Uppgift 11d stängde bytet före infogningen med återläsningen, och uppgift

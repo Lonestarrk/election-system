@@ -199,8 +199,9 @@ export function FollowAVote({
           Den visar databasen inifrån, som den som driver systemet ser den, och finns bara i
           demoläget. Den som antecknade en chifferhash i pending_vote före stängningen hittar samma
           hash i encrypted_vote efteråt, och vet då vems chiffret är. Detsamma gäller en backup, en
-          läsreplik och WAL-loggen från före stängningen, och BankID:s kopia av det väljaren
-          signerade. Det är begränsningen «{linkLimitationTitle}» i praktiken. Sidan kan låta bli att
+          läsreplik och WAL-loggen från före stängningen. BankID:s kopia av det väljaren signerade
+          bär inte hashen, och utan saltet ur pending_vote går den inte att matcha. Det är
+          begränsningen «{linkLimitationTitle}» i praktiken. Sidan kan låta bli att
           minnas, men den kan inte få någon annan att glömma.
         </div>
       </div>

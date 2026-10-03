@@ -29,7 +29,11 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -265,10 +269,16 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     if (!personalNumber) throw new Error('Okänd testväljare.')
 
     const service = new MockBankIdService()
+    const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
-      userNonVisibleData: envelopePayload({ electionId, ballotId: ballot.id, ciphertextHash, castSequence }),
+      userNonVisibleData: envelopePayload({
+        electionId,
+        ballotId: ballot.id,
+        ciphertextCommitment: ciphertextCommitment(ciphertextHash, commitmentSalt)!,
+        castSequence,
+      }),
     })
     selectDemoIdentity(order.orderRef, personalNumber)
 
@@ -280,6 +290,7 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
       signature: result.completionData.signature,
       certificateChain: result.completionData.certificateChain,
       signedData: result.completionData.signedData,
+      commitmentSalt,
     }
   }
 

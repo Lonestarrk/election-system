@@ -1,4 +1,4 @@
-import { createVerify, type KeyObject } from 'node:crypto'
+import { createHash, createVerify, randomBytes, type KeyObject } from 'node:crypto'
 
 /**
  * Det som binder en signatur till en bestämd röst.
@@ -10,7 +10,18 @@ import { createVerify, type KeyObject } from 'node:crypto'
 export type EnvelopePayload = {
   electionId: string
   ballotId: string
-  ciphertextHash: string
+
+  /**
+   * Åtagandet över chifferhashen, se `ciphertextCommitment`. INTE
+   * chifferhashen själv (uppgift 11e).
+   *
+   * BankID sparar det väljaren skriver under, med hennes identitet, bland annat
+   * för tvister. Bar det signerade chifferhashen fanns kopplingen mellan
+   * väljaren och chiffret kvar hos BankID efter att den raderats här, eftersom
+   * hashen står i urnan och pekar ut chiffret. Åtagandet går bara att räkna med
+   * saltet, som finns i `PendingVote` och raderas med raden vid skalningen.
+   */
+  ciphertextCommitment: string
 
   /**
    * Räknaren för väljarens senaste giltiga kuvert.
@@ -25,6 +36,82 @@ export type EnvelopePayload = {
   castSequence: number
 }
 
+/** Formatets namn, först i det signerade. v1 bar chifferhashen, v2 bär åtagandet. */
+const ENVELOPE_FORMAT = 'valsystem/kuvert/v2'
+const LEGACY_ENVELOPE_FORMAT = 'valsystem/kuvert/v1'
+
+/** Domänen för åtagandet, så att samma indata aldrig kan vara en hash i ett annat sammanhang. */
+const COMMITMENT_DOMAIN = 'valsystem/bankid-atagande/v1'
+
+/** 32 byte som 64 gemena hextecken, så som chifferhashen och saltet lagras. */
+const HEX_32_BYTES = /^[0-9a-f]{64}$/
+
+/**
+ * ÅTAGANDET ÖVER CHIFFERHASHEN (uppgift 11e).
+ *
+ *   SHA-256( UTF-8("valsystem/bankid-atagande/v1") ‖ 0x00 ‖ H ‖ S )
+ *
+ * där H är chifferhashens 32 byte och S saltets 32 byte, båda avkodade ur 64
+ * gemena hextecken. Svaret är 64 gemena hextecken.
+ *
+ * KODNINGEN ÄR ENTYDIG. Domänen är fast och följs av 0x00, och H och S har fast
+ * längd, så två olika par kan inte ge samma indata. Längdprefix behövs därför
+ * inte, till skillnad från i nyttolasten, där fälten har olika längd.
+ *
+ * SALTET GÖR ÅTAGANDET OMÖJLIGT ATT MATCHA UTAN RADEN. Chifferhashen står i
+ * urnan efter stängningen. Utan salt hade den som har BankID:s kopia kunnat
+ * räkna åtagandet för varje hash i urnan och hitta väljarens. Med 32 slumpbyte
+ * går det inte att pröva sig fram, och saltet raderas med raden.
+ *
+ * Returnerar null för en hash eller ett salt som inte är 64 gemena hextecken,
+ * och kastar aldrig: valideringen läser båda ur databasen, förbi varje schema,
+ * och en trasig rad ska bli en avvikelse och inte en krasch.
+ */
+export function ciphertextCommitment(ciphertextHash: string, salt: string): string | null {
+  if (!HEX_32_BYTES.test(ciphertextHash) || !HEX_32_BYTES.test(salt)) return null
+
+  return createHash('sha256')
+    .update(Buffer.from(COMMITMENT_DOMAIN, 'utf8'))
+    .update(Buffer.from([0]))
+    .update(Buffer.from(ciphertextHash, 'hex'))
+    .update(Buffer.from(salt, 'hex'))
+    .digest('hex')
+}
+
+/**
+ * Ett nytt salt: 32 byte ur `crypto.randomBytes`, som 64 gemena hextecken.
+ *
+ * Skapas i /api/vote/sign-start, hålls med ordern i orderlagret och sparas i
+ * `PendingVote` när rösten läggs. Det går aldrig till klienten eller till
+ * BankID, loggas aldrig och följer aldrig med till votes_db.
+ */
+export function newCommitmentSalt(): string {
+  return randomBytes(32).toString('hex')
+}
+
+/**
+ * Texten väljaren ser i BankID-appen innan hon skriver sin kod.
+ *
+ * Den säger vad som skrivs under, och ingenting som pekar ut rösten: varken
+ * chifferhashen eller åtagandet, eftersom BankID sparar också den här texten.
+ * Valsedeln namnges efter sitt slag och inte efter kommunen eller regionen, så
+ * att texten inte säger mer om väljaren än att hon röstar i valet.
+ */
+export function signingText(electionName: string, ballotKind: string): string {
+  const ballot = BALLOT_KIND_TEXT[ballotKind] ?? 'omröstningen'
+  return (
+    `Jag lägger min röst i ${electionName}, ${ballot}. ` +
+    'Rösten är krypterad. Det jag skriver under är ett åtagande om den, och det visar inte vad ' +
+    'jag har röstat på. Jag kan ändra rösten fram till att röstningen stänger.'
+  )
+}
+
+const BALLOT_KIND_TEXT: Record<string, string> = {
+  RIKSDAG: 'valet till riksdagen',
+  LANDSTING: 'valet till regionfullmäktige',
+  KOMMUN: 'valet till kommunfullmäktige',
+}
+
 /**
  * Den kanoniska sträng som signeras.
  *
@@ -34,14 +121,40 @@ export type EnvelopePayload = {
  * flytta mellan valsedlar utan att något ser fel ut.
  */
 export function envelopePayload(payload: EnvelopePayload): string {
-  const parts = [
-    'valsystem/kuvert/v1',
+  return encodeFields([
+    ENVELOPE_FORMAT,
+    payload.electionId,
+    payload.ballotId,
+    payload.ciphertextCommitment,
+    String(payload.castSequence),
+  ])
+}
+
+/**
+ * DET GAMLA FORMATET, MED CHIFFERHASHEN I DET SIGNERADE.
+ *
+ * Kuvert som lades före uppgift 11e är underskrivna över den här strängen.
+ * Läggningen tar aldrig emot den, eftersom `parseEnvelopePayload` bara läser
+ * det nya formatet. Funktionen finns för valideringen före stängningen, som
+ * känner igen ett äkta kuvert i det gamla formatet och skiljer det från en
+ * förfalskning, se `OLD_SIGNATURE_FORMAT` i validate-before-close.usecase.ts.
+ */
+export function legacyEnvelopePayload(payload: {
+  electionId: string
+  ballotId: string
+  ciphertextHash: string
+  castSequence: number
+}): string {
+  return encodeFields([
+    LEGACY_ENVELOPE_FORMAT,
     payload.electionId,
     payload.ballotId,
     payload.ciphertextHash,
     String(payload.castSequence),
-  ]
+  ])
+}
 
+function encodeFields(parts: string[]): string {
   return parts.map((part) => `${part.length}:${part}`).join('')
 }
 
@@ -68,9 +181,9 @@ export function envelopePayload(payload: EnvelopePayload): string {
  *
  * Returnerar null för allt som inte är välformat: fel antal fält, en
  * längdangivelse som inte är siffror, en längd som inte stämmer med vad som
- * faktiskt finns kvar av strängen, eller data som blir över efter sista
- * fältet. Anroparen ska då avvisa kuvertet — aldrig anta något om
- * innehållet i en trasig nyttolast.
+ * faktiskt finns kvar av strängen, data som blir över efter sista fältet,
+ * eller det gamla formatet med chifferhashen. Anroparen ska då avvisa
+ * kuvertet — aldrig anta något om innehållet i en trasig nyttolast.
  */
 export function parseEnvelopePayload(payload: string): EnvelopePayload | null {
   const fields: string[] = []
@@ -93,7 +206,7 @@ export function parseEnvelopePayload(payload: string): EnvelopePayload | null {
 
   if (rest.length !== 0) return null
 
-  const [magic, electionId, ballotId, ciphertextHash, castSequenceText] = fields as [
+  const [magic, electionId, ballotId, ciphertextCommitment, castSequenceText] = fields as [
     string,
     string,
     string,
@@ -101,10 +214,10 @@ export function parseEnvelopePayload(payload: string): EnvelopePayload | null {
     string,
   ]
 
-  if (magic !== 'valsystem/kuvert/v1') return null
+  if (magic !== ENVELOPE_FORMAT) return null
   if (!/^\d+$/.test(castSequenceText)) return null
 
-  return { electionId, ballotId, ciphertextHash, castSequence: Number(castSequenceText) }
+  return { electionId, ballotId, ciphertextCommitment, castSequence: Number(castSequenceText) }
 }
 
 /**

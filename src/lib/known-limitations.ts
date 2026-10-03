@@ -71,26 +71,6 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     stillTrueIf: { file: 'prisma/voters/schema.prisma', contains: 'model PendingVote' },
   },
   {
-    id: 'bankid-order-carries-link',
-    title: 'BankID-ordern bär kopplingen ut ur systemet',
-    why:
-      'Det väljaren signerar innehåller chifferhashen, och samma BankID-order bär hennes ' +
-      'identitet. BankID sparar signaturer, bland annat för tvister, så med skarp BankID finns ' +
-      'kopplingen mellan väljaren och chiffret kvar hos BankID efter att den raderats här, och ' +
-      'hashen står kvar i encrypted_vote och pekar ut chiffret. Raderingen vid stängningen når ' +
-      'inte dit. I demoläget håller attrappen dessutom övergivna signeringsordrar i ' +
-      'processminnet tills servern startas om, med det signerade och, om ordern hunnit skannas, ' +
-      'personnumret.',
-    // sign-start lägger chifferhashen oförändrad i det signerade. När det
-    // signerade i stället bär en saltad hash av den, med ett salt som bara
-    // finns i PendingVote och raderas med raden, ändras just den här raden, och
-    // BankID:s kopia slutar gå att matcha mot något efter stängningen.
-    stillTrueIf: {
-      file: 'src/app/api/vote/sign-start/route.ts',
-      contains: 'ciphertextHash: body.data.ciphertextHash',
-    },
-  },
-  {
     id: 'trusted-dealer',
     title: 'Tröskelnyckeln delas av en betrodd utdelare',
     why:
@@ -402,7 +382,16 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
         contains:
-          "  kind: 'BAD_SIGNATURE' | 'STALE_SEQUENCE' | 'WRONG_BALLOT' | 'BAD_PROOF' | 'OLD_PROOF_FORMAT'\n  pendingVoteId: string",
+          [
+          '  kind:',
+          "    | 'BAD_SIGNATURE'",
+          "    | 'STALE_SEQUENCE'",
+          "    | 'WRONG_BALLOT'",
+          "    | 'BAD_PROOF'",
+          "    | 'OLD_PROOF_FORMAT'",
+          "    | 'OLD_SIGNATURE_FORMAT'",
+          '  pendingVoteId: string',
+        ].join('\n'),
       },
     ],
   },

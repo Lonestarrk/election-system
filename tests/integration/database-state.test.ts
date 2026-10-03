@@ -11,7 +11,11 @@ import {
   MockBankIdService,
   selectDemoIdentity,
 } from '@/modules/eligibility/bankid/MockBankIdService'
-import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
+import {
+  ciphertextCommitment,
+  envelopePayload,
+  newCommitmentSalt,
+} from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
   nextCastSequence,
@@ -165,13 +169,14 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     const castSequence = await nextCastSequence(voterStatusId, ballotId)
 
     const service = new MockBankIdService()
+    const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
       userVisibleData: 'Bekräfta din röst',
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId,
-        ciphertextHash: ballot.ciphertextHash,
+        ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
         castSequence,
       }),
     })
@@ -190,6 +195,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
         signature: result.completionData.signature,
         certificateChain: result.completionData.certificateChain,
         signedData: result.completionData.signedData,
+        commitmentSalt,
       },
       await getEncryptedBallotShape(ballotId),
     )
@@ -374,7 +380,13 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     })
     const envelope = await votersDb.pendingVote.findFirstOrThrow({
       where: { voterStatusId: anna },
-      select: { id: true, bankIdSignature: true, bankIdCertificateChain: true, ciphertext: true },
+      select: {
+        id: true,
+        bankIdSignature: true,
+        bankIdCertificateChain: true,
+        ciphertext: true,
+        commitmentSalt: true,
+      },
     })
     const shares = await votesDb.trusteeShare.findMany({
       where: { electionId },
@@ -396,6 +408,9 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     // Hemligheter och sådant som bara behövs för valideringen.
     expect(state).not.toContain(envelope.bankIdSignature)
     expect(state).not.toContain(envelope.bankIdCertificateChain)
+    // Saltet i BankID-åtagandet (uppgift 11e), inte ens förkortat.
+    expect(envelope.commitmentSalt).toMatch(/^[0-9a-f]{64}$/)
+    expect(state).not.toContain(envelope.commitmentSalt!.slice(0, 12))
     expect(state).not.toContain('BEGIN CERTIFICATE')
     expect(state).not.toContain('BEGIN PUBLIC KEY')
     expect(state).not.toContain('PRIVATE KEY')
@@ -404,7 +419,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
       expect(state).not.toContain(share.encryptedShare)
       expect(state).not.toContain(share.publicShare)
     }
-    expect(state).not.toMatch(/"(proofs|bankIdSignature|bankIdCertificateChain|encryptedShare)":/)
+    expect(state).not.toMatch(/"(proofs|bankIdSignature|bankIdCertificateChain|commitmentSalt|encryptedShare)":/)
   })
 
   it('det gamla flödets tabell redovisas som den är, märkt för sig', async () => {
