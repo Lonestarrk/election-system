@@ -3,6 +3,7 @@ import { env } from '@/lib/env'
 import { clearVotingCookies, SESSION_COOKIE } from '@/lib/cookies'
 import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
+import { hashCiphertext } from '@/lib/crypto/verify-ballot'
 import { putOrder } from '@/lib/order-state'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, signStartSchema } from '@/lib/validation'
@@ -10,6 +11,7 @@ import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.serv
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { envelopePayload } from '@/modules/eligibility/bankid/envelope-signature'
 import { launchUrl, renderQrPng } from '@/modules/eligibility/bankid/qr'
+import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { ballotBelongsToElection } from '@/modules/eligibility/election.service'
 import { nextCastSequence } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
@@ -45,6 +47,13 @@ export const dynamic = 'force-dynamic'
  * bara `orderRef`. Hashen i begäran måste vara valsedelns egen: det som
  * signeras är hashen, och en valsedel med en annan hash hade bara fått rösten
  * avvisad efter att väljaren skrivit under.
+ *
+ * FORMEN PRÖVAS HÄR, INNAN BANKID-ORDERN SKAPAS (fixrunda 1). Servern hämtar
+ * omröstningens form, kräver att antalet chiffer är valsedelns antal alternativ
+ * och räknar om hashen ur chiffret. Det är samma prövning som vid läggningen,
+ * minus bevisen, som kostar en halv sekund. Utan den kunde väljaren skriva under
+ * en valsedel som avvisas efteråt, och en order kunde hålla en valsedel större än
+ * omröstningens, som lagret räknar minnet efter.
  *
  * Andra halvan, /api/vote/encrypted, hämtar den färdiga signaturen och
  * certifikatkedjan från BankID:s eget svar och verifierar mot exakt den här
@@ -100,6 +109,17 @@ export async function POST(request: Request) {
 
   if (body.data.ballot.ciphertextHash !== body.data.ciphertextHash) {
     return errorResponse('INVALID_INPUT', 'Valsedelns hash stämmer inte.', 400)
+  }
+
+  const shape = await getEncryptedBallotShape(body.data.ballotId)
+  if (!shape) {
+    return errorResponse('INVALID_BALLOT', 'Valsedeln kan inte ta emot en krypterad röst.', 400)
+  }
+  if (body.data.ballot.ciphertext.length !== shape.optionCount) {
+    return errorResponse('INVALID_BALLOT', 'Valsedeln har fel antal alternativ.', 400)
+  }
+  if (hashCiphertext(body.data.ballot.ciphertext) !== body.data.ballot.ciphertextHash) {
+    return errorResponse('INVALID_BALLOT', 'Valsedelns hash stämmer inte med chiffret.', 400)
   }
 
   const castSequence = await nextCastSequence(session.voterStatusId, body.data.ballotId)

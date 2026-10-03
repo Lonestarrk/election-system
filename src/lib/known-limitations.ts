@@ -717,7 +717,9 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     why:
       'Mellan att väljaren startar underskriften och att BankID är klart håller servern den ' +
       'krypterade valsedeln i processminnet, bunden till väljarens session, och den förfaller efter ' +
-      'tre minuter. Med flera instanser bakom en lastbalanserare kan en pollning hamna hos en ' +
+      'tre minuter. Är verifieringskön full när BankID svarar klart håller servern också ' +
+      'BankID:s svar, med signaturen och certifikatkedjan, på samma sätt tills nästa pollning kan ' +
+      'lägga rösten. Med flera instanser bakom en lastbalanserare kan en pollning hamna hos en ' +
       'instans som inte har ordern, och väljaren får skriva under igen. Detsamma gäller om servern ' +
       'startas om under en signering. Verifieringskön, som prövar bevisen i valsedeln, är per ' +
       'process på samma sätt.',

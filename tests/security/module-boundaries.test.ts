@@ -177,6 +177,8 @@ describe('modulgränser', () => {
       'src/app/api/admin/stats/route.ts',
       'src/app/api/demo/database-state/route.ts',
       'src/app/api/vote/encrypted/route.ts',
+      // Prövar valsedelns form mot omröstningens innan BankID-ordern skapas (uppgift 14e).
+      'src/app/api/vote/sign-start/route.ts',
     ]
 
     const filesSeeingBoth = sourceFiles

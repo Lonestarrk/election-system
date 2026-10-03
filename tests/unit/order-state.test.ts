@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  attachCompletion,
   MAX_ORDERS,
   MAX_ORDERS_PER_SESSION,
   ORDER_LIFETIME_MS,
@@ -120,6 +121,60 @@ describe('taken', () => {
     }
 
     expect(getOrder('annans', 'session-b')).not.toBeNull()
+  })
+})
+
+describe('kapacitetskontrollen går före ersättningen (fixrunda 1)', () => {
+  it('ett fullt lager avvisar utan att ersätta sessionens äldsta order', () => {
+    for (let index = 0; index < MAX_ORDERS_PER_SESSION; index += 1) {
+      putOrder(`egen-${index}`, 'session-a', state())
+    }
+    for (let index = 0; index < MAX_ORDERS - MAX_ORDERS_PER_SESSION; index += 1) {
+      putOrder(`order-${index}`, `session-${index}`, state())
+    }
+    expect(orderCount()).toBe(MAX_ORDERS)
+
+    expect(putOrder('ny', 'session-a', state())).toBe(false)
+
+    for (let index = 0; index < MAX_ORDERS_PER_SESSION; index += 1) {
+      expect(getOrder(`egen-${index}`, 'session-a')).not.toBeNull()
+    }
+    expect(orderCount()).toBe(MAX_ORDERS)
+  })
+})
+
+describe('det insamlade resultatet hålls med ordern (fixrunda 1)', () => {
+  const completion = { signature: 'sig', certificateChain: ['kedja'], signedData: 'signerat' }
+
+  it('läggs på ordern, bunden till sessionen, och följer med get och take', () => {
+    putOrder(ORDER, 'session-a', state())
+    expect(getOrder(ORDER, 'session-a')?.completion).toBeUndefined()
+
+    expect(attachCompletion(ORDER, 'session-a', completion)).toBe(true)
+    expect(getOrder(ORDER, 'session-a')?.completion).toEqual(completion)
+    expect(takeOrder(ORDER, 'session-a')?.completion).toEqual(completion)
+    expect(getOrder(ORDER, 'session-a')).toBeNull()
+  })
+
+  it('en annan session kan varken lägga eller läsa det', () => {
+    putOrder(ORDER, 'session-a', state())
+
+    expect(attachCompletion(ORDER, 'session-b', completion)).toBe(false)
+    expect(getOrder(ORDER, 'session-a')?.completion).toBeUndefined()
+    attachCompletion(ORDER, 'session-a', completion)
+    expect(getOrder(ORDER, 'session-b')).toBeNull()
+  })
+
+  it('förlänger inte förfallet: resultatet förfaller med ordern', () => {
+    const start = 1_000_000
+    putOrder(ORDER, 'session-a', state(), start)
+    attachCompletion(ORDER, 'session-a', completion, start + ORDER_LIFETIME_MS - 1)
+
+    expect(getOrder(ORDER, 'session-a', start + ORDER_LIFETIME_MS)).toBeNull()
+  })
+
+  it('en order som saknas kan inte få något', () => {
+    expect(attachCompletion(ORDER, 'session-a', completion)).toBe(false)
   })
 })
 

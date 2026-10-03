@@ -7,7 +7,7 @@ import {
   reserveVerification,
 } from '@/lib/crypto/server'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
-import { getOrder, takeOrder } from '@/lib/order-state'
+import { attachCompletion, getOrder, takeOrder } from '@/lib/order-state'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { castEncryptedBallotSchema, parseJsonBody } from '@/lib/validation'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
@@ -109,67 +109,77 @@ export async function POST(request: Request) {
   const { orderRef } = body.data
 
   /**
-   * KÖN RESERVERAR SIN PLATS INNAN BANKID-ORDERN HÄMTAS (uppgift 14e).
+   * VALSEDELN HÅLLS AV SERVERN, BUNDEN TILL SESSIONEN.
    *
-   * Ordern förbrukas när den hämtas. Avvisades valsedeln först efteråt, för att
-   * verifieringskön var full, hade väljaren fått skriva under en gång till. Här
-   * lever ordern kvar, så svaret blir `queued`, som när BankID ännu inte är
-   * klart, och röstsidan frågar igen vid nästa varv. 503 säger samma sak till
-   * den som bara läser statusraden.
-   *
-   * Det räcker inte att fråga om kön är full. Mellan frågan och verifieringen
-   * hämtas BankID-ordern och omröstningen läses, och när en plats var kvar
-   * klarade fem samtidiga röster frågan: fyra fick kön full först efter att
-   * deras order förbrukats. Platsen RESERVERAS därför här, och verifieringen
-   * tar över den. Reservationen släpps i `finally` på varje väg ut: svar,
-   * fel och avbrott.
+   * Ordern lades av /api/vote/sign-start, med valsedeln. En order som saknas
+   * eller tillhör en annan session ger samma svar, och BankID frågas då inte:
+   * annars hade en annan väljare kunnat förbruka ordern. En order som saknas
+   * har förfallit, eller servern har startat om, och väljaren får skriva under
+   * igen.
    */
-  const reservation = reserveVerification()
-  if (!reservation) {
-    return jsonResponse(
-      { status: 'queued', message: 'Många röstar just nu. Rösten prövas så fort det finns plats.' },
-      503,
-      { 'Retry-After': '1' },
-    )
+  const held = getOrder(orderRef, sessionId)
+  if (!held) {
+    return jsonResponse({
+      status: 'failed',
+      message: 'Signeringen gick inte att slutföra, och rösten lades inte. Försök igen.',
+    })
   }
 
-  try {
-    /**
-     * VALSEDELN HÅLLS AV SERVERN, BUNDEN TILL SESSIONEN.
-     *
-     * Ordern lades av /api/vote/sign-start, med valsedeln. En order som saknas
-     * eller tillhör en annan session ger samma svar, och BankID frågas då inte:
-     * annars hade en annan väljare kunnat förbruka ordern. En order som saknas
-     * har förfallit, eller servern har startat om, och väljaren får skriva under
-     * igen.
-     */
-    if (!getOrder(orderRef, sessionId)) {
-      return jsonResponse({
-        status: 'failed',
-        message: 'Signeringen gick inte att slutföra, och rösten lades inte. Försök igen.',
-      })
-    }
-
+  /**
+   * BANKID FRÅGAS, OCH KÖN RÖRS BARA OM ORDERN ÄR KLAR (fixrunda 1).
+   *
+   * Ordern förbrukas när den hämtas. Avvisades valsedeln först efteråt, för att
+   * verifieringskön var full, hade väljaren fått skriva under en gång till. Förut
+   * reserverades därför en plats i kön före frågan, under varje pollning, också
+   * de som bara fick `pending`: fler än 22 pollningar i flygning gav `queued`
+   * fast ingen verifierade.
+   *
+   * Nu frågar rutten BankID först. Är ordern inte klar rörs kön aldrig. Är den
+   * klar reserveras platsen, och är kön full läggs det insamlade svaret i
+   * orderlagret och svaret blir `queued`: nästa pollning hittar svaret och
+   * hoppar över BankID. Ordern är förbrukad hos BankID men väljaren slipper
+   * skriva under igen.
+   */
+  let completion = held.completion
+  if (!completion) {
     const collected = await bankIdService.collect(orderRef)
 
     if (collected.status === 'pending') {
       return jsonResponse({ status: 'pending', message: 'Väntar på BankID …' })
     }
 
-    // Ordern är förbrukad hos BankID, klar eller misslyckad, och valsedeln
-    // hålls inte längre. En order kan bara förbrukas en gång.
-    const order = takeOrder(orderRef, sessionId)
-
-    if (collected.status === 'failed' || !order) {
+    if (collected.status === 'failed') {
+      // Ordern är förbrukad hos BankID, och valsedeln hålls inte längre.
+      takeOrder(orderRef, sessionId)
       return jsonResponse({
         status: 'failed',
         message:
-          collected.status === 'failed' && collected.hintCode === 'userCancel'
+          collected.hintCode === 'userCancel'
             ? 'Signeringen avbröts.'
             : 'Signeringen misslyckades. Försök igen.',
       })
     }
 
+    // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
+    completion = {
+      signature: collected.completionData.signature,
+      certificateChain: collected.completionData.certificateChain,
+      signedData: collected.completionData.signedData,
+    }
+  }
+
+  const reservation = reserveVerification()
+  if (!reservation) {
+    attachCompletion(orderRef, sessionId, completion)
+    return queuedResponse()
+  }
+
+  // Ordern tas ur lagret på varje väg utom en: kön fylldes under verifieringen, och
+  // svaret ligger kvar med sitt ursprungliga förfall.
+  let keepOrder = false
+  const order = held
+
+  try {
     const shape = await getEncryptedBallotShape(order.ballotId)
 
     let outcome: CastOutcome
@@ -179,31 +189,21 @@ export async function POST(request: Request) {
         session.electionId,
         order.ballotId,
         order.ballot,
-        {
-          // ENDAST FRÅN BANKID:S EGET SVAR — se dokumentationen ovan.
-          signature: collected.completionData.signature,
-          certificateChain: collected.completionData.certificateChain,
-          signedData: collected.completionData.signedData,
-        },
+        completion,
         shape,
         request.signal,
         reservation,
       )
     } catch (error) {
       /**
-       * Kön fylldes ändå, och ordern är redan förbrukad. Det kan hända när
-       * andra uppgifter än besökare, som valideringen före stängningen, tar
-       * platser. Svaret säger rakt ut att rösten inte lades, i stället för
-       * `queued`, som hade fått röstsidan att vänta på en order som inte finns
-       * längre.
+       * Kön fylldes ändå. Det kan hända när andra uppgifter än besökare, som
+       * valideringen före stängningen, tar platser. Svaret och valsedeln läggs
+       * tillbaka, och svaret blir `queued`: nästa pollning prövar igen utan ny
+       * underskrift.
        */
       if (error instanceof VerificationQueueFull) {
-        return errorResponse(
-          'BUSY',
-          'Servern har för mycket att göra just nu, och rösten lades inte. Försök igen om en stund.',
-          503,
-          { 'Retry-After': '5' },
-        )
+        keepOrder = attachCompletion(orderRef, sessionId, completion)
+        return queuedResponse()
       }
       /**
        * Besökaren gav upp, och ingenting lades. Ingen läser svaret, men det ska
@@ -218,8 +218,17 @@ export async function POST(request: Request) {
 
     return jsonResponse(outcome, httpStatusFor(outcome.status))
   } finally {
+    if (!keepOrder) takeOrder(orderRef, sessionId)
     reservation.release()
   }
+}
+
+function queuedResponse() {
+  return jsonResponse(
+    { status: 'queued', message: 'Många röstar just nu. Rösten prövas så fort det finns plats.' },
+    503,
+    { 'Retry-After': '1' },
+  )
 }
 
 /**

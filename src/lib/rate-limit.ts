@@ -73,15 +73,19 @@ export const RATE_LIMITS = {
    * tiotal gånger per signering. Med `castVote`s gräns skulle en ärlig
    * väljare bli hastighetsbegränsad mitt i en egen, pågående signering.
    *
-   * Satt lägre än `authCollect` (60/min) och inte lika högt, eftersom ett
-   * `complete`-svar här — till skillnad från `authCollect`s — också gör ett
-   * riktigt arbete: kryptografisk verifiering och en scrypt-hashning (se
-   * `hashPersonalNumber`). 30/min ger fortfarande gott om utrymme för att
-   * polla var annan sekund under en BankID-orders livstid (BankID rekommenderar
-   * ~30 sekunder), samtidigt som det håller nere hur många kostsamma
-   * verifieringsförsök en enda klient kan trigga per minut.
+   * 150 per minut och adress (ruling 139). Röstsidan frågar varannan sekund, alltså 30
+   * gånger per minut och väljare, så förut låg en enda väljare exakt på gränsen
+   * och två bakom samma NAT blev strypta mitt i en egen signering. 150 ger plats
+   * för fem väljare bakom samma adress, med pollningen i full takt.
+   *
+   * Gränsen skyddar inte längre mot kostsamma verifieringsförsök, och det är med
+   * flit. Det som kostar är verifieringen av bevisen och hashningen, och de körs
+   * först när BankID svarar att ordern är klar, en gång per order. Dem begränsar
+   * ordern själv, som bara kan förbrukas en gång, och verifieringskön
+   * (src/lib/crypto/server.ts) med sina platser. En pollning som får `pending` är
+   * ett billigt anrop. Gränsen är kvar som skydd mot en klient som hamrar rutten.
    */
-  castEncryptedBallot: { limit: 30, windowMs: 60_000 },
+  castEncryptedBallot: { limit: 150, windowMs: 60_000 },
   /**
    * Jämförelsen av enhetens sparade chifferhash med det liggande kuvertet
    * (/api/vote/compare).

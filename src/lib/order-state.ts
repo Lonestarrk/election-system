@@ -47,19 +47,34 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
  * encrypted-rutten läste.
  */
 
+/**
+ * BankID:s svar när ordern är klar. Hålls bara om verifieringskön var full när
+ * svaret kom, så att nästa pollning kan lägga rösten utan att fråga BankID igen:
+ * ordern är förbrukad hos BankID, och väljaren ska inte behöva skriva under på nytt.
+ * Innehåller en signatur och en certifikatkedja med väljarens personnummer, och
+ * loggas därför aldrig.
+ */
+export type Completion = { signature: string; certificateChain: string[]; signedData: string }
+
 /** Det servern håller för en order. */
 export type OrderState = {
   ballotId: string
   /** Den krypterade valsedeln, med chiffer, bevis och hash. */
   ballot: EncryptedBallot
+  /** BankID:s insamlade svar, när ordern är klar men rösten ännu inte lagd. */
+  completion?: Completion
 }
 
 /** Hur länge en order som inte blir klar ligger kvar. BankID låter en order gå ut efter tre minuter. */
 export const ORDER_LIFETIME_MS = 3 * 60_000
 
 /**
- * Högsta antal ordrar samtidigt. En order håller en valsedel, omkring 170 kB för
- * en riksdagsvalsedel, så taket är minnestaket: 500 ordrar är omkring 85 MB.
+ * Högsta antal ordrar samtidigt. En order håller en valsedel, och taket är
+ * minnestaket. En riksdagsvalsedel med 26 alternativ är omkring 170 kB, så 500
+ * ordrar är omkring 85 MB. Men valsedelns storlek följer antalet alternativ, och
+ * schemat tillåter 200: omkring 1,3 MB per order, alltså upp till omkring 650 MB
+ * när varje order är en sådan. `sign-start` kräver att antalet chiffer är
+ * omröstningens, så en valsedel kan inte vara större än valsedeln den gäller.
  * Fullt lager avvisar en ny order, och väljaren får försöka igen om en stund.
  */
 export const MAX_ORDERS = 500
@@ -99,14 +114,16 @@ export function putOrder(
   sweep(now)
   const sessionKey = sessionKeyOf(sessionId)
 
+  // Kapaciteten prövas FÖRE ersättningen: en avvisad order ska inte kosta sessionen
+  // en order den redan hade.
+  if (!orders.has(orderRef) && orders.size >= MAX_ORDERS) return false
+
   // Samma session har redan sina ordrar: den äldsta ersätts. Map håller
   // insättningsordningen, så den första träffen är den äldsta.
   const own = [...orders].filter(([, entry]) => entry.sessionKey === sessionKey)
   for (const [staleRef] of own.slice(0, Math.max(0, own.length - MAX_ORDERS_PER_SESSION + 1))) {
     orders.delete(staleRef)
   }
-
-  if (!orders.has(orderRef) && orders.size >= MAX_ORDERS) return false
 
   orders.delete(orderRef)
   orders.set(orderRef, { sessionKey, state, expiresAt: now + ORDER_LIFETIME_MS })
@@ -129,6 +146,22 @@ export function getOrder(
   now: number = Date.now(),
 ): OrderState | null {
   return lookup(orderRef, sessionId, now)?.state ?? null
+}
+
+/**
+ * Lägger BankID:s insamlade svar på ordern, med ordern och dess förfall oförändrade.
+ * Returnerar false om ordern saknas eller tillhör en annan session.
+ */
+export function attachCompletion(
+  orderRef: string,
+  sessionId: string,
+  completion: Completion,
+  now: number = Date.now(),
+): boolean {
+  const entry = lookup(orderRef, sessionId, now)
+  if (!entry) return false
+  entry.state = { ...entry.state, completion }
+  return true
 }
 
 /** Läser ordern och tar bort den, så att den bara kan förbrukas en gång. */

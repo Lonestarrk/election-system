@@ -31,13 +31,18 @@ const state = vi.hoisted(() => ({
   cancel: vi.fn(),
   sign: vi.fn(),
   cast: vi.fn(),
+  shape: { publicKey: 'k', optionCount: 26 } as { publicKey: string; optionCount: number } | null,
 }))
 
 vi.mock('next/headers', () => ({
-  cookies: async () => ({
-    get: (name: string) =>
-      name === 'valsession' && state.sessionId ? { value: state.sessionId } : undefined,
-  }),
+  // Sessionen läses när cookies() anropas, så att samtidiga begäranden från olika
+  // sessioner i ett test får var sin.
+  cookies: async () => {
+    const sessionId = state.sessionId
+    return {
+      get: (name: string) => (name === 'valsession' && sessionId ? { value: sessionId } : undefined),
+    }
+  },
 }))
 vi.mock('@/lib/csrf', () => ({ isValidCsrfToken: () => true }))
 vi.mock('@/modules/eligibility/audit.service', () => ({
@@ -58,7 +63,7 @@ vi.mock('@/modules/eligibility/pending-vote.service', () => ({
   castEncryptedBallot: (...args: unknown[]) => state.cast(...args),
 }))
 vi.mock('@/modules/ballot-box', () => ({
-  getEncryptedBallotShape: async () => ({ publicKey: 'k', optionCount: 26 }),
+  getEncryptedBallotShape: async () => state.shape,
 }))
 vi.mock('@/modules/eligibility/bankid', () => ({
   bankIdService: {
@@ -106,6 +111,7 @@ beforeEach(() => {
   resetOrders()
   resetRateLimits()
   state.sessionId = 'session-a'
+  state.shape = { publicKey: 'k', optionCount: 26 }
   state.collect
     .mockReset()
     .mockResolvedValue({ status: 'pending', hintCode: 'outstandingTransaction' })
@@ -133,6 +139,44 @@ describe('servern håller valsedeln med ordern', () => {
     expect(response.status).toBe(400)
     expect(state.sign).not.toHaveBeenCalled()
     expect(orderCount()).toBe(0)
+  })
+
+  it('sign-start avvisar en valsedel med fel antal chiffer, innan BankID-ordern skapas', async () => {
+    state.shape = { publicKey: 'k', optionCount: 25 }
+
+    const response = await signStart(post('/api/vote/sign-start', startBody()))
+
+    expect(response.status).toBe(400)
+    expect(state.sign).not.toHaveBeenCalled()
+    expect(orderCount()).toBe(0)
+  })
+
+  it('sign-start avvisar en valsedel vars chiffer inte ger den angivna hashen', async () => {
+    // Samma hash i båda fälten, men chiffret är ett annat än det hashen gäller.
+    const tampered = {
+      ...BALLOT,
+      ciphertext: [
+        { ...BALLOT.ciphertext[0]!, c1: BALLOT.ciphertext[1]!.c1 },
+        ...BALLOT.ciphertext.slice(1),
+      ],
+    }
+
+    const response = await signStart(
+      post('/api/vote/sign-start', { ...startBody(), ballot: tampered }),
+    )
+
+    expect(response.status).toBe(400)
+    expect(state.sign).not.toHaveBeenCalled()
+    expect(orderCount()).toBe(0)
+  })
+
+  it('sign-start avvisar en valsedel som inte har någon krypteringsform', async () => {
+    state.shape = null
+
+    const response = await signStart(post('/api/vote/sign-start', startBody()))
+
+    expect(response.status).toBe(400)
+    expect(state.sign).not.toHaveBeenCalled()
   })
 
   it('är lagret fullt avbryts BankID-ordern och väljaren får veta att rösten inte lades', async () => {
@@ -208,7 +252,7 @@ describe('en order är bunden till väljarens session', () => {
   })
 })
 
-describe('kön reserverar sin plats innan BankID-ordern hämtas', () => {
+describe('kön reserveras först när BankID är klart (fixrunda 1)', () => {
   /** Fyller kapaciteten utom en plats med reservationer. */
   function fillAllButOne() {
     return Array.from(
@@ -226,38 +270,129 @@ describe('kön reserverar sin plats innan BankID-ordern hämtas', () => {
     )
   }
 
-  it('fem samtidiga röster mot en plats: fyra får kön full FÖRE sin BankID-order', async () => {
-    await signStart(post('/api/vote/sign-start', startBody()))
-    const filler = fillAllButOne()
-    state.collect.mockResolvedValue(COMPLETE)
-    state.cast.mockImplementation(throughQueue)
+  /** BankID förbrukar ordern vid första svaret som är klart, som i verkligheten. */
+  function consumingBankId() {
+    const consumed = new Set<string>()
+    state.collect.mockImplementation(async (orderRef: string) => {
+      if (consumed.has(orderRef)) return { status: 'failed', hintCode: 'expiredTransaction' }
+      consumed.add(orderRef)
+      return COMPLETE
+    })
+  }
 
-    const replies = await Promise.all(Array.from({ length: 5 }, () => encrypted(poll())))
+  const orderOf = (index: number) => `5a0f3c1e-8f2d-4b6a-9c11-0d2e4f6a8b${10 + index}`
+
+  async function startFive() {
+    for (let index = 0; index < 5; index += 1) {
+      state.sessionId = `session-${index}`
+      state.sign.mockResolvedValueOnce({ orderRef: orderOf(index), autoStartToken: 'auto' })
+      await signStart(post('/api/vote/sign-start', startBody()))
+    }
+  }
+
+  it('fem samtidiga röster mot en plats: fyra får queued, och ingen behöver skriva under igen', async () => {
+    await startFive()
+    const filler = fillAllButOne()
+    consumingBankId()
+
+    // Verifieringen håller sin plats tills testet öppnar grinden, så att de fem
+    // verkligen är samtidiga: annars hinner den första bli klar innan nästa kommer.
+    let openGate!: () => void
+    const gate = new Promise<void>((resolve) => (openGate = resolve))
+    state.cast.mockImplementation(async (...args: unknown[]) => {
+      const signal = args[6] as AbortSignal
+      const reservation = args[7] as VerificationReservation | undefined
+      return inVerificationTurn(
+        async () => {
+          await gate
+          return { status: 'recorded', ciphertextHash: 'h', replaced: false }
+        },
+        { signal, reservation },
+      )
+    })
+
+    // Fem väljare, var och en med sin session och sin order.
+    const pending = [0, 1, 2, 3, 4].map((index) => {
+      state.sessionId = `session-${index}`
+      return encrypted(poll(orderOf(index)))
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    openGate()
+    const replies = await Promise.all(pending)
     const bodies = await Promise.all(replies.map((reply) => reply.json()))
 
     expect(bodies.filter((body) => body.status === 'recorded')).toHaveLength(1)
-    const queued = replies.filter((_, index) => bodies[index].status === 'queued')
-    expect(queued).toHaveLength(4)
-    expect(queued.every((reply) => reply.status === 503)).toBe(true)
+    const queuedIndexes = bodies.flatMap((body, index) => (body.status === 'queued' ? [index] : []))
+    expect(queuedIndexes).toHaveLength(4)
+    expect(queuedIndexes.every((index) => replies[index]!.status === 503)).toBe(true)
 
-    // BankID-ordern hämtades av den enda som fick plats, och av ingen av de fyra.
-    expect(state.collect).toHaveBeenCalledTimes(1)
+    // De fyras BankID-order är förbrukad, men resultatet ligger kvar hos servern.
+    for (const index of queuedIndexes) {
+      expect(getOrder(orderOf(index), `session-${index}`)?.completion).toBeDefined()
+    }
 
+    // När det finns plats lägger nästa pollning rösten, utan ny underskrift och utan
+    // ny fråga till BankID.
     for (const reservation of filler) reservation.release()
+    const collectCalls = state.collect.mock.calls.length
+    for (const index of queuedIndexes) {
+      state.sessionId = `session-${index}`
+      expect(await (await encrypted(poll(orderOf(index)))).json()).toMatchObject({
+        status: 'recorded',
+      })
+    }
+    expect(state.collect.mock.calls.length).toBe(collectCalls)
+    expect(state.cast).toHaveBeenCalledTimes(5)
     expect(verificationReservations()).toBe(0)
     expect(verificationQueueState()).toEqual({ running: 0, waiting: 0 })
   })
 
-  it('en order som nekades för att kön var full ligger kvar, så väljaren slipper skriva under igen', async () => {
+  it('pollningar som får pending rör aldrig kön, inte ens när den är full', async () => {
     await signStart(post('/api/vote/sign-start', startBody()))
     const filler = [...fillAllButOne(), reserveVerification()!]
+    expect(reserveVerification()).toBeNull()
 
-    const reply = await encrypted(poll())
-    expect((await reply.json()).status).toBe('queued')
-    expect(getOrder(ORDER, 'session-a')).not.toBeNull()
-    expect(state.collect).not.toHaveBeenCalled()
+    for (let index = 0; index < 3; index += 1) {
+      expect(await (await encrypted(poll())).json()).toMatchObject({ status: 'pending' })
+    }
+    expect(state.collect).toHaveBeenCalledTimes(3)
+    expect(verificationReservations()).toBe(filler.length)
 
     for (const reservation of filler) reservation.release()
+  })
+
+  it('en order med sparat resultat hoppar över BankID, och resultatet loggas inte', async () => {
+    await signStart(post('/api/vote/sign-start', startBody()))
+    const filler = [...fillAllButOne(), reserveVerification()!]
+    state.collect.mockResolvedValue(COMPLETE)
+    const logged: string[] = []
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation((...args) => {
+        logged.push(args.map(String).join(' '))
+      }),
+    )
+
+    expect((await (await encrypted(poll())).json()).status).toBe('queued')
+    state.collect.mockClear()
+    expect((await (await encrypted(poll())).json()).status).toBe('queued')
+    expect(state.collect).not.toHaveBeenCalled()
+
+    spies.forEach((spy) => spy.mockRestore())
+    expect(logged.join('\n')).not.toMatch(/signerat|kedja/)
+    for (const reservation of filler) reservation.release()
+  })
+
+  it('en annan session får inte använda det sparade resultatet', async () => {
+    await signStart(post('/api/vote/sign-start', startBody()))
+    const filler = [...fillAllButOne(), reserveVerification()!]
+    state.collect.mockResolvedValue(COMPLETE)
+    await encrypted(poll())
+    for (const reservation of filler) reservation.release()
+
+    state.sessionId = 'session-b'
+    state.cast.mockClear()
+    expect((await (await encrypted(poll())).json()).status).toBe('failed')
+    expect(state.cast).not.toHaveBeenCalled()
   })
 
   it('platsen släpps när BankID inte är klart', async () => {
@@ -303,5 +438,17 @@ describe('kön reserverar sin plats innan BankID-ordern hämtas', () => {
     const reply = await encrypted(poll(ORDER, controller.signal))
     expect(reply.status).toBe(499)
     expect(verificationReservations()).toBe(0)
+  })
+
+  it('kön full inne i verifieringen lägger tillbaka resultatet, så ordern inte går förlorad', async () => {
+    const { VerificationQueueFull } = await import('@/lib/crypto/server')
+    await signStart(post('/api/vote/sign-start', startBody()))
+    state.collect.mockResolvedValue(COMPLETE)
+    state.cast.mockRejectedValueOnce(new VerificationQueueFull())
+
+    expect((await encrypted(poll())).status).toBe(503)
+    expect(getOrder(ORDER, 'session-a')?.completion).toBeDefined()
+
+    expect((await (await encrypted(poll())).json()).status).toBe('recorded')
   })
 })
