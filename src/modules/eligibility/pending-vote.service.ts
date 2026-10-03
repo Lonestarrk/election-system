@@ -1,4 +1,5 @@
 import { safeEqual } from '@/lib/crypto'
+import { electionBelongsToThisMode } from '@/lib/mode-flag'
 import { truncateToDay } from '@/lib/time'
 import { VerificationAborted, verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -73,6 +74,11 @@ export type SignedEnvelope = {
 export type CastOutcome =
   | { status: 'recorded'; ciphertextHash: string; replaced: boolean }
   | { status: 'closed' }
+  /**
+   * OMRÖSTNINGENS LÄGE ÄR EN ANNAN ÄN SERVERNS (uppgift 17). Ingenting har rörts.
+   * En demoomröstning kan inte hanteras av en server i skarpt läge, och tvärtom.
+   */
+  | { status: 'wrong_mode' }
   | { status: 'invalid_proof' }
   | { status: 'invalid_signature' }
   | { status: 'stale_sequence' }
@@ -124,7 +130,7 @@ export async function castEncryptedBallot(
 ): Promise<CastOutcome> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
-    select: { closesAt: true, linkClearedAt: true, phase: true },
+    select: { closesAt: true, linkClearedAt: true, phase: true, mode: true },
   })
 
   /**
@@ -155,6 +161,10 @@ export async function castEncryptedBallot(
   ) {
     return { status: 'closed' }
   }
+
+  // Läget är oföränderligt, så prövningen här räcker: raden i transaktionen längre ned
+  // läser samma omröstning, och kolumnen skrivs bara när omröstningen skapas.
+  if (!electionBelongsToThisMode(election.mode)) return { status: 'wrong_mode' }
 
   if (!shape) return { status: 'not_eligible' }
 

@@ -129,7 +129,8 @@ describe('en fil som inte håller stoppar', () => {
 
 describe('attrappens rot känns igen på sitt fingeravtryck', () => {
   it('och inte på sitt namn', () => {
-    // Uppgift 17 ska vägra starta skarpt läge med attrappens rot. En rot med
+    // Uppgift 17 vägrar starta skarpt läge med attrappens rot (kravet
+    // bankid-root-not-mock). En rot med
     // samma namn men en annan nyckel är inte attrappens, och attrappens rot
     // under ett annat namn vore det fortfarande.
     const lookalike = lookalikeHierarchy()

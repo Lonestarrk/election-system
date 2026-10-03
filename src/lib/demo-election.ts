@@ -1,3 +1,5 @@
+import { runtimeMode } from './mode-flag'
+
 /**
  * Demovalet, det som prisma/seed.ts skapar (uppgift 12c).
  *
@@ -39,4 +41,34 @@ export function demoElectionWindow(now: Date = new Date()): { opensAt: Date; clo
   const opensAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   const closesAt = new Date(opensAt.getTime() + 30 * 86_400_000)
   return { opensAt, closesAt }
+}
+
+/**
+ * Är frasen en av demofraserna? Jämförelsen ser förbi skiftläge och blanksteg
+ * runt frasen: "Demo-Fortroendeman-Ett " är lika känd som originalet, och en
+ * spärr som en versal kringgår vore ingen spärr.
+ */
+export function isKnownDemoPassphrase(phrase: string): boolean {
+  const normalised = phrase.trim().toLowerCase()
+  return DEMO_TRUSTEE_PASSPHRASES.some((known) => known.toLowerCase() === normalised)
+}
+
+/**
+ * Seedningen vägrar köra utanför demoläget (uppgift 17).
+ *
+ * Den skapar demovalet med förtroendemännens kända fraser och en administratör
+ * med ett känt personnummer, och skriver ut dem. Det är rätt för en demo och
+ * fel för allt annat. Anropas först i prisma/seed.ts, före varje databasåtkomst.
+ *
+ * Läser läget ur src/lib/mode-flag.ts, som är en fil utan importer och därför
+ * går att köra ur tsx utan appens sökvägsalias.
+ */
+export function assertSeedAllowed(): void {
+  if (runtimeMode() === 'DEMO') return
+
+  throw new Error(
+    'Seedningen körs bara i demoläget. Den här processen kör i skarpt läge, som är förvalt: ' +
+      'DEMO_MODE är inte exakt "true". Seedningen skapar demovalet med förtroendemännens kända fraser ' +
+      'och en administratör med ett känt personnummer, och gör inget utanför demoläget.',
+  )
 }

@@ -27,3 +27,6 @@ redirectToTestDatabases()
 process.env.IDENTITY_PEPPER ??= 'test-pepper-minst-trettiotva-tecken-langt-0000'
 process.env.APP_ORIGIN ??= 'http://localhost:3000'
 process.env.MOCK_BANKID_POLLS_UNTIL_COMPLETE ??= '0'
+// Läget (uppgift 17). Skarpt är förvalt, och testerna använder attrappen: de kör i demoläget om
+// inte skalet eller .env säger något annat. Tester som prövar skarpt läge sätter det själva.
+process.env.DEMO_MODE ??= 'true'

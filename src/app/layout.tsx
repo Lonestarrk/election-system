@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import { isDemoMode } from '@/lib/demo-mode'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -25,13 +26,27 @@ export const metadata: Metadata = {
 export const dynamic = 'force-dynamic'
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  /**
+   * BANDEROLLEN I DEMOLÄGE, PÅ VARJE SIDA (uppgift 17).
+   *
+   * Den publika demon är ett produktionsbygge i demoläge, och ska inte kunna
+   * förväxlas med ett riktigt val. Banderollen är ett av skydden för det, vid
+   * sidan av att skarpt läge är förvalt och att omröstningen bär sitt läge.
+   * Texten säger vad sidan är och lovar ingenting om rösten.
+   *
+   * I skarpt läge visas ingen banderoll. Sidfoten säger ändå att systemet är
+   * ett proof of concept, och den står kvar i båda lägena.
+   */
+  const demo = isDemoMode()
+
   return (
     <html lang="sv">
       <body>
-        <div className="poc-banner">
-          Detta är en teknisk demonstration. Inga riktiga röster registreras och systemet är inte
-          avsett för verkliga val.
-        </div>
+        {demo && (
+          <div className="mode-banner" role="note" data-testid="mode-banner">
+            Demo, inte ett riktigt val. BankID är en attrapp.
+          </div>
+        )}
 
         <header className="site-header">
           <div className="site-header-inner">

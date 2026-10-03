@@ -1,3 +1,4 @@
+import type { RuntimeMode } from '@/lib/mode-flag'
 import { votersDb } from './db'
 
 /**
@@ -60,6 +61,8 @@ export type MirrorElectionInput = {
   id: string
   name: string
   kind: string
+  /** Samma läge som i röstdatabasen (uppgift 17). */
+  mode: RuntimeMode
   opensAt: Date
   closesAt: Date
   ballots: Array<{
@@ -88,6 +91,7 @@ export async function mirrorElection(input: MirrorElectionInput): Promise<void> 
         id: input.id,
         name: input.name,
         kind: input.kind,
+        mode: input.mode,
         opensAt: input.opensAt,
         closesAt: input.closesAt,
       },

@@ -859,13 +859,47 @@ th {
   font-weight: 700;
 }
 
-.poc-banner {
+/* Banderollen i demoläge (uppgift 17), på varje sida. */
+.mode-banner {
   background: var(--warning-soft);
   border-bottom: 1px solid var(--warning);
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.86rem;
+  font-weight: 600;
   text-align: center;
-  padding: 0.5rem 1.25rem;
+  padding: 0.45rem 1.25rem;
+}
+
+/* Lägeskortet på adminsidan (uppgift 17). */
+.mode-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.mode-subheading {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.mode-requirements {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.mode-requirements code {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.mode-requirements .small {
+  margin-top: 0.15rem;
 }
 
 /* ---------------------------------------------------------------------------

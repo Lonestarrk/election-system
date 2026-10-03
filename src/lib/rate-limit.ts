@@ -112,6 +112,8 @@ export const RATE_LIMITS = {
 
   /** Adminstatistik. Läses om ofta medan en omröstning pågår. */
   adminStats: { limit: 120, windowMs: 60_000 },
+  /** Det offentliga lägessvaret (uppgift 17). Det ger bara läget. */
+  publicMode: { limit: 120, windowMs: 60_000 },
 
   /**
    * Det publicerade resultatet (uppgift 13). Varje hämtning räknar om

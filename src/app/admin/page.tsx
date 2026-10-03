@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react'
 import { BankIdLogin, type DemoIdentity } from '../_components/BankIdLogin'
 import { post } from './api'
 import { ElectionPanel } from './ElectionPanel'
+import { ModeCard } from './ModeCard'
 
 /**
  * Adminvyn.
@@ -91,6 +92,8 @@ export default function AdminPage() {
 
         {phase === 'ready' && (
           <>
+            <ModeCard />
+
             <div className="card">
               <h2>Omröstning</h2>
               <label htmlFor="election-select">Vilken omröstning gäller det?</label>

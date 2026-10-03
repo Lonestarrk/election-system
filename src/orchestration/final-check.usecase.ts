@@ -18,12 +18,15 @@ import {
 } from '@/lib/crypto/threshold'
 import { hashCiphertext, type EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { merkleRoot } from '@/lib/merkle'
+import { electionBelongsToThisMode, runtimeMode } from '@/lib/mode-flag'
+import { bankIdKind } from '@/modules/eligibility/bankid/kind'
 import { urnRootOf, type UrnRow } from '@/lib/urn-root'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
 import {
   AUDIT_EVENTS,
+  certifiedEventTypeFor,
   recordAuditEvent,
   urnRootInAuditChain,
   verifyAuditChain,
@@ -1139,6 +1142,8 @@ export type CertifyOutcome =
   /** Förutsättningarna är inte uppfyllda än. Ingenting har markerats. */
   | { status: 'not_ready'; report: FinalCheckReport }
   | { status: 'unknown_election' }
+  /** Omröstningens läge är ett annat än serverns (uppgift 17). Ingenting har rörts. */
+  | { status: 'wrong_mode' }
   | { status: 'already_certified'; report: FinalCheckReport }
 
 /**
@@ -1172,6 +1177,14 @@ export type CertifyOutcome =
  * nu bara markeringen UNDER_REVIEW.
  */
 export async function certifyElection(electionId: string): Promise<CertifyOutcome> {
+  // En demoomröstning fastställs aldrig av en server i skarpt läge, och en skarp aldrig av en
+  // demoserver. Prövas före slutkontrollen, som annars hade markerat omröstningen.
+  const row = await votersDb.election.findUnique({ where: { id: electionId }, select: { mode: true } })
+  const votesRow = await votesDb.election.findUnique({ where: { id: electionId }, select: { mode: true } })
+  if (row && (!electionBelongsToThisMode(row.mode) || (votesRow && !electionBelongsToThisMode(votesRow.mode)))) {
+    return { status: 'wrong_mode' }
+  }
+
   const report = await runFinalCheck(electionId)
   if (!report) return { status: 'unknown_election' }
 
@@ -1263,6 +1276,8 @@ async function markUnderReview(electionId: string): Promise<void> {
  * fem. Låset tas efter jämför-och-sätt, i samma ordning som skalningen och
  * räkningen tar omröstningens rad och sedan skriver sin post.
  *
+ * POSTENS TYP BÄR BANKID-MILJÖN (uppgift 17). Se `certifiedEventTypeFor`.
+ *
  * READ COMMITTED, UTTRYCKLIGEN. Läsningen av det senaste numret görs efter att
  * låset tagits och ska se en post som gjorde COMMIT medan låset väntade. Under
  * REPEATABLE READ hade den sett kedjan som den stod vid transaktionens första
@@ -1277,7 +1292,7 @@ async function writeCertified(electionId: string): Promise<boolean> {
       })
       if (cas.count !== 1) return false
       await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`
-      await recordAuditEvent(AUDIT_EVENTS.ELECTION_CERTIFIED, tx)
+      await recordAuditEvent(certifiedEventTypeFor(bankIdKind(runtimeMode())), tx)
       return true
     },
     { isolationLevel: 'ReadCommitted' },

@@ -1,6 +1,6 @@
 import { scryptHex } from '../src/lib/crypto'
 import { describeElectionSeed } from './election-seed-report'
-import { demoElectionWindow } from '../src/lib/demo-election'
+import { assertSeedAllowed, demoElectionWindow } from '../src/lib/demo-election'
 import { generateElectionKeyPair } from '../src/lib/blind-signature'
 // Serverns ingång, som i createElection: nyckeln exponentieras i OpenSSL.
 import { generateKeyPair, publicShare, splitSecret } from '../src/lib/crypto/server'
@@ -124,6 +124,10 @@ const CANDIDATES: Record<string, string[]> = {
 }
 
 async function main() {
+  // Före allt annat, också före läsningen av peppret: seedningen skapar demovalet med kända
+  // fraser och en administratör med ett känt personnummer, och körs bara i demoläget.
+  assertSeedAllowed()
+
   const pepper = process.env.IDENTITY_PEPPER
   if (!pepper || pepper.length < 32) {
     throw new Error('IDENTITY_PEPPER saknas eller är för kort (minst 32 tecken).')
@@ -167,6 +171,8 @@ async function main() {
       data: {
         name: 'Valet 2026',
         kind: 'RIKSDAGSVAL',
+        // Seedningen körs bara i demoläget, och demovalet bär det (uppgift 17).
+        mode: 'DEMO',
         // Tiderna räknas från idag (ruling 136), så att demovalet är öppet när det seedas.
         ...demoElectionWindow(),
       },
@@ -253,6 +259,7 @@ async function main() {
         id: election.id,
         name: election.name,
         kind: election.kind,
+        mode: 'DEMO',
         opensAt: election.opensAt,
         closesAt: election.closesAt,
       },

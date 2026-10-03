@@ -86,6 +86,19 @@ export async function POST(request: Request) {
     return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
   }
 
+  if (outcome.status === 'wrong_mode') {
+    // 409: begäran var behörig, men omröstningen hör till det andra läget (uppgift 17).
+    return jsonResponse(
+      {
+        status: 'wrong_mode',
+        message:
+          'Omröstningen skapades i ett annat läge än det servern kör i, och fastställs inte här. ' +
+          'Ingenting har ändrats. Läget sätts vid driftsättning.',
+      },
+      409,
+    )
+  }
+
   if (outcome.status === 'not_ready') {
     /**
      * Förutsättningarna är inte uppfyllda — omröstningen pågår, är inte

@@ -3,6 +3,7 @@ import type { Prisma as VotersPrisma } from '.prisma/voters'
 import { sha256Hex } from '@/lib/crypto'
 import { hashLeaf, merkleRoot } from '@/lib/merkle'
 import { logger } from '@/lib/logger'
+import { electionBelongsToThisMode } from '@/lib/mode-flag'
 import { urnRootOf } from '@/lib/urn-root'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
@@ -123,6 +124,11 @@ export type CloseOutcome =
       urnRowsReplaced: string[]
     }
   | { status: 'too_early'; closesAt: Date }
+  /**
+   * Omröstningens läge är ett annat än serverns (uppgift 17). Ingenting har rörts: en
+   * demoomröstning stängs inte av en server i skarpt läge, och tvärtom.
+   */
+  | { status: 'wrong_mode' }
   | {
       status: 'already_closed'
       /**
@@ -1791,6 +1797,16 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
  */
 export async function closeElection(electionId: string): Promise<CloseOutcome> {
   const urn: UrnChanges = { residueRemoved: [], urnRowsReplaced: [] }
+
+  // Först av allt, före låset och före varje läsning av kopplingen. Läget skrivs bara när
+  // omröstningen skapas. En omröstning som inte finns går vidare, och får sitt vanliga svar.
+  // Båda databasernas rad ska stämma: läget står i båda, och en rad som skrivits om ensam
+  // ska inte räcka.
+  const row = await votersDb.election.findUnique({ where: { id: electionId }, select: { mode: true } })
+  const votesRow = await votesDb.election.findUnique({ where: { id: electionId }, select: { mode: true } })
+  if (row && (!electionBelongsToThisMode(row.mode) || (votesRow && !electionBelongsToThisMode(votesRow.mode)))) {
+    return { status: 'wrong_mode' }
+  }
 
   try {
     const locked = await withClosingLock(electionId, (lock) => closeUnderLock(electionId, lock, urn))

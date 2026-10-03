@@ -158,6 +158,19 @@ export async function POST(request: Request) {
     )
   }
 
+  if (outcome.status === 'wrong_mode') {
+    // 409: begäran var behörig, men omröstningen hör till det andra läget (uppgift 17).
+    return jsonResponse(
+      {
+        status: 'wrong_mode',
+        message:
+          'Omröstningen skapades i ett annat läge än det servern kör i, och stängs inte här. ' +
+          'Ingenting har ändrats. Läget sätts vid driftsättning.',
+      },
+      409,
+    )
+  }
+
   if (outcome.status === 'too_early') {
     // 409, inte 403: begäran var behörig, men omröstningen pågår fortfarande.
     return jsonResponse(

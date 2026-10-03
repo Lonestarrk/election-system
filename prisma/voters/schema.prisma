@@ -107,6 +107,15 @@ model Election {
   /// fasovergang ar en handelse nagon utfort.
   phase String @default("OPEN")
 
+  /// DEMO | SHARP: det läge omröstningen skapades i (uppgift 17).
+  ///
+  /// En server i skarpt läge vägrar läggning, stängning och fastställande i en
+  /// DEMO-omröstning, och tvärtom. Utan det kunde demoröster hamna i ett skarpt val,
+  /// och en demoomröstning kunde fastställas som riktig. Skapandet skriver läget
+  /// ur serverns eget läge. Förvalet gäller bara rader som fanns före kolumnen, och
+  /// alla databaser som fanns då var demodatabaser.
+  mode String @default("DEMO")
+
   /// Merklerot över (ciphertextHash, bankIdSignature), beräknad före
   /// skalningen och skriven en enda gång.
   ///

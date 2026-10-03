@@ -13,6 +13,8 @@ import { mirrorElection, removeMirroredElection } from '@/modules/eligibility/el
 import { generateKeyPair, publicShare, splitSecret } from '@/lib/crypto/server'
 import { TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '@/lib/crypto/threshold'
 import { encryptShare } from '@/lib/crypto/share-storage'
+import { isKnownDemoPassphrase } from '@/lib/demo-election'
+import { runtimeMode } from '@/lib/mode-flag'
 
 /**
  * Skapar en omröstning i båda databaserna.
@@ -94,11 +96,38 @@ export async function createElection(
    */
   const keyPairs = input.ballots.map(() => generateElectionKeyPair())
 
+  /**
+   * LÄGET OMRÖSTNINGEN SKAPAS I, OCH KÄNDA FRASER VÄGRAS I SKARPT LÄGE (uppgift 17).
+   *
+   * Läget läses här, ur serverns eget läge, och skrivs i båda databaserna.
+   * Det kommer aldrig från den som fyller i formuläret. En omröstning bär sitt
+   * läge, så att en demoomröstning aldrig kan fastställas i skarpt läge och
+   * demoröster aldrig hamnar i en skarp.
+   *
+   * Demofraserna står i repot och är kända för alla som läser det. I skarpt läge
+   * skulle de göra förtroendemännens andelar öppningsbara för vem som helst som
+   * når röstdatabasen, så ett skapande med en av dem vägras, före allt skrivs.
+   * Kontrollen hänger inte på en miljövariabel som driften måste komma ihåg att
+   * sätta: den gäller fraserna själva. Den hindrar inte en svag fras som inte
+   * står i repot, och är ingen bedömning av frasers styrka.
+   */
+  const mode = runtimeMode()
+  if (mode === 'SHARP' && input.trusteePassphrases.some(isKnownDemoPassphrase)) {
+    logger.warn('Skapandet av en omröstning vägrades: en av fraserna är en känd demofras')
+    return {
+      status: 'failed',
+      message:
+        'Omröstningen skapades inte. En av förtroendepersonernas fraser är en av demofraserna, ' +
+        'som är kända för alla som läser koden. Välj egna fraser.',
+    }
+  }
+
   let created: CreatedElection
 
   try {
     created = await createElectionInVotesDb({
       ...input,
+      mode,
       ballots: input.ballots.map((ballot, index) => ({
         ...ballot,
         signingPublicKeyPem: keyPairs[index]!.publicKeyPem,
@@ -162,6 +191,7 @@ export async function createElection(
       id: created.id,
       name: input.name,
       kind: input.kind,
+      mode,
       opensAt: input.opensAt,
       closesAt: input.closesAt,
       ballots: created.ballotIds.map((ballot, index) => ({

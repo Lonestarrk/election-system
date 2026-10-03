@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { truncateToHour } from '@/lib/time'
 import { logger } from '@/lib/logger'
+import type { BankIdKind } from './bankid/kind'
 import { votersDb } from './db'
 
 /**
@@ -126,6 +127,16 @@ export const AUDIT_EVENTS = {
    */
   ELECTION_CERTIFIED: 'ELECTION_CERTIFIED',
   /**
+   * Samma händelse, med BankID-miljön nedskriven i typen (uppgift 17). Fastställandet
+   * skriver den typ som hör till den BankID servern använde, så att kedjan säger
+   * vilken miljö det gällde: testmiljön med test-BankID, produktion, eller ingen klient
+   * alls. Demoläget, där BankID är en attrapp, skriver den vanliga ELECTION_CERTIFIED.
+   * Se `certifiedEventTypeFor` nedan.
+   */
+  ELECTION_CERTIFIED_BANKID_TEST: 'ELECTION_CERTIFIED_BANKID_TEST',
+  ELECTION_CERTIFIED_BANKID_PRODUCTION: 'ELECTION_CERTIFIED_BANKID_PRODUCTION',
+  ELECTION_CERTIFIED_BANKID_NONE: 'ELECTION_CERTIFIED_BANKID_NONE',
+  /**
    * En slutkontroll fann en avvikelse, och fastställandet markerade
    * omröstningen UNDER_REVIEW (fixrunda 1 av uppgift 12b). Markeringen står i
    * röstdatabasen, där den som kan skriva kan ta bort den. Posten står här, i
@@ -144,6 +155,26 @@ export const AUDIT_EVENTS = {
 } as const
 
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS]
+
+/**
+ * Fastställandets händelsetyp för en BankID-miljö (uppgift 17).
+ *
+ * Typen bär miljön, och inte ett fält i raden: kedjans hash går över typen, så en miljö
+ * som skrivits om i efterhand syns som en bruten kedja. Posten säger vilken miljö det
+ * gällde, och ingenting om vilka som loggade in.
+ */
+export function certifiedEventTypeFor(kind: BankIdKind): AuditEventType {
+  switch (kind) {
+    case 'mock':
+      return AUDIT_EVENTS.ELECTION_CERTIFIED
+    case 'test':
+      return AUDIT_EVENTS.ELECTION_CERTIFIED_BANKID_TEST
+    case 'production':
+      return AUDIT_EVENTS.ELECTION_CERTIFIED_BANKID_PRODUCTION
+    case 'none':
+      return AUDIT_EVENTS.ELECTION_CERTIFIED_BANKID_NONE
+  }
+}
 
 /**
  * Hashen för en rad i kedjan.

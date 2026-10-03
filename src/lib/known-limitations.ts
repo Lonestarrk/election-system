@@ -495,7 +495,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       // Attrappen är den enda implementationen av gränssnittet.
       {
         file: 'src/modules/eligibility/bankid/index.ts',
-        contains: 'export const bankIdService: IBankIdService = new MockBankIdService()',
+        contains: "runtimeMode() === 'DEMO' ? new MockBankIdService() : new UnavailableBankIdService()",
       },
       // Underskriften lagras som den kommer. Med en adapter som förseglar den ändras raden.
       { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'bankIdSignature: envelope.signature,' },
@@ -554,11 +554,16 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     why:
       'Demovalets tre andelar är krypterade med tre fasta fraser, så att en och samma person kan ' +
       'spela alla tre förtroendemännen. Fraserna står i repot, i prisma/seed.ts, och därmed i ' +
-      'imagen, där prisma kopieras in, och seedningen skriver ut dem varje gång appen startar, i ' +
-      'Azure alltså i Log Analytics. Den som når röstdatabasen, med adressen ur valvet eller som ' +
+      'imagen, där prisma kopieras in, och seedningen skriver ut dem varje gång appen startar i ' +
+      'demoläget, i Azure alltså i Log Analytics. Den som når röstdatabasen, med adressen ur valvet eller som ' +
       'administratör, kan då öppna andelarna och dekryptera varje chiffer hen kommer åt, inte bara ' +
-      'summan. Lösenfraserna skyddar alltså ingenting för demovalet. Uppgift 17 ska få appen att vägra ' +
-      'starta i skarpt läge med de kända fraserna.',
+      'summan. Lösenfraserna skyddar alltså ingenting för demovalet. I skarpt läge vägrar skapandet av en ' +
+      'omröstning de tre fraserna, och seedningen vägrar köra. Spärren gäller de tre fraserna i repot, ' +
+      'inte svaga fraser i allmänhet, och den hänger inte på en miljövariabel. Ett demoval som ' +
+      'redan finns kan inte läggas i, stängas eller fastställas av en server i skarpt läge, eftersom ' +
+      'omröstningen bär sitt läge. Läget står i båda databaserna. Läggningen läser röstlängdens rad, och ' +
+      'stängning och fastställande kräver att båda raderna stämmer. Den som kan skriva i båda kan ' +
+      'ändå byta läget, så spärren skyddar mot ett misstag och inte mot en sådan skrivning.',
     stillTrueIf: [
       // Fraserna står i seedningen ...
       { file: 'prisma/seed.ts', contains: "'demo-fortroendeman-ett'," },
@@ -567,9 +572,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         file: 'prisma/seed.ts',
         contains: 'TRUSTEE_PASSPHRASES.map((phrase, index) => `  ${index + 1}. ${phrase}`)',
       },
-      // ... och körs vid varje start, med seedningen kopierad in i imagen.
+      // ... och körs vid varje start i demoläget, med seedningen kopierad in i imagen.
       { file: 'docker/entrypoint.sh', contains: 'npx tsx prisma/seed.ts' },
       { file: 'Dockerfile', contains: 'COPY --from=builder /app/prisma ./prisma' },
+      // I skarpt läge vägrar skapandet av en omröstning fraserna, och seedningen körs inte.
+      {
+        file: 'src/orchestration/create-election.usecase.ts',
+        contains: "input.trusteePassphrases.some(isKnownDemoPassphrase)",
+      },
+      { file: 'prisma/seed.ts', contains: 'assertSeedAllowed()' },
     ],
   },
   {

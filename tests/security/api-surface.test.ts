@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
+import { demoRouteProblems } from './demo-route-source'
 
 /**
  * Testpunkt 8: en väljaridentitet kan inte användas för att få fram en token.
@@ -70,6 +71,11 @@ describe('API-ytan', () => {
       /** Räkningen av en valsedel, när två bidrag finns (uppgift 12). */
       'src/app/api/admin/elections/tally/route.ts',
       'src/app/api/admin/login/route.ts',
+      /**
+       * Läget och kraven för skarpt läge, för adminsidans kort (uppgift 17).
+       * Bara GET, bakom adminsessionen. Ingen rutt byter läge.
+       */
+      'src/app/api/admin/mode/route.ts',
       'src/app/api/admin/stats/route.ts',
       'src/app/api/auth/bankid/collect/route.ts',
       'src/app/api/auth/bankid/qr/route.ts',
@@ -95,6 +101,8 @@ describe('API-ytan', () => {
       'src/app/api/demo/reset-rate-limits/route.ts',
       'src/app/api/demo/trustee-passphrases/route.ts',
       'src/app/api/elections/route.ts',
+      /** Bara läget, för banderollen (uppgift 17). Ingen checklista. */
+      'src/app/api/mode/route.ts',
       /**
        * Observatörens överblick: fasen, valdeltagandet och rötterna. Inget
        * resultat i någon fas (uppgift 13, spec 6.2).
@@ -465,9 +473,9 @@ describe('demorutterna', () => {
    * /api/demo/database-state hade inget villkor alls, medan arkitektursidan
    * som visar svaret bara frågade i demoläget. Villkoret lästes dessutom på
    * fyra ställen, var för sig. Det här testet hade fångat luckan: varje rutt
-   * under /api/demo ska börja med att fråga `isDemoMode()`, och ingen fil utom
-   * src/lib/demo-mode.ts får läsa `bankIdIsMocked` själv. Då är bytet i
-   * uppgift 17 en rad, och ingen rutt kan hamna utanför det.
+   * under /api/demo ska börja med att fråga `isDemoMode()`. Sedan uppgift 17
+   * avgörs läget av DEMO_MODE, i src/lib/mode-flag.ts, och `isDemoMode()` är
+   * lägesfunktionen.
    *
    * Kommentarerna tas bort före granskningen. Rutterna förklarar sitt villkor
    * i löpande text, och en förklaring ska inte kunna fälla eller rädda testet.
@@ -493,27 +501,30 @@ describe('demorutterna', () => {
   })
 
   it.each(demoRoutes.map((route) => [route.path, route.content] as const))(
-    '%s börjar varje hanterare med att fråga om demoläget, och svarar 404 annars',
+    '%s är skriven som en demorutt och börjar varje hanterare med att svara 404 utanför demoläget',
     (path, content) => {
-      const code = withoutComments(content)
-
-      expect(code, `${path} importerar inte predikatet`).toMatch(
-        /import \{ isDemoMode \} from '@\/lib\/demo-mode'/,
-      )
-
-      const handlers = code.match(/export async function (GET|POST|PUT|PATCH|DELETE)\b/g) ?? []
-      const gated =
-        code.match(
-          /export async function (GET|POST|PUT|PATCH|DELETE)\([^)]*\)\s*\{\s*if \(!isDemoMode\(\)\) \{\s*return errorResponse\('NOT_FOUND'/g,
-        ) ?? []
-
-      expect(handlers.length, `${path} har ingen hanterare`).toBeGreaterThan(0)
-      expect(gated.length, `${path}: varje hanterare ska börja med villkoret`).toBe(handlers.length)
-      expect(code, `${path} läser bankIdIsMocked direkt`).not.toMatch(/bankIdIsMocked/)
+      // Kontrollen och dess mutanttest ligger i tests/security/demo-route-source.ts
+      // och demo-route-guard.test.ts. Beteendet prövas i demo-routes-behaviour.test.ts.
+      expect(demoRouteProblems(path, content)).toEqual([])
     },
   )
 
-  it('ingen fil utom predikatet läser bankIdIsMocked', () => {
+  it('inga filer under src/app/api/demo heter något annat än route.ts', () => {
+    function everyFile(directory: string): string[] {
+      return readdirSync(directory).flatMap((entry) => {
+        const full = join(directory, entry)
+        return statSync(full).isDirectory() ? everyFile(full) : [full]
+      })
+    }
+
+    const others = everyFile(join(API_ROOT, 'demo'))
+      .map((file) => relative(process.cwd(), file).split(sep).join('/'))
+      .filter((file) => !file.endsWith('/route.ts'))
+
+    expect(others).toEqual([])
+  })
+
+  it('ingen fil utom lägesfunktionen läser läget, och ingen läser BankID-attrappen för att avgöra det', () => {
     function sourceFiles(directory: string): string[] {
       return readdirSync(directory).flatMap((entry) => {
         const full = join(directory, entry)
@@ -525,9 +536,8 @@ describe('demorutterna', () => {
     const readers = sourceFiles(join(process.cwd(), 'src'))
       .filter((file) => /bankIdIsMocked/.test(withoutComments(readFileSync(file, 'utf8'))))
       .map((file) => relative(process.cwd(), file).split(sep).join('/'))
-      .sort()
 
-    // Definitionen, och den enda som läser den.
-    expect(readers).toEqual(['src/lib/demo-mode.ts', 'src/modules/eligibility/bankid/index.ts'])
+    // Variabeln finns inte längre. Läget följer DEMO_MODE, inte implementationen.
+    expect(readers).toEqual([])
   })
 })

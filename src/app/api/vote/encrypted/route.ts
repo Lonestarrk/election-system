@@ -192,6 +192,7 @@ function httpStatusFor(status: CastOutcome['status']): number {
     case 'recorded':
       return 200
     case 'closed':
+    case 'wrong_mode':
     case 'stale_sequence':
     case 'voted_in_old_flow':
       return 409

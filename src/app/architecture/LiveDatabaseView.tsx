@@ -40,7 +40,7 @@ import {
  * bara när `isDemoMode()` säger ja, så i skarpt läge finns de inte i sidan
  * alls och ingen hämtning görs. Rutten de hämtar från frågar samma funktion
  * och svarar 404 annars. Ett eget villkor här hade varit ett ställe till att
- * glömma när uppgift 17 byter predikatet.
+ * glömma, och predikatet följer sedan uppgift 17 DEMO_MODE.
  *
  * Tillståndet hålls av `followReducer` i follow-a-vote.ts, och hämtningen av
  * live-refresh.ts. Båda är byggda så att sidan inte kan bli kopplingen den

@@ -1736,16 +1736,18 @@ export const CURRENTLY = {
 
   azureRunsDemo: {
     text:
-      'Uppsättningen i Azure kör i demoläget: BankID är attrappen, som utfärdar certifikaten själv. ' +
-      'Entrypoint kör seedningen vid varje start, och den skapar demovalet, om det saknas, med ' +
+      'Demon i Azure körs i demoläget, som sätts vid driftsättning med DEMO_MODE=true och inte går ' +
+      'att ändra inifrån appen: BankID är attrappen, som utfärdar certifikaten själv. Entrypoint ' +
+      'kör seedningen vid varje start i demoläget, och den skapar demovalet, om det saknas, med ' +
       'förtroendemännens tre kända demofraser. Den som når röstdatabasen kan då öppna andelarna med ' +
       'dem och dekryptera varje chiffer hen kommer åt.',
     holdsWhile: [
       { file: 'infra/azure/README.md', contains: 'Med MockBankID är appen i demoläge' },
       {
         file: 'src/modules/eligibility/bankid/index.ts',
-        contains: 'export const bankIdService: IBankIdService = new MockBankIdService()',
+        contains: "runtimeMode() === 'DEMO' ? new MockBankIdService() : new UnavailableBankIdService()",
       },
+      { file: 'src/lib/mode-flag.ts', contains: "? 'DEMO' : 'SHARP'" },
       ...DEMO_PASSPHRASES_SEEDED,
       { file: 'src/lib/crypto/share-storage.ts', contains: 'function keyFor(passphrase: string, electionId: string, trusteeIndex: number): Buffer {' },
     ],
@@ -2046,7 +2048,7 @@ export const PHASES: PhaseRow[] = [
             '      })',
             '      if (cas.count !== 1) return false',
             '      await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`',
-            '      await recordAuditEvent(AUDIT_EVENTS.ELECTION_CERTIFIED, tx)',
+            '      await recordAuditEvent(certifiedEventTypeFor(bankIdKind(runtimeMode())), tx)',
           ].join('\n'),
         },
         {

@@ -1,4 +1,5 @@
 import { canonicalOptions } from '@/lib/crypto/ballot-encoding'
+import type { RuntimeMode } from '@/lib/mode-flag'
 import { votesDb } from './db'
 
 /**
@@ -371,6 +372,8 @@ export async function validateBallotChoice(
 export type CreateElectionInput = {
   name: string
   kind: ElectionKind
+  /** Läget omröstningen skapas i, ur serverns eget läge (uppgift 17). */
+  mode: RuntimeMode
   opensAt: Date
   closesAt: Date
   ballots: Array<{
@@ -415,6 +418,7 @@ export async function createElection(input: CreateElectionInput): Promise<Create
       data: {
         name: input.name,
         kind: input.kind,
+        mode: input.mode,
         opensAt: input.opensAt,
         closesAt: input.closesAt,
       },

@@ -34,6 +34,9 @@ services:
       COOKIE_SECURE: 'false'
       MOCK_BANKID_POLLS_UNTIL_COMPLETE: '2'
       NODE_ENV: production
+      # Lokalt demoläge (uppgift 17). Skarpt läge är förvalt, och en compose-fil som lämnar det
+      # osatt skulle inte starta: skarpt läge saknar än så länge en riktig BankID-klient.
+      DEMO_MODE: 'true'
     ports:
       - '3000:3000'
 

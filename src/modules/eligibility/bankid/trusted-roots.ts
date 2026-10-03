@@ -128,17 +128,15 @@ export function trustedBankIdRoots(): X509Certificate[] {
   }
 
   /**
-   * UPPGIFT 17: SKARPT LÄGE SKA VÄGRA STARTA MED ATTRAPPENS ROT.
+   * SKARPT LÄGE FALLER ALDRIG TILLBAKA PÅ ATTRAPPENS ROT (uppgift 17).
    *
-   * Förvalet nedan gäller bara i demoläget, och i dag är demoläget detsamma som
-   * att BankID är en attrapp, så skarpt läge har ingen rot att falla tillbaka
-   * på. Två vägar finns ändå kvar till attrappens rot i skarpt läge, och båda
-   * ska stängas av uppgift 17: lägesväxeln gör att demoläget inte längre följer
-   * av implementationen, och BANKID_ROOT_CERTIFICATES kan peka ut attrappens rot
-   * uttryckligen. Lägg därför ett krav i `sharpModeRequirements()` i
-   * src/lib/runtime-mode.ts, till exempel `bankid-root-not-mock`, som läser
-   * `trustedBankIdRoots()` och är uppfyllt bara om `isMockBankIdRoot` svarar nej
-   * för varenda rot, så att `assertBootable()` kastar annars.
+   * Förvalet nedan gäller bara i demoläget, som sätts vid driftsättning med
+   * DEMO_MODE=true. Skarpt läge har ingen rot att falla tillbaka på och kastar.
+   * Den andra vägen till attrappens rot är att BANKID_ROOT_CERTIFICATES pekar ut
+   * den uttryckligen. Den stängs av kravet `bankid-root-not-mock` i
+   * `sharpModeRequirements()` (src/lib/runtime-mode.ts), som är uppfyllt bara om
+   * `isMockBankIdRoot` svarar nej för varenda rot, så att uppstartsvakten
+   * stoppar skarpt läge annars.
    */
   if (isDemoMode()) return [mockBankIdRoot()]
 
