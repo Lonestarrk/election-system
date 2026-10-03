@@ -559,14 +559,19 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'administratör, kan då öppna andelarna och dekryptera varje chiffer hen kommer åt, inte bara ' +
       'summan. Lösenfraserna skyddar alltså ingenting för demovalet. I skarpt läge vägrar skapandet av en ' +
       'omröstning de tre fraserna, och seedningen vägrar köra. Spärren gäller de tre fraserna i repot, ' +
-      'inte svaga fraser i allmänhet, och den hänger inte på en miljövariabel. Ett demoval som ' +
-      'redan finns kan inte läggas i, stängas, räknas, publiceras eller fastställas av en server i ' +
-      'skarpt läge, och tvärtom, eftersom omröstningen bär sitt läge. Det gäller kuvertflödet, det ' +
-      'gamla flödets röstintyg och röster, räkningen, dekrypteringen och publiceringen. Gamla ' +
-      'flödet tas bort i uppgift 15, och spärren står kvar tills dess. Inget i en server i det ' +
-      'andra läget blockerar däremot att någon läser databasen direkt. Läget står i båda databaserna. Läggningen läser röstlängdens rad, och ' +
-      'stängning och fastställande kräver att båda raderna stämmer. Den som kan skriva i båda kan ' +
-      'ändå byta läget, så spärren skyddar mot ett misstag och inte mot en sådan skrivning.',
+      'inte svaga fraser i allmänhet, och den hänger inte på en miljövariabel. ' +
+      'Omröstningen bär sitt läge, i båda databaserna. Ett demoval som redan finns kan därför inte ' +
+      'läggas i, stängas, räknas, publiceras eller fastställas av en server i skarpt läge, och ett ' +
+      'skarpt val inte av en demoserver. Spärren gäller kuvertflödet, det gamla flödets röstintyg och ' +
+      'röster, räkningens ingångar, dekrypteringen, omräkningen och publiceringen, fastställandet, och ' +
+      'rutterna som skriver ett åtagande eller startar slutkontrollen. Läsvägarna spärras inte: ' +
+      'adminsidans läsning av fas och antal (state), observatörens överblick (observer/election) och ' +
+      '/api/verify svarar i båda lägena, eftersom de ändrar ingenting och bara lämnar ut antal, fas ' +
+      'och väljarens eget besked. Gamla flödet tas bort i uppgift 15, och spärren står kvar tills dess. ' +
+      'Läggningen läser röstlängdens rad, och stängning och fastställande kräver att båda raderna ' +
+      'stämmer. Den som kan skriva i båda databaserna kan ändå byta läget, och den som läser databasen ' +
+      'direkt hindras inte av något läge. Spärren skyddar alltså mot ett misstag och inte mot en sådan ' +
+      'skrivning.',
     stillTrueIf: [
       // Fraserna står i seedningen ...
       { file: 'prisma/seed.ts', contains: "'demo-fortroendeman-ett'," },
@@ -584,6 +589,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         contains: "input.trusteePassphrases.some(isKnownDemoPassphrase)",
       },
       { file: 'prisma/seed.ts', contains: 'assertSeedAllowed()' },
+      // Omröstningens läge prövas i räkningen och publiceringen ...
+      { file: 'src/orchestration/tally.usecase.ts', contains: 'checkElectionMode(' },
+      { file: 'src/orchestration/publish-results.usecase.ts', contains: 'checkElectionMode(' },
+      // ... i det gamla flödets intyg och röster ...
+      { file: 'src/modules/eligibility/credential.service.ts', contains: 'electionBelongsToThisMode' },
+      { file: 'src/modules/ballot-box/index.ts', contains: 'electionBelongsToThisMode' },
+      // ... och i rutterna som skriver ett åtagande eller startar slutkontrollen.
+      { file: 'src/app/api/admin/elections/commit/route.ts', contains: 'checkElectionMode(' },
+      { file: 'src/app/api/admin/elections/check/route.ts', contains: 'checkElectionMode(' },
     ],
   },
   {

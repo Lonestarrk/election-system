@@ -20,6 +20,11 @@ describe('layout.tsx', () => {
     expect(description).not.toMatch(/kan kopplas ihop/)
   })
 
+  it('säger inte att namn och röst hålls isär, eftersom de är kopplade före stängningen', () => {
+    expect(description).not.toMatch(/hålls isär|isär/)
+    expect(description).not.toMatch(/dubbla kuvert: väljarens namn/)
+  })
+
   it('säger att kopplingen finns tills stängningen', () => {
     expect(description).toMatch(/stängning/)
   })

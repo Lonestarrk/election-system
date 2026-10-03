@@ -4,6 +4,7 @@ import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
 import { getMirroredElection } from '@/modules/eligibility/election.service'
+import { checkElectionMode } from '@/orchestration/election-mode'
 import { startFinalCheck } from '@/orchestration/final-check-job'
 
 export const runtime = 'nodejs'
@@ -57,6 +58,20 @@ export async function POST(request: Request) {
 
   const election = await getMirroredElection(body.data.electionId)
   if (!election) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
+
+  // Läget före skrivningen och före starten (uppgift 17, fixrunda 2). En omröstning i det andra läget
+  // får ingen slutkontroll startad av den här servern.
+  if ((await checkElectionMode(body.data.electionId)) === 'wrong') {
+    return jsonResponse(
+      {
+        status: 'wrong_mode',
+        message:
+          'Omröstningen skapades i ett annat läge än det servern kör i. Ingenting skrevs eller startades. ' +
+          'Läget sätts vid driftsättning.',
+      },
+      409,
+    )
+  }
 
   const started = startFinalCheck(body.data.electionId)
 

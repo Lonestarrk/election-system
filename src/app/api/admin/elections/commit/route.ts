@@ -3,6 +3,7 @@ import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, statsRequestSchema } from '@/lib/validation'
+import { checkElectionMode } from '@/orchestration/election-mode'
 import { commitCurrentState } from '@/modules/ballot-box/commitment.service'
 
 export const runtime = 'nodejs'
@@ -49,6 +50,20 @@ export async function POST(request: Request) {
 
   if (!body.data.electionId) {
     return errorResponse('INVALID_INPUT', 'Ange vilken omröstning det gäller.', 400)
+  }
+
+  // Läget före skrivningen och före starten (uppgift 17, fixrunda 2). En omröstning i det andra läget
+  // får inget åtagande skrivet av den här servern.
+  if ((await checkElectionMode(body.data.electionId)) === 'wrong') {
+    return jsonResponse(
+      {
+        status: 'wrong_mode',
+        message:
+          'Omröstningen skapades i ett annat läge än det servern kör i. Ingenting skrevs eller startades. ' +
+          'Läget sätts vid driftsättning.',
+      },
+      409,
+    )
   }
 
   const commitment = await commitCurrentState(body.data.electionId)

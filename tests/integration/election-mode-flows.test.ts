@@ -14,7 +14,22 @@ import {
   submitPartialDecryption,
 } from '@/orchestration/tally.usecase'
 import { getElectionTallyResults, publishedResults } from '@/orchestration/publish-results.usecase'
-import { disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createAdminSession } from '@/modules/eligibility/admin-session.service'
+import { POST as commitRoute } from '@/app/api/admin/elections/commit/route'
+import { POST as checkRoute } from '@/app/api/admin/elections/check/route'
+import { POST as stateRoute } from '@/app/api/admin/elections/state/route'
+import { POST as observerRoute } from '@/app/api/observer/election/route'
+import { disconnect, isDatabaseAvailable, resetElectionData, createVoter } from './helpers'
+
+/** Adminsessionens cookie läggs in utifrån, eftersom next/headers kräver Nexts begäranskontext. */
+const cookieJar = vi.hoisted(() => ({ admin: undefined as string | undefined }))
+
+vi.mock('next/headers', () => ({
+  cookies: async () => ({
+    get: (name: string) =>
+      name === 'valadmin' && cookieJar.admin ? { name, value: cookieJar.admin } : undefined,
+  }),
+}))
 
 /**
  * LÄGESSPÄRREN I DET GAMLA FLÖDET, RÄKNINGEN OCH PUBLICERINGEN (uppgift 17,
@@ -129,6 +144,88 @@ describe.skipIf(!databaseAvailable)('lägesspärren i övriga ingångar', () => 
 
       expect(await publishedResults(election.id)).toMatchObject({ status: 'wrong_mode' })
       expect(await completeTally(election.ballotId)).toMatchObject({ status: 'wrong_mode' })
+    })
+  })
+
+  describe('adminrutterna som skriver eller startar kontroller', () => {
+    const ORIGIN = 'http://localhost:3000'
+    let csrf = ''
+
+    async function login(): Promise<void> {
+      const admin = await createVoter('198001019876', { isAdmin: true })
+      const session = await createAdminSession(admin)
+      cookieJar.admin = session.id
+      csrf = session.csrfSecret
+    }
+
+    function post(handler: (request: Request) => Promise<Response>, path: string, body: unknown) {
+      return handler(
+        new Request(`${ORIGIN}${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: ORIGIN, 'x-csrf-token': csrf },
+          body: JSON.stringify(body),
+        }),
+      )
+    }
+
+    afterEach(() => {
+      cookieJar.admin = undefined
+    })
+
+    it.each(directions)('commit skriver inget åtagande i en %s', async (_label, createdIn, serverIn) => {
+      const election = await create(createdIn)
+      await login()
+      vi.stubEnv('DEMO_MODE', serverIn)
+
+      const response = await post(commitRoute, '/api/admin/elections/commit', { electionId: election.id })
+
+      expect(response.status).toBe(409)
+      expect((await response.json()).status).toBe('wrong_mode')
+      expect(await votesDb.electionCommitment.count()).toBe(0)
+    })
+
+    it('commit skriver i en omröstning i rätt läge', async () => {
+      const election = await create('true')
+      await login()
+
+      const response = await post(commitRoute, '/api/admin/elections/commit', { electionId: election.id })
+
+      expect(response.status).toBe(200)
+      expect(await votesDb.electionCommitment.count()).toBe(1)
+    })
+
+    it.each(directions)('slutkontrollen startas inte för en %s', async (_label, createdIn, serverIn) => {
+      const election = await create(createdIn)
+      await login()
+      vi.stubEnv('DEMO_MODE', serverIn)
+
+      const response = await post(checkRoute, '/api/admin/elections/check', { electionId: election.id })
+
+      expect(response.status).toBe(409)
+      expect((await response.json()).status).toBe('wrong_mode')
+    })
+
+    it('slutkontrollen startas för en omröstning i rätt läge', async () => {
+      const election = await create('true')
+      await login()
+
+      const response = await post(checkRoute, '/api/admin/elections/check', { electionId: election.id })
+
+      expect(response.status).toBe(202)
+    })
+
+    it('läsvägarna spärras INTE: adminsidans läsning och observatörens överblick svarar i båda lägena', async () => {
+      // Avsiktligt: de ändrar ingenting och lämnar bara ut antal och fas. Posten
+      // demo-trustee-passphrases-known säger det uttryckligen.
+      const election = await create('true')
+      await login()
+      vi.stubEnv('DEMO_MODE', '')
+
+      const state = await post(stateRoute, '/api/admin/elections/state', { electionId: election.id })
+      expect(state.status).toBe(200)
+
+      const observer = await post(observerRoute, '/api/observer/election', { electionId: election.id })
+      expect(observer.status).not.toBe(409)
     })
   })
 
