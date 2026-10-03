@@ -577,8 +577,15 @@ BallotTally
 2. **Väljaren legitimerar sig** och ser sina valsedlar och om väljaren redan har röstat.
 3. **Klienten** hämtar valsedelns kanoniska alternativlista, bygger enhetsvektorn,
    krypterar och bevisar.
-4. **Väljaren signerar** chifferhashen med BankID `/sign`. Appen visar vad som godkänns;
-   räknaren och valsedelns id ligger i det icke synliga fältet. Se avsnitt 4.6.
+4. **Väljaren signerar** ett saltat åtagande över chifferhashen med BankID `/sign`.
+   - Åtagandet är `SHA-256(UTF-8("valsystem/bankid-atagande/v1") ‖ 0x00 ‖ H ‖ S)`, skrivet som
+     64 gemena hextecken. H är chifferhashens 32 byte och S ett salt på 32 byte.
+   - Saltet skapas i `sign-start`, hålls på servern med ordern och sparas i `PendingVote`. Det
+     raderas med raden vid skalningen och skickas aldrig till klienten.
+   - Testvektor: H = `ab`×32 och S = `01`×32 ger
+     `2f7ba812e6a265664730d4ebc3c28d02f96efd37e8072d1d9e154dc5e0199ae5`.
+   - Appen visar på svenska vad som godkänns, utan hash. Räknaren, valsedelns id och åtagandet
+     ligger i det icke synliga fältet i formatet `valsystem/kuvert/v2`. Se avsnitt 4.6.
 5. **Servern** verifierar bevisen, prövar kedjan mot BankID:s rot, signaturen mot lövets
    nyckel och personnumret i lövet mot väljarens, kontrollerar att räknaren är högre än den
    lagrade, och gör upsert på `(voterStatusId, ballotId)` med kedjan krypterad (4.6).
@@ -790,8 +797,10 @@ B kräver två oberoende intrång i stället för ett, och Estland har valt den 
 strikt starkare på valhemlighet och strikt svagare på granskning.
 
 **Valt: A, med ett tillägg som återtar det mesta av granskbarheten.** Innan kuverten
-skalas beräknas en Merklerot över alla par av `(ciphertextHash, signatur)` och
-publiceras. Roten avslöjar ingenting — den är en hash — men binder oss vid exakt vilka
+skalas beräknas en Merklerot över alla kuvert och publiceras. Bladet är
+`hashLeaf("<chifferhash>|<salt>|<signatur>")` (uppgift 11e). Saltet står i bladet,
+eftersom BankID har varje signatur och urnans hashar annars hade räckt för att pröva sig
+fram till roten när en valsedel har få röster. Roten avslöjar ingenting — den är en hash — men binder oss vid exakt vilka
 signerade kuvert som fanns.
 
 Det som följer är att vi inte senare kan påstå att andra kuvert fanns, eftersom roten
@@ -903,11 +912,11 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   väljare att lägga kopior av det förskjuter summan för det alternativet, och kan därmed
   lära sig något om den väljarens röst. Det kräver chiffret, som aldrig publiceras, och många
   medverkande. Att avvisa kopior skulle i stället ge en köpare ett orakel (5).
-- **BankID-ordern bär chifferhashen ut ur systemet**, tillsammans med väljarens
-  identitet. BankID sparar signaturer, bland annat för tvister, så kopplingen skulle
-  finnas kvar hos BankID efter raderingen här. Åtgärdas genom att det signerade bär en
-  hash av chifferhashen och ett salt som bara finns i `PendingVote` och raderas med
-  raden. Efter stängningen går BankID:s kopia inte att matcha mot någonting.
+- **BankID vet vem som röstade, när och hur många gånger.** Sedan uppgift 11e signerar
+  väljaren ett saltat åtagande i stället för chifferhashen (4.6). BankID:s kopia går därför
+  inte att matcha mot en röst efter stängningen, eftersom saltet raderas med kuvertet. Men
+  varje signering är en order med väljarens identitet och en tidpunkt, så BankID ser
+  deltagandet och varje omröstning.
 - **Den som driver systemet kan ta bort ett kuvert eller återställa en väljares tidigare
   äkta röst.** Kedjevalideringen (4.6) hindrar att nya underskrifter förfalskas, men inte
   att äkta tas bort eller spelas upp igen, eftersom räknaren för den senaste underskriften
