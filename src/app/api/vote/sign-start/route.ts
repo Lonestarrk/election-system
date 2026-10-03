@@ -50,8 +50,8 @@ export const dynamic = 'force-dynamic'
  * 170 kB varannan sekund. Nu lägger den här rutten valsedeln i orderlagret
  * (src/lib/order-state.ts), bunden till väljarens session, och pollningen bär
  * bara `orderRef`. Hashen i begäran måste vara valsedelns egen: det som
- * signeras är hashen, och en valsedel med en annan hash hade bara fått rösten
- * avvisad efter att väljaren skrivit under.
+ * signeras är ett saltat åtagande om hashen (uppgift 11e), och en valsedel med
+ * en annan hash hade bara fått rösten avvisad efter att väljaren skrivit under.
  *
  * FORMEN PRÖVAS HÄR, INNAN BANKID-ORDERN SKAPAS (fixrunda 1). Servern hämtar
  * omröstningens form, kräver att antalet chiffer är valsedelns antal alternativ

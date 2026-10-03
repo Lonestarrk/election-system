@@ -156,9 +156,9 @@ export function challengeHash(context: string, values: bigint[]): bigint {
  * antagandet vilar bevisen redan. Med hela listan i varje utmaning hade
  * arbetet vuxit med kvadraten på antalet alternativ: en riksdagsvalsedel har
  * 27 utmaningar och en lista på 13 kB. Hashen räknas en gång per valsedel. Den
- * är dessutom valsedelns egen chifferhash, som väljaren skriver under med
- * BankID och som kuvertroten byggs av, så bevisen binder samma värde som
- * resten av kuvertet.
+ * är dessutom valsedelns egen chifferhash, som BankID-underskriftens saltade
+ * åtagande och kuvertroten byggs av, så bevisen binder samma värde som resten
+ * av kuvertet.
  *
  * Valsedelns verifiering i verify-ballot.ts räknar hashen själv ur chiffren
  * och tar den aldrig på ord.
