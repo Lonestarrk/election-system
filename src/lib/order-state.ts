@@ -21,6 +21,9 @@ import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
  *   putOrder(orderRef, sessionId, state)  lägger ordern, eller returnerar false när lagret är fullt
  *   getOrder(orderRef, sessionId)         läser utan att förbruka, för en pollning som inte är klar
  *   takeOrder(orderRef, sessionId)        läser och tar bort, så att en order bara förbrukas en gång
+ *   attachCompletion(orderRef, sessionId, completion)
+ *                                         lägger BankID:s insamlade svar på ordern, med förfallet
+ *                                         oförändrat, när kön var full; false om ordern saknas
  *
  * EN ORDER ÄR BUNDEN TILL VÄLJARENS SESSION. Referensen är en UUID som BankID
  * ger och som sidan skickar tillbaka, och en annan väljare som kommer över den

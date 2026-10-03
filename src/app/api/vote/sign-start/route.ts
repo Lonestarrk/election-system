@@ -118,6 +118,11 @@ export async function POST(request: Request) {
   if (body.data.ballot.ciphertext.length !== shape.optionCount) {
     return errorResponse('INVALID_BALLOT', 'Valsedeln har fel antal alternativ.', 400)
   }
+  // Hashen täcker chiffret men inte bevisen. Ett bevis per alternativ, annars avvisas
+  // valsedeln vid läggningen, efter att väljaren skrivit under.
+  if (body.data.ballot.proofs.components.length !== shape.optionCount) {
+    return errorResponse('INVALID_BALLOT', 'Valsedeln har fel antal bevis.', 400)
+  }
   if (hashCiphertext(body.data.ballot.ciphertext) !== body.data.ballot.ciphertextHash) {
     return errorResponse('INVALID_BALLOT', 'Valsedelns hash stämmer inte med chiffret.', 400)
   }

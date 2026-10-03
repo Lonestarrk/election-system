@@ -170,7 +170,14 @@ export async function POST(request: Request) {
 
   const reservation = reserveVerification()
   if (!reservation) {
-    attachCompletion(orderRef, sessionId, completion)
+    // Kunde svaret inte sparas har ordern förfallit eller tagits bort under tiden. Då
+    // finns inget att vänta på, och `queued` hade låtit sidan fråga en order som inte finns.
+    if (!attachCompletion(orderRef, sessionId, completion)) {
+      return jsonResponse({
+        status: 'failed',
+        message: 'Signeringen gick inte att slutföra, och rösten lades inte. Försök igen.',
+      })
+    }
     return queuedResponse()
   }
 
@@ -203,6 +210,12 @@ export async function POST(request: Request) {
        */
       if (error instanceof VerificationQueueFull) {
         keepOrder = attachCompletion(orderRef, sessionId, completion)
+        if (!keepOrder) {
+          return jsonResponse({
+            status: 'failed',
+            message: 'Signeringen gick inte att slutföra, och rösten lades inte. Försök igen.',
+          })
+        }
         return queuedResponse()
       }
       /**

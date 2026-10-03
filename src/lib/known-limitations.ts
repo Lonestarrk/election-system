@@ -713,20 +713,24 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   },
   {
     id: 'order-state-per-process',
-    title: 'Valsedeln under signeringen hålls i en serverprocess',
+    title: 'Orderns tillstånd under signeringen hålls i en serverprocess',
     why:
       'Mellan att väljaren startar underskriften och att BankID är klart håller servern den ' +
       'krypterade valsedeln i processminnet, bunden till väljarens session, och den förfaller efter ' +
       'tre minuter. Är verifieringskön full när BankID svarar klart håller servern också ' +
-      'BankID:s svar, med signaturen och certifikatkedjan, på samma sätt tills nästa pollning kan ' +
-      'lägga rösten. Med flera instanser bakom en lastbalanserare kan en pollning hamna hos en ' +
+      'BankID:s svar, tills nästa pollning kan lägga rösten. Det svaret innehåller väljarens ' +
+      'personnummer och namn i klartext, i certifikatkedjan, och ligger i processminnet i upp till ' +
+      'tre minuter. Den som kan läsa processminnet läser dem där. Med flera instanser bakom en lastbalanserare kan en pollning hamna hos en ' +
       'instans som inte har ordern, och väljaren får skriva under igen. Detsamma gäller om servern ' +
       'startas om under en signering. Verifieringskön, som prövar bevisen i valsedeln, är per ' +
       'process på samma sätt.',
-    stillTrueIf: {
-      file: 'src/lib/order-state.ts',
-      contains: 'const orders: Map<string, Entry> = globalForOrders.__orderStates',
-    },
+    stillTrueIf: [
+      {
+        file: 'src/lib/order-state.ts',
+        contains: 'const orders: Map<string, Entry> = globalForOrders.__orderStates',
+      },
+      { file: 'src/lib/order-state.ts', contains: 'export function attachCompletion(' },
+    ],
   },
 ]
 

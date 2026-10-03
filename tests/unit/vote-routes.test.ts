@@ -21,8 +21,10 @@ import fixture from './crypto/fixtures/ballot-26-14d.json'
  * sessionen, BankID och läggningen av kuvertet.
  *
  * Tre egenskaper prövas: att pollningen bara bär orderRef och servern håller
- * valsedeln, att en order är bunden till sin session, och att kön reserverar en
- * plats INNAN BankID-ordern hämtas och släpper den på varje väg.
+ * valsedeln, att en order är bunden till sin session, och att kön bara rörs när
+ * BankID svarar klart. Är kön då full läggs BankID:s svar i orderlagret och
+ * svaret blir queued, så att väljaren slipper skriva under igen. Platsen släpps
+ * på varje väg (fixrunda 1).
  */
 
 const state = vi.hoisted(() => ({
@@ -164,6 +166,20 @@ describe('servern håller valsedeln med ordern', () => {
     const response = await signStart(
       post('/api/vote/sign-start', { ...startBody(), ballot: tampered }),
     )
+
+    expect(response.status).toBe(400)
+    expect(state.sign).not.toHaveBeenCalled()
+    expect(orderCount()).toBe(0)
+  })
+
+  it('sign-start avvisar en valsedel med fel antal bevis, innan BankID-ordern skapas', async () => {
+    // Hashen gäller chiffret och täcker inte bevisen, så en kortad lista syns bara här.
+    const short = {
+      ...BALLOT,
+      proofs: { ...BALLOT.proofs, components: BALLOT.proofs.components.slice(1) },
+    }
+
+    const response = await signStart(post('/api/vote/sign-start', { ...startBody(), ballot: short }))
 
     expect(response.status).toBe(400)
     expect(state.sign).not.toHaveBeenCalled()
@@ -393,6 +409,19 @@ describe('kön reserveras först när BankID är klart (fixrunda 1)', () => {
     state.cast.mockClear()
     expect((await (await encrypted(poll())).json()).status).toBe('failed')
     expect(state.cast).not.toHaveBeenCalled()
+  })
+
+  it('försvinner ordern innan svaret kan sparas får väljaren failed, inte queued', async () => {
+    await signStart(post('/api/vote/sign-start', startBody()))
+    const filler = [...fillAllButOne(), reserveVerification()!]
+    // Ordern förfaller eller tas bort medan BankID svarar.
+    state.collect.mockImplementation(async () => {
+      resetOrders()
+      return COMPLETE
+    })
+
+    expect((await (await encrypted(poll())).json()).status).toBe('failed')
+    for (const reservation of filler) reservation.release()
   })
 
   it('platsen släpps när BankID inte är klart', async () => {
