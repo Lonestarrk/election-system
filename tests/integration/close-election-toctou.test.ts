@@ -30,7 +30,7 @@ import {
   nextCastSequence,
   type CastOutcome,
 } from '@/modules/eligibility/pending-vote.service'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * STÄNGNINGEN FLYTTAR EXAKT DE RADER DEN VALIDERAT (granskningen av uppgift 14f, K1).
@@ -223,7 +223,7 @@ describe.skipIf(!databaseAvailable)('en skrivning mitt i stängningen', () => {
       const commitmentSalt = newCommitmentSalt()
       const order = await service.sign({
         endUserIp: '127.0.0.1',
-        userVisibleData: 'Bekräfta din röst',
+        userVisibleData: await signingTextFor(ballotId, electionId),
         userNonVisibleData: envelopePayload({
           electionId,
           ballotId,

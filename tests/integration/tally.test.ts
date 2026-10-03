@@ -41,7 +41,7 @@ import {
 } from '@/modules/eligibility/pending-vote.service'
 import { POST as decryptRoute } from '@/app/api/admin/elections/decrypt/route'
 import { POST as tallyRoute } from '@/app/api/admin/elections/tally/route'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * UPPGIFT 12: SUMMERING OCH TRÖSKELDEKRYPTERING.
@@ -272,7 +272,7 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(ballot.id, electionId),
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId: ballot.id,

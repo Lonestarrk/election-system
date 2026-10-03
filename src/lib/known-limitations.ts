@@ -517,8 +517,10 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'underskrift från BankID:s testmiljö. Attrappen skriver samma format, så att varje test går ' +
       'genom läsaren, men det är attrappens tolkning av beskrivningen. Avviker en riktig underskrift ' +
       'från den, till exempel i ett elementnamn, en algoritm eller ett fält som BankID lägger till, ' +
-      'avvisar läsaren underskriften, och rösten läggs inte. Klienten mot BankID finns inte heller ' +
-      'ännu, och skarpt läge kan inte starta utan den.',
+      'avvisar läsaren underskriften, och rösten läggs inte. Läsaren prövar inte heller vem som bad ' +
+      'om underskriften: srvInfo/name, den förlitande partens namn ur dess certifikat, jämförs inte med ' +
+      'systemets eget. Texten väljaren såg prövas, så en underskrift som gjordes under en annan text ' +
+      'godtas inte. Klienten mot BankID finns inte heller ännu, och skarpt läge kan inte starta utan den.',
     stillTrueIf: [
       // Attrappen är den enda implementationen av gränssnittet.
       {

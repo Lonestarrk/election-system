@@ -265,5 +265,8 @@ function httpStatusFor(status: CastOutcome['status']): number {
     case 'invalid_signature':
     case 'not_eligible':
       return 403
+    // Serverns tak är för snålt, och felet är serverns (fixrunda 1 av 17b).
+    case 'signature_too_large':
+      return 500
   }
 }

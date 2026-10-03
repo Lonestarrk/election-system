@@ -31,7 +31,7 @@ import { POST as adminResultsRoute } from '@/app/api/admin/elections/results/rou
 import { POST as participationRoute } from '@/app/api/vote/participation/route'
 import { GET as databaseStateRoute } from '@/app/api/demo/database-state/route'
 import type { DatabaseState } from '@/app/api/demo/database-state/route'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * UPPGIFT 13: BARA SUMMORNA PUBLICERAS, OCH VEM SOM HELST KAN KONTROLLERA DEM.
@@ -187,7 +187,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(ballot.id, electionId),
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId: ballot.id,

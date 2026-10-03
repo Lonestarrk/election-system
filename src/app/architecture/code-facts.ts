@@ -1130,7 +1130,7 @@ export const CURRENTLY = {
       },
       {
         file: 'src/orchestration/validate-before-close.usecase.ts',
-        contains: 'const { electionId, ballots, envelopes: pendingVotes } = snapshot',
+        contains: 'const { electionId, electionName, ballots, envelopes: pendingVotes } = snapshot',
       },
       // Valideringen öppnar underskriften, prövar den med kedjan mot rötterna och jämför lövet med väljaren.
       {

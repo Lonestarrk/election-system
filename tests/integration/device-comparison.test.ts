@@ -25,7 +25,7 @@ import { createVotingSession } from '@/modules/eligibility/voting-session.servic
 import { closeElection } from '@/orchestration/close-election.usecase'
 import { POST as compare } from '@/app/api/vote/compare/route'
 import { POST as session } from '@/app/api/vote/session/route'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOnce } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOnce, signingTextFor } from './helpers'
 
 /**
  * SERVERN JÄMFÖR, DEN LÄMNAR INTE UT (uppgift 14).
@@ -151,7 +151,7 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
     const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(ballotId, electionId),
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId,

@@ -40,7 +40,7 @@ import {
   type EncryptedBallotShape,
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * FASERNA ÄR VERKLIGA TILLSTÅND (uppgift 11d).
@@ -547,7 +547,7 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(target.ballotId, target.electionId),
       userNonVisibleData: envelopePayload({
         electionId: target.electionId,
         ballotId: target.ballotId,

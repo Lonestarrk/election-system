@@ -50,7 +50,7 @@ import {
   legacyVerifyEncryptedBallot,
   type LegacyEncryptedBallot,
 } from '../unit/crypto/legacy-ballot'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * EN KONSTRUERAD TYST ROLLBACK (fixrunda 2, uppgift 11).
@@ -343,7 +343,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(ballotId, electionId),
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId,
@@ -581,7 +581,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       const service = new MockBankIdService()
       const order = await service.sign({
         endUserIp: '127.0.0.1',
-        userVisibleData: 'Bekräfta din röst',
+        userVisibleData: await signingTextFor(targetBallotId, targetElectionId),
         userNonVisibleData: envelopePayload({
           electionId: targetElectionId,
           ballotId: targetBallotId,
@@ -913,7 +913,7 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
       const service = new MockBankIdService()
       const abandoned = await service.sign({
         endUserIp: '127.0.0.1',
-        userVisibleData: 'Bekräfta din röst',
+        userVisibleData: await signingTextFor(ballotId, electionId),
         userNonVisibleData: envelopePayload({
           electionId,
           ballotId,

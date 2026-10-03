@@ -28,7 +28,9 @@ import {
   type CastOutcome,
   type SignedEnvelope,
 } from '@/modules/eligibility/pending-vote.service'
-import { openBankIdSignature } from '@/modules/eligibility/sealed-chain'
+import { MAX_OCSP_RESPONSE_BYTES, openBankIdSignature } from '@/modules/eligibility/sealed-chain'
+import { MAX_SIGNATURE_XML_BYTES } from '@/modules/eligibility/bankid/xmldsig'
+import { logger } from '@/lib/logger'
 import { verifyBankIdSignature } from '@/modules/eligibility/bankid/xmldsig'
 import { signedAt } from '@/modules/eligibility/bankid/certificate-chain'
 import { bankIdSignature, signedContentIn } from '../unit/bankid/bankid-xml'
@@ -43,7 +45,7 @@ import {
 import { createBlindedCredential } from '@/lib/blind-client'
 import { issueCredential } from '@/modules/eligibility/credential.service'
 import { closeElection as closeAndStrip } from '@/orchestration/close-election.usecase'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * Låter testet ge upp i precis rätt ögonblick (fixrunda 1, uppgift 14b).
@@ -197,7 +199,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     const service = new MockBankIdService()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(ballotId, electionId),
       userNonVisibleData:
         signedContent?.(commitmentSalt) ??
         envelopePayload({
@@ -415,6 +417,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
           userNonVisibleData: signedData,
           certificates: chainFor(forger),
           privateKey: forger.privateKey,
+          userVisibleData: await signingTextFor(ballotId, electionId),
         }),
         ocspResponse: '',
         commitmentSalt,
@@ -506,6 +509,63 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       expect(stored.bankIdCertificateChain).not.toContain(ocsp.toString('base64'))
       const opened = openBankIdSignature(stored.bankIdCertificateChain, { voterStatusId: voter, ballotId })
       expect(opened?.ocspResponse.equals(ocsp)).toBe(true)
+    })
+
+    it('vårt kuvert som osynlig data under texten "Logga in hos X" avvisas', async () => {
+      // Granskningen av 17b, Viktigt 1: väljaren ska ha sett att hon röstade.
+      const ballot = await buildBallot('bp-s')
+      const commitmentSalt = newCommitmentSalt()
+      const service = new MockBankIdService()
+      const order = await service.sign({
+        endUserIp: '127.0.0.1',
+        userVisibleData: 'Logga in hos X',
+        userNonVisibleData: envelopePayload({
+          electionId,
+          ballotId,
+          ciphertextCommitment: ciphertextCommitment(ballot.ciphertextHash, commitmentSalt)!,
+          castSequence: 1,
+        }),
+      })
+      selectDemoIdentity(order.orderRef, VOTER_PN)
+      let result = await service.collect(order.orderRef)
+      while (result.status === 'pending') result = await service.collect(order.orderRef)
+      if (result.status !== 'complete') throw new Error('Signeringen blev inte klar.')
+      const envelope = { signature: result.completionData.signature, ocspResponse: '', commitmentSalt }
+
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('invalid_signature')
+      expect(await votersDb.pendingVote.count()).toBe(0)
+    })
+
+    it('en underskrift eller ett spärrsvar över taket är ett eget utfall och loggas utan innehåll', async () => {
+      /**
+       * Granskningen av 17b, Mindre 2. Ett för snålt tak ska synas som ett fel hos
+       * servern, inte som en förfalskning från väljaren.
+       */
+      const ballot = await buildBallot('bp-s')
+      const envelope = await signAs(voter, ballot, 1)
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+      const oversizedXml = Buffer.alloc(MAX_SIGNATURE_XML_BYTES + 1, 0x41).toString('base64')
+      const oversizedOcsp = Buffer.alloc(MAX_OCSP_RESPONSE_BYTES + 1, 0x42).toString('base64')
+
+      try {
+        expect((await castRaw(voter, ballot, { ...envelope, signature: oversizedXml })).status).toBe('signature_too_large')
+        expect((await castRaw(voter, ballot, { ...envelope, ocspResponse: oversizedOcsp })).status).toBe(
+          'signature_too_large',
+        )
+        expect(await votersDb.pendingVote.count()).toBe(0)
+
+        expect(warn).toHaveBeenCalledTimes(2)
+        const logged = JSON.stringify(warn.mock.calls)
+        expect(logged).toMatch(/tak/)
+        expect(logged).not.toContain(oversizedXml.slice(0, 40))
+        expect(logged).not.toContain(oversizedOcsp.slice(0, 40))
+        expect(logged).not.toContain(VOTER_PN)
+      } finally {
+        warn.mockRestore()
+      }
+
+      // Kontrasten: samma underskrift läggs, när den ryms.
+      expect((await castRaw(voter, ballot, envelope)).status).toBe('recorded')
     })
 
     it('ett spärrsvar som inte är base64 avvisas, och ingenting lagras', async () => {

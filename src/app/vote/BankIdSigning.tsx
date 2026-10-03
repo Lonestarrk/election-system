@@ -112,6 +112,9 @@ const OUTCOMES: Record<string, string> = {
     'Underskriften kom inte från den som är inloggad, så rösten lades inte. Bara du kan skriva ' +
     'under din röst.',
   not_eligible: 'Den här valsedeln kan inte ta emot din röst. Rösten lades inte.',
+  signature_too_large:
+    'Underskriften från BankID var större än servern tar emot, och rösten lades inte. Felet är ' +
+    'serverns och har loggats. Försök igen senare.',
   voted_in_old_flow:
     'Du har redan röstat på den här valsedeln i det tidigare röstflödet, och den rösten går inte att ' +
     'byta. Den här rösten lades inte.',

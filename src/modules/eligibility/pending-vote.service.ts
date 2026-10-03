@@ -9,9 +9,11 @@ import {
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { hashPersonalNumber } from './identity'
 import { signedAt } from './bankid/certificate-chain'
-import { ciphertextCommitment, envelopePayload, parseEnvelopePayload } from './bankid/envelope-signature'
+import { ciphertextCommitment, envelopePayload, parseEnvelopePayload, signingText } from './bankid/envelope-signature'
 import { trustedBankIdRoots } from './bankid/trusted-roots'
-import { strictBase64, verifyBankIdSignature } from './bankid/xmldsig'
+import { MAX_SIGNATURE_XML_BYTES, strictBase64, verifyBankIdSignature } from './bankid/xmldsig'
+import { signingSubject } from './election.service'
+import { logger } from '@/lib/logger'
 import { votersDb } from './db'
 import { MAX_OCSP_RESPONSE_BYTES, sealBankIdSignature } from './sealed-chain'
 import { holdVoterBooksForEnvelope, votedInOldFlow } from './voter-status.service'
@@ -83,6 +85,13 @@ export type CastOutcome =
   | { status: 'wrong_mode' }
   | { status: 'invalid_proof' }
   | { status: 'invalid_signature' }
+  /**
+   * BankID:s underskrift eller spärrsvar är större än servern tar emot
+   * (fixrunda 1 av uppgift 17b). Ingenting har lagts. Det är ett fel i serverns
+   * tak och inte något väljaren gjort, så det skiljs från `invalid_signature` och
+   * loggas, utan innehåll.
+   */
+  | { status: 'signature_too_large' }
   | { status: 'stale_sequence' }
   | { status: 'not_eligible' }
   /**
@@ -216,14 +225,27 @@ export async function castEncryptedBallot(
    */
   const signatureXml = strictBase64(envelope.signature)
   const ocspResponse = strictBase64(envelope.ocspResponse)
-  if (!signatureXml || !ocspResponse || ocspResponse.length > MAX_OCSP_RESPONSE_BYTES) {
-    return { status: 'invalid_signature' }
+  if (!signatureXml || !ocspResponse) return { status: 'invalid_signature' }
+
+  /**
+   * ETT FÖR SNÅLT TAK SKA SYNAS (fixrunda 1 av uppgift 17b, Mindre 2). Taken är
+   * valda med marginal mot den största realistiska underskriften, se
+   * `MAX_SIGNATURE_XML_BYTES` och `MAX_OCSP_RESPONSE_BYTES`. Går en riktig
+   * underskrift över dem är det taket som är fel, och det loggas med storlekarna
+   * men utan innehåll, eftersom underskriften bär personnummer och namn.
+   */
+  if (signatureXml.length > MAX_SIGNATURE_XML_BYTES || ocspResponse.length > MAX_OCSP_RESPONSE_BYTES) {
+    return signatureTooLarge(signatureXml.length, ocspResponse.length)
   }
 
   const signed = verifyBankIdSignature(signatureXml, {
     roots: trustedBankIdRoots(),
     signedDuring: signedAt(new Date()),
   })
+  // Läsarens tak för djup och antal element är också ett tak.
+  if (!signed.ok && signed.reason === 'too_large') {
+    return signatureTooLarge(signatureXml.length, ocspResponse.length)
+  }
   if (!signed.ok) return { status: 'invalid_signature' }
 
   /**
@@ -254,6 +276,25 @@ export async function castEncryptedBallot(
     signedPayload.ballotId !== ballotId ||
     signedPayload.ciphertextCommitment !== commitment
   ) {
+    return { status: 'invalid_signature' }
+  }
+
+  /**
+   * VÄLJAREN SKA HA SETT ATT HON RÖSTADE (fixrunda 1 av uppgift 17b, Viktigt 1).
+   *
+   * BankID visar usrVisibleData och inte usrNonVisibleData. Den som kan få
+   * väljaren att skriva under något annat, till exempel en legitimering hos någon
+   * annan, kan lägga vårt kuvert som osynlig data under en helt annan text.
+   * Digesten, kedjan och personnumret håller då. Texten ska därför vara exakt den
+   * sign-start lät BankID visa, `signingText` för omröstningen och valsedeln.
+   * Valideringen före stängningen prövar samma sak.
+   *
+   * Det prövar inte vem som bad om underskriften: srvInfo/name, den förlitande
+   * partens namn ur dess certifikat, prövas i uppgift 17c, när det finns ett
+   * riktigt certifikat att jämföra med.
+   */
+  const subject = await signingSubject(ballotId, electionId)
+  if (!subject || signed.usrVisibleData !== signingText(subject.electionName, subject.ballotKind)) {
     return { status: 'invalid_signature' }
   }
 
@@ -437,6 +478,17 @@ export async function castEncryptedBallot(
   if (written.status !== 'written') return written
 
   return { status: 'recorded', ciphertextHash: ballot.ciphertextHash, replaced: written.replaced }
+}
+
+/** Se `signature_too_large` i `CastOutcome`. Bara storlekarna loggas, aldrig innehållet. */
+function signatureTooLarge(xmlBytes: number, ocspBytes: number): CastOutcome {
+  logger.warn('BankID:s underskrift eller spärrsvar är större än serverns tak, och rösten lades inte.', {
+    xmlBytes,
+    ocspBytes,
+    maxXmlBytes: MAX_SIGNATURE_XML_BYTES,
+    maxOcspBytes: MAX_OCSP_RESPONSE_BYTES,
+  })
+  return { status: 'signature_too_large' }
 }
 
 /** Vad skrivningen i läggningens transaktion kom fram till. */

@@ -42,7 +42,7 @@ import {
   selfSignedLeaf,
   voterLeaf,
 } from '../unit/bankid/forged-certificates'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * Uppgift 10: valideringen som körs medan `PendingVote` fortfarande pekar på
@@ -227,7 +227,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
     const service = new MockBankIdService()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(targetBallotId, electionId),
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId: targetBallotId,
@@ -397,6 +397,7 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
           }),
           certificates: chain,
           privateKey: signingKey,
+          userVisibleData: await signingTextFor(ballotId, electionId),
         }),
         '',
         { voterStatusId, ballotId },
@@ -1113,6 +1114,35 @@ describe.skipIf(!databaseAvailable)('validering medan kopplingen finns kvar', ()
       await writeKims(ballot, storedBankIdSignature(commented, '', { voterStatusId: kim, ballotId }), envelope.commitmentSalt)
 
       expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'comment')
+    })
+
+    it('vårt kuvert som osynlig data under texten "Logga in hos X" är BAD_SIGNATURE', async () => {
+      /**
+       * Granskningen av 17b, Viktigt 1. Den som kan få väljaren att skriva under en
+       * legitimering hos någon annan kan lägga vårt kuvert som osynlig data under
+       * en annan text. Digesten, kedjan och personnumret håller, men väljaren
+       * såg aldrig att hon röstade. Texten ska vara den sign-start ger.
+       */
+      const ballot = await buildBallot('bp-m')
+      const commitmentSalt = newCommitmentSalt()
+      const service = new MockBankIdService()
+      const order = await service.sign({
+        endUserIp: '127.0.0.1',
+        userVisibleData: 'Logga in hos X',
+        userNonVisibleData: signedFor(ballot, commitmentSalt),
+      })
+      selectDemoIdentity(order.orderRef, KIM_PN)
+      let result = await service.collect(order.orderRef)
+      while (result.status === 'pending') result = await service.collect(order.orderRef)
+      if (result.status !== 'complete') throw new Error('Signeringen blev inte klar.')
+
+      await writeKims(
+        ballot,
+        storedBankIdSignature(result.completionData.signature, '', { voterStatusId: kim, ballotId }),
+        commitmentSalt,
+      )
+
+      expectOnlyBadSignatureForKim(await validateBeforeClose(electionId), 'visible_text')
     })
 
     it('kontrasten: samma rad med dokumentet som det kom från BankID godkänns', async () => {

@@ -577,12 +577,16 @@ function readStructure(root: XmlElement): Structure {
   })
   readAssessment(assessment)
 
+  // SignatureValue ska vara strikt base64. Texten lämnas ut som den står.
+  base64Element(signatureValue)
+  const signatureValueText = signatureValue.text
+
   return {
     signedInfo,
     canonicalization: emptyElement(canonicalization, { Algorithm: 'required' }).get('Algorithm')!,
     signatureMethod: emptyElement(signatureMethod, { Algorithm: 'required' }).get('Algorithm')!,
     references: references.map(readReference),
-    signatureValue: (base64Element(signatureValue), signatureValue.text),
+    signatureValue: signatureValueText,
     keyInfo,
     certificates,
     signedData,

@@ -1,4 +1,6 @@
 import { createHash, createSign, type KeyObject, type X509Certificate } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { signedAt } from '@/modules/eligibility/bankid/certificate-chain'
 import { buildBankIdSignatureXml } from '@/modules/eligibility/bankid/mock-signature'
@@ -453,6 +455,50 @@ describe('det läsaren i övrigt avvisar', () => {
     expect(verify(resign(genuine(), { key: rsaKeys('någon annan').privateKey }))).toEqual({
       ok: false,
       reason: 'signature',
+    })
+  })
+})
+
+/**
+ * EN FAST TESTVEKTOR FRÅN EN OBEROENDE IMPLEMENTATION (fixrunda 1 av 17b, Mindre 3).
+ *
+ * Annars prövar attrappen och läsaren bara varandra: ett fel i kanoniseringen som
+ * båda delar hade gått obemärkt förbi. Dokumenten i ./bankid/fixtures godkändes
+ * av .NET:s SignedXml.CheckSignature, som räknar digesterna och prövar
+ * underskriften med sin egen kanonisering, se check-dotnet.ps1 där. De är
+ * signerade med en nyckel under attrappens mellannivå, och lövet gäller från
+ * 2026-10-03 i ett år, så tidpunkten för underskriften är fast.
+ *
+ *   dotnet-exc-c14n.xml         exklusiv kanonisering, briefens identifierare
+ *   dotnet-inc-c14n.xml         inkluderande kanonisering, profilens identifierare
+ *   dotnet-redundant-xmlns.xml  överflödiga xmlns inne i de signerade elementen,
+ *                               som kanoniseringen ska stryka
+ */
+describe('fasta testvektorer som .NET:s SignedXml har godkänt', () => {
+  const FIXTURES = join(__dirname, 'bankid', 'fixtures')
+  const signedDuring = signedAt(new Date('2026-10-04T12:00:00Z'))
+
+  for (const name of ['dotnet-exc-c14n.xml', 'dotnet-inc-c14n.xml', 'dotnet-redundant-xmlns.xml']) {
+    it(`${name} godtas, med det signerade och texten som .NET prövade`, () => {
+      const verdict = verifyBankIdSignature(readFileSync(join(FIXTURES, name)), { roots: [MOCK_ROOT], signedDuring })
+
+      expect(verdict).toMatchObject({
+        ok: true,
+        usrNonVisibleData: SIGNED,
+        usrVisibleData: 'Rösta på Åsa & Ölof <>',
+        personalNumber: VOTER,
+      })
+    })
+  }
+
+  it('ett ändrat tecken i det signerade i testvektorn underkänns', () => {
+    const xml = readFileSync(join(FIXTURES, 'dotnet-exc-c14n.xml'), 'utf8')
+    const changed = xml.replace(b64(SIGNED), b64(SIGNED.replace('1:1', '1:2')))
+
+    expect(changed).not.toBe(xml)
+    expect(verifyBankIdSignature(Buffer.from(changed), { roots: [MOCK_ROOT], signedDuring })).toEqual({
+      ok: false,
+      reason: 'digest',
     })
   })
 })

@@ -12,8 +12,10 @@ import {
   envelopePayload,
   legacyEnvelopePayload,
   parseEnvelopePayload,
+  signingText,
   verifySignedPayload,
 } from '@/modules/eligibility/bankid/envelope-signature'
+import { logger } from '@/lib/logger'
 import { trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
 import { verifyBankIdSignature, type XmlDsigFailure } from '@/modules/eligibility/bankid/xmldsig'
 import { hashPersonalNumber } from '@/modules/eligibility/identity'
@@ -122,8 +124,16 @@ import { getEncryptedBallotShape } from '@/modules/ballot-box'
  *                inte den i bankid_signature, eller det signerade är inte radens
  *                kuvert för någon räknare
  *   other_voter  kedjan och signaturen håller, men lövet tillhör någon annan
+ *   visible_text texten väljaren såg i BankID-appen är inte den sign-start ger
+ *                för omröstningen och valsedeln (fixrunda 1 av uppgift 17b)
  */
-export type SignatureFault = ChainFailure | XmlDsigFailure | 'unreadable' | 'signature' | 'other_voter'
+export type SignatureFault =
+  | ChainFailure
+  | XmlDsigFailure
+  | 'unreadable'
+  | 'signature'
+  | 'other_voter'
+  | 'visible_text'
 
 export type Anomaly = {
   /**
@@ -278,6 +288,7 @@ type SignatureVerdict = 'ok' | 'stale' | 'bad'
  * Det som signeringskontrollen läser ur en rad.
  */
 type SignedRow = {
+  id: string
   voterStatusId: string
   ballotId: string
   ciphertextHash: string
@@ -449,6 +460,8 @@ type SignatureJudgement =
 async function judgeSignature(
   electionId: string,
   vote: SignedRow,
+  /** `signingText` för omröstningen och radens valsedel, den text väljaren ska ha sett. */
+  expectedVisibleText: string,
   roots: X509Certificate[],
   identityHashOf: (personalNumber: string) => Promise<string>,
   staleProbeBudget: { remaining: number },
@@ -479,13 +492,32 @@ async function judgeSignature(
    * uppgift 17b, men prövas inte.
    */
   const signed = verifyBankIdSignature(sealed.xml, { roots, signedDuring: signedOnDay(vote.updatedAt) })
-  if (!signed.ok) return { verdict: 'bad', reason: signed.reason }
+  if (!signed.ok) {
+    /**
+     * Ett tak i läsaren ska synas som ett tak och inte bara som en förfalskning
+     * (fixrunda 1 av uppgift 17b, Mindre 2). Läggningen tar aldrig emot något
+     * över taken, så här hamnar bara en rad skriven förbi läggningen, men loggen
+     * säger det ändå, med radens id och utan innehåll.
+     */
+    if (signed.reason === 'too_large') {
+      logger.warn('En förseglad BankID-underskrift går över läsarens tak.', { pendingVoteId: vote.id })
+    }
+    return { verdict: 'bad', reason: signed.reason }
+  }
 
   // Kuvertroten läser underskriften ur bankid_signature. Den ska vara dokumentets.
   if (vote.bankIdSignature !== signed.signatureValue) return { verdict: 'bad', reason: 'signature' }
 
   const verdict = classifySignedContent(electionId, vote, signed.usrNonVisibleData)
   if (verdict === 'bad') return { verdict: 'bad', reason: 'signature' }
+
+  /**
+   * VÄLJAREN SKA HA SETT ATT HON RÖSTADE (fixrunda 1 av uppgift 17b, Viktigt 1).
+   * BankID visar usrVisibleData, inte usrNonVisibleData. Utan den här prövningen
+   * kunde vårt kuvert ligga som osynlig data under en helt annan text, till
+   * exempel en legitimering hos någon annan. Samma prövning görs när rösten läggs.
+   */
+  if (signed.usrVisibleData !== expectedVisibleText) return { verdict: 'bad', reason: 'visible_text' }
 
   const identityHash = await identityHashOf(signed.personalNumber)
   if (!safeEqual(identityHash, vote.voterStatus.externalIdentityHash)) {
@@ -679,6 +711,8 @@ async function proofHoldsSafely(
  * `CLOSING_LOCK_TIMEOUT_MS` i close-election.usecase.ts.
  */
 export async function readEnvelopes(electionId: string) {
+  // Namnet står i texten väljaren såg, se `signingText`.
+  const election = await votersDb.election.findUnique({ where: { id: electionId }, select: { name: true } })
   const ballots = await votersDb.electionBallot.findMany({
     where: { electionId },
     select: { id: true, kind: true, areaCode: true },
@@ -695,7 +729,7 @@ export async function readEnvelopes(electionId: string) {
     after = batch[batch.length - 1]!.id
   }
 
-  return { electionId, ballots, envelopes }
+  return { electionId, electionName: election?.name ?? '', ballots, envelopes }
 }
 
 /**
@@ -790,7 +824,7 @@ export async function validateBeforeClose(electionId: string): Promise<Validatio
  * samma rader som stängningen sedan flyttar, se `readEnvelopes`.
  */
 export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<ValidationReport> {
-  const { electionId, ballots, envelopes: pendingVotes } = snapshot
+  const { electionId, electionName, ballots, envelopes: pendingVotes } = snapshot
   const ballotById = new Map(ballots.map((ballot) => [ballot.id, ballot]))
 
   /**
@@ -843,7 +877,9 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
     // tillhör, se `judgeSignature`. En verifiering av signaturen och två av
     // kedjan i det vanliga fallet, och en hashning per väljare. Körs OAVSETT om
     // WRONG_BALLOT redan träffade.
-    const signature = await judgeSignature(electionId, vote, roots, identityHashOf, staleProbeBudget)
+    // En valsedel som inte finns ger en text som ingen underskrift har, och raden är redan WRONG_BALLOT.
+    const expectedVisibleText = signingText(electionName, ballot?.kind ?? '')
+    const signature = await judgeSignature(electionId, vote, expectedVisibleText, roots, identityHashOf, staleProbeBudget)
     if (signature.verdict === 'stale') {
       anomalies.push(anomaly('STALE_SEQUENCE'))
     }

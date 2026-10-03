@@ -10,6 +10,8 @@ import {
   unblindSignature,
 } from '@/lib/blind-client'
 import { TEST_DATABASE_SUFFIX, isTestDatabaseName } from '../test-databases'
+import { signingText } from '@/modules/eligibility/bankid/envelope-signature'
+import { signingSubject } from '@/modules/eligibility/election.service'
 
 /**
  * Hjälpfunktioner för integrationstesterna.
@@ -292,4 +294,15 @@ export async function voteOnce(
 export async function disconnect(): Promise<void> {
   await votersDb.$disconnect()
   await votesDb.$disconnect()
+}
+
+/**
+ * Texten väljaren ser i BankID-appen för en valsedel, som sign-start ger den.
+ * Läggningen och valideringen kräver den sedan fixrunda 1 av uppgift 17b, så
+ * testernas underskrifter bär den. En valsedel utan omröstning ger en text som
+ * inte godtas, så att ett test som skriver under fel valsedel fortfarande avvisas.
+ */
+export async function signingTextFor(ballotId: string, electionId: string): Promise<string> {
+  const subject = await signingSubject(ballotId, electionId)
+  return subject ? signingText(subject.electionName, subject.ballotKind) : 'ingen valsedel i omröstningen'
 }

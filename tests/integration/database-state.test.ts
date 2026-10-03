@@ -22,7 +22,7 @@ import {
 } from '@/modules/eligibility/pending-vote.service'
 import { GET } from '@/app/api/demo/database-state/route'
 import type { DatabaseState } from '@/app/api/demo/database-state/route'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOnce } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOnce, signingTextFor } from './helpers'
 
 /**
  * ARKITEKTURSIDANS LIVEVY: VAD RUTTEN FAKTISKT LÄMNAR UT.
@@ -172,7 +172,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     const commitmentSalt = newCommitmentSalt()
     const order = await service.sign({
       endUserIp: '127.0.0.1',
-      userVisibleData: 'Bekräfta din röst',
+      userVisibleData: await signingTextFor(ballotId, electionId),
       userNonVisibleData: envelopePayload({
         electionId,
         ballotId,
