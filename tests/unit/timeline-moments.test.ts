@@ -191,9 +191,19 @@ describe('liknelsen säger det den måste säga', () => {
     expect(moment('Namnen tas bort').text).toMatch(/ordningen inte avslöjar vem som röstade när/)
   })
 
-  it('efteråt ser du att du har röstat, inte vad, och ingen annan heller', () => {
-    expect(moment('Efteråt').text).toMatch(/att du har röstat, men inte vad/)
-    expect(moment('Efteråt').text).toMatch(/Ingen annan kan se din röst/)
+  it('efteråt ser du att du har röstat, inte vad, och ingen annan heller, med förbehållen', () => {
+    const text = moment('Efteråt').text
+    expect(text).toMatch(/att du har röstat, men inte vad/)
+    /**
+     * Helgrensgranskningen, B3. "Ingen annan kan se din röst heller, varken i urnan
+     * eller i resultatet" sa emot ruling 138, där en valsedel med en enda röst visar
+     * den i resultatet, och emot två förtroendepersoner som samarbetar och demons
+     * kända lösenord. Förbehållen står i samma moment.
+     */
+    expect(text).not.toMatch(/varken i urnan eller i resultatet\./)
+    expect(text).toMatch(/utom när valsedeln har så få röster att summan visar dem/)
+    expect(text).toMatch(/Två förtroendepersoner som samarbetar/)
+    expect(text).toMatch(/i demon är deras lösenord kända/)
   })
 
   it('beviset överdriver inte vad allmänheten kan räkna om', () => {
@@ -272,7 +282,14 @@ describe('valvet i tidslinjen', () => {
   it('inloggningen: ett fingeravtryck med hemligheten, och röstlängden har inte numret', () => {
     const text = moment('Du loggar in').vault!.text
     expect(text).toMatch(/fingeravtryck med en hemlighet ur valvet/)
-    expect(text).toMatch(/I röstlängden står fingeravtrycket, aldrig själva numret/)
+    /**
+     * Helgrensgranskningen, B2. "Aldrig själva numret" lovade för mycket: medan rösten
+     * ligger står numret också i intyget från BankID, inlåst med samma hemlighet, och
+     * med hemligheten går fingeravtrycket att pröva fram.
+     */
+    expect(text).not.toMatch(/aldrig själva numret/)
+    expect(text).toMatch(/I röstlängden står fingeravtrycket i stället för numret/)
+    expect(text).toMatch(/den som har hemligheten kan också pröva sig fram till numret/)
     // Inte att röstlängden BARA har fingeravtrycket: raden bär också
     // folkbokföringskommunen, se begränsningen municipality-beside-identity-hash.
     expect(text).not.toMatch(/bara fingeravtrycket/)

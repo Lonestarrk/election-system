@@ -116,7 +116,9 @@ export const MOMENTS: readonly Moment[] = [
       inScene: true,
       text:
         'Systemet gör om ditt personnummer till ett fingeravtryck med en hemlighet ur valvet, och ' +
-        'hittar dig i röstlängden med det. I röstlängden står fingeravtrycket, aldrig själva numret.',
+        'hittar dig i röstlängden med det. I röstlängden står fingeravtrycket i stället för numret, ' +
+        'men den som har hemligheten kan också pröva sig fram till numret ur det. Medan din röst ' +
+        'ligger kvar står numret dessutom i ditt intyg från BankID, inlåst med samma hemlighet.',
     },
   },
   {
@@ -273,7 +275,9 @@ export const MOMENTS: readonly Moment[] = [
     stage: 'Efteråt',
     text:
       'Efteråt ser du att du har röstat, men inte vad. Ingen annan kan se din röst heller, varken ' +
-      'i urnan eller i resultatet.',
+      'i urnan eller i resultatet, utom när valsedeln har så få röster att summan visar dem. Två ' +
+      'förtroendepersoner som samarbetar kan öppna kuverten ett och ett, och i demon är deras ' +
+      'lösenord kända, se svagheterna.',
     yourEnvelope: 'ingen',
     vault: {
       inScene: true,

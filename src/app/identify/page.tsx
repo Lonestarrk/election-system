@@ -61,8 +61,11 @@ export default function LegitimeringPage() {
         <div>
           <h1>Legitimera dig</h1>
           <p className="muted">
-            Ditt personnummer lagras aldrig. Det omvandlas direkt till ett oåterkalleligt värde som
-            bara används för att slå upp dig i röstlängden.
+            Ditt personnummer lagras aldrig i klartext. Röstlängden slår upp dig med ett fingeravtryck
+            av det, gjort med en hemlighet som systemet håller, och den som har hemligheten kan pröva
+            sig fram till numret ur fingeravtrycket. När du röstar sparas din underskrift från BankID,
+            med ditt namn och personnummer, inlåst med samma hemlighet tills röstningen stänger, och
+            den som har hemligheten kan låsa upp den.
           </p>
         </div>
 

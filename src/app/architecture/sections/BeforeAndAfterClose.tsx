@@ -41,7 +41,9 @@ export function BeforeAndAfterClose() {
         <li style={listItemStyle}>
           <strong>Efter stängningen publiceras bara summorna.</strong> Per valsedel: den
           krypterade summan, förtroendemännens partiella dekrypteringar med bevis, resultatet och
-          kuvertroten. Aldrig något per röst, varken chiffer eller hashar.
+          kuvertroten. Aldrig något per röst, varken chiffer eller hashar, utom när valsedeln har
+          så få röster att summan visar dem. Med en enda röst är summan just den röstens chiffer,
+          och resultatet visar hur den röstade.
         </li>
         <li style={listItemStyle}>
           <strong>Priset är att allmänheten inte kan räkna om summan röst för röst.</strong> Vem
@@ -55,7 +57,8 @@ export function BeforeAndAfterClose() {
         Skyddet mot röstköp är att rösten går att ändra fram till stängningen, och att det du ser
         på skärmen inte bevisar något. En köpare kan inte lita på skärmen. Han måste se själva
         läggningen, och den som ser en läggning klockan 19 vet ingenting om vad som gäller
-        klockan 20. Efter stängningen finns ingenting publicerat att matcha mot. Varje ny
+        klockan 20. Efter stängningen finns ingenting publicerat att matcha mot, utom när
+        valsedeln har så få röster att summan visar dem. Varje ny
         läggning kräver en ny BankID-signatur, och räknaren inuti det signerade måste vara högre
         än förra gången. Utan räknaren kunde den som fångat ditt första kuvert skicka in det igen
         efter att du ändrat dig.

@@ -27,9 +27,10 @@
  * personen legitimerat sig på sin egen enhet med sin egen app. Systemet kan
  * inte längre tillfrågas om ett personnummer det inte redan fått.
  *
- * Observera också vad gränssnittet INTE exponerar: ingen metod tar emot eller
- * returnerar något som har med röstning att göra. Legitimering och röst möts
- * först vid utfärdandet av röstintyget.
+ * Observera också vad gränssnittet INTE vet: vad en röst är. `sign` tar emot
+ * en text och en nyttolast som servern byggt, och ingen metod läser eller
+ * returnerar ett chiffer. Legitimering och röst möts först i det yttre kuvertet,
+ * när underskriften över valsedelns åtagande läggs med chiffret i pending_vote.
  */
 
 export type BankIdAuthOrder = {

@@ -779,7 +779,7 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
     expect((await castRaw(voter, started, staleEnvelope)).status).toBe('stale_sequence')
   })
 
-  it('ändring ger en ny verifikationskod', async () => {
+  it('en ändrad röst ger ett nytt chiffer med en ny hash', async () => {
     const first = await cast(voter, 'bp-s')
     const second = await cast(voter, 'bp-m')
 

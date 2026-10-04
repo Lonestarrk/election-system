@@ -63,7 +63,8 @@ export function EnvelopeModel() {
         <div className="flow-arrow">↓</div>
         <div className="flow-node anonymous">Bara summorna publiceras, med bevis</div>
         <div className="flow-label">
-          ingenting per röst · {CURRENTLY.sumsPublished.short}
+          ingenting per röst, utom när valsedeln har så få röster att summan visar dem ·{' '}
+          {CURRENTLY.sumsPublished.short}
         </div>
       </div>
 

@@ -36,7 +36,7 @@ const ELECTION = 'Valet 2026'
  */
 const VOTERS = {
   canVote: 'Anna — röstberättigad',
-  verifiesReceipt: 'Kim — röstberättigad',
+  checksFromTwoDevices: 'Kim — röstberättigad',
   doubleVote: 'Robin — röstberättigad',
   noStorage: 'Mira — röstberättigad',
   /**
@@ -141,11 +141,11 @@ test.describe('röstning från början till slut', () => {
   test('en annan enhet ser att rösten finns, men inte vad den innehåller', async ({ browser }) => {
     // Innehållet finns bara där rösten lades. Servern vet det inte.
     const here = await browser.newPage()
-    await identify(here, VOTERS.verifiesReceipt)
+    await identify(here, VOTERS.checksFromTwoDevices)
     await voteFor(here, 'Moderaterna')
 
     const elsewhere = await (await browser.newContext()).newPage()
-    await identify(elsewhere, VOTERS.verifiesReceipt)
+    await identify(elsewhere, VOTERS.checksFromTwoDevices)
     await expect(elsewhere.getByText(/du har en röst registrerad/i)).toBeVisible()
     await expect(elsewhere.getByText('Moderaterna')).toHaveCount(0)
 
