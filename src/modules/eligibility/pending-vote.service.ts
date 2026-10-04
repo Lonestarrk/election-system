@@ -17,7 +17,6 @@ import { signingSubject } from './election.service'
 import { logger } from '@/lib/logger'
 import { votersDb } from './db'
 import { MAX_OCSP_RESPONSE_BYTES, sealBankIdSignature } from './sealed-chain'
-import { holdVoterBooksForEnvelope, votedInOldFlow } from './voter-status.service'
 
 /**
  * DET YTTRE KUVERTET.
@@ -95,11 +94,6 @@ export type CastOutcome =
   | { status: 'signature_too_large' }
   | { status: 'stale_sequence' }
   | { status: 'not_eligible' }
-  /**
-   * Väljaren har redan en röst på valsedeln i det gamla flödet, och den går
-   * inte att byta. Se spärren mellan böckerna i voter-status.service.ts.
-   */
-  | { status: 'voted_in_old_flow' }
 
 /**
  * Valsedelns kryptonyckel och antal alternativ — det `verifyEncryptedBallotOnServer`
@@ -414,14 +408,6 @@ export async function castEncryptedBallot(
    * (fixrunda 3 av 11d, ruling 130). Ingenting här frågar om chiffret redan
    * ligger på ett annat kuvert, och ingenting i svaret säger det. Fixrunda 2
    * svarade `duplicate_ciphertext`, och det gav en köpare ett orakel.
-   *
-   * INTE I BÅDA BÖCKERNA (uppgift 12). Efter fasen tar transaktionen väljarens
-   * rad och prövar det gamla flödets bok. Har väljaren redan röstat på
-   * valsedeln där läggs inget kuvert. Utfärdandet av ett röstintyg tar samma
-   * rad i ett läge som krockar med läggningens, så de två kan inte gå om
-   * varandra, men två läggningar kan, se `holdVoterBooksForEnvelope` i
-   * voter-status.service.ts. Svaret gäller bara väljarens egen bok, i
-   * väljarens egen session, och säger ingenting om någon annans röst.
    */
   const envelopeData = {
     ciphertext: ballot.ciphertext,
@@ -449,9 +435,6 @@ export async function castEncryptedBallot(
       ) {
         return { status: 'closed' }
       }
-
-      await holdVoterBooksForEnvelope(tx, voterStatusId)
-      if (await votedInOldFlow(tx, voterStatusId, ballotId)) return { status: 'voted_in_old_flow' }
 
       const replaced = await tx.pendingVote.updateMany({
         where: { voterStatusId, ballotId, castSequence: { lt: signedPayload.castSequence } },
@@ -497,7 +480,6 @@ function signatureTooLarge(xmlBytes: number, ocspBytes: number): CastOutcome {
 type EnvelopeWrite =
   | { status: 'closed' }
   | { status: 'stale_sequence' }
-  | { status: 'voted_in_old_flow' }
   | { status: 'written'; replaced: boolean }
 
 /**
@@ -569,9 +551,8 @@ export async function pendingVoteFor(
  * för det, och en enhet som fick den skulle veta mer än den själv lagt; se
  * `compareWithPendingVotes`.
  *
- * Uppgiften kommer ur pending_vote, kuvertmodellens egen tabell, och inte ur
- * det gamla flödets markering. Ett kuvert kan bytas ut fram till stängningen,
- * en markering i det gamla flödet kan det inte.
+ * Uppgiften kommer ur pending_vote. Ett kuvert kan bytas ut fram till
+ * stängningen.
  *
  * `acceptsVotes` har samma villkor som `castEncryptedBallot` avvisar på, i
  * omvänd form: fasen är OPEN, kopplingen är inte raderad och `closesAt` har

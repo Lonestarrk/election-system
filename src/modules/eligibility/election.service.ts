@@ -6,8 +6,8 @@ import { votersDb } from './db'
  *
  * Det här är SPEGLINGEN: samma omröstnings-id och samma valsedels-id som i
  * röstdatabasen, men bara det som röstlängden behöver för att svara på sina
- * två frågor — vilka valsedlar gäller den här personen, och vilka har hen
- * redan röstat på.
+ * frågor — vilka valsedlar gäller den här personen, och vilka valsedlar
+ * finns i omröstningen att lägga ett kuvert på.
  *
  * Vad speglingen medvetet INTE innehåller: partier, kandidater,
  * svarsalternativ. Röstlängden ska inte kunna formulera frågan "vad fanns att
@@ -92,9 +92,6 @@ export type MirrorElectionInput = {
     kind: string
     label: string
     areaCode: string | null
-    /** Valsedelns signeringsnyckel. Den privata halvan lämnar aldrig den här databasen. */
-    signingPrivateKeyPem: string
-    signingPublicKeyPem: string
   }>
 }
 
@@ -127,8 +124,6 @@ export async function mirrorElection(input: MirrorElectionInput): Promise<void> 
           kind: ballot.kind,
           label: ballot.label,
           areaCode: ballot.areaCode,
-          signingPrivateKeyPem: ballot.signingPrivateKeyPem,
-          signingPublicKeyPem: ballot.signingPublicKeyPem,
           displayOrder: index + 1,
         },
       })
@@ -166,11 +161,8 @@ export async function removeMirroredElection(electionId: string): Promise<void> 
   await votersDb.election.deleteMany({ where: { id: electionId } })
 }
 
-export type BallotForVoter = MirroredBallot & { hasVoted: boolean }
-
 /**
- * Vilka valsedlar den här personen ska rösta på, och vilka som redan är
- * avklarade.
+ * Vilka valsedlar den här personen ska rösta på.
  *
  * KOMMUN- och LANDSTINGSVALSEDLAR gäller bara den som är folkbokförd i rätt
  * område — man röstar i sin egen kommun, inte i alla. RIKSDAG och FRAGA gäller
@@ -182,22 +174,16 @@ export type BallotForVoter = MirroredBallot & { hasVoted: boolean }
 export async function ballotsForVoter(
   voterStatusId: string,
   electionId: string,
-): Promise<BallotForVoter[]> {
-  const [voter, election, voted] = await Promise.all([
+): Promise<MirroredBallot[]> {
+  const [voter, election] = await Promise.all([
     votersDb.voterStatus.findUnique({
       where: { id: voterStatusId },
       select: { municipalityCode: true, regionCode: true },
     }),
     getMirroredElection(electionId),
-    votersDb.voterBallotStatus.findMany({
-      where: { voterStatusId, ballot: { electionId } },
-      select: { ballotId: true },
-    }),
   ])
 
   if (!voter || !election) return []
-
-  const votedBallotIds = new Set(voted.map((row) => row.ballotId))
 
   return election.ballots
     .filter((ballot) => {
@@ -205,30 +191,6 @@ export async function ballotsForVoter(
       if (ballot.kind === 'LANDSTING') return ballot.areaCode === voter.regionCode
       return true
     })
-    .map((ballot) => ({ ...ballot, hasVoted: votedBallotIds.has(ballot.id) }))
-}
-
-/**
- * Valsedelns privata signeringsnyckel.
- *
- * Lämnar aldrig röstlängdsmodulen. Den används för att signera blindade
- * röstintyg medan väljaren är legitimerad, och den som har den kan skapa
- * röstintyg som ser auktoriserade ut.
- */
-export async function getBallotSigningKey(
-  ballotId: string,
-): Promise<{ privateKeyPem: string; publicKeyPem: string } | null> {
-  const ballot = await votersDb.electionBallot.findUnique({
-    where: { id: ballotId },
-    select: { signingPrivateKeyPem: true, signingPublicKeyPem: true },
-  })
-
-  if (!ballot) return null
-
-  return {
-    privateKeyPem: ballot.signingPrivateKeyPem,
-    publicKeyPem: ballot.signingPublicKeyPem,
-  }
 }
 
 /**

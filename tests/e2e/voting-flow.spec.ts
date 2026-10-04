@@ -38,7 +38,6 @@ const VOTERS = {
   canVote: 'Anna — röstberättigad',
   verifiesReceipt: 'Kim — röstberättigad',
   doubleVote: 'Robin — röstberättigad',
-  oldRoutes: 'Charlie — röstberättigad',
   noStorage: 'Mira — röstberättigad',
   /**
    * Samma väljare som ovan, på en annan valsedel. Noa lämnas med flit orörd
@@ -63,10 +62,6 @@ const OTHER_MUNICIPALITY = 'Gunvor — annan kommun'
  * Regionvalsedeln har nio alternativ och tar några sekunder att kryptera i
  * webbläsaren och att verifiera på servern. Riksdagsvalsedeln med personröst
  * har tjugosex och tar flera gånger så lång tid; den prövas i ett eget test.
- *
- * Inte kommunvalsedeln, som var den det gamla flödets tester röstade på. En
- * databas som inte nollställts sedan dess bär det gamla flödets markering där,
- * och den valsedeln går då med rätta inte att rösta på.
  */
 const BALLOT = /Regionfullmäktige/
 
@@ -256,8 +251,7 @@ test.describe('röstning från början till slut', () => {
   })
 
   /**
-   * TVÅ TESTER UR DET GAMLA FLÖDET ÄR BORTTAGNA, OCH SKÄLET ÄR ATT DERAS
-   * EGENSKAPER INTE LÄNGRE ÄR SANNA.
+   * TVÅ EGENSKAPER SOM INTE GÄLLER KUVERTMODELLEN HAR INGET TEST HÄR.
    *
    * "Samma väljare kan inte rösta två gånger på samma valsedel": i
    * kuvertmodellen ersätter en ny röst den förra fram till stängningen. Det är
@@ -341,26 +335,6 @@ test.describe('vad sidorna inte läcker', () => {
     // Och sidan säger rakt ut att det den visar inte bevisar något.
     await expect(page.getByRole('heading', { name: 'Det här är inget kvitto' })).toBeVisible()
     await expect(page.getByText(/ingen kan få ett/i)).toBeVisible()
-  })
-
-  test('röstsidan och verifieringssidan anropar inte det gamla flödets rutter', async ({ page }) => {
-    // Rutterna finns kvar tills det gamla flödet tas bort, men ingen sida
-    // ska använda dem. Ett anrop hit vore en röst eller ett kvitto som ingen
-    // längre ska kunna få.
-    const oldRoutes: string[] = []
-    page.on('request', (request) => {
-      if (/^\/api\/(vote\/cast|vote\/credential|verify)$/.test(new URL(request.url()).pathname)) {
-        oldRoutes.push(request.url())
-      }
-    })
-
-    await identify(page, VOTERS.oldRoutes)
-    await voteFor(page, 'Vänsterpartiet')
-
-    await page.goto('/verify')
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
-
-    expect(oldRoutes).toEqual([])
   })
 
   test('verifieringssidan frågar inte efter någon kod', async ({ page }) => {

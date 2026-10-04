@@ -64,7 +64,7 @@ const VOTE: DeviceVote = {
 }
 
 function ballot(id: string, overrides: Partial<ServerBallot> = {}): ServerBallot {
-  return { id, kind: 'RIKSDAG', label: 'Riksdagen', hasPendingVote: false, votedInOldFlow: false, ...overrides }
+  return { id, kind: 'RIKSDAG', label: 'Riksdagen', hasPendingVote: false, ...overrides }
 }
 
 describe('vad enheten sparar', () => {
@@ -234,17 +234,6 @@ describe('vad valsedeln visar', () => {
         comparison: 'same',
       }),
     ).toEqual({ kind: 'closed', hasPendingVote: true })
-  })
-
-  it('en röst i det gamla flödet går inte att ändra, och ett kuvert erbjuds inte ovanpå den', () => {
-    expect(
-      ballotStatus({
-        ballot: ballot(RIKSDAG, { votedInOldFlow: true }),
-        acceptsVotes: true,
-        deviceVote: undefined,
-        comparison: undefined,
-      }),
-    ).toEqual({ kind: 'old-flow' })
   })
 
   const ANSWER: DeviceVote = {

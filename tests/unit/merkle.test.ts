@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalVoteRecord, commitmentHash, hashLeaf, merkleRoot } from '@/lib/merkle'
+import { hashLeaf, merkleRoot } from '@/lib/merkle'
 
 /**
  * Merkleträdet bär kravet att röster inte ska kunna ändras eller tas bort utan
@@ -9,17 +9,9 @@ import { canonicalVoteRecord, commitmentHash, hashLeaf, merkleRoot } from '@/lib
  * De två egenskaperna drar åt olika håll, och testerna nedan prövar båda.
  */
 
-function vote(overrides: Partial<Parameters<typeof canonicalVoteRecord>[0]> = {}) {
-  return canonicalVoteRecord({
-    tokenHash: 'a'.repeat(64),
-    credentialId: 'b'.repeat(64),
-    credentialSignature: 'c'.repeat(512),
-    ballotId: '11111111-1111-1111-1111-111111111111',
-    ballotPartyId: '22222222-2222-2222-2222-222222222222',
-    candidateId: null,
-    optionId: null,
-    ...overrides,
-  })
+/** Innehållet i ett löv. Själva trädet bryr sig inte om vad det är, bara om att det är en sträng. */
+function vote(id: string): string {
+  return `${id.repeat(64)}|11111111-1111-1111-1111-111111111111`
 }
 
 describe('Merkleroten avslöjar ingen ordning', () => {
@@ -32,11 +24,11 @@ describe('Merkleroten avslöjar ingen ordning', () => {
      * röstlängdsdatabasen, tillräcklig för att para ihop väljare med röst.
      */
     const leaves = [
-      hashLeaf(vote({ tokenHash: '1'.repeat(64) })),
-      hashLeaf(vote({ tokenHash: '2'.repeat(64) })),
-      hashLeaf(vote({ tokenHash: '3'.repeat(64) })),
-      hashLeaf(vote({ tokenHash: '4'.repeat(64) })),
-      hashLeaf(vote({ tokenHash: '5'.repeat(64) })),
+      hashLeaf(vote('1')),
+      hashLeaf(vote('2')),
+      hashLeaf(vote('3')),
+      hashLeaf(vote('4')),
+      hashLeaf(vote('5')),
     ]
 
     const forward = merkleRoot(leaves)
@@ -46,25 +38,17 @@ describe('Merkleroten avslöjar ingen ordning', () => {
     expect(backward).toEqual(forward)
     expect(shuffled).toEqual(forward)
   })
-
-  it('den kanoniska formen innehåller ingen tidsstämpel', () => {
-    // Tas skapandetidpunkten med blir trädet tidsberoende igen, och två
-    // observatörer som hämtar data vid olika tillfällen räknar fram olika
-    // rötter.
-    expect(vote()).not.toMatch(/\d{4}-\d{2}-\d{2}/)
-    expect(vote()).not.toMatch(/T\d{2}:\d{2}/)
-  })
 })
 
 describe('Merkleroten upptäcker manipulation', () => {
   const leaves = ['1', '2', '3', '4', '5', '6', '7'].map((digit) =>
-    hashLeaf(vote({ tokenHash: digit.repeat(64) })),
+    hashLeaf(vote(digit)),
   )
   const root = merkleRoot(leaves)
 
   it('en ändrad röst ger en annan rot', () => {
     const tampered = [...leaves]
-    tampered[3] = hashLeaf(vote({ tokenHash: '9'.repeat(64) }))
+    tampered[3] = hashLeaf(vote('9'))
 
     expect(merkleRoot(tampered)).not.toEqual(root)
   })
@@ -74,18 +58,7 @@ describe('Merkleroten upptäcker manipulation', () => {
   })
 
   it('en tillagd röst ger en annan rot', () => {
-    expect(merkleRoot([...leaves, hashLeaf(vote({ tokenHash: '8'.repeat(64) }))])).not.toEqual(root)
-  })
-
-  it('ett ändrat parti på en röst ger en annan rot', () => {
-    // Rösträkningen sker på partiet. Ändras det utan att roten ändras vore
-    // hela konstruktionen verkningslös.
-    const tampered = [...leaves]
-    tampered[0] = hashLeaf(
-      vote({ tokenHash: '1'.repeat(64), ballotPartyId: '33333333-3333-3333-3333-333333333333' }),
-    )
-
-    expect(merkleRoot(tampered)).not.toEqual(root)
+    expect(merkleRoot([...leaves, hashLeaf(vote('8'))])).not.toEqual(root)
   })
 
   it('ett löv kan inte förväxlas med en intern nod', () => {
@@ -115,36 +88,5 @@ describe('Merkleroten upptäcker manipulation', () => {
     // specialfall som hoppas över.
     expect(merkleRoot([])).toMatch(/^[0-9a-f]{64}$/)
     expect(merkleRoot([])).not.toEqual(merkleRoot([hashLeaf('a')]))
-  })
-})
-
-describe('åtagandekedjan', () => {
-  it('varje åtagande binds till det föregående', () => {
-    const first = commitmentHash({ sequence: 1, root: 'aa', voteCount: 3, previousHash: null })
-    const second = commitmentHash({ sequence: 2, root: 'bb', voteCount: 5, previousHash: first })
-
-    // Byts det första åtagandet ut stämmer inte det andra längre.
-    const forgedFirst = commitmentHash({
-      sequence: 1,
-      root: 'cc',
-      voteCount: 3,
-      previousHash: null,
-    })
-    const secondAfterForgery = commitmentHash({
-      sequence: 2,
-      root: 'bb',
-      voteCount: 5,
-      previousHash: forgedFirst,
-    })
-
-    expect(secondAfterForgery).not.toEqual(second)
-  })
-
-  it('antalet röster ingår i åtagandet', () => {
-    // Annars kunde någon påstå att samma rot gällde ett annat antal röster.
-    const withThree = commitmentHash({ sequence: 1, root: 'aa', voteCount: 3, previousHash: null })
-    const withFour = commitmentHash({ sequence: 1, root: 'aa', voteCount: 4, previousHash: null })
-
-    expect(withThree).not.toEqual(withFour)
   })
 })

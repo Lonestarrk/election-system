@@ -58,7 +58,7 @@ export const dynamic = 'force-dynamic'
  *
  * 4. Det hemliga väljs aldrig ut: väljarens BankID-signatur och den krypterade
  *    certifikatkedjan, bevisen, förtroendemännens krypterade andelar och
- *    valsedlarnas privata signeringsnycklar. Kolumnerna finns, men ingenting ur
+ *    kolumnerna som bär hemligheter. Kolumnerna finns, men ingenting ur
  *    dem lämnar databasen här.
  */
 
@@ -66,8 +66,7 @@ export const dynamic = 'force-dynamic'
 // Svarets form
 //
 // Exporteras som typer och inget annat. Arkitektursidan läser samma typer, så
-// att en kolumn som tas bort här (till exempel den gamla tabellen `vote` när
-// det gamla flödet raderas) blir ett kompileringsfel på sidan i stället för en
+// att en kolumn som tas bort här blir ett kompileringsfel på sidan i stället för en
 // tabell som tyst blir tom. Next.js tillåter bara vissa värden som export från
 // en ruttfil, men typer syns inte för den kontrollen.
 // ---------------------------------------------------------------------------
@@ -154,9 +153,6 @@ export type BallotTallyRow = {
   count: number
 }
 
-/** GAMLA MODELLEN: en röst lagd med röstintyg och blind signatur. */
-export type LegacyVoteRow = { id: string; tokenHash: string; ballotId: string; createdAt: string }
-
 export type DatabaseState = {
   elections: ElectionState[]
   votersDb: {
@@ -175,8 +171,6 @@ export type DatabaseState = {
     trusteeShare: TrusteeShareRow[]
     partialDecryption: PartialDecryptionRow[]
     ballotTally: BallotTallyRow[]
-    /** Tabellen `vote`, som röstsidan fortfarande skriver till med det gamla flödet. */
-    legacyVote: LegacyVoteRow[]
     foreignKeys: ForeignKey[]
   }
   analysis: {
@@ -269,11 +263,6 @@ function shorten(value: string): string {
 
 function day(date: Date): string {
   return date.toISOString().slice(0, 10)
-}
-
-/** Timupplösning, precis som det gamla flödet lagrar sina röster. */
-function hour(date: Date): string {
-  return `${date.toISOString().slice(0, 13).replace('T', ' ')}:00`
 }
 
 /**
@@ -395,7 +384,6 @@ export async function GET() {
       trusteeShares,
       partialDecryptions,
       ballotTallies,
-      legacyVotes,
       voteKeys,
       voteTables,
     },
@@ -426,12 +414,6 @@ export async function GET() {
     ballotTallies: votesDb.ballotTally.findMany({
       orderBy: [{ ballotId: 'asc' }, { optionIndex: 'asc' }],
       select: { ballotId: true, optionIndex: true, count: true },
-    }),
-    legacyVotes: votesDb.vote.findMany({
-      orderBy: { id: 'asc' },
-      // Bara valsedeln, inte partiet. Livevyn behöver inte avslöja vad någon
-      // röstat på för att visa hur tabellen ser ut.
-      select: { id: true, tokenHash: true, ballotId: true, createdAt: true },
     }),
     voteKeys: votesDb.$queryRawUnsafe<ForeignKey[]>(FOREIGN_KEY_QUERY),
     voteTables: votesDb.$queryRawUnsafe<Array<{ table_name: string }>>(TABLE_QUERY),
@@ -468,10 +450,6 @@ export async function GET() {
   for (const row of encryptedVotes) {
     votesDbValues.add(row.id)
     votesDbValues.add(row.ciphertextHash)
-  }
-  for (const row of legacyVotes) {
-    votesDbValues.add(row.id)
-    votesDbValues.add(row.tokenHash)
   }
   for (const row of partialDecryptions) votesDbValues.add(row.value)
   for (const row of trusteeShares) votesDbValues.add(row.publicShare)
@@ -566,12 +544,6 @@ export async function GET() {
         optionIndex: row.optionIndex,
         count: row.count,
       })),
-      legacyVote: legacyVotes.map((vote) => ({
-        id: shorten(vote.id),
-        tokenHash: shorten(vote.tokenHash),
-        ballotId: shorten(vote.ballotId),
-        createdAt: hour(vote.createdAt),
-      })),
       foreignKeys: voteKeys,
     },
 
@@ -588,7 +560,7 @@ export async function GET() {
       /**
        * Räknas fram mot tabellistan ur samma databas, inte mot en handskriven
        * lista. Den tidigare listan hade hunnit bli fel: den räknade upp
-       * `anonymous_vote`, som bytt namn till `vote`, och saknade tabellerna
+       * `anonymous_vote`, som bytt namn, och saknade tabellerna
        * kuvertmodellen lade till.
        */
       foreignKeysAcrossDatabases: [

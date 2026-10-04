@@ -4,9 +4,10 @@
 // Denna databas vet VEM som är röstberättigad och VEM som har röstat i vilken
 // omröstning. Den vet aldrig VAD någon röstat på.
 //
-// Det finns ingen kolumn här som kan kopplas till en rad i Vote.
-// Ingen token, inget token-hash, ingen röst-id, ingen parti-id, ingen
-// kandidat-id.
+// Ingen kolumn här pekar på en rad i votes_db, och ingen innehåller ett parti,
+// en kandidat eller ett svarsalternativ. Det som binder en väljare till ett
+// chiffer medan röstningen pågår är pending_vote, och det raderas vid
+// stängningen (spec 6 och 7).
 //
 // OM OMRÖSTNINGENS SPEGLING
 //
@@ -75,7 +76,6 @@ model VoterStatus {
 
   sessions       VotingSession[]
   adminSessions  AdminSession[]
-  ballotStatuses VoterBallotStatus[]
   pendingVotes   PendingVote[]
   votedMarkers   VotedMarker[]
 
@@ -177,59 +177,12 @@ model ElectionBallot {
   /// valsedeln gäller. Matchas mot väljarens folkbokföring.
   areaCode String? @map("area_code")
 
-  /// Valmyndighetens signeringsnyckel för valsedelns röstintyg.
-  ///
-  /// EGET NYCKELPAR PER VALSEDEL, INTE PER OMRÖSTNING.
-  ///
-  /// Myndigheten signerar blint och ser alltså aldrig vilken valsedel intyget
-  /// gäller. Bindningen måste därför komma från VILKEN NYCKEL som signerade:
-  /// ett intyg för kommunvalsedeln verifierar helt enkelt inte mot
-  /// riksdagsvalsedelns publika nyckel. Utan det skulle en väljare kunna
-  /// begära tre intyg och lösa in alla tre på samma valsedel.
-  ///
-  /// Läcker den privata nyckeln kan vem som helst skapa röstintyg som ser
-  /// auktoriserade ut. Den angriper alltså valets RIKTIGHET, till skillnad
-  /// från IDENTITY_PEPPER som bär valhemligheten.
-  signingPrivateKeyPem String @map("signing_private_key_pem")
-  signingPublicKeyPem  String @map("signing_public_key_pem")
-
   displayOrder Int @map("display_order")
 
-  voterStatuses VoterBallotStatus[]
-  votedMarkers  VotedMarker[]
+  votedMarkers VotedMarker[]
 
   @@index([electionId])
   @@map("election_ballot")
-}
-
-/// "Har röstat", per person och valsedel, i DET GAMLA FLÖDET.
-///
-/// Detta ersätter den tidigare booleanen på VoterStatus. Raden skapas först
-/// när personen faktiskt röstat — frånvaro av rad betyder "har inte röstat".
-/// Kuvertmodellens markering är en egen modell, VotedMarker nedan, och den här
-/// tas bort med det gamla flödet i uppgift 15.
-model VoterBallotStatus {
-  id String @id @default(uuid())
-
-  voterStatusId String      @map("voter_status_id")
-  voterStatus   VoterStatus @relation(fields: [voterStatusId], references: [id], onDelete: Cascade)
-
-  ballotId String         @map("ballot_id")
-  ballot   ElectionBallot @relation(fields: [ballotId], references: [id], onDelete: Cascade)
-
-  /// AVSIKTLIGT GROVKORNIG: avrundad till dygn.
-  ///
-  /// Med millisekundsupplösning här och i Vote.createdAt skulle en
-  /// angripare med båda databaserna kunna matcha rad mot rad på tid och
-  /// därmed återskapa kopplingen mellan väljare och röst. Hela separationen
-  /// vore då meningslös. Se SECURITY.md, avsnittet om tidskorrelation.
-  votedAt DateTime @map("voted_at")
-
-  /// Dubbelröstningsspärren. Att den ligger i databasen och inte i koden är
-  /// avgörande: två samtidiga begäranden kan inte båda skapa raden.
-  @@unique([voterStatusId, ballotId])
-  @@index([ballotId])
-  @@map("voter_ballot_status")
 }
 
 /// Markeringen "har röstat" i kuvertmodellen, en per väljare och valsedel
@@ -246,13 +199,6 @@ model VoterBallotStatus {
 /// Raderna skrivs dessutom i en ordning som följer väljarens id och inte den
 /// ordning kuverten lades, så att inte heller tabellens fysiska ordning säger
 /// vem som röstade före vem.
-///
-/// SKILD FRÅN VoterBallotStatus. Den modellen har en obligatorisk tidpunkt, är
-/// det gamla flödets dubbelröstningsspärr och läses av röstsidan som en röst i
-/// det gamla flödet (`votedInOldFlow`). En gemensam tabell hade gjort en
-/// kuvertröst till en röst som röstsidan säger inte går att byta, och en
-/// väljare med en rad från det gamla flödet hade stoppat skalningen på
-/// unikhetskravet.
 ///
 /// Den som kan skriva i röstlängden kan skriva eller radera en markering förbi
 /// stängningen, precis som ett kuvert. Före skalningen stoppar en sådan rad
@@ -358,7 +304,7 @@ model PushSubscription {
   p256dh String
   auth   String
 
-  /// AVSIKTLIGT GROVKORNIG: avrundad till dygn, av samma skäl som votedAt.
+  /// AVSIKTLIGT GROVKORNIG: avrundad till dygn, av samma skäl som tidsstämplarna i övrigt.
   /// En exakt prenumerationstidpunkt skulle kunna korreleras mot en
   /// legitimeringstidpunkt om samma person gör båda strax efter varandra.
   createdAt DateTime @map("created_at")
@@ -369,8 +315,8 @@ model PushSubscription {
 /// Revisionslogg för säkerhetshändelser.
 ///
 /// Innehåller ALDRIG: identitet, parti, kandidat, token, IP-adress,
-/// request-id. Tidsstämpeln är avrundad till hel timme av samma skäl som
-/// votedAt.
+/// request-id. Tidsstämpeln är avrundad till hel timme, för att en exakt tid
+/// skulle kunna korreleras mot tidpunkter i röstdatabasen.
 ///
 /// Detta är en medveten avvägning: en revisionslogg detaljerad nog att
 /// utreda ett enskilt fall vore också detaljerad nog att avanonymisera en
@@ -385,7 +331,7 @@ model AuditEvent {
   /// HÄR ÄR EN ORDNING OFARLIG, TILL SKILLNAD FRÅN BLAND RÖSTERNA.
   ///
   /// En ordnad revisionslogg avslöjar i vilken följd händelser inträffade —
-  /// exempelvis att sex röstintyg utfärdades. Men rösterna är INTE ordnade:
+  /// exempelvis att sex legitimeringar avslutades. Men rösterna är INTE ordnade:
   /// deras Merkleträd sorteras på innehåll och deras tidsstämplar är avrundade
   /// till timme. Att para ihop de två sidorna kräver ordning på BÅDA, och den
   /// finns inte att få.
@@ -399,8 +345,7 @@ model AuditEvent {
   ///
   /// Kedjan gör att en borttagen eller ändrad rad upptäcks: alla senare hashar
   /// slutar stämma. Den hindrar inte någon med databasåtkomst från att räkna om
-  /// hela kedjan — skyddet mot det är att kedjans spets publiceras, se
-  /// ElectionCommitment i röstdatabasen och observatörsgränssnittet.
+  /// hela kedjan — skyddet mot det är att kedjans spets sparas utanför systemet.
   entryHash String @unique @map("entry_hash")
 
   /// Urnroten, bara på posten LINK_CLEARED (uppgift 12b). Den ingår i radens

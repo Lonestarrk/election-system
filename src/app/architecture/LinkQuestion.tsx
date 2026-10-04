@@ -5,9 +5,7 @@ import { ColumnList, DbTable, preStyle, rowCount, type Row } from './db-table'
 /**
  * "FINNS DET NÅGON KOPPLING?"
  *
- * I den gamla modellen var svaret nej, och demonstrationen gick ut på att
- * frågan "vem röstade på vad" inte gick att skriva färdigt. I kuvertmodellen
- * är svaret ja, med flit, medan röstningen pågår. Avsnittet visar därför vad
+ * I kuvertmodellen är svaret ja, med flit, medan röstningen pågår. Avsnittet visar därför vad
  * frågan faktiskt ger: under röstningen en väljare och ett chiffer som inte går
  * att läsa, efter stängningen ingenting att joina.
  *
@@ -36,9 +34,8 @@ export function LinkQuestion({
       <h2 id="koppling">Finns det någon koppling?</h2>
       {status}
       <p className="muted small">
-        Ja, med flit, medan röstningen pågår. Det är skillnaden mot den gamla modellen, där
-        kopplingen inte gick att skapa. Frågan man skulle vilja ställa, vem som röstade på vad, går
-        nu att skriva. Den här körs mot röstlängden varje gång databasernas innehåll hämtas:
+        Ja, med flit, medan röstningen pågår. Frågan man skulle vilja ställa, vem som röstade på vad,
+        går att skriva för den som läser databasen. Den här körs mot röstlängden varje gång databasernas innehåll hämtas:
       </p>
       <pre className="mono small" style={preStyle}>
         {analysis.linkQuery.sql}

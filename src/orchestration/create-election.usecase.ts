@@ -1,4 +1,3 @@
-import { generateElectionKeyPair } from '@/lib/blind-signature'
 import { logger } from '@/lib/logger'
 import {
   createElection as createElectionInVotesDb,
@@ -86,17 +85,6 @@ export async function createElection(
   input: CreateElectionRequest,
 ): Promise<CreateElectionOutcome> {
   /**
-   * ETT NYCKELPAR PER VALSEDEL, SKAPAT HÄR.
-   *
-   * Orkestreringen är enda stället som håller båda halvorna samtidigt: den
-   * publika går till röstdatabasen så att vem som helst kan verifiera
-   * röstintyg, den privata till röstlängden där intygen signeras. Ingen av
-   * modulerna genererar nyckeln själv — då skulle den privata halvan behöva
-   * passera röstdatabasen för att nå röstlängden.
-   */
-  const keyPairs = input.ballots.map(() => generateElectionKeyPair())
-
-  /**
    * LÄGET OMRÖSTNINGEN SKAPAS I, OCH KÄNDA FRASER VÄGRAS I SKARPT LÄGE (uppgift 17).
    *
    * Läget läses här, ur serverns eget läge, och skrivs i båda databaserna.
@@ -128,10 +116,6 @@ export async function createElection(
     created = await createElectionInVotesDb({
       ...input,
       mode,
-      ballots: input.ballots.map((ballot, index) => ({
-        ...ballot,
-        signingPublicKeyPem: keyPairs[index]!.publicKeyPem,
-      })),
     })
   } catch (error) {
     logger.error('Kunde inte skapa omröstningen i röstdatabasen', { error: String(error) })
@@ -194,11 +178,7 @@ export async function createElection(
       mode,
       opensAt: input.opensAt,
       closesAt: input.closesAt,
-      ballots: created.ballotIds.map((ballot, index) => ({
-        ...ballot,
-        signingPrivateKeyPem: keyPairs[index]!.privateKeyPem,
-        signingPublicKeyPem: keyPairs[index]!.publicKeyPem,
-      })),
+      ballots: created.ballotIds,
     })
   } catch (error) {
     logger.error('Kunde inte spegla omröstningen till röstlängden', { error: String(error) })

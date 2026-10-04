@@ -117,9 +117,6 @@ const OUTCOMES: Record<string, string> = {
   signature_too_large:
     'Underskriften från BankID var större än servern tar emot, och rösten lades inte. Felet är ' +
     'serverns och har loggats. Försök igen senare.',
-  voted_in_old_flow:
-    'Du har redan röstat på den här valsedeln i det tidigare röstflödet, och den rösten går inte att ' +
-    'byta. Den här rösten lades inte.',
 }
 
 export function BankIdSigning({

@@ -25,8 +25,7 @@ import { forgetFinalCheck } from './final-check-job'
  *     Statusen blir OPEN, och fastställandets och räkningens tidpunkter tas bort.
  *   – i röstlängden: de liggande kuverten, markeringarna "har röstat", och i
  *     omröstningens rad fasen (OPEN), kuvertroten, urnroten och tidpunkten för
- *     raderingen av kopplingen. Det gamla flödets markeringar rörs inte: ingen
- *     fil utanför det gamla flödet ska nämna dem, se `votedMarkerWritten`.
+ *     raderingen av kopplingen.
  * Förtroendepersonernas andelar och omröstningens nyckel behålls, som
  * omröstningen själv och röstlängden.
  *

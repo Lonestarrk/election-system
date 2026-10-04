@@ -3,7 +3,7 @@
  *
  * Loggar är den vanligaste vägen för känsliga uppgifter att läcka ut ur ett
  * system som i övrigt är korrekt byggt. En enda `console.log(request.body)` i
- * en felsökningssituation räcker för att skriva en väljares token till disk,
+ * en felsökningssituation räcker för att skriva en väljares personnummer till disk,
  * och därifrån vidare till loggaggregering, backuper och supportärenden.
  *
  * Därför får ingenting i den här applikationen logga direkt. All loggning går
@@ -17,28 +17,17 @@ const REDACTED = '[MASKERAT]'
 /**
  * Mönster som aldrig får nå loggutdata.
  *
- * Ordningen spelar roll: token matchas före generiska hexsträngar så att en
- * token maskeras som token.
+ * Personnummer matchas före hexsträngar.
  */
 const SENSITIVE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
-  {
-    // Röst-token i visningsformat: 6 grupper om 8 Crockford-base32-tecken.
-    label: 'token',
-    pattern: /\b[0-9ABCDEFGHJKMNPQRSTVWXYZ]{8}(?:-[0-9ABCDEFGHJKMNPQRSTVWXYZ]{8}){5}\b/gi,
-  },
-  {
-    // Röst-token utan gruppering.
-    label: 'token',
-    pattern: /\b[0-9ABCDEFGHJKMNPQRSTVWXYZ]{48}\b/gi,
-  },
   {
     // Personnummer: ÅÅÅÅMMDD-NNNN, ÅÅMMDD-NNNN, med eller utan skiljetecken.
     label: 'personnummer',
     pattern: /\b(?:19|20)?\d{6}[-+]?\d{4}\b/g,
   },
   {
-    // SHA-256/HMAC som hex. Ett token-hash i loggen låter den som har
-    // databasen slå upp exakt vilken röst en loggrad hör till.
+    // SHA-256/HMAC som hex. En chifferhash i loggen låter den som har
+    // databasen slå upp exakt vilket kuvert en loggrad hör till.
     label: 'hash',
     pattern: /\b[a-f0-9]{64}\b/gi,
   },

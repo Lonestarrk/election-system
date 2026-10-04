@@ -487,7 +487,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     }
   })
 
-  it('observatörsrutten för det gamla flödets röster finns inte längre', () => {
+  it('ingen observatörsrutt lämnar ut röster en och en', () => {
     expect(existsSync(join(process.cwd(), 'src/app/api/observer/votes/route.ts'))).toBe(false)
   })
 
@@ -497,7 +497,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
 
   it('inga delsummor under röstningen, bara valdeltagandet', async () => {
     // Spec 6.2. Ett löpande resultat är en tröskeldekryptering per siffra, eller
-    // som i det gamla flödet en räkning i klartext.
+    // en räkning i klartext.
     await castFor(anna, 'bp-s')
     await castFor(kim, 'bp-s')
 

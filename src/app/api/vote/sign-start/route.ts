@@ -83,7 +83,7 @@ export async function POST(request: Request) {
 
   const clientIp = getClientIp(request)
 
-  const rate = checkRateLimit('vote-sign-start', clientIp, RATE_LIMITS.castVote)
+  const rate = checkRateLimit('vote-sign-start', clientIp, RATE_LIMITS.signStart)
   if (!rate.allowed) {
     await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många försök.', 429, {

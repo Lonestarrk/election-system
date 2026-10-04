@@ -22,7 +22,7 @@ import {
 } from '@/modules/eligibility/pending-vote.service'
 import { GET } from '@/app/api/demo/database-state/route'
 import type { DatabaseState } from '@/app/api/demo/database-state/route'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOnce, signingTextFor } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * ARKITEKTURSIDANS LIVEVY: VAD RUTTEN FAKTISKT LÄMNAR UT.
@@ -391,10 +391,6 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
       where: { electionId },
       select: { encryptedShare: true, publicShare: true },
     })
-    const signingKey = await votersDb.electionBallot.findUniqueOrThrow({
-      where: { id: ballotId },
-      select: { signingPrivateKeyPem: true },
-    })
 
     // Fullständiga värden: bara de första tolv tecknen får lämna rutten.
     for (const full of [anna, voter.externalIdentityHash, envelope.id, annasHash]) {
@@ -413,32 +409,10 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     expect(state).not.toContain('BEGIN CERTIFICATE')
     expect(state).not.toContain('BEGIN PUBLIC KEY')
     expect(state).not.toContain('PRIVATE KEY')
-    expect(state).not.toContain(signingKey.signingPrivateKeyPem.slice(40, 80))
     for (const share of shares) {
       expect(state).not.toContain(share.encryptedShare)
       expect(state).not.toContain(share.publicShare)
     }
     expect(state).not.toMatch(/"(proofs|bankIdSignature|bankIdCertificateChain|commitmentSalt|encryptedShare)":/)
-  })
-
-  it('det gamla flödets tabell redovisas som den är, märkt för sig', async () => {
-    /**
-     * Det gamla flödets rutter tar fortfarande emot röster med röstintyg och
-     * blind signatur, fast röstsidan inte längre använder dem. Livevyn får inte
-     * låtsas att det flödet är borta: rösten ska synas i tabellen vote, med
-     * timupplösning precis som den lagras.
-     */
-    const attempt = await voteOnce(robin, { electionId, ballotId, ballotPartyId: bpS })
-    expect(attempt.status).toBe('voted')
-
-    const state = await readState()
-
-    expect(state.votesDb.legacyVote).toHaveLength(1)
-    expect(state.votesDb.legacyVote[0]).toMatchObject({ ballotId: shortened(ballotId) })
-    expect(state.votesDb.legacyVote[0]!.tokenHash).toMatch(/^[0-9a-f]{12}…$/)
-    expect(state.votesDb.legacyVote[0]!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:00$/)
-
-    // Det gamla flödet lägger inga kuvert.
-    expect(state.votersDb.pendingVote).toEqual([])
   })
 })

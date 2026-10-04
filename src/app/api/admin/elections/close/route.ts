@@ -230,8 +230,7 @@ export async function POST(request: Request) {
      * den läser kuverten, och fasen går inte tillbaka. Före 11d stod fasen kvar
      * i OPEN efter en avvikelse, och beskedet "stängningen avbröts" kunde läsas
      * som att röstningen pågick. Nu säger det vad som gäller. Beskedet gäller
-     * kuverten: det gamla flödets rutter prövar ingen fas, se `oldFlowRoutesRemain`
-     * i src/app/architecture/code-facts.ts.
+     * kuverten.
      */
     return jsonResponse(
       {

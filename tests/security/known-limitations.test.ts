@@ -11,8 +11,7 @@ import { visibleText } from '../page-text'
  *
  * Listan över kända begränsningar fanns tidigare som prosa på tre ställen:
  * arkitektursidan, SECURITY.md och VERIFIABILITY.md. Följden blev
- * förutsägbar. Ordningsproblemet mellan de två databasskrivningarna löstes av
- * röstintygen men stod kvar som ett kvarvarande problem långt efteråt — och en
+ * förutsägbar. Ett löst problem stod kvar som ett kvarvarande problem långt efteråt — och en
  * demonstration som påstår att systemet är sämre än det är underminerar
  * tilliten lika säkert som en som påstår motsatsen.
  *

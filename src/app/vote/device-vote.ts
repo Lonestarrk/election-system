@@ -287,18 +287,16 @@ export type ServerBallot = {
   kind: string
   label: string
   hasPendingVote: boolean
-  votedInOldFlow: boolean
 }
 
 /**
- * De sju lägen en valsedel kan visas i.
+ * De fem lägen en valsedel kan visas i.
  *
  * `current` är det enda som bär ett innehåll, och bara när servern bekräftat
  * att den håller exakt den röst som lades härifrån.
  */
 export type BallotStatus =
   | { kind: 'closed'; hasPendingVote: boolean }
-  | { kind: 'old-flow' }
   | { kind: 'current'; label: string }
   | { kind: 'changed-elsewhere' }
   | { kind: 'registered' }
@@ -307,15 +305,7 @@ export type BallotStatus =
 /**
  * Avgör vad en valsedel visar.
  *
- * DET GAMLA FLÖDETS MARKERING RESPEKTERAS, men bara som ett eget läge. En röst
- * lagd med röstintyg ligger i tabellen vote utan någon koppling till väljaren,
- * så den går inte att byta ut, och ett kuvert ovanpå vore en andra röst på
- * samma valsedel. Sidan erbjuder därför ingen röstning där. Ingen sida lägger
- * sådana röster längre, så läget uppstår bara om någon anropat det gamla
- * flödets rutter direkt, och det försvinner med dem.
- *
- * "Du har en röst registrerad" kommer ur kuvertmodellens egen uppgift,
- * `hasPendingVote`, aldrig ur markeringen.
+ * "Du har en röst registrerad" kommer ur `hasPendingVote`, alltså ur att ett kuvert ligger.
  */
 export function ballotStatus(input: {
   ballot: ServerBallot
@@ -326,7 +316,6 @@ export function ballotStatus(input: {
   const { ballot, acceptsVotes, deviceVote, comparison } = input
 
   if (!acceptsVotes) return { kind: 'closed', hasPendingVote: ballot.hasPendingVote }
-  if (ballot.votedInOldFlow) return { kind: 'old-flow' }
 
   if (ballot.hasPendingVote) {
     if (deviceVote && comparison === 'same') return { kind: 'current', label: deviceVote.label }

@@ -62,9 +62,9 @@ test.describe('observatörsgränssnittet', () => {
     expect((await results.json()).status).toBe('not_published')
   })
 
-  test('det gamla flödets röster lämnas inte längre ut', async ({ request, baseURL }) => {
-    // /api/observer/votes lämnade ut varje röst i det gamla flödet med sitt
-    // innehåll, utan inloggning och under röstningen. Rutten finns inte längre.
+  test('ingen rutt lämnar ut enskilda röster', async ({ request, baseURL }) => {
+    // /api/observer/votes lämnade ut varje röst med sitt innehåll, utan
+    // inloggning och under röstningen. Rutten finns inte.
     const response = await request.post(`${baseURL}/api/observer/votes`, {
       data: {},
       headers: { Origin: baseURL! },

@@ -12,7 +12,7 @@
  *
  *   1. En cachad valsedel kan vara inaktuell. Väljaren skulle kunna se partier
  *      som inte längre står på valsedeln.
- *   2. Kryptokoden som blindar röstintyget måste komma från servern varje
+ *   2. Kryptokoden som krypterar valsedeln måste komma från servern varje
  *      gång, så att den går att granska mot det som faktiskt levereras. En
  *      cachad kopia gör det svårare att avgöra vilken version som kördes.
  *

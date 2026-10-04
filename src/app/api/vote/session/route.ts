@@ -46,8 +46,7 @@ export const dynamic = 'force-dynamic'
  * radera det enheten sparat när fasen lämnat OPEN (spec 3.1 punkt 4). Och per
  * valsedel om väljaren har ett liggande kuvert, för beskedet "Du har en röst
  * registrerad" på en enhet som inte själv lade rösten. Det senare kommer ur
- * pending_vote, inte ur det gamla flödets markering, som bara säger att en
- * röst lades i det gamla flödet och därför heter `votedInOldFlow` här.
+ * pending_vote.
  *
  * Hashen för det liggande kuvertet lämnas inte ut, varken här eller av någon
  * annan rutt röstsidan anropar. Enheten som vill veta om dess röst är den som
@@ -102,7 +101,7 @@ export async function POST(request: Request) {
     closesAt: envelopes?.closesAt.toISOString() ?? null,
     acceptsVotes: envelopes?.acceptsVotes ?? false,
     /**
-     * Bara valsedlar som gäller väljaren, med status per valsedel.
+     * Bara valsedlar som gäller väljaren, och om ett kuvert ligger på dem.
      *
      * Innehåller ingenting om VAD som står på dem — det hämtas separat från
      * /api/vote/ballot, som är öppen eftersom valsedelns innehåll är
@@ -114,7 +113,6 @@ export async function POST(request: Request) {
       kind: ballot.kind,
       label: ballot.label,
       hasPendingVote: withEnvelope.has(ballot.id),
-      votedInOldFlow: ballot.hasVoted,
     })),
   })
 }

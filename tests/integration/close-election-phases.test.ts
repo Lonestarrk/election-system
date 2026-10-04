@@ -2370,9 +2370,6 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
         WHERE table_schema = 'public' AND table_name = 'voted_marker'`
       expect(columns.map((column) => column.column_name).sort()).toEqual(['ballot_id', 'id', 'voter_status_id'])
       expect(columns.filter((column) => /time|date|interval/i.test(column.data_type))).toEqual([])
-
-      // Det gamla flödets markering rörs inte, så röstsidan tolkar ingenting nytt.
-      expect(await votersDb.voterBallotStatus.count()).toBe(0)
     })
 
     it('ingen markering skrivs när valideringen stoppar stängningen', async () => {

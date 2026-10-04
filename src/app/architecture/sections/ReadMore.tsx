@@ -22,7 +22,7 @@ export function ReadMore() {
         <Link href={STATUS_PATH}>
           <strong>Utvecklingsstatus</strong>
           <span className="muted small">
-            Vad som är byggt och inte, vad det gamla röstflödet fortfarande gör, vad som återstår och
+            Vad som är byggt och inte, vad som återstår och
             vad som finns av uppsättningen i Azure.
           </span>
         </Link>

@@ -1,7 +1,6 @@
 import { scryptHex } from '../src/lib/crypto'
 import { describeElectionSeed } from './election-seed-report'
 import { assertSeedAllowed, demoElectionWindow } from '../src/lib/demo-election'
-import { generateElectionKeyPair } from '../src/lib/blind-signature'
 // Serverns ingång, som i createElection: nyckeln exponentieras i OpenSSL.
 import { generateKeyPair, publicShare, splitSecret } from '../src/lib/crypto/server'
 import { TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '../src/lib/crypto/threshold'
@@ -24,16 +23,10 @@ import { PrismaClient as VotesClient } from '.prisma/votes'
  *
  * VARFÖR INGA SEEDADE RÖSTER
  *
- * Tidigare seedades en anonym röst för den väljare som markerats som "har
- * redan röstat", så att integritetskontrollen inte skulle visa en avvikelse
- * direkt vid start. Det går inte längre: varje röst måste bära ett röstintyg
- * signerat av valsedelns privata nyckel, och ett seedat intyg vore ett intyg
- * som aldrig utfärdats genom den auktoriserade processen.
- *
- * Det är precis den egenskapen systemet ska ha. Att det blev omöjligt att
- * seeda en röst är inte ett problem med seed-skriptet — det är beviset på att
- * röster inte kan läggas till utanför den normala processen, och det gäller
- * även för oss som skriver koden.
+ * Ett kuvert bär ett inre kuvert som krypterats på väljarens enhet och ett yttre som är väljarens
+ * BankID-underskrift över det. Ett seedat kuvert vore en röst som aldrig lagts genom den
+ * normala processen, och stängningen skulle vägra det, eftersom underskriften inte går att
+ * förfalska. Demon får sina röster av den som provar den.
  */
 
 const votersDb = new VotersClient()
@@ -164,11 +157,6 @@ async function main() {
       { kind: 'FRAGA', label: 'Ska det införas ett nytt biblioteksbidrag?', areaCode: null },
     ]
 
-    // Ett nyckelpar per valsedel. Bindningen mellan röstintyg och valsedel
-    // kommer från vilken nyckel som signerade — myndigheten signerar blint och
-    // ser aldrig vilken valsedel intyget gäller.
-    const keyPairs = ballotSpecs.map(() => generateElectionKeyPair())
-
     const election = await votesDb.election.create({
       data: {
         name: 'Valet 2026',
@@ -221,7 +209,6 @@ async function main() {
           areaCode: spec.areaCode,
           // Personröst bara i riksdagsvalet, för att hålla demodatan hanterlig.
           allowsCandidateVote: spec.kind === 'RIKSDAG',
-          signingPublicKeyPem: keyPairs[index]!.publicKeyPem,
           displayOrder: index + 1,
         },
       })
@@ -284,8 +271,6 @@ async function main() {
           kind: ballot.kind,
           label: ballot.label,
           areaCode: ballot.areaCode,
-          signingPrivateKeyPem: keyPairs[index]!.privateKeyPem,
-          signingPublicKeyPem: keyPairs[index]!.publicKeyPem,
           displayOrder: index + 1,
         },
       })

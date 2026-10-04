@@ -123,17 +123,6 @@ export async function POST(request: Request) {
     })
   }
 
-  if (decision.outcome === 'already_voted') {
-    await recordAuditEvent(AUDIT_EVENTS.DOUBLE_VOTE_BLOCKED)
-    return jsonResponse({
-      status: 'rejected',
-      reason: 'already_voted',
-      // Systemet vet ATT personen röstat. Det vet inte VAD, och kan inte ta
-      // reda på det: uppgiften finns i en annan databas utan koppling hit.
-      message: 'Du har redan röstat i det här valet.',
-    })
-  }
-
   const session = await createVotingSession(decision.voterStatusId, body.data.electionId)
   await recordAuditEvent(AUDIT_EVENTS.AUTH_COMPLETED)
   await recordAuditEvent(AUDIT_EVENTS.VOTING_SESSION_CREATED)
@@ -143,13 +132,12 @@ export async function POST(request: Request) {
     // Namnet visas för väljaren som bekräftelse på vem som legitimerats. Det
     // lagras inte och kommer från BankID-svaret, inte från röstlängden.
     name: result.completionData.name,
-    // Valsedlarna som gäller just den här väljaren, med status per valsedel.
-    // Innehåller ingenting om vad som står på dem — bara vilka de är.
+    // Valsedlarna som gäller just den här väljaren. Innehåller ingenting om vad som
+    // står på dem — bara vilka de är.
     ballots: decision.ballots.map((ballot) => ({
       id: ballot.id,
       kind: ballot.kind,
       label: ballot.label,
-      hasVoted: ballot.hasVoted,
     })),
   })
 

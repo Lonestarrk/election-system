@@ -16,9 +16,6 @@ import { votersDb } from './db'
  *     i samma transaktion som raderar kuverten, en per flyttat kuvert och utan
  *     tidsstämpel (spec 3.1 punkt 6)
  *
- * Det gamla flödets markering läses inte här. Ingen sida lägger röster i det
- * gamla flödet sedan uppgift 14.
- *
  * VAD BESKEDET INTE SÄGER (spec 10). Markeringen skrivs ur kuverten som
  * raderas, så ett kuvert som tagits bort före stängningen syns som "har inte
  * röstat". Ett äldre äkta kuvert som lagts tillbaka syns inte: det ger en

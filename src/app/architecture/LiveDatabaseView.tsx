@@ -170,8 +170,7 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
           <div style={{ marginTop: '0.35rem' }}>
             Livevyn visar databaserna inifrån, som den som driver systemet eller har läsrätt i
             databasen ser dem. Den finns bara i demoläget: i skarpt läge visas den inte, och rutten
-            bakom den svarar inte. Varje tabell är märkt med vilken modell den hör till, och en tom
-            tabell är tom på riktigt.
+            bakom den svarar inte. En tom tabell är tom på riktigt.
           </div>
         </div>
 
@@ -221,7 +220,6 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
 
         <DbTable
           name="voter_status"
-          model="båda"
           description={
             <>
               En rad per person i röstlängden, röstberättigad eller inte.{' '}
@@ -243,7 +241,6 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
 
         <DbTable
           name="pending_vote"
-          model="kuvert"
           description={
             <>
               Ytterkuvertet: vem som har röstat, i kolumnen{' '}
@@ -283,14 +280,13 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
           <span className="mono">votes_db</span>, röstdatabasen
         </h2>
         <p className="muted small">
-          Vet vad som har röstats: som chiffer i kuvertmodellens tabeller, och i klartext i det gamla
-          flödets tabell vote. Vet inte vem som har röstat, och har ingen kolumn som skulle kunna
+          Vet vad som har röstats: som chiffer i kuvertens tabell, och som summor när de
+          har öppnats. Vet inte vem som har röstat, och har ingen kolumn som skulle kunna
           säga det.
         </p>
 
         <DbTable
           name="encrypted_vote"
-          model="kuvert"
           description={
             <>
               Innerkuvertet, utan väljare. {CURRENTLY.writeOrder.text} Ingen rad här märks av sidan.
@@ -315,7 +311,6 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
 
         <DbTable
           name="trustee_share"
-          model="kuvert"
           description={
             <>
               Tröskelnyckelns andelar, tre per omröstning, varav två krävs. Här visas bara den
@@ -336,7 +331,6 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
 
         <DbTable
           name="partial_decryption"
-          model="kuvert"
           description="Förtroendemännens bidrag till att öppna summan, ett per alternativ och förtroendeman."
           headers={['valsedel', 'alternativ', 'förtroendeman', 'värde']}
           rows={snapshot.votesDb.partialDecryption.map((row) => ({
@@ -348,7 +342,6 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
 
         <DbTable
           name="ballot_tally"
-          model="kuvert"
           description="Summan per alternativ, när den har öppnats. Ingen enskild röst dekrypteras."
           headers={['valsedel', 'alternativ', 'antal']}
           rows={snapshot.votesDb.ballotTally.map((row) => ({
@@ -356,23 +349,6 @@ export function LiveDatabaseView({ linkLimitationTitle }: Props) {
             cells: [row.ballotLabel ?? row.ballotId, row.optionIndex, row.count],
           }))}
           emptyNote={CURRENTLY.decryptionGate.text}
-        />
-
-        <DbTable
-          name="vote"
-          model="gammal"
-          description={
-            <>
-              Det gamla flödets röster, en rad per lagd röst. {CURRENTLY.oldFlowRoutesRemain.text}{' '}
-              Tabellen försvinner när det gamla flödet tas bort. Partiet visas inte här: livevyn
-              behöver inte avslöja vad någon röstat på för att visa hur tabellen ser ut.
-            </>
-          }
-          headers={['id', 'token-hash', 'valsedel', 'tidpunkt']}
-          rows={snapshot.votesDb.legacyVote.map((vote) => ({
-            key: vote.id,
-            cells: [vote.id, vote.tokenHash, vote.ballotId, vote.createdAt],
-          }))}
         />
       </section>
 

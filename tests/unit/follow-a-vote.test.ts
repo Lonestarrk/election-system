@@ -99,7 +99,6 @@ function snapshot(
       trusteeShare: [],
       partialDecryption: [],
       ballotTally: [],
-      legacyVote: [],
       foreignKeys: [],
     },
     analysis: {

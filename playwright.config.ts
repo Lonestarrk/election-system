@@ -5,15 +5,13 @@ import { defineConfig, devices } from '@playwright/test'
  *
  * VARFÖR DE HÄR TESTERNA BEHÖVS UTÖVER VITEST
  *
- * Vitest-sviten kör tjänstelagret direkt i Node. Den kan visa att röstintyg
- * utfärdas och löses in korrekt, men inte att blindningen fungerar i en riktig
- * webbläsare — och det är där den MÅSTE fungera. Blindningsfaktorn är det enda
- * som hindrar valmyndigheten från att koppla ihop ett utfärdat intyg med en
- * inlämnad röst, och den räknas fram med WebCrypto och BigInt på klienten.
+ * Vitest-sviten kör tjänstelagret direkt i Node. Den kan visa att servern tar emot och
+ * kontrollerar ett kuvert, men inte att krypteringen fungerar i en riktig webbläsare —
+ * och det är där den MÅSTE fungera. Valsedeln krypteras och bevisen byggs med BigInt
+ * på klienten.
  *
- * Ett fel där skulle inte synas i något annat test: servern skulle signera
- * villigt, klienten avblinda villigt, och felet visa sig först när en riktig
- * väljare får sin röst avvisad.
+ * Ett fel där skulle inte synas i något annat test: servern skulle verifiera villigt
+ * det den får, och felet visa sig först när en riktig väljare får sin röst avvisad.
  *
  * KRÄVER DATABAS OCH SEEDAD DEMODATA.
  *
@@ -27,14 +25,13 @@ export default defineConfig({
   /**
    * Nollställer röstdata och seedar om före sviten.
    *
-   * Testerna röstar på riktigt och förbrukar rösträtt. Utan detta blockeras
-   * andra körningen av dubbelröstningsspärren — korrekt beteende, värdelöst
-   * testresultat.
+   * Testerna röstar på riktigt och lämnar kuvert kvar. Utan detta utgår
+   * nästa körning från kuvert och en stängd omröstning som den förra lämnade.
    */
   globalSetup: './tests/e2e/global-setup.ts',
 
   // Röstning är tillståndsändrande: två tester som röstar som samma person
-  // samtidigt skulle störa varandra genom dubbelröstningsspärren.
+  // samtidigt skulle skriva över varandras kuvert.
   fullyParallel: false,
   workers: 1,
 
@@ -47,8 +44,8 @@ export default defineConfig({
   /**
    * Generös tidsgräns per förväntan.
    *
-   * Sidorna gör riktig kryptografi: blindning, avblindning och verifiering av
-   * en 2048-bitars RSA-signatur med BigInt i webbläsaren. Det tar hundratals
+   * Sidorna gör riktig kryptografi: kryptering och bevis
+   * över gruppelement på 2048 bitar med BigInt i webbläsaren. Det tar hundratals
    * millisekunder per valsedel, och på en långsam maskin mer.
    */
   expect: { timeout: 20_000 },

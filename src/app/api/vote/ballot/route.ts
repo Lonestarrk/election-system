@@ -20,7 +20,7 @@ export const dynamic = 'force-dynamic'
  * ofarligt valsedels-id är nästa år det självklara stället att lägga en token,
  * och då hamnar den i accessloggar, proxyloggar, webbläsarhistorik och
  * Referer-headern. Spärren kostar en aning elegans och tar bort en hel
- * felklass. /api/verify löser det på samma sätt och av samma skäl.
+ * felklass.
  *
  * Innehållet är i övrigt offentligt och kräver ingen legitimering. Vilka
  * partier som ställer upp och vilka kandidater som går att kryssa är själva
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
     // Ingen revisionshändelse här. Revisionsloggen ligger i röstlängdsmodulen,
     // och en rutt som rör den anonyma sidan ska inte importera från
     // väljarsidan bara för att logga — då ser den plötsligt båda sidorna, och
-    // ett arkitekturtest fångar det. /api/verify löser det på samma sätt.
+    // ett arkitekturtest fångar det.
     return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
       'Retry-After': String(rate.retryAfterSeconds),
     })

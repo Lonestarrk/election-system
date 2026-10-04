@@ -43,7 +43,7 @@ export function Secrets({
    */
   municipality: KnownLimitation
 }) {
-  const { pepperHolder, dealer, demoIssuer, demoPassphrases, signingKeys } = limitations
+  const { pepperHolder, dealer, demoIssuer, demoPassphrases } = limitations
 
   return (
     <section className="card" aria-labelledby="hemligheterna">
@@ -100,9 +100,6 @@ export function Secrets({
         </li>
         <li style={listItemStyle}>
           {CURRENTLY.mockIssuerInRepo.text} <LimitationReference entry={demoIssuer} />
-        </li>
-        <li style={listItemStyle}>
-          {CURRENTLY.oldSigningKeysInDatabase.text} <LimitationReference entry={signingKeys} />
         </li>
       </ul>
 

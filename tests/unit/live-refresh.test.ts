@@ -59,7 +59,6 @@ function snapshotWith(pendingVotes: number): DatabaseState {
       trusteeShare: [],
       partialDecryption: [],
       ballotTally: [],
-      legacyVote: [],
       foreignKeys: [],
     },
     analysis: {

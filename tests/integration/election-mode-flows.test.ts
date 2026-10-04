@@ -1,8 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
-import { castVote } from '@/modules/ballot-box'
-import { issueCredential } from '@/modules/eligibility/credential.service'
 import { DEMO_TRUSTEE_PASSPHRASES } from '@/lib/demo-election'
 import { createElection } from '@/orchestration/create-election.usecase'
 import { checkElectionMode } from '@/orchestration/election-mode'
@@ -15,7 +13,6 @@ import {
 } from '@/orchestration/tally.usecase'
 import { getElectionTallyResults, publishedResults } from '@/orchestration/publish-results.usecase'
 import { createAdminSession } from '@/modules/eligibility/admin-session.service'
-import { POST as commitRoute } from '@/app/api/admin/elections/commit/route'
 import { POST as checkRoute } from '@/app/api/admin/elections/check/route'
 import { POST as stateRoute } from '@/app/api/admin/elections/state/route'
 import { POST as observerRoute } from '@/app/api/observer/election/route'
@@ -32,13 +29,11 @@ vi.mock('next/headers', () => ({
 }))
 
 /**
- * LÄGESSPÄRREN I DET GAMLA FLÖDET, RÄKNINGEN OCH PUBLICERINGEN (uppgift 17,
- * fixrunda 1).
+ * LÄGESSPÄRREN I RÄKNINGEN OCH PUBLICERINGEN (uppgift 17, fixrunda 1).
  *
  * Förut prövade bara läggning av kuvert, stängning och fastställande
- * omröstningens läge. Röstintygen och `castVote` i det gamla flödet, räkningens
- * ingångar, dekrypteringen och publiceringen fick en omröstning i det andra
- * läget. Här prövas varje ingång åt båda håll. Spärren står före fasen: att
+ * omröstningens läge. Räkningens ingångar, dekrypteringen och publiceringen fick en omröstning i det
+ * andra läget. Här prövas varje ingång åt båda håll. Spärren står före fasen: att
  * omröstningen står i OPEN ska inte vara det som stoppar.
  */
 
@@ -53,7 +48,6 @@ afterAll(async () => {
 })
 
 const FRESH: [string, string, string] = ['riktig-fras-ett-x', 'riktig-fras-tva-x', 'riktig-fras-tre-x']
-const NO_ONE = '00000000-0000-4000-8000-000000000000'
 
 async function create(demoMode: 'true' | '') {
   vi.stubEnv('DEMO_MODE', demoMode)
@@ -89,26 +83,6 @@ describe.skipIf(!databaseAvailable)('lägesspärren i övriga ingångar', () => 
   ] as const
 
   describe.each(directions)('%s', (_label, createdIn, serverIn) => {
-    it('röstintyget i det gamla flödet utfärdas inte', async () => {
-      const election = await create(createdIn)
-      vi.stubEnv('DEMO_MODE', serverIn)
-
-      expect(await issueCredential(NO_ONE, election.id, election.ballotId, 'ab')).toEqual({ status: 'wrong_mode' })
-    })
-
-    it('castVote i det gamla flödet lägger ingen röst', async () => {
-      const election = await create(createdIn)
-      vi.stubEnv('DEMO_MODE', serverIn)
-
-      const result = await castVote({
-        ballotId: election.ballotId,
-        credentialId: 'x',
-        credentialSignature: 'y',
-      })
-      expect(result).toEqual({ status: 'wrong_mode' })
-      expect(await votesDb.vote.count()).toBe(0)
-    })
-
     it('båda sätten att lämna ett bidrag, och räkningen, vägras', async () => {
       const election = await create(createdIn)
       vi.stubEnv('DEMO_MODE', serverIn)
@@ -147,7 +121,7 @@ describe.skipIf(!databaseAvailable)('lägesspärren i övriga ingångar', () => 
     })
   })
 
-  describe('adminrutterna som skriver eller startar kontroller', () => {
+  describe('adminrutten som startar kontrollen', () => {
     const ORIGIN = 'http://localhost:3000'
     let csrf = ''
 
@@ -170,28 +144,6 @@ describe.skipIf(!databaseAvailable)('lägesspärren i övriga ingångar', () => 
 
     afterEach(() => {
       cookieJar.admin = undefined
-    })
-
-    it.each(directions)('commit skriver inget åtagande i en %s', async (_label, createdIn, serverIn) => {
-      const election = await create(createdIn)
-      await login()
-      vi.stubEnv('DEMO_MODE', serverIn)
-
-      const response = await post(commitRoute, '/api/admin/elections/commit', { electionId: election.id })
-
-      expect(response.status).toBe(409)
-      expect((await response.json()).status).toBe('wrong_mode')
-      expect(await votesDb.electionCommitment.count()).toBe(0)
-    })
-
-    it('commit skriver i en omröstning i rätt läge', async () => {
-      const election = await create('true')
-      await login()
-
-      const response = await post(commitRoute, '/api/admin/elections/commit', { electionId: election.id })
-
-      expect(response.status).toBe(200)
-      expect(await votesDb.electionCommitment.count()).toBe(1)
     })
 
     it.each(directions)('slutkontrollen startas inte för en %s', async (_label, createdIn, serverIn) => {
@@ -233,7 +185,6 @@ describe.skipIf(!databaseAvailable)('lägesspärren i övriga ingångar', () => 
     it('vägras inte av lägesspärren i något av dem', async () => {
       const election = await create('true')
 
-      expect(await issueCredential(NO_ONE, election.id, election.ballotId, 'ab')).not.toEqual({ status: 'wrong_mode' })
       expect(await submitPartialDecryption(election.ballotId, 1, 'fras')).toMatchObject({ status: 'wrong_phase' })
       expect(await publishedResults(election.id)).toMatchObject({ status: 'not_published' })
     })

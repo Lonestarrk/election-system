@@ -19,7 +19,7 @@ import { NextRequest } from 'next/server'
  *
  * Det första felet är det som gör testerna här viktiga i andra riktningen
  * också: fixen är 'unsafe-eval', och den får ALDRIG nå produktion. I den här
- * appen är klientkoden det enda som håller blindningsfaktorn hemlig.
+ * appen är klientkoden det enda som håller slumptalet i kuvertet hemligt och valet orört.
  */
 
 const ORIGIN_A = 'http://localhost:3000'
@@ -65,8 +65,7 @@ describe("'unsafe-eval' i produktion", () => {
      * 'unsafe-eval' upphäver en stor del av skyddet mot kodinjektion. Slank
      * det med i ett produktionsbygge vore den enskilt allvarligaste
      * försvagningen i appen, eftersom en injicerad skriptsnutt kan läsa
-     * blindningsfaktorn innan den används — och då finns kopplingen mellan
-     * väljare och röst igen.
+     * valet och slumptalet innan kuvertet krypteras, eller byta ut valet.
      */
     const middleware = await loadMiddleware({
       NODE_ENV: 'production',
@@ -161,7 +160,7 @@ describe('flera tillåtna origins', () => {
     const middleware = await loadMiddleware({ NODE_ENV: 'production', APP_ORIGIN: FLERA })
 
     const response = middleware(
-      request('/api/vote/cast', { origin: FRÄMMANDE, method: 'OPTIONS' }),
+      request('/api/vote/encrypted', { origin: FRÄMMANDE, method: 'OPTIONS' }),
     )
 
     expect(response.status).toBe(403)
@@ -170,7 +169,7 @@ describe('flera tillåtna origins', () => {
   it('släpper igenom preflight från en uppräknad origin', async () => {
     const middleware = await loadMiddleware({ NODE_ENV: 'production', APP_ORIGIN: FLERA })
 
-    const response = middleware(request('/api/vote/cast', { origin: ORIGIN_B, method: 'OPTIONS' }))
+    const response = middleware(request('/api/vote/encrypted', { origin: ORIGIN_B, method: 'OPTIONS' }))
 
     expect(response.status).toBe(204)
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe(ORIGIN_B)
@@ -222,7 +221,7 @@ describe('X-Forwarded-For från klienten', () => {
    */
   function forwarded(value: string) {
     const headers = new Headers({ 'x-forwarded-for': value })
-    return new NextRequest(`${ORIGIN_A}/api/verify`, { method: 'POST', headers })
+    return new NextRequest(`${ORIGIN_A}/api/vote/session`, { method: 'POST', headers })
   }
 
   const passedOn = (response: { headers: Headers }) => ({

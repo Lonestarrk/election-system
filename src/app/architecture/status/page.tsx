@@ -1,15 +1,14 @@
 import { ArchitectureNav } from '../sections/ArchitectureNav'
 import { AzureStatus } from '../sections/AzureStatus'
-import { OldFlow } from '../sections/OldFlow'
 import { PhasesToday } from '../sections/PhasesToday'
 import { Remaining } from '../sections/Remaining'
 import { ReviewToday } from '../sections/ReviewToday'
-import { limitation, pageLimitations } from '../sections/shared'
+import { pageLimitations } from '../sections/shared'
 import { StatusOverview } from '../sections/StatusOverview'
 
 /**
  * Utvecklingsstatus: vad som är byggt av kuvertmodellen och vad som inte är
- * det, vad det gamla flödet fortfarande gör, vad som återstår och, sedan
+ * det, vad som återstår och, sedan
  * uppgift 11g, vad som finns av driftsättningen i Azure.
  *
  * VARJE PÅSTÅENDE HÄR OM KODEN LÄSES UR ../code-facts.ts OCH BÄR MARKÖRER.
@@ -41,13 +40,6 @@ export default function StatusPage() {
         <StatusOverview />
         <ReviewToday limitations={limitations} />
         <PhasesToday />
-        <OldFlow
-          entries={[
-            limitation('receipt-proves-choice'),
-            limitation('signing-keys-in-database'),
-            limitation('no-guaranteed-anonymity-set'),
-          ]}
-        />
         <Remaining
           fixable={[
             limitations.revocation,

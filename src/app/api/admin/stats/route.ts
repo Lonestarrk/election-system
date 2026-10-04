@@ -16,8 +16,8 @@ export const dynamic = 'force-dynamic'
  * antalet röstberättigade och valdeltagandet per valsedel.
  *
  * INGA LÖPANDE RESULTAT, INTE HELLER FÖR ADMINISTRATÖREN (uppgift 13, spec
- * 6.2). Fram till uppgiften visade rutten antalet röster per parti ur det
- * gamla flödets tabell medan röstningen pågick. Spec 6.2 gäller alla: den som
+ * 6.2). Fram till uppgiften visade rutten antalet röster per parti medan
+ * röstningen pågick. Spec 6.2 gäller alla: den som
  * kan titta på ett löpande resultat kan också påverka när det slutliga kommer.
  * Resultatet finns först när omröstningen är räknad, i
  * /api/admin/elections/results och offentligt, med bevis, i
@@ -81,7 +81,7 @@ export async function POST(request: Request) {
     return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
   }
 
-  const [voterStats, turnout] = await Promise.all([getVoterStatistics(electionId), turnoutByBallot(electionId)])
+  const [voterStats, turnout] = await Promise.all([getVoterStatistics(), turnoutByBallot(electionId)])
   if (!turnout) return errorResponse('UNKNOWN_ELECTION', 'Omröstningen finns inte.', 404)
 
   return jsonResponse({

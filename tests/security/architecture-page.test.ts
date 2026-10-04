@@ -19,12 +19,10 @@ import {
   STRIP_IN_LOCK_TRANSACTION,
   VOTERS_MODELS_TODAY,
   VOTER_MODEL_FIELDS_TODAY,
-  MARKING_ONLY_IN_OLD_FLOW,
-  NO_NEW_MARKING_WRITE,
   NO_WRITES_BESIDE_THE_CODE,
   MARKER_WRITTEN_ONLY_IN_STRIPPING,
   VOTED_MARKER_HAS_NO_TIME,
-  OLD_FLOW_VOTES_AND_RECEIPTS,
+  OLD_FLOW_REMOVED,
   type CodeFact,
   type Marker,
   type Status,
@@ -38,8 +36,7 @@ import { vaultClaimProblems } from '../vault-claims'
  * ARKITEKTURSIDAN FÅR INTE PÅSTÅ NÅGOT OM KODEN SOM KODEN INTE LÄNGRE GÖR.
  *
  * Sidan beskriver en modell som byggs i etapper, och en del av det den säger
- * gäller just nu: att röstsidan fortfarande kör det gamla flödet, att
- * dekrypteringen inte är byggd, vilka faser som faktiskt skrivs, hur
+ * gäller just nu: vad som ännu inte är byggt, vilka faser som faktiskt skrivs, hur
  * tidsstämplar lagras. Varje sådant påstående står i
  * src/app/architecture/code-facts.ts med markörer som är sanna så länge
  * påståendet är sant. Testet här prövar markörerna.
@@ -504,13 +501,11 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
     const markers = CURRENTLY.votedMarkerWritten.holdsWhile
     expect(markers).toContain(STRIPPING_TRANSACTION)
     expect(markers).toContain(VOTERS_MODELS_TODAY)
-    expect(markers).toContain(MARKING_ONLY_IN_OLD_FLOW)
     expect(markers).toContain(VOTED_MARKER_HAS_NO_TIME)
     for (const marker of [
       ...STRIPPING_HELPERS,
       ...MARKER_WRITTEN_ONLY_IN_STRIPPING,
       ...VOTER_MODEL_FIELDS_TODAY,
-      ...NO_NEW_MARKING_WRITE,
       ...NO_WRITES_BESIDE_THE_CODE,
     ]) {
       expect(markers).toContain(marker)
@@ -534,8 +529,6 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
     const insertions = [
       // En markering i en annan modell.
       '    await tx.votedAt.createMany({ data: [] })\n',
-      // Det gamla flödets markering.
-      '    await tx.voterBallotStatus.createMany({ data: [] })\n',
       // En hjälpfunktion som får transaktionen.
       '    await markEnvelopesAsVotedAgain(electionId, tx)\n',
     ]
@@ -585,7 +578,7 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
 
     const mutated = pendingVoteService.replace(
       deletion,
-      '  await client.voterBallotStatus.createMany({ data: [] })\n' + deletion,
+      '  await client.voterStatus.updateMany({ data: {} })\n' + deletion,
     )
     expect(mutated.includes(clearPendingVotes!)).toBe(false)
 
@@ -643,9 +636,9 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
     expect(VOTERS_MODELS_TODAY.matches.test('model VotedMarkerAt {\n  id String\n}')).toBe(true)
   })
 
-  it('en ny kolumn i VoterStatus, VoterBallotStatus eller VotedMarker fäller påståendet, en ändrad kommentar inte', () => {
+  it('en ny kolumn i VoterStatus eller VotedMarker fäller påståendet, en ändrad kommentar inte', () => {
     const schema = read('prisma/voters/schema.prisma')
-    const [voterStatus, voterBallotStatus] = VOTER_MODEL_FIELDS_TODAY.map((marker) => {
+    const [voterStatus] = VOTER_MODEL_FIELDS_TODAY.map((marker) => {
       if (!('matches' in marker)) throw new Error('Väntade ett mönster.')
       return marker.matches
     })
@@ -653,7 +646,6 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
     const votedMarker = VOTED_MARKER_HAS_NO_TIME.matches
 
     expect(voterStatus!.test(schema)).toBe(false)
-    expect(voterBallotStatus!.test(schema)).toBe(false)
     expect(votedMarker.test(schema)).toBe(false)
 
     const withColumn = schema.replace(
@@ -662,13 +654,6 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
     )
     expect(withColumn).not.toBe(schema)
     expect(voterStatus!.test(withColumn)).toBe(true)
-
-    const withMarkingColumn = schema.replace(
-      '  votedAt DateTime @map("voted_at")',
-      '  votedAt DateTime @map("voted_at")\n  fromEnvelope Boolean @default(false)',
-    )
-    expect(withMarkingColumn).not.toBe(schema)
-    expect(voterBallotStatus!.test(withMarkingColumn)).toBe(true)
 
     // En tid i kuvertmodellens markering är just det den inte får ha.
     const withTime = schema.replace(
@@ -690,39 +675,6 @@ describe('markeringen "har röstat" skrivs bara i skalningens transaktion', () =
     )
     expect(withEditedMarkerComment).not.toBe(schema)
     expect(votedMarker.test(withEditedMarkerComment)).toBe(false)
-  })
-
-  it('det gamla flödets markering nämnd i en fil utanför det gamla flödet fäller påståendet, också i src/orchestration', () => {
-    if (!('onlyIn' in MARKING_ONLY_IN_OLD_FLOW)) throw new Error('Väntade en markör med onlyIn.')
-    expect(check(MARKING_ONLY_IN_OLD_FLOW).holds).toBe(true)
-
-    // Kontrasten mot den riktiga koden: tas en av det gamla flödets filer bort
-    // ur listan är den genast en fil utanför listan som nämner markeringen.
-    const [first, ...rest] = MARKING_ONLY_IN_OLD_FLOW.onlyIn
-    const narrowed = { ...MARKING_ONLY_IN_OLD_FLOW, onlyIn: rest }
-    const verdict = check(narrowed)
-    expect(verdict.holds).toBe(false)
-    expect(verdict.detail).toContain(first!)
-
-    // Markören täcker hela src, alltså också src/orchestration och alla rutter.
-    expect(MARKING_ONLY_IN_OLD_FLOW.under).toBe('src')
-    expect(MARKING_ONLY_IN_OLD_FLOW.matches.test('await tx.voterBallotStatus.createMany({ data })')).toBe(
-      true,
-    )
-  })
-
-  it('en ny skrivning av det gamla flödets markering i dess filer fäller påståendet', () => {
-    // En andra i röstintygens fil, och en första i voter-status.service.ts.
-    for (const marker of NO_NEW_MARKING_WRITE) {
-      if (!('nowhereIn' in marker)) throw new Error('Väntade ett mönster.')
-      const content = read(marker.nowhereIn)
-
-      expect(marker.matches.test(content), marker.nowhereIn).toBe(false)
-      expect(
-        marker.matches.test(`${content}\nawait tx.voterBallotStatus.createMany({ data: [] })\n`),
-        marker.nowhereIn,
-      ).toBe(true)
-    }
   })
 
   it('en trigger eller rå SQL som skriver fäller påståendet', () => {
@@ -860,22 +812,23 @@ describe('arkitektursidan skriver inte själv det den läser', () => {
     }
   })
 
-  it('sidans egna filer lägger inte heller röster i det gamla flödet eller frågar efter kvitton', () => {
-    /**
-     * Påståendet oldFlowRoutesRemain gäller alla sidor, och arkitektursidan är
-     * en av dem. Markörgranskningen ovan hoppar alltid över sidans egna filer,
-     * eftersom de bär påståendena och deras mönster, så samma mönster prövas
-     * här för sig. code-facts.ts skriver mönstret med snedstreck som inte
-     * matchar mönstret självt.
-     */
-    const offenders = allPageFiles.filter((file) => OLD_FLOW_VOTES_AND_RECEIPTS.test(read(file)))
-    expect(allPageFiles.length).toBeGreaterThan(10)
-    expect(offenders).toEqual([])
+  it('det gamla flödet är borta, och varje markör kan slå fel', () => {
+    for (const marker of OLD_FLOW_REMOVED) expect(check(marker).holds, JSON.stringify(marker)).toBe(true)
 
-    // Kontrasten: mönstret hittar ett anrop och en import av blindningen.
-    expect(OLD_FLOW_VOTES_AND_RECEIPTS.test("await fetch('/api/vote/cast', {")).toBe(true)
-    expect(OLD_FLOW_VOTES_AND_RECEIPTS.test("post(`/api/verify`, { token })")).toBe(true)
-    expect(OLD_FLOW_VOTES_AND_RECEIPTS.test("import { x } from '@/lib/blind-client'")).toBe(true)
+    // Kontrasten: varje mönster hittar det det ska vakta.
+    const [code, votesModels, votersModel, votersKeys, votesKeys] = OLD_FLOW_REMOVED
+    if (!code || !('matches' in code) || !votesModels || !('matches' in votesModels)) throw new Error('Väntade mönster.')
+    if (!votersModel || !('matches' in votersModel) || !votersKeys || !('matches' in votersKeys)) throw new Error('Väntade mönster.')
+    if (!votesKeys || !('matches' in votesKeys)) throw new Error('Väntade mönster.')
+    expect(code.matches.test('export async function issueCredential(')).toBe(true)
+    expect(code.matches.test("import { signBlinded } from '@/lib/blind-signature'")).toBe(true)
+    expect(votesModels.matches.test('model Vote {\n  id String')).toBe(true)
+    expect(votesModels.matches.test('model ElectionCommitment {\n  id String')).toBe(true)
+    // Ett längre namn är en annan modell.
+    expect(votesModels.matches.test('model VoteTally {\n  id String')).toBe(false)
+    expect(votersModel.matches.test('model VoterBallotStatus {\n  id String')).toBe(true)
+    expect(votersKeys.matches.test('  signingPrivateKeyPem String')).toBe(true)
+    expect(votesKeys.matches.test('  tokenHash String @unique')).toBe(true)
   })
 })
 
@@ -1271,11 +1224,8 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
   })
 
   describe('LIMITATION_STATUS: status för de kända begränsningar sidan märker längre ned', () => {
-    /** Id:n som Utvecklingsstatus faktiskt visar, i OldFlow och Remaining. */
+    /** Id:n som Utvecklingsstatus faktiskt visar, i Remaining. */
     const usedOnStatusPage = [
-      'receipt-proves-choice',
-      'signing-keys-in-database',
-      'no-guaranteed-anonymity-set',
       'no-revocation-check',
       'bankid-reader-untested-against-bankid',
       'votes-db-writer-can-swap-ciphertext',
@@ -1330,7 +1280,6 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       'auditChain',
       'certifyBlockedWhileLinked',
       'finalCheckEnvelopeModel',
-      'oldFlowRoutesRemain',
       'noLiveResults',
       'azureSetupBuilt',
       'azureRunsDemo',
@@ -1352,7 +1301,6 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
       'src/app/architecture/sections/StatusOverview.tsx',
       'src/app/architecture/sections/ReviewToday.tsx',
       'src/app/architecture/sections/PhasesToday.tsx',
-      'src/app/architecture/sections/OldFlow.tsx',
       'src/app/architecture/sections/Remaining.tsx',
       'src/app/architecture/sections/AzureStatus.tsx',
     ]

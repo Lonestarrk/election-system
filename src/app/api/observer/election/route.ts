@@ -26,8 +26,7 @@ export const dynamic = 'force-dynamic'
  *      med bevis, lämnar /api/observer/results.
  *
  * INGA LÖPANDE RESULTAT (uppgift 13, spec 6.2). Fram till uppgiften lämnade
- * rutten ut antalet röster per parti ur det gamla flödets tabell medan
- * röstningen pågick, till vem som helst. Delsiffror påverkar dem som ännu inte
+ * rutten ut antalet röster per parti medan röstningen pågick, till vem som helst. Delsiffror påverkar dem som ännu inte
  * röstat, och differensen mellan två hämtningar är rösterna som lades
  * däremellan. Nu finns inget resultat här alls, i någon fas.
  *

@@ -2,13 +2,7 @@ import { inject } from 'vitest'
 import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { hashPersonalNumber } from '@/modules/eligibility/identity'
-import { issueCredential } from '@/modules/eligibility/credential.service'
-import { castVote } from '@/modules/ballot-box'
 import { createElection } from '@/orchestration/create-election.usecase'
-import {
-  createBlindedCredential,
-  unblindSignature,
-} from '@/lib/blind-client'
 import { TEST_DATABASE_SUFFIX, isTestDatabaseName } from '../test-databases'
 import { signingText } from '@/modules/eligibility/bankid/envelope-signature'
 import { signingSubject } from '@/modules/eligibility/election.service'
@@ -137,13 +131,10 @@ export async function resetElectionData(): Promise<void> {
   // två tömningar, skulle bara kunna berätta vad som redan gått förlorat.
   await assertConnectedToTestDatabases()
 
-  // Ordningen följer beroendena: rösterna först, sedan valsedlarna de pekar på.
-  await votesDb.vote.deleteMany()
   await votesDb.election.deleteMany()
 
   await votersDb.adminSession.deleteMany()
   await votersDb.votingSession.deleteMany()
-  await votersDb.voterBallotStatus.deleteMany()
   // Markeringen "har röstat" har RESTRICT mot väljaren, som kuverten nedan.
   await votersDb.votedMarker.deleteMany()
   /**
@@ -204,9 +195,9 @@ export type TestElection = {
 /**
  * Skapar en enkel omröstning med en riksdagsvalsedel.
  *
- * Går via orkestreringslagret, så att nyckelparet skapas och speglas precis som
- * i drift. Ett test som skrev raderna direkt skulle missa att röstintygen
- * kräver att båda databaserna känner till samma valsedel.
+ * Går via orkestreringslagret, så att omröstningen skapas och speglas precis som
+ * i drift. Ett test som skrev raderna direkt skulle missa att båda databaserna
+ * måste känna till samma valsedel.
  */
 export async function createTestElection(name = 'Testvalet'): Promise<TestElection> {
   const partyId = await firstPartyId()
@@ -239,56 +230,6 @@ export async function createTestElection(name = 'Testvalet'): Promise<TestElecti
   if (!ballotParty) throw new Error('Valsedeln saknar partier.')
 
   return { electionId: outcome.election.id, ballotId, ballotPartyId: ballotParty.id }
-}
-
-export type VoteAttempt =
-  | { status: 'voted'; token: string }
-  | { status: 'blocked'; reason: string }
-
-/**
- * Genomför en fullständig röstning: blindning, utfärdande, avblindning, inlösen.
- *
- * Blindningen körs med klientmodulen — samma kod som webbläsaren använder —
- * så att testet går igenom hela kedjan och inte bara serverdelen av den.
- */
-export async function voteOnce(
-  voterStatusId: string,
-  election: TestElection,
-): Promise<VoteAttempt> {
-  const keys = await votersDb.electionBallot.findUnique({
-    where: { id: election.ballotId },
-    select: { signingPublicKeyPem: true },
-  })
-
-  if (!keys) throw new Error('Valsedeln saknas i röstlängdens spegling.')
-
-  const credential = await createBlindedCredential(keys.signingPublicKeyPem)
-
-  const issued = await issueCredential(
-    voterStatusId,
-    election.electionId,
-    election.ballotId,
-    credential.blinded,
-  )
-
-  if (issued.status !== 'issued') return { status: 'blocked', reason: issued.status }
-
-  const signature = await unblindSignature(
-    issued.blindSignature,
-    credential.blindingFactor,
-    keys.signingPublicKeyPem,
-  )
-
-  const cast = await castVote({
-    ballotId: election.ballotId,
-    ballotPartyId: election.ballotPartyId,
-    credentialId: credential.credentialId,
-    credentialSignature: signature,
-  })
-
-  if (cast.status !== 'recorded') return { status: 'blocked', reason: cast.status }
-
-  return { status: 'voted', token: cast.token }
 }
 
 export async function disconnect(): Promise<void> {

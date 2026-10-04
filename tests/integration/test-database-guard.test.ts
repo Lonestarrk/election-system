@@ -10,7 +10,6 @@ import {
   disconnect,
   isDatabaseAvailable,
   resetElectionData,
-  voteOnce,
 } from './helpers'
 
 /**
@@ -77,20 +76,19 @@ describe.skipIf(!databaseAvailable)('vakten mot fel databas', () => {
 
   it('resetElectionData raderar ingenting när vakten slår till', async () => {
     await resetElectionData()
-    const election = await createTestElection()
-    const voterId = await createVoter('199001011234')
-    expect((await voteOnce(voterId, election)).status).toBe('voted')
+    await createTestElection()
+    await createVoter('199001011234')
 
-    // Servern "svarar" att röstdatabasen är utvecklingsdatabasen. Rösten ligger
-    // i röstdatabasen och väljaren i röstlängden, så en enda radering före
+    // Servern "svarar" att röstdatabasen är utvecklingsdatabasen. Omröstningen ligger
+    // i båda databaserna och väljaren i röstlängden, så en enda radering före
     // vakten — på vilken sida som helst — syns i räkningen nedan.
     vi.spyOn(votesDb, '$queryRaw').mockResolvedValueOnce([{ name: 'votes_db' }] as never)
 
     await expect(resetElectionData()).rejects.toThrow('röstdatabasen → "votes_db"')
 
     vi.restoreAllMocks()
-    expect(await votesDb.vote.count()).toBe(1)
+    expect(await votesDb.election.count()).toBe(1)
+    expect(await votersDb.election.count()).toBe(1)
     expect(await votersDb.voterStatus.count()).toBe(1)
-    expect(await votersDb.voterBallotStatus.count()).toBe(1)
   })
 })

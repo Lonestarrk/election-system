@@ -58,19 +58,19 @@ export const RATE_LIMITS = {
   authStart: { limit: 20, windowMs: 60_000 },
   /** Polling av legitimeringsstatus: sker ofta, mjukare gräns. */
   authCollect: { limit: 60, windowMs: 60_000 },
-  /** Röstläggning. */
-  castVote: { limit: 5, windowMs: 60_000 },
+  /** Start av BankID-underskriften över ett kuvert (/api/vote/sign-start). Ett anrop per röst. */
+  signStart: { limit: 5, windowMs: 60_000 },
   /**
    * Inlämning av den krypterade, signerade valsedeln (fixrunda 1 av
    * uppgift 9:s granskning, fynd 3).
    *
-   * /api/vote/encrypted är, till skillnad från /api/vote/cast, en
+   * /api/vote/encrypted är, till skillnad från /api/vote/sign-start, en
    * POLLNINGSRUTT: väljarens BankID-signering är oftast inte klar första
    * gången rutten anropas — svaret blir `pending`, och klienten frågar igen
    * om en sekund, precis som /api/auth/bankid/collect (se `authCollect`
-   * ovan, samma resonemang). `castVote`s 5/min är satt för ETT anrop som
-   * lägger rösten direkt; den passar inte en rutt som normalt anropas ett
-   * tiotal gånger per signering. Med `castVote`s gräns skulle en ärlig
+   * ovan, samma resonemang). `signStart`s 5/min är satt för ETT anrop per
+   * röst; den passar inte en rutt som normalt anropas ett
+   * tiotal gånger per signering. Med `signStart`s gräns skulle en ärlig
    * väljare bli hastighetsbegränsad mitt i en egen, pågående signering.
    *
    * 150 per minut och adress (ruling 139). Röstsidan frågar varannan sekund, alltså 30
@@ -98,11 +98,6 @@ export const RATE_LIMITS = {
    * pröva dem i hög takt.
    */
   compareDeviceVotes: { limit: 20, windowMs: 60_000 },
-  /**
-   * Verifiering. Stramt satt trots att en 240-bitars token inte går att
-   * gissa — gränsen finns för att stoppa uppräkning som lastangrepp.
-   */
-  verify: { limit: 10, windowMs: 60_000 },
 
   /**
    * Uppslag av en valsedels innehåll. Generös gräns — det är offentlig

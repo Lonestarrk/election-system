@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 
-/** SHA-256 som hex. Används för att hasha tokens före lagring. */
+/** SHA-256 som hex. Används för nycklar i hastighetsbegränsningen och för hashar i kuvertflödet. */
 export function sha256Hex(input: string): string {
   return createHash('sha256').update(input, 'utf8').digest('hex')
 }
@@ -72,8 +72,8 @@ export function hmacSha256Hex(input: string, key: string): string {
  * folkbokföringsort kopplad till identitet. Ingen hashparameter försvarar de
  * två — se known-limitations.ts.
  *
- * Valhemligheten berörs inte av något av detta. Den sköts av blindsigneringen,
- * i en annan databas, där ingen identitet finns.
+ * Valhemligheten berörs inte av något av detta. Den bärs av att kuverten krypteras
+ * på väljarens enhet och att kopplingen mellan namn och kuvert raderas vid stängningen.
  */
 const SCRYPT_PARAMS = { N: 2 ** 14, r: 8, p: 1, maxmem: 48 * 1024 * 1024 } as const
 

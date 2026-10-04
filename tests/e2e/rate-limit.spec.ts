@@ -16,25 +16,25 @@ import { expect, test } from './fixtures'
  * Fixturen nollställer gränserna före varje test, så det här testet tömmer
  * bara sin egen hink.
  */
-test('tio försök per minut gäller också den som byter X-Forwarded-For varje gång', async ({
+test('tjugo försök per minut gäller också den som byter X-Forwarded-For varje gång', async ({
   request,
   baseURL,
 }) => {
   const statuses: number[] = []
 
-  for (let attempt = 1; attempt <= 11; attempt += 1) {
-    const response = await request.post('/api/verify', {
+  for (let attempt = 1; attempt <= 21; attempt += 1) {
+    const response = await request.post('/api/auth/bankid/start', {
       headers: {
         origin: baseURL ?? 'http://localhost:3000',
         'x-forwarded-for': `203.0.113.${attempt}`,
       },
-      data: {},
+      data: { purpose: 'ogiltigt' },
     })
     statuses.push(response.status())
   }
 
-  // De tio första når valideringen och får 400 för en tom token. Det visar
-  // att gränsen inte stoppar allt. Den elfte stoppas, fast adressen är ny.
-  expect(statuses.slice(0, 10)).toEqual(Array.from({ length: 10 }, () => 400))
-  expect(statuses[10]).toBe(429)
+  // De tjugo första når valideringen och får 400 för ett ogiltigt syfte. Det visar
+  // att gränsen inte stoppar allt. Den tjugoförsta stoppas, fast adressen är ny.
+  expect(statuses.slice(0, 20)).toEqual(Array.from({ length: 20 }, () => 400))
+  expect(statuses[20]).toBe(429)
 })

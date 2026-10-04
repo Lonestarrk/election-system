@@ -2,11 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_JSON_BODY_BYTES,
   adminLoginSchema,
-  castVoteSchema,
   parseJsonBody,
   personalNumberSchema,
   startAuthSchema,
-  verifyTokenSchema,
 } from '@/lib/validation'
 
 describe('validering av personnummer', () => {
@@ -26,70 +24,6 @@ describe('validering av personnummer', () => {
     ['skript', '<script>alert(1)</script>'],
   ])('avvisar %s', (_label, input) => {
     expect(personalNumberSchema.safeParse(input).success).toBe(false)
-  })
-})
-
-describe('validering av en röst', () => {
-  const validVote = {
-    ballotId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
-    ballotPartyId: '3f2504e0-4f89-11d3-9a0c-0305e82c3302',
-    credentialId: 'a'.repeat(64),
-    credentialSignature: 'b'.repeat(512),
-  }
-
-  it('godtar en röst med valsedel, parti och röstintyg', () => {
-    expect(castVoteSchema.safeParse(validVote).success).toBe(true)
-  })
-
-  it('kräver ett röstintyg', () => {
-    const { credentialId: _omitted, ...utanIntyg } = validVote
-    expect(castVoteSchema.safeParse(utanIntyg).success).toBe(false)
-  })
-
-  it('avvisar ett röstintyg med fel längd', () => {
-    // Intyget är exakt 32 byte och signaturen exakt modulusens bredd. Allt
-    // annat är antingen ett fel eller ett försök att pröva sig fram.
-    expect(castVoteSchema.safeParse({ ...validVote, credentialId: 'a'.repeat(63) }).success).toBe(
-      false,
-    )
-    expect(
-      castVoteSchema.safeParse({ ...validVote, credentialSignature: 'b'.repeat(511) }).success,
-    ).toBe(false)
-  })
-
-  it('avvisar både parti och svarsalternativ i samma röst', () => {
-    expect(
-      castVoteSchema.safeParse({
-        ...validVote,
-        optionId: '3f2504e0-4f89-11d3-9a0c-0305e82c3303',
-      }).success,
-    ).toBe(false)
-  })
-
-  it('avvisar en personröst utan parti', () => {
-    const { ballotPartyId: _omitted, ...utanParti } = validVote
-    expect(
-      castVoteSchema.safeParse({
-        ...utanParti,
-        candidateId: '3f2504e0-4f89-11d3-9a0c-0305e82c3304',
-      }).success,
-    ).toBe(false)
-  })
-})
-
-describe('validering av token', () => {
-  it('godtar token med och utan bindestreck', () => {
-    expect(verifyTokenSchema.safeParse({ token: 'ABCDEFGH-JKMNPQRS' }).success).toBe(true)
-    expect(verifyTokenSchema.safeParse({ token: 'ABCDEFGHJKMNPQRS' }).success).toBe(true)
-  })
-
-  it('avvisar tecken utanför alfabetet', () => {
-    expect(verifyTokenSchema.safeParse({ token: "ABC'; DROP TABLE--" }).success).toBe(false)
-    expect(verifyTokenSchema.safeParse({ token: '<script>' }).success).toBe(false)
-  })
-
-  it('avvisar orimligt långa värden', () => {
-    expect(verifyTokenSchema.safeParse({ token: 'A'.repeat(500) }).success).toBe(false)
   })
 })
 

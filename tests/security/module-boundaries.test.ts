@@ -80,11 +80,7 @@ describe('modulgränser', () => {
 
   it('endast godkända filer ser båda sidorna', () => {
     /**
-     * Listan KRYMPTE när röstintygen infördes.
-     *
-     * Röstläggningen behöver ingen session längre och orkestreras därför inte
-     * — rutten anropar bara den anonyma modulen. Ingen fil i systemet ser
-     * numera båda sidorna i samband med att en röst läggs.
+     * Filerna som ser båda sidorna, och varför.
      *
      * Kvarvarande undantag:
      *  – admin/stats: hämtar två aggregat, ett från varje databas. Ser antal,
@@ -98,10 +94,9 @@ describe('modulgränser', () => {
      *    rötterna, ANTALET liggande kuvert och revisionskedjan i röstlängden
      *    (uppgift 12b). Läser aldrig en enskild väljare, och kan inte para ihop
      *    sidorna — det finns ingen gemensam identifierare.
-     *  – observer/election stod här fram till uppgift 13, med antalet
-     *    godkända röstningar ur det gamla flödet. Sedan uppgiften läser den
-     *    valdeltagandet och rötterna genom election-overview.usecase och ser
-     *    bara den anonyma modulens lista över omröstningar själv.
+     *  – observer/election läser valdeltagandet och rötterna genom
+     *    election-overview.usecase och ser bara den anonyma modulens lista
+     *    över omröstningar själv.
      *  – publish-results.usecase: publiceringen (uppgift 13). Läser fasen,
      *    rötterna och ANTALET markeringar per valsedel i röstlängden, och
      *    urnan, andelarna och bidragen i röstdatabasen, genom räkningens
@@ -192,7 +187,7 @@ describe('modulgränser', () => {
     expect(filesSeeingBoth.sort()).toEqual(allowed.sort())
   })
 
-  it('admin- och demovyerna rör aldrig röstläggning eller legitimering', () => {
+  it('admin- och demovyerna rör aldrig läggning av kuvert eller legitimering', () => {
     const aggregateOnly = sourceFiles.filter(
       (file) =>
         file.path === 'src/app/api/admin/stats/route.ts' ||
@@ -202,8 +197,7 @@ describe('modulgränser', () => {
     expect(aggregateOnly).toHaveLength(2)
 
     for (const file of aggregateOnly) {
-      expect(file.content, `${file.path} lägger röster`).not.toMatch(/castVote/)
-      expect(file.content, `${file.path} verifierar tokens`).not.toMatch(/verifyToken/)
+      expect(file.content, `${file.path} lägger kuvert`).not.toMatch(/castEncryptedBallot/)
       expect(file.content, `${file.path} utvärderar röstberättigande`).not.toMatch(
         /evaluateEligibility/,
       )
@@ -217,62 +211,25 @@ describe('modulgränser', () => {
 describe('röstmodulens publika kontrakt', () => {
   const moduleApi = readFileSync(join(SRC, 'modules/ballot-box/index.ts'), 'utf8')
 
-  it('tar bara emot identifierare som pekar på rader i röstdatabasen', () => {
-    const inputType = moduleApi.match(/export type CastVoteInput = \{[^}]*\}/)?.[0] ?? ''
-    expect(inputType).toBeTruthy()
-
-    const fields = [...inputType.matchAll(/^\s{2}(\w+)\??:/gm)].map((match) => match[1])
-
-    // Exakt den här mängden, varken mer eller mindre. Ett nytt fält i
-    // kontraktet ska tvinga fram ett medvetet beslut här, inte glida igenom.
-    expect(fields.sort()).toEqual([
-      'ballotId',
-      'ballotPartyId',
-      'candidateId',
-      'credentialId',
-      'credentialSignature',
-      'optionId',
-    ])
-  })
-
-  it('har ingen parameter som knyter ihop flera röster', () => {
+  it('lägger och tar emot inga röster, och har ingenting som kan bära identitet', () => {
     /**
-     * Väljaren i ett riksdagsval anropar modulen tre gånger, en gång per
-     * valsedel. De tre anropen får inte ha något gemensamt som lagras: en
-     * kombination av kommun-, landstings- och riksdagsval är betydligt mer
-     * identifierande än något enskilt av dem.
-     *
-     * Det räcker alltså inte att kontraktet saknar identitet — det måste också
-     * sakna varje fält som skulle kunna gruppera rösterna i efterhand.
+     * Röstdatabasmodulen visar bara omröstningarna och valsedlarna. Rösterna kommer in som
+     * kuvert i röstlängden, och skalningen skriver dem hit. Ett nytt namn här som lägger en
+     * röst, eller tar emot något som pekar ut en väljare, ska tvinga fram ett medvetet beslut
+     * i det här testet, inte glida igenom.
      */
-    const inputType = moduleApi.match(/export type CastVoteInput = \{[^}]*\}/)?.[0] ?? ''
-
     for (const forbidden of [
-      'receiptId',
-      'groupId',
-      'batchId',
-      'electionId',
-      'correlationId',
-      'sequence',
-    ]) {
-      expect(inputType, `${forbidden} finns i kontraktet`).not.toContain(forbidden)
-    }
-  })
-
-  it('har inga parametrar som kan bära identitet', () => {
-    const inputType = moduleApi.match(/export type CastVoteInput = \{[^}]*\}/)?.[0] ?? ''
-
-    for (const forbidden of [
+      'castVote',
+      'recordVote',
       'voterId',
       'voterStatusId',
       'personalNumber',
       'identityHash',
       'sessionId',
-      'ip',
       'requestId',
       'userAgent',
     ]) {
-      expect(inputType, `${forbidden} finns i kontraktet`).not.toContain(forbidden)
+      expect(moduleApi, `${forbidden} finns i modulens yta`).not.toContain(forbidden)
     }
   })
 })
@@ -294,7 +251,7 @@ describe('loggdisciplin', () => {
       const content = sourceFiles.find((file) => file.path === path)?.content ?? ''
       expect(content, `${path} saknas`).toBeTruthy()
       // 'query' i loggnivåerna skulle skriva ut identitetshashar respektive
-      // token-hashar till applikationsloggen.
+      // chifferhashar till applikationsloggen.
       expect(content).toMatch(/log: \['error'\]/)
       expect(content).not.toMatch(/'query'/)
     }

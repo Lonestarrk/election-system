@@ -1,5 +1,4 @@
 import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
-import { CURRENTLY } from '../code-facts'
 
 /**
  * Varför detta inte räcker för ett riktigt val: hela listan över kända
@@ -7,10 +6,6 @@ import { CURRENTLY } from '../code-facts'
  *
  * Varje rad har ett ankare, begransning-<id>, som hänvisningarna i resten av
  * sidan länkar till.
- *
- * Vad det gamla flödet gör i dag läses ur code-facts.ts. Här stod tidigare
- * "det gamla flödet som röstsidan fortfarande kör" som fri text, och den
- * meningen blev fel utan att något test sa ifrån när röstsidan byggdes om.
  */
 export function LimitationsList() {
   return (
@@ -20,11 +15,6 @@ export function LimitationsList() {
         Modellen visar principen: legitimera väljaren, låt henne lägga ett krypterat kuvert som
         bär hennes egen signatur och som hon kan byta ut, skala bort identiteten vid stängningen
         och publicera bara summorna. Den visar inte ett valsystem redo för drift.
-      </p>
-      <p className="muted small">
-        Listan gäller hela systemet, både kuvertmodellen och det gamla flödet.{' '}
-        {CURRENTLY.oldFlowRoutesRemain.text} Poster som bara gäller det gamla flödet försvinner ur
-        listan när det tas bort.
       </p>
 
       <div className="table-wrap" style={{ marginTop: '1rem' }}>
@@ -40,8 +30,7 @@ export function LimitationsList() {
               Läses ur src/lib/known-limitations.ts och står inte skriven här.
 
               Skälet är erfarenhet: listan fanns tidigare som prosa på tre
-              ställen, och ordningsproblemet mellan de två databasskrivningarna
-              stod kvar som olöst långt efter att röstintygen löst det. En sida
+              ställen, och ett löst problem stod kvar som olöst långt efter att det löstes. En sida
               som påstår att systemet är sämre än det är underminerar tilliten
               lika säkert som en som påstår motsatsen.
 

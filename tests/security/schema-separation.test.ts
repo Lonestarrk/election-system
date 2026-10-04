@@ -51,18 +51,9 @@ describe('databasseparation', () => {
     /**
      * MÖNSTREN MÅSTE MATCHA DEKLARATIONEN, INTE BARA NAMNET.
      *
-     * När modellen hette AnonymousVote räckte /model AnonymousVote/, eftersom
-     * inget annat började så. Efter namnbytet till Vote gör det inte det:
-     * röstlängden har VoterStatus, VoterBallotStatus och VotingSession, och
-     * /model Vote/ matchar den första av dem.
-     *
-     * Testet gick alltså rött av rätt skäl men på fel grund — det påstod att
-     * röstlängden innehöll röstmodellen när den innehöll VoterStatus. Ett
-     * falskt positivt i ett säkerhetstest är farligt på sikt: det är den
-     * sortens rödhet någon "fixar" genom att slappna av assertionen.
-     *
-     * ` \{` binder mönstret till modellhuvudet och kan inte träffa ett
-     * längre namn.
+     * Röstlängden har VoterStatus och VotingSession, och /model Vote/ matchar den första av dem.
+     * Ett falskt positivt i ett säkerhetstest är farligt på sikt: det är den sortens rödhet
+     * någon "fixar" genom att slappna av assertionen. Mönstret binder därför till modellhuvudet.
      */
     expect(votersFields).not.toMatch(/model Vote \{/)
     expect(votersFields).not.toMatch(/model Party \{/)
@@ -84,8 +75,8 @@ describe('databasseparation', () => {
     }
   })
 
-  it('Vote innehåller ingen identitet och ingen session', () => {
-    const model = votesFields.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? ''
+  it('EncryptedVote innehåller ingen identitet och ingen session', () => {
+    const model = votesFields.match(/model EncryptedVote \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(model).toBeTruthy()
 
     for (const forbidden of [
@@ -99,7 +90,7 @@ describe('databasseparation', () => {
       'ipAddress',
       'ip_address',
     ]) {
-      expect(model, `Vote innehåller ${forbidden}`).not.toContain(forbidden)
+      expect(model, `EncryptedVote innehåller ${forbidden}`).not.toContain(forbidden)
     }
   })
 
@@ -129,7 +120,6 @@ describe('databasseparation', () => {
     const votersAllowed = ['voter_status', 'voting_session', 'election', 'election_ballot']
     const votesAllowed = [
       'party',
-      'anonymous_vote',
       'election',
       'election_ballot',
       'ballot_party',
@@ -162,11 +152,11 @@ describe('databasseparation', () => {
      * partival — och i en liten kommun med ett ovanligt parti räcker det
      * långt mot att peka ut någon.
      */
-    const model = votesFields.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? ''
+    const model = votesFields.match(/model EncryptedVote \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(model).toBeTruthy()
 
     for (const forbidden of ['areaCode', 'area_code', 'municipality', 'region']) {
-      expect(model, `Vote innehåller ${forbidden}`).not.toContain(forbidden)
+      expect(model, `EncryptedVote innehåller ${forbidden}`).not.toContain(forbidden)
     }
   })
 
@@ -191,42 +181,20 @@ describe('databasseparation', () => {
     expect(table, 'push_subscription har en foreign key').not.toMatch(/REFERENCES/)
   })
 
-  it('varje valsedel har en egen token, så de tre rösterna inte bildar en profil', () => {
-    // En gemensam token över kommun-, landstings- och riksdagsvalsedeln
-    // skulle binda ihop de tre till en profil, och tre partival tillsammans
-    // är långt mer identifierande än ett. Unikhetskravet på token_hash är det
-    // som gör att en rad aldrig kan delas av flera valsedlar.
-    expect(votesMigrations).toMatch(/CREATE UNIQUE INDEX "anonymous_vote_token_hash_key"/)
-
-    const model = votesFields.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? ''
-    // Ett fält som grupperar flera röster vore samma profil under annat namn.
-    for (const forbidden of ['receiptId', 'receipt_id', 'groupId', 'group_id', 'batchId']) {
-      expect(model, `Vote innehåller ${forbidden}`).not.toContain(forbidden)
+  it('urnan har ingen token, inget kvitto och ingen kolumn som grupperar en väljares röster', () => {
+    // Ett fält som grupperar flera röster vore en profil under annat namn: tre partival tillsammans
+    // är långt mer identifierande än ett. En token eller ett kvitto vore ett handtag för en köpare.
+    expect(votesFields).not.toMatch(/token|credential|receipt|batch/i)
+    const model = votesFields.match(/model EncryptedVote \{[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(model).not.toBe('')
+    for (const forbidden of ['groupId', 'group_id']) {
+      expect(model, `EncryptedVote innehåller ${forbidden}`).not.toContain(forbidden)
     }
-  })
-
-  it('token lagras med unikt index, så en kollision blir ett fel', () => {
-    expect(votesMigrations).toMatch(/CREATE UNIQUE INDEX "anonymous_vote_token_hash_key"/)
-  })
-
-  it('token-kolumnen heter token_hash — inte token', () => {
-    // Namnet är en påminnelse om att klartexten aldrig lagras.
-    expect(votesSchema).toContain('@map("token_hash")')
-    expect(votesSchema).not.toMatch(/@map\("token"\)/)
   })
 
   it('PendingVote bär identitet och hör därför hemma i röstlängden', () => {
     expect(votersFields).toMatch(/model PendingVote \{/)
     expect(votesFields).not.toMatch(/model PendingVote \{/)
-  })
-
-  it('EncryptedVote innehåller ingen identitet', () => {
-    const model = votesFields.match(/model EncryptedVote \{[\s\S]*?\n\}/)?.[0] ?? ''
-
-    expect(model).not.toBe('')
-    for (const forbidden of ['voterStatusId', 'personalNumber', 'identityHash', 'sessionId']) {
-      expect(model, `EncryptedVote innehåller ${forbidden}`).not.toContain(forbidden)
-    }
   })
 
   it('saltet i BankID-åtagandet finns bara i röstlängden, aldrig i röstdatabasen (uppgift 11e)', () => {

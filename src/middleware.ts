@@ -48,7 +48,7 @@ function isAllowedOrigin(origin: string | null): origin is string {
  *
  * FÅR ALDRIG NÅ PRODUKTION. 'unsafe-eval' upphäver en stor del av skyddet mot
  * kodinjektion, och i den här appen är klientkoden det enda som håller
- * blindningsfaktorn hemlig. Villkoret vaktas av ett test.
+ * slumptalet i det krypterade kuvertet hemligt och valet orört. Villkoret vaktas av ett test.
  */
 const IS_DEVELOPMENT = process.env.NODE_ENV === 'development'
 

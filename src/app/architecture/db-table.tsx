@@ -10,8 +10,6 @@ import type { CiphertextPreview } from '@/app/api/demo/database-state/route'
  * ur den aktuella bilden.
  */
 
-export type Model = 'kuvert' | 'gammal' | 'båda'
-
 /**
  * Vad en rad kan vara märkt med. `följs` och `väljaren` gäller bara
  * pending_vote respektive voter_status, och bara före stängningen. Ingen rad i
@@ -23,7 +21,6 @@ export type Row = { key: string; cells: ReactNode[]; mark?: Mark }
 
 export function DbTable({
   name,
-  model,
   description,
   headers,
   rows,
@@ -31,7 +28,6 @@ export function DbTable({
   bare = false,
 }: {
   name: string
-  model?: Model
   description?: ReactNode
   headers: string[]
   rows: Row[]
@@ -45,7 +41,6 @@ export function DbTable({
         <>
           <h3 style={tableHeadingStyle}>
             <span className="mono">{name}</span>
-            {model && <ModelBadge model={model} />}
             <span className="muted small" style={{ fontWeight: 400 }}>
               {rowCount(rows.length)}
             </span>
@@ -84,26 +79,6 @@ export function DbTable({
         </div>
       )}
     </div>
-  )
-}
-
-const MODEL_LABELS: Record<Model, string> = {
-  kuvert: 'Kuvertmodellen',
-  gammal: 'Gamla modellen',
-  båda: 'Båda modellerna',
-}
-
-const MODEL_COLOURS: Record<Model, { background: string; borderColor: string }> = {
-  kuvert: { background: 'var(--accent-soft)', borderColor: 'var(--accent)' },
-  gammal: { background: 'var(--warning-soft)', borderColor: 'var(--warning)' },
-  båda: { background: 'var(--surface-muted)', borderColor: 'var(--border-strong)' },
-}
-
-export function ModelBadge({ model }: { model: Model }) {
-  return (
-    <span style={{ ...badgeStyle, ...MODEL_COLOURS[model] }} title="Vilken röstmodell tabellen hör till">
-      {MODEL_LABELS[model]}
-    </span>
   )
 }
 

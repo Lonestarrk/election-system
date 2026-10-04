@@ -2,11 +2,10 @@
  * KÄNDA BEGRÄNSNINGAR — EN ENDA KÄLLA
  *
  * Listan fanns tidigare som prosa på tre ställen: arkitektursidan, SECURITY.md
- * och VERIFIABILITY.md. Följden blev förutsägbar. Ordningsproblemet mellan de
- * två databasskrivningarna löstes av röstintygen, men stod kvar som ett
- * kvarvarande problem på sidan långt efteråt — och en sida som påstår att
- * systemet är sämre än det är underminerar tilliten lika säkert som en som
- * påstår motsatsen.
+ * och VERIFIABILITY.md. Följden blev förutsägbar. Ett problem som en senare
+ * ändring löst stod kvar som ett kvarvarande problem på sidan långt efteråt —
+ * och en sida som påstår att systemet är sämre än det är underminerar tilliten
+ * lika säkert som en som påstår motsatsen.
  *
  * VARJE BEGRÄNSNING BÄR SITT EGET TEST
  *
@@ -48,14 +47,8 @@ export type KnownLimitation = {
 
 export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   /**
-   * KUVERTMODELLENS BEGRÄNSNINGAR.
-   *
-   * Posterna till och med `client-code-from-server` gäller modellen med dubbla
-   * kuvert och är sanna i koden redan i dag. Övriga poster beskriver antingen det gamla röstflödet
-   * med röstintyg och blinda signaturer, som ingen sida lägger röster i sedan
-   * uppgift 14 men vars rutter och tabeller finns kvar, eller gäller oavsett
-   * modell. Det gamla flödets poster står kvar tills flödet tas bort, och testet
-   * tvingar bort var och en när dess markör försvinner.
+   * Begränsningarna gäller modellen med dubbla kuvert, och är sanna i koden i dag. Varje post bär
+   * en markör, och testet tvingar bort posten när markören försvinner.
    */
   {
     id: 'link-exists-during-voting',
@@ -351,17 +344,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       { file: 'prisma/votes/schema.prisma', contains: '  ciphertextHash String @map("ciphertext_hash")' },
       { file: 'prisma/votes/schema.prisma', contains: '  @@index([ciphertextHash])' },
       // Läggningen skriver kopian som vilket kuvert som helst, utan någon
-      // prövning av chiffret mellan fasen och skrivningen. Det som prövas där
-      // sedan uppgift 12 är väljarens egen bok i det gamla flödet, inte
-      // chiffret ...
+      // prövning av chiffret mellan fasen och skrivningen ...
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
         contains: [
           "        return { status: 'closed' }",
           '      }',
-          '',
-          '      await holdVoterBooksForEnvelope(tx, voterStatusId)',
-          "      if (await votedInOldFlow(tx, voterStatusId, ballotId)) return { status: 'voted_in_old_flow' }",
           '',
           '      const replaced = await tx.pendingVote.updateMany({',
           '        where: { voterStatusId, ballotId, castSequence: { lt: signedPayload.castSequence } },',
@@ -638,12 +626,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'inte svaga fraser i allmänhet, och den hänger inte på en miljövariabel. ' +
       'Omröstningen bär sitt läge, i båda databaserna. Ett demoval som redan finns kan därför inte ' +
       'läggas i, stängas, räknas, publiceras eller fastställas av en server i skarpt läge, och ett ' +
-      'skarpt val inte av en demoserver. Spärren gäller kuvertflödet, det gamla flödets röstintyg och ' +
-      'röster, räkningens ingångar, dekrypteringen, omräkningen och publiceringen, fastställandet, och ' +
-      'rutterna som skriver ett åtagande eller startar slutkontrollen. Läsvägarna spärras inte: ' +
+      'skarpt val inte av en demoserver. Spärren gäller läggningen av kuvert, stängningen, ' +
+      'räkningens ingångar, dekrypteringen, omräkningen och publiceringen, fastställandet, och ' +
+      'rutten som startar slutkontrollen. Läsvägarna spärras inte: ' +
       'adminsidans läsning av fas och antal (state), observatörens överblick (observer/election) och ' +
-      '/api/verify svarar i båda lägena, eftersom de ändrar ingenting och bara lämnar ut antal, fas ' +
-      'och väljarens eget besked. Gamla flödet tas bort i uppgift 15, och spärren står kvar tills dess. ' +
+      'verifieringssidans besked (participation) svarar i båda lägena, eftersom de ändrar ingenting ' +
+      'och bara lämnar ut antal, fas och väljarens eget besked. ' +
       'Läggningen läser röstlängdens rad, och stängning och fastställande kräver att båda raderna ' +
       'stämmer. Den som kan skriva i båda databaserna kan ändå byta läget, och den som läser databasen ' +
       'direkt hindras inte av något läge. Spärren skyddar alltså mot ett misstag och inte mot en sådan ' +
@@ -665,14 +653,11 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
         contains: "input.trusteePassphrases.some(isKnownDemoPassphrase)",
       },
       { file: 'prisma/seed.ts', contains: 'assertSeedAllowed()' },
-      // Omröstningens läge prövas i räkningen och publiceringen ...
+      // Omröstningens läge prövas i läggningen av kuvert, räkningen och publiceringen ...
+      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'electionBelongsToThisMode(election.mode)' },
       { file: 'src/orchestration/tally.usecase.ts', contains: 'checkElectionMode(' },
       { file: 'src/orchestration/publish-results.usecase.ts', contains: 'checkElectionMode(' },
-      // ... i det gamla flödets intyg och röster ...
-      { file: 'src/modules/eligibility/credential.service.ts', contains: 'electionBelongsToThisMode' },
-      { file: 'src/modules/ballot-box/index.ts', contains: 'electionBelongsToThisMode' },
-      // ... och i rutterna som skriver ett åtagande eller startar slutkontrollen.
-      { file: 'src/app/api/admin/elections/commit/route.ts', contains: 'checkElectionMode(' },
+      // ... och i rutten som startar slutkontrollen.
       { file: 'src/app/api/admin/elections/check/route.ts', contains: 'checkElectionMode(' },
     ],
   },
@@ -688,41 +673,12 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'ut i en webbapp.',
     /**
      * Så länge valsedeln krypteras i klientkod som servern levererar står
-     * problemet kvar. Fram till uppgift 14 gällde posten blindningen i det
-     * gamla flödet och pekade på src/lib/blind-client.ts. Röstsidan blindar
-     * inte längre något, så posten beskriver nu kuvertmodellens klient, som
-     * spec 10 anger, och markören följer med dit.
+     * problemet kvar (spec 10, klientintegriteten är fortfarande olöst).
      */
     stillTrueIf: {
       file: 'src/app/vote/page.tsx',
       contains: "import { encryptBallotInSteps } from '@/lib/encrypt-client'",
     },
-  },
-  {
-    id: 'signing-keys-in-database',
-    title: 'Signeringsnycklarna ligger i databasen',
-    why:
-      'Valsedlarnas privata nycklar lagras i röstlängden. En databasdump — en backup i fel händer ' +
-      'räcker — låter vem som helst prägla giltiga röstintyg och lägga röster som passerar varje ' +
-      'kontroll. Nycklarna hör hemma i en HSM, aldrig i en tabell.',
-    // Fältet försvinner ur schemat den dag signeringen flyttar till Key Vault.
-    stillTrueIf: { file: 'prisma/voters/schema.prisma', contains: 'signingPrivateKeyPem' },
-  },
-  {
-    id: 'receipt-proves-choice',
-    title: 'Kvittot bevisar hur du röstat',
-    why:
-      'Det gamla flödets verifiering visar vilket alternativ token gäller. Det gör att en väljare ' +
-      'kan bevisa sin röst för någon annan, vilket öppnar för röstköp. Det gäller varje val på ' +
-      'valsedeln, inte bara personröster — kvittot är problemet, inte hur finfördelat valet är. ' +
-      'Ingen sida delar längre ut en token, men rutten som svarar på dem finns kvar, och en token ' +
-      'från förr visar fortfarande sitt parti. Kuvertmodellen är utformad utan kvitto (spec 3.1). ' +
-      'Före stängningen ser väljaren sin nuvarande röst på enheten hon röstade från, men enheten ' +
-      'sparar aldrig slumptalet, så det den visar bevisar ingenting för någon annan. Ingen kod ' +
-      'visas, och efter stängningen publiceras bara summorna, så att det inte finns något per ' +
-      'röst att visa upp eller matcha mot. Posten gäller det gamla flödet och försvinner med det.',
-    // `choice` i verifieringssvaret är precis det som bevisar valet.
-    stillTrueIf: { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
   },
   {
     id: 'municipality-beside-identity-hash',
@@ -742,10 +698,13 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   },
   {
     id: 'commitments-internal-only',
-    title: 'Åtaganden publiceras bara internt',
+    title: 'Rötterna sparas bara av systemet självt',
     why:
-      'En Merklerot som bara finns i samma databas som den skyddar kan skrivas om tillsammans med ' +
-      'rösterna. Rötterna måste publiceras utanför systemet för att ha fullt bevisvärde.',
+      'Kuvertroten och urnroten skrivs i röstlängden och i revisionskedjan, och lämnas ut av ' +
+      'observatörsrutten. En rot som bara finns i databasen som den skyddar kan skrivas om ' +
+      'tillsammans med det den binder, av den som kan skriva i den. Den som sparat roten utanför ' +
+      'systemet i tid ser det. Att granskare hämtar och sparar rötterna medan röstningen pågår är ' +
+      'en rutin systemet inte kan genomdriva.',
     // Ingen kodmarkör: att rötterna publiceras externt är en driftsrutin, inte en kodegenskap.
   },
   {
@@ -758,18 +717,6 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     stillTrueIf: {
       file: 'src/orchestration/final-check.usecase.ts',
       contains: 'export async function certifyElection',
-    },
-  },
-  {
-    id: 'no-guaranteed-anonymity-set',
-    title: 'Ingen garanterad anonymitetsmängd',
-    why:
-      'Vid låg röstfrekvens räcker inte grova tidsstämplar. Rösterna behöver köas och skrivas i ' +
-      'blandade satser med en garanterad mängd.',
-    // Rösten skrivs direkt vid inlösen. En kö skulle ersätta det anropet.
-    stillTrueIf: {
-      file: 'src/modules/ballot-box/vote.service.ts',
-      contains: 'votesDb.vote.create',
     },
   },
   {

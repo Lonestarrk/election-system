@@ -564,8 +564,8 @@ function phaseCheck(phase: string): CheckResult {
 }
 
 /**
- * 2. KOPPLINGEN ÄR RADERAD OCH KUVERTROTEN SKRIVEN (punkt 5). Behållen ur det
- * gamla flödet och utökad.
+ * 2. KOPPLINGEN ÄR RADERAD OCH KUVERTROTEN SKRIVEN (punkt 5). Utökad från den
+ * första versionen av kontrollen.
  *
  * RADERINGEN BLIR ETT KONTROLLERAT VILLKOR I STÄLLET FÖR ETT LÖFTE. Skalningen
  * raderar kopplingen, men att den körde säger ingenting om att den lyckades,
@@ -1172,10 +1172,8 @@ export type CertifyOutcome =
  * posten ELECTION_CERTIFIED inte att skriva förs fasen tillbaka, så att den ena
  * aldrig finns utan den andra.
  *
- * Det gamla flödets fastställande publicerade ett sista åtagande över tabellen
- * vote och satte ett statusfält i röstdatabasen. Tabellen är tom i
- * kuvertmodellen, och fastställandet är fasen i röstlängden. Statusfältet bär
- * nu bara markeringen UNDER_REVIEW.
+ * Fastställandet är fasen i röstlängden. Statusfältet i röstdatabasen bär bara
+ * markeringen UNDER_REVIEW.
  */
 export async function certifyElection(electionId: string): Promise<CertifyOutcome> {
   // En demoomröstning fastställs aldrig av en server i skarpt läge, och en skarp aldrig av en

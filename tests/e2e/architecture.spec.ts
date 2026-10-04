@@ -86,7 +86,6 @@ function snapshot(phase: 'OPEN' | 'STRIPPED'): DatabaseState {
       trusteeShare: [],
       partialDecryption: [],
       ballotTally: [],
-      legacyVote: [],
       foreignKeys: [],
     },
     analysis: {
@@ -136,17 +135,15 @@ test.describe('arkitektursidan', () => {
     }
 
     const tables = [
-      ['voter_status', 'Båda modellerna'],
-      ['pending_vote', 'Kuvertmodellen'],
-      ['encrypted_vote', 'Kuvertmodellen'],
-      ['trustee_share', 'Kuvertmodellen'],
-      ['partial_decryption', 'Kuvertmodellen'],
-      ['ballot_tally', 'Kuvertmodellen'],
-      // Det gamla flödet finns kvar, och livevyn låtsas inte något annat.
-      ['vote', 'Gamla modellen'],
+      'voter_status',
+      'pending_vote',
+      'encrypted_vote',
+      'trustee_share',
+      'partial_decryption',
+      'ballot_tally',
     ] as const
-    for (const [table, model] of tables) {
-      await expect(page.getByRole('heading', { name: new RegExp(`^${table} ${model}`) })).toBeVisible()
+    for (const table of tables) {
+      await expect(page.getByRole('heading', { name: new RegExp(`^${table}(?![a-z_])`) })).toBeVisible()
     }
   })
 
@@ -816,14 +813,14 @@ test.describe('huvudsidan och undersidorna', () => {
      * utesluter inte heller något. Rätt attribut att välja bort på är
      * aria-labelledby, som sitter direkt på <section>.
      *
-     * Antalet sektioner prövas uttryckligen: sex på sidan totalt (Läget i
-     * korthet, Granskningen, Faserna, Gamla flödet, Vad som återstår, Azure),
-     * fem kvar sedan sammanfattningen valts bort. Utan den kontrollen kunde
+     * Antalet sektioner prövas uttryckligen: fem på sidan totalt (Läget i
+     * korthet, Granskningen, Faserna, Vad som återstår, Azure),
+     * fyra kvar sedan sammanfattningen valts bort. Utan den kontrollen kunde
      * ett uttryck som återigen inte utesluter något passera obemärkt.
      */
     const restOfPage = page.locator('main section:not([aria-labelledby="laget-i-korthet"])')
-    await expect(page.locator('main section')).toHaveCount(6)
-    await expect(restOfPage).toHaveCount(5)
+    await expect(page.locator('main section')).toHaveCount(5)
+    await expect(restOfPage).toHaveCount(4)
     await expect(restOfPage.getByText('Klart', { exact: true }).first()).toBeVisible()
     await expect(restOfPage.getByText(/^Kommer \(uppgift/).first()).toBeVisible()
     await expect(restOfPage.getByText('Ingår inte', { exact: true }).first()).toBeVisible()
@@ -837,7 +834,7 @@ test.describe('huvudsidan och undersidorna', () => {
      * minst en badge. Tas alla badges bort ur ett enda avsnitt går just den
      * raden röd, medan sammanfattningen och de andra avsnitten är orörda.
      */
-    for (const id of ['granskning-i-dag', 'faserna-i-dag', 'gamla-flodet', 'aterstar', 'azure']) {
+    for (const id of ['granskning-i-dag', 'faserna-i-dag', 'aterstar', 'azure']) {
       const section = page.locator(`main section[aria-labelledby="${id}"]`)
       await expect(section.locator('.status-badge').first(), id).toBeVisible()
     }

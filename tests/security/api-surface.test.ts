@@ -5,8 +5,8 @@ import { KNOWN_LIMITATIONS } from '@/lib/known-limitations'
 import { demoRouteProblems } from './demo-route-source'
 
 /**
- * Testpunkt 8: en väljaridentitet kan inte användas för att få fram en token.
- * Testpunkt 12: verifieringen avslöjar inte väljarens identitet.
+ * Ingen rutt lämnar ut en token eller en kod som pekar på en röst, och ingen tar emot en
+ * identitet och svarar med något som kan kopplas till en röst.
  *
  * Testet granskar API-ytan som helhet, inte bara enskilda svar. Poängen är att
  * visa att den farliga funktionen inte finns någonstans — inte att den råkar
@@ -52,7 +52,6 @@ describe('API-ytan', () => {
        * slår.
        */
       'src/app/api/admin/elections/close/route.ts',
-      'src/app/api/admin/elections/commit/route.ts',
       /**
        * Förtroendepersonens bidrag (uppgift 12). Tar emot en fras och låser
        * upp andelen i serverns minne, se posten `server-sees-trustee-share`
@@ -111,13 +110,11 @@ describe('API-ytan', () => {
       /**
        * Det publicerade resultatet med bevis, efter TALLIED (uppgift 13). Det
        * oberoende verktyget läser det. /api/observer/votes, som lämnade ut
-       * varje röst i det gamla flödet med innehåll, finns inte längre.
+       * varje röst med innehåll, finns inte.
        */
       'src/app/api/observer/results/route.ts',
       'src/app/api/push/subscribe/route.ts',
-      'src/app/api/verify/route.ts',
       'src/app/api/vote/ballot/route.ts',
-      'src/app/api/vote/cast/route.ts',
       /**
        * Jämförelsen av enhetens sparade chifferhash med väljarens liggande
        * kuvert (uppgift 14).
@@ -129,7 +126,6 @@ describe('API-ytan', () => {
        * tests/integration/device-comparison.test.ts.
        */
       'src/app/api/vote/compare/route.ts',
-      'src/app/api/vote/credential/route.ts',
       'src/app/api/vote/encrypted/route.ts',
       /**
        * Verifieringssidans besked "Du har röstat" per valsedel (uppgift 13).
@@ -142,12 +138,12 @@ describe('API-ytan', () => {
     ])
   })
 
-  it('endast röstläggningen returnerar en token', () => {
+  it('ingen rutt returnerar en token som pekar på en röst', () => {
     const returningToken = routes
       .filter((route) => /token:\s*(outcome\.token|data\.token|token)\b/.test(route.content))
       .map((route) => route.path)
 
-    expect(returningToken).toEqual(['src/app/api/vote/cast/route.ts'])
+    expect(returningToken).toEqual([])
   })
 
   it('ingen rutt tar emot ett personnummer och svarar med en token', () => {
@@ -189,41 +185,6 @@ describe('API-ytan', () => {
   })
 })
 
-describe('verifieringsrutten', () => {
-  const verify = routes.find((route) => route.path === 'src/app/api/verify/route.ts')!
-
-  it('verifierar bara via POST', () => {
-    expect(verify.content).toMatch(/export async function POST/)
-    expect(verify.content).toMatch(/export async function GET/)
-    // GET finns, men bara för att svara 405 med en förklaring.
-    const getBody = verify.content.match(/export async function GET[\s\S]*$/)?.[0] ?? ''
-    expect(getBody).toMatch(/405/)
-    expect(getBody).not.toMatch(/verifyToken/)
-  })
-
-  it('svarar aldrig med identitetsuppgifter', () => {
-    for (const forbidden of [
-      'personalNumber',
-      'voterId',
-      'voterStatusId',
-      'identityHash',
-      'externalIdentityHash',
-      'sessionId',
-      'ipAddress',
-    ]) {
-      expect(verify.content, `verifieringen nämner ${forbidden}`).not.toContain(forbidden)
-    }
-  })
-
-  it('importerar ingenting från väljarmodulen', () => {
-    expect(verify.content).not.toMatch(/@\/modules\/eligibility/)
-  })
-
-  it('hastighetsbegränsas', () => {
-    expect(verify.content).toMatch(/checkRateLimit/)
-  })
-})
-
 describe('adminytan', () => {
   const stats = routes.find((route) => route.path === 'src/app/api/admin/stats/route.ts')!
 
@@ -240,9 +201,8 @@ describe('adminytan', () => {
   })
 
   it('visar inga löpande resultat (uppgift 13, spec 6.2)', () => {
-    // Fram till uppgift 13 räknade rutten röster per parti ur det gamla
-    // flödets tabell medan röstningen pågick.
-    expect(stats.content).not.toMatch(/getElectionResults|ballotTally|votesDb|recordedVotes/)
+    // Fram till uppgift 13 räknade rutten röster per parti medan röstningen pågick.
+    expect(stats.content).not.toMatch(/ballotTally|votesDb/)
   })
 
   it('kräver inloggning', () => {
@@ -251,11 +211,7 @@ describe('adminytan', () => {
 })
 
 describe('skydd på tillståndsändrande rutter', () => {
-  const mutating = routes.filter(
-    (route) =>
-      /export async function POST/.test(route.content) &&
-      route.path !== 'src/app/api/verify/route.ts',
-  )
+  const mutating = routes.filter((route) => /export async function POST/.test(route.content))
 
   it('kontrollerar Origin', () => {
     for (const route of mutating) {
@@ -269,30 +225,14 @@ describe('skydd på tillståndsändrande rutter', () => {
     }
   })
 
-  it('utfärdandet av röstintyg kräver dessutom CSRF-token', () => {
-    /**
-     * KRAVET FLYTTADE, DET FÖRSVANN INTE.
-     *
-     * CSRF-skyddet bygger på en hemlighet knuten till röstsessionen. Sedan
-     * röstintygen infördes har röstläggningen ingen session alls — den
-     * auktoriseras av ett kryptografiskt intyg i stället, vilket är ett
-     * starkare skydd än en cookie: en angripande sajt kan inte framkalla en
-     * giltig signatur.
-     *
-     * Den sessionsbärande rutten är nu utfärdandet, och det är där CSRF-kravet
-     * hör hemma.
-     */
-    const issue = routes.find((route) => route.path === 'src/app/api/vote/credential/route.ts')!
-    expect(issue.content).toMatch(/isValidCsrfToken/)
-  })
-
-  it('röstläggningen läser ingen sessionscookie', () => {
-    // Det här är vinsten med röstintygen: rutten KAN inte veta vem som röstar.
-    const cast = routes.find((route) => route.path === 'src/app/api/vote/cast/route.ts')!
-
-    expect(cast.content).not.toMatch(/SESSION_COOKIE/)
-    expect(cast.content).not.toMatch(/getValidVotingSession/)
-    expect(cast.content).not.toMatch(/@\/modules\/eligibility/)
+  it('rutterna som tar emot ett kuvert eller startar dess underskrift kräver dessutom CSRF-token', () => {
+    // CSRF-skyddet bygger på en hemlighet knuten till röstsessionen, och båda rutterna kräver
+    // en session. En angripande sajt kan inte framkalla en underskrift i någon annans BankID,
+    // men kan försöka starta en.
+    for (const path of ['src/app/api/vote/sign-start/route.ts', 'src/app/api/vote/encrypted/route.ts']) {
+      const route = routes.find((candidate) => candidate.path === path)!
+      expect(route.content, path).toMatch(/isValidCsrfToken/)
+    }
   })
 })
 
@@ -348,8 +288,7 @@ describe('publiceringen och observatören (uppgift 13)', () => {
   /**
    * BARA SUMMORNA PUBLICERAS, OCH INGENTING UNDER RÖSTNINGEN.
    *
-   * Observatörsrutterna läser inte det gamla flödets röster eller resultat, och
-   * inte urnans rader själva. Resultatet går genom publiceringen, som räknar om
+   * Observatörsrutterna läser inte urnans rader själva. Resultatet går genom publiceringen, som räknar om
    * det ur urnan och de prövade bidragen. Att svaren saknar allt per röst prövas
    * mot riktiga databaser i tests/integration/independent-verification.test.ts.
    * Kommentarerna tas bort först, eftersom rutterna förklarar det här i text.
@@ -365,11 +304,11 @@ describe('publiceringen och observatören (uppgift 13)', () => {
   const observerRoutes = routes.filter((route) => route.path.startsWith('src/app/api/observer/'))
   const results = code(routes.find((route) => route.path === 'src/app/api/observer/results/route.ts')!.content)
 
-  it('observatörsrutterna läser inget per röst och inget ur det gamla flödet', () => {
+  it('observatörsrutterna läser inget per röst', () => {
     for (const route of observerRoutes) {
       const content = code(route.content)
       expect(content, route.path).not.toMatch(
-        /votesDb|votersDb|getElectionResults|countIssuedCredentials|commitment\.service|encryptedVote|ciphertextHash/,
+        /votesDb|votersDb|encryptedVote|ciphertextHash/,
       )
     }
   })

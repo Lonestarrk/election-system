@@ -25,7 +25,7 @@ import { createVotingSession } from '@/modules/eligibility/voting-session.servic
 import { closeElection } from '@/orchestration/close-election.usecase'
 import { POST as compare } from '@/app/api/vote/compare/route'
 import { POST as session } from '@/app/api/vote/session/route'
-import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, voteOnce, signingTextFor } from './helpers'
+import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 
 /**
  * SERVERN JÄMFÖR, DEN LÄMNAR INTE UT (uppgift 14).
@@ -343,37 +343,23 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
       electionId,
       phase: 'OPEN',
       acceptsVotes: true,
-      ballots: [{ id: ballotId, hasPendingVote: true, votedInOldFlow: false }],
+      ballots: [{ id: ballotId, hasPendingVote: true }],
     })
     expect(text).not.toMatch(ANY_HASH)
   })
 
-  it('"har en röst" kommer ur kuvertet, inte ur det gamla flödets markering', async () => {
-    const before = JSON.parse(await (await post(session, {})).text())
-    expect(before.ballots[0]).toMatchObject({ hasPendingVote: false, votedInOldFlow: false })
-
-    // En röst i det gamla flödet markerar väljaren men lägger inget kuvert.
-    const oldFlow = await voteOnce(anna, { electionId, ballotId, ballotPartyId: bpS })
-    expect(oldFlow.status).toBe('voted')
-
-    const after = JSON.parse(await (await post(session, {})).text())
-    expect(after.ballots[0]).toMatchObject({ hasPendingVote: false, votedInOldFlow: true })
-  })
-
-  it('skalningens markering "har röstat" tolkas inte som en röst i det gamla flödet', async () => {
+  it('skalningens markering "har röstat" är inte ett liggande kuvert', async () => {
     /**
-     * Uppgift 11d skriver markeringen i en egen tabell, voted_marker, och inte i
-     * det gamla flödets voter_ballot_status, som röstsidan sedan uppgift 14
-     * visar som en röst som inte går att byta. Före stängningen finns
-     * markeringen aldrig, och efter stängningen är röstsidan stängd. Här prövas
-     * båda, och att sessionen inte säger att väljaren röstat i det gamla flödet.
+     * Skalningen skriver markeringen i voted_marker. Före stängningen finns den
+     * aldrig, och efter stängningen är röstsidan stängd. Sessionen säger då att
+     * inget kuvert ligger, fast väljaren har en markering.
      */
     const { outcome } = await cast(bpS)
     expect(outcome.status).toBe('recorded')
     expect(await votersDb.votedMarker.count()).toBe(0)
 
     const open = JSON.parse(await (await post(session, {})).text())
-    expect(open.ballots[0]).toMatchObject({ hasPendingVote: true, votedInOldFlow: false })
+    expect(open.ballots[0]).toMatchObject({ hasPendingVote: true })
 
     await votersDb.election.update({ where: { id: electionId }, data: { closesAt: new Date(Date.now() - 1000) } })
     await votesDb.election.update({ where: { id: electionId }, data: { closesAt: new Date(Date.now() - 1000) } })
@@ -384,7 +370,7 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
     expect(closed).toMatchObject({
       phase: 'STRIPPED',
       acceptsVotes: false,
-      ballots: [{ id: ballotId, hasPendingVote: false, votedInOldFlow: false }],
+      ballots: [{ id: ballotId, hasPendingVote: false }],
     })
   })
 

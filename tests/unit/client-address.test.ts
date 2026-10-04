@@ -20,7 +20,7 @@ afterEach(() => {
 function requestWith(forwardedFor: string | null): Request {
   const headers = new Headers()
   if (forwardedFor !== null) headers.set('x-forwarded-for', forwardedFor)
-  return new Request('http://localhost:3000/api/verify', { method: 'POST', headers })
+  return new Request('http://localhost:3000/api/vote/session', { method: 'POST', headers })
 }
 
 describe('TRUSTED_PROXY_HOPS', () => {

@@ -1,12 +1,8 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { describeErrorChain, logger, redact } from '@/lib/logger'
-import { generateVoteToken } from '@/modules/ballot-box/token.service'
 
 /**
- * Testpunkt 10 (enhetsnivå): klartext-token skrivs aldrig till loggen.
- *
- * Integrationsvarianten i tests/security/no-token-in-logs.test.ts kör ett helt
- * röstningsflöde och granskar allt som faktiskt skrevs ut.
+ * Personnummer och hashvärden skrivs aldrig till loggen.
  */
 
 afterEach(() => {
@@ -14,19 +10,6 @@ afterEach(() => {
 })
 
 describe('maskering', () => {
-  it('maskerar en token i visningsformat', () => {
-    const { token } = generateVoteToken()
-    const output = redact(`Väljaren fick token ${token} vid röstningen`)
-
-    expect(output).not.toContain(token)
-    expect(output).toContain('[MASKERAT]')
-  })
-
-  it('maskerar en token utan bindestreck', () => {
-    const { canonical } = generateVoteToken()
-    expect(redact(`token=${canonical}`)).not.toContain(canonical)
-  })
-
   it('maskerar personnummer i alla vanliga format', () => {
     const numbers = ['19900101-1234', '199001011234', '900101-1234', '900101+1234']
 
@@ -50,23 +33,23 @@ describe('maskering', () => {
 describe('logger', () => {
   it('maskerar innan något skrivs ut', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    const { token } = generateVoteToken()
+    const hash = 'b'.repeat(64)
 
-    logger.info(`Detta borde aldrig hända: ${token}`)
+    logger.info(`Detta borde aldrig hända: ${hash}`)
 
     const written = spy.mock.calls.flat().join(' ')
-    expect(written).not.toContain(token)
+    expect(written).not.toContain(hash)
     expect(written).toContain('[MASKERAT]')
   })
 
   it('maskerar även värden som skickats in via kontextobjektet', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { token } = generateVoteToken()
+    const hash = 'c'.repeat(64)
 
-    logger.error('Fel vid röstning', { token, personalNumber: '19900101-1234' })
+    logger.error('Fel vid röstning', { hash, personalNumber: '19900101-1234' })
 
     const written = spy.mock.calls.flat().join(' ')
-    expect(written).not.toContain(token)
+    expect(written).not.toContain(hash)
     expect(written).not.toContain('19900101-1234')
   })
 })

@@ -33,8 +33,7 @@ import { test as base, expect } from '@playwright/test'
  * uppvärmningen står kvar: en svit vars första test betalar
  * kompileringstiden är ändå ojämn, och ojämna tester slutar man tro på.
  *
- * Röstsidans rutter är kuvertmodellens sedan uppgift 14. Det gamla flödets
- * /api/vote/cast anropas inte längre av någon sida och värms därför inte.
+ * Röstsidans rutter är kuvertmodellens, och de värms nedan.
  */
 const ROUTES_TO_WARM = [
   '/api/auth/bankid/start',

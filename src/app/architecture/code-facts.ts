@@ -2,9 +2,8 @@
  * VAD ARKITEKTURSIDAN PÅSTÅR OM KODEN I DAG, MED MARKÖRER.
  *
  * Sidan beskriver en modell som är halvvägs byggd. En del av det den säger
- * handlar därför om kodens nuvarande läge: att det gamla flödets rutter finns
- * kvar, att dekrypteringen inte är byggd, vilka faser som faktiskt skrivs, hur
- * tidsstämplar lagras. Sådana påståenden blir fel av sig själva i
+ * handlar därför om kodens nuvarande läge: vilka faser som faktiskt skrivs, hur
+ * tidsstämplar lagras, vad som ännu inte är byggt. Sådana påståenden blir fel av sig själva i
  * samma stund som en senare uppgift ändrar något, och den som ändrar det har
  * ingen anledning att öppna arkitektursidan.
  *
@@ -285,35 +284,19 @@ const TALLIED_WRITTEN_BY_TALLY: Marker[] = [
 ]
 
 /**
- * Det gamla flödets röster och kvitton: adresserna till rutterna som lägger
- * en röst med röstintyg och som svarar på en kvittokod, som strängar, och
- * klientmodulen för blindningen.
- *
- * Exporteras för arkitektursidans test, som prövar sidans egna filer med samma
- * mönster (se nedan).
+ * Det gamla flödet är borta ur koden och ur schemana: inga röstintyg, inga blinda signaturer, ingen token,
+ * inte tabellerna vote, election_commitment och voter_ballot_status och inte nycklarna på valsedlarna.
+ * Migreringarna i prisma/ nämner tabellerna, så mönstren prövar bara schemana, och migreringarna
+ * prövas med en filmarkör.
  */
-export const OLD_FLOW_VOTES_AND_RECEIPTS =
-  /['"`]\/api\/(vote\/cast|vote\/credential|verify)['"`]|@\/lib\/blind-client/
-
-/**
- * Ingen sida lägger röster i det gamla flödet eller frågar efter dess kvitton.
- *
- * Fram till uppgift 14 stod här det motsatta: röstsidan lade röster med
- * röstintyg och fick en kvittokod tillbaka. Mönstret prövas i hela src/app, i
- * kod och kommentarer. Det omfattar också rutterna under src/app/api, som i dag
- * inte nämner varandra, vilket är strängare än påståendet kräver. Behöver en
- * rutt en dag nämna en av adresserna ska markören smalnas av då, inte
- * påståendet. Arkitektursidans egna filer hoppar granskningen alltid över,
- * eftersom de bär påståendena och deras mönster. För dem gör
- * tests/security/architecture-page.test.ts samma prov för sig.
- *
- * Påståendet gäller röster och kvitton, inte allt i det gamla flödet.
- * Adminsidans statistik läste det gamla flödets tabell fram till uppgift 13,
- * se noLiveResults.
- * Fram till uppgift 12b fastställde den också i det gamla flödet.
- */
-const NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW: Marker[] = [
-  { nowhereIn: 'src/app', matches: OLD_FLOW_VOTES_AND_RECEIPTS },
+export const OLD_FLOW_REMOVED: Marker[] = [
+  { nowhereIn: 'src', matches: /issueCredential|castVote|generateVoteToken|signBlinded|blind-signature|blind-client/ },
+  { nowhereIn: 'prisma/votes/schema.prisma', matches: /^model (?:Vote|ElectionCommitment) [{]/m },
+  { nowhereIn: 'prisma/voters/schema.prisma', matches: /^model VoterBallotStatus [{]/m },
+  { nowhereIn: 'prisma/voters/schema.prisma', matches: /signingPrivateKeyPem|signingPublicKeyPem/ },
+  { nowhereIn: 'prisma/votes/schema.prisma', matches: /signingPublicKeyPem|tokenHash|credentialId/ },
+  { file: 'prisma/voters/migrations/20261004100000_drop_old_flow/migration.sql', contains: 'DROP TABLE "voter_ballot_status";' },
+  { file: 'prisma/votes/migrations/20261004100000_drop_old_flow/migration.sql', contains: 'DROP TABLE "vote";' },
 ]
 
 /**
@@ -325,7 +308,6 @@ const VOTE_PAGE_LAYS_ENVELOPES: Marker[] = [
   { file: 'src/app/vote/page.tsx', contains: 'await encryptBallotInSteps(' },
   { file: 'src/app/vote/BankIdSigning.tsx', contains: "post('/api/vote/sign-start'" },
   { file: 'src/app/vote/BankIdSigning.tsx', contains: "post('/api/vote/encrypted'" },
-  ...NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW,
 ]
 
 /**
@@ -622,12 +604,11 @@ export const VOTED_MARKER_HAS_NO_TIME: Marker = {
 export const VOTERS_MODELS_TODAY: Marker = {
   nowhereIn: 'prisma/voters/schema.prisma',
   matches:
-    /^model (?!(?:VoterStatus|Election|ElectionBallot|VoterBallotStatus|VotedMarker|VotingSession|AdminSession|PushSubscription|AuditEvent|PendingVote) \{)/m,
+    /^model (?!(?:VoterStatus|Election|ElectionBallot|VotedMarker|VotingSession|AdminSession|PushSubscription|AuditEvent|PendingVote) \{)/m,
 }
 
 /**
- * Fälten i de två modeller där en markering per väljare kunde hamna, som de
- * är i dag.
+ * Fälten i modellen där en markering per väljare kunde hamna, som de är i dag.
  *
  * En markering kan också bli en ny kolumn i en befintlig modell i stället för
  * en ny tabell. Mönstret matchar ett fält, alltså en rad som börjar med ett
@@ -639,56 +620,12 @@ export const VOTER_MODEL_FIELDS_TODAY: Marker[] = [
   {
     nowhereIn: 'prisma/voters/schema.prisma',
     matches:
-      /model VoterStatus \{[^}]*\n\s+(?!(?:id|externalIdentityHash|isEligible|isAdmin|municipalityCode|regionCode|sessions|adminSessions|ballotStatuses|pendingVotes|votedMarkers)\s)[A-Za-z]\w*\s/,
-  },
-  {
-    nowhereIn: 'prisma/voters/schema.prisma',
-    matches:
-      /model VoterBallotStatus \{[^}]*\n\s+(?!(?:id|voterStatusId|voterStatus|ballotId|ballot|votedAt)\s)[A-Za-z]\w*\s/,
+      /model VoterStatus \{[^}]*\n\s+(?!(?:id|externalIdentityHash|isEligible|isAdmin|municipalityCode|regionCode|sessions|adminSessions|pendingVotes|votedMarkers)\s)[A-Za-z]\w*\s/,
   },
 ]
 
 /**
- * Det gamla flödets markering nämns bara i det gamla flödets tre filer.
- *
- * Markeringen i voter_ballot_status skrivs i dag bara när röstintyget utfärdas.
- * Den läses när valsedlarna listas, i statistiken och, sedan uppgift 12, när
- * ett kuvert läggs: läggningen vägrar ett kuvert från en väljare som har röstat
- * i det gamla flödet (`votedInOldFlow`). Nämns tabellen i någon annan fil under
- * src, en ny tjänst, en rutt eller något i src/orchestration, fäller det
- * påståendet, oavsett om det är en läsning eller en skrivning.
- */
-export const MARKING_ONLY_IN_OLD_FLOW: Marker = {
-  under: 'src',
-  onlyIn: [
-    'src/modules/eligibility/credential.service.ts',
-    'src/modules/eligibility/election.service.ts',
-    'src/modules/eligibility/voter-status.service.ts',
-  ],
-  matches: /voterBallotStatus|VoterBallotStatus|voter_ballot_status/,
-}
-
-/**
- * ... och där skrivs den bara när röstintyget utfärdas, en gång. En ny funktion
- * i en av filerna som skriver markeringen, och som anropas från ett nytt ställe
- * under ett annat namn, hade annars gått förbi mönstret ovan. Mönstret matchar
- * en andra skrivning i röstintygens fil och en första i voter-status.service.ts.
- * Den läser markeringen men skriver den inte sedan fixrunda 1 av uppgift 12,
- * som tog bort den oanvända `markBallotAsVoted`: den skrev markeringen utan
- * spärren mellan böckerna.
- */
-const MARKING_WRITE = /voterBallotStatus\.(?:create|createMany|upsert|update|updateMany)\(/.source
-
-export const NO_NEW_MARKING_WRITE: Marker[] = [
-  {
-    nowhereIn: 'src/modules/eligibility/credential.service.ts',
-    matches: new RegExp(`${MARKING_WRITE}[\\s\\S]*${MARKING_WRITE}`),
-  },
-  { nowhereIn: 'src/modules/eligibility/voter-status.service.ts', matches: new RegExp(MARKING_WRITE) },
-]
-
-/**
- * Och ingenting skrivs förbi koden: ingen trigger i någon migrering eller
+ * Ingenting skrivs förbi koden: ingen trigger i någon migrering eller
  * källfil, och ingen rå SQL som skriver. En trigger på pending_vote kunde
  * annars skriva en markering vid raderingen utan att en enda rad TypeScript
  * ändrats.
@@ -802,29 +739,11 @@ const DEMO_PASSPHRASES_SEEDED: Marker[] = [
 // ---------------------------------------------------------------------------
 
 export const CURRENTLY = {
-  /**
-   * Uppgift 14 ersatte påståendet att röstsidan körde det gamla flödet. Det
-   * här är dess efterföljare, och det gamla flödets kvarvarande del står i
-   * `oldFlowRoutesRemain` nedan.
-   */
   votePageLaysEnvelopes: {
     text:
       'Röstsidan lägger kuvert: rösten låses i webbläsaren, skrivs under med BankID och läggs i ' +
       'pending_vote, där den byts ut om väljaren röstar om.',
     holdsWhile: VOTE_PAGE_LAYS_ENVELOPES,
-  },
-
-  oldFlowRoutesRemain: {
-    text:
-      'Ingen sida lägger längre röster i det gamla flödet eller frågar efter dess kvitton, men ' +
-      'rutterna finns kvar och tar emot röster till tabellen vote tills flödet tas bort.',
-    holdsWhile: [
-      ...NO_PAGE_VOTES_OR_VERIFIES_IN_OLD_FLOW,
-      { file: 'src/app/api/vote/credential/route.ts', contains: 'export async function POST' },
-      { file: 'src/app/api/vote/cast/route.ts', contains: 'export async function POST' },
-      { file: 'src/modules/ballot-box/vote.service.ts', contains: 'votesDb.vote.create' },
-    ],
-    status: statusPlanned('15'),
   },
 
   deviceViewBuilt: {
@@ -967,7 +886,7 @@ export const CURRENTLY = {
   /**
    * Uppgift 12b ersatte "Slutkontrollen granskar i dag det gamla flödets
    * röster". Markörerna följer kontrollerna i kuvertmodellen, en per sak
-   * texten nämner, och att ingen av dem läser det gamla flödets tabeller.
+   * texten nämner.
    * Fastställandets jämför-och-sätt bär fasen CERTIFIED i fastabellen.
    */
   finalCheckEnvelopeModel: {
@@ -989,11 +908,6 @@ export const CURRENTLY = {
         contains: 'const recomputed = urnRootOf(readings.flatMap((reading) => reading.leaves))',
       },
       { file: 'src/orchestration/final-check.usecase.ts', contains: 'const hash = hashOfCiphertext(row.ciphertext)' },
-      // Ingen kontroll läser det gamla flödets röster, röstintyg eller åtaganden.
-      {
-        nowhereIn: 'src/orchestration/final-check.usecase.ts',
-        matches: /votesDb\.vote\b|countIssuedCredentials|blind-signature|commitment\.service|getElectionResults/,
-      },
     ],
     status: STATUS_DONE,
   },
@@ -1001,10 +915,8 @@ export const CURRENTLY = {
   /**
    * Uppgift 13 ersatte "Det gamla flödet räknar i klartext medan röstningen
    * pågår" (oldFlowLiveResults). Observatörsrutten och adminvyn räknade då
-   * röster per parti ur tabellen vote, och /api/observer/votes lämnade ut
-   * varje röst med sitt innehåll. Markörerna bär det omvända, och avgränsar
-   * det: rutterna visar inget, men tabellen vote finns kvar med det gamla
-   * flödet.
+   * röster per parti, och /api/observer/votes lämnade ut varje röst med sitt
+   * innehåll. Markörerna bär det omvända.
    */
   noLiveResults: {
     text:
@@ -1012,20 +924,16 @@ export const CURRENTLY = {
       'adminvyn bara valdeltagandet per valsedel. Efter stängningen ser administratören varje ' +
       'valsedel när den räknas, och offentligt publiceras resultatet först när omröstningen är ' +
       'räknad. I demon kan den som driver systemet dekryptera när som helst, eftersom fraserna är ' +
-      'kända. Rutten som lämnade ut det gamla flödets röster en och en, med innehåll, finns inte ' +
-      'längre. Livevyn i demon visar räkneverken först när resultatet är publicerat. Det gamla ' +
-      'flödets tabell vote finns kvar tills flödet tas bort, och den som kan läsa röstdatabasen kan ' +
-      'räkna i den.',
+      'kända. Ingen rutt lämnar ut röster en och en, med innehåll. ' +
+      'Livevyn i demon visar räkneverken först när resultatet är publicerat.',
     holdsWhile: [
-      { nowhereIn: 'src/app/api', matches: /getElectionResults|countVotes\(/ },
-      { nowhereIn: 'src/app/api/observer', matches: /votesDb|ballotTally|getElectionResults/ },
+      { nowhereIn: 'src/app/api/observer', matches: /votesDb|ballotTally/ },
       { file: 'src/app/api/admin/stats/route.ts', contains: 'voted: ballot.voted,' },
       { file: 'src/orchestration/election-overview.usecase.ts', contains: 'const turnout = await turnoutByBallot(electionId)' },
       {
         file: 'src/app/api/demo/database-state/route.ts',
         contains: 'ballotTally: ballotTallies.filter((row) => resultPublished(row.ballotId)).map((row) => ({',
       },
-      { file: 'src/modules/ballot-box/vote.service.ts', contains: 'votesDb.vote.create' },
     ],
     status: STATUS_DONE,
   },
@@ -1041,8 +949,7 @@ export const CURRENTLY = {
       'Skalningen skriver markeringen "har röstat" i röstlängden, i samma transaktion som raderar ' +
       'kopplingen, ur de kuvert som raderas: en per väljare och valsedel, utan tidsstämpel och i en ' +
       'ordning som inte följer läggningen. Stängningen kräver att antalet markeringar per valsedel ' +
-      'är antalet flyttade kuvert innan den gör COMMIT. Markeringen står i en egen tabell och inte ' +
-      'i det gamla flödets voter_ballot_status.',
+      'är antalet flyttade kuvert innan den gör COMMIT. Markeringen står i en egen tabell, voted_marker.',
     holdsWhile: [
       // Skalningens transaktion och det den lämnar `tx` till, ord för ord:
       // markeringen skrivs där, före raderingen, och antalet prövas före COMMIT.
@@ -1056,11 +963,6 @@ export const CURRENTLY = {
       VOTED_MARKER_HAS_NO_TIME,
       VOTERS_MODELS_TODAY,
       ...VOTER_MODEL_FIELDS_TODAY,
-      // Det gamla flödets markering nämns bara i det gamla flödet, också i
-      // src/orchestration, och skrivs där bara när röstintyget utfärdas.
-      // Kuvertmodellens markering hamnar alltså inte där.
-      MARKING_ONLY_IN_OLD_FLOW,
-      ...NO_NEW_MARKING_WRITE,
       // Och ingen trigger eller rå SQL skriver förbi allt det här.
       ...NO_WRITES_BESIDE_THE_CODE,
       STRIPPING_DELETES_ENVELOPES,
@@ -1303,7 +1205,7 @@ export const CURRENTLY = {
   timestamps: {
     text:
       'Dygn i röstlängden, också på pending_vote. encrypted_vote har ingen tidsstämpel alls. ' +
-      'Revisionsloggen och det gamla flödets röster har timupplösning.',
+      'Revisionsloggen har timupplösning.',
     holdsWhile: [
       {
         file: 'src/modules/eligibility/pending-vote.service.ts',
@@ -1314,7 +1216,6 @@ export const CURRENTLY = {
         file: 'src/modules/eligibility/audit.service.ts',
         contains: 'const occurredAt = truncateToHour(new Date())',
       },
-      { file: 'src/modules/ballot-box/vote.service.ts', contains: 'createdAt: truncateToHour(new Date())' },
     ],
   },
 
@@ -1814,14 +1715,6 @@ export const CURRENTLY = {
     ],
   },
 
-  oldSigningKeysInDatabase: {
-    text: 'Det gamla flödets signeringsnycklar ligger i election_ballot i röstlängden, en per valsedel.',
-    holdsWhile: [
-      { file: 'prisma/voters/schema.prisma', contains: 'signingPrivateKeyPem String @map("signing_private_key_pem")' },
-      { file: 'prisma/voters/schema.prisma', contains: '@@map("election_ballot")' },
-    ],
-  },
-
   // -------------------------------------------------------------------------
   // Azure-uppsättningen på Utvecklingsstatus
   // -------------------------------------------------------------------------
@@ -2099,17 +1992,23 @@ export const PHASES: PhaseRow[] = [
  * Uppgift 11d strök de två första punkterna, faserna CLOSED och VALIDATED och
  * markeringen "har röstat". Uppgift 12 strök tröskeldekrypteringen, och
  * uppgift 12b slutkontrollen och fastställandet med fasen CERTIFIED. Uppgift 13
- * strök verifieringssidan och publiceringen av summorna och rötterna. De står
- * nu under Klart.
+ * strök verifieringssidan och publiceringen av summorna och rötterna, och uppgift 15 det
+ * gamla flödet. De står nu under Klart.
  */
 export const REMAINING: CodeFact[] = [
   {
-    text: 'Att det gamla flödet tas bort, med sina röstintyg, blinda signaturer och kvitton.',
+    // Uppgift 17d. Läsaren av BankID:s underskrift är byggd efter beskrivningen av formatet och prövad mot
+    // attrappen, men ingen riktig underskrift finns som testfall, och en sådan kräver en människa med test-BankID.
+    text:
+      'Läsaren av BankID:s underskrift prövas mot en riktig underskrift från BankID:s testmiljö, som ' +
+      'ett testfall. Det kräver en människa med test-BankID.',
     holdsWhile: [
-      { file: 'src/lib/blind-client.ts', contains: 'createBlindedCredential' },
-      { file: 'src/modules/ballot-box/vote.service.ts', contains: 'choice: string' },
+      {
+        file: 'src/modules/eligibility/bankid/kind.ts',
+        contains: 'export const READER_TESTED_AGAINST_REAL_SIGNATURE = false',
+      },
     ],
-    status: CURRENTLY.oldFlowRoutesRemain.status,
+    status: statusPlanned('17d'),
   },
 ]
 
@@ -2200,6 +2099,15 @@ export const BUILT: CodeFact[] = [
     status: STATUS_DONE,
   },
   {
+    // Uppgift 15 flyttade punkten hit från "Kommer att implementeras".
+    text:
+      'Kuvertflödet är den enda vägen: röstintyg, blinda signaturer, kvittokoder och det gamla flödets ' +
+      'tabeller finns inte längre i koden eller i schemana. Migreringarna tar bort tabellerna och ' +
+      'kolumnerna, och med dem raderna i dem.',
+    holdsWhile: OLD_FLOW_REMOVED,
+    status: STATUS_DONE,
+  },
+  {
     text: 'Azure-uppsättningen finns som Bicep och distribueras med ett skript.',
     holdsWhile: CURRENTLY.azureSetupBuilt.holdsWhile,
     status: STATUS_DONE,
@@ -2282,20 +2190,14 @@ export const OUT_OF_SCOPE: OutOfScopeItem[] = [
  * STATUS FÖR DE KÄNDA BEGRÄNSNINGAR UTVECKLINGSSTATUS MÄRKER MED EN ETIKETT.
  *
  * Begränsningarna själva står i src/lib/known-limitations.ts. Den här kartan
- * är den enda källan för vilken status de har på Utvecklingsstatus: tre hör
- * till det gamla flödet och försvinner när det tas bort (uppgift 15). En
- * fjärde, `live-results-in-old-flow`, stängde uppgift 13 genom att skriva om
- * observatörsrutterna, och den är borta ur listan. Tre är kuvertmodellens
- * egna, i Remaining.tsx. Uppgift 11e stängde en fjärde, att BankID-ordern bar
- * chifferhashen, och den är också borta ur listan. Ingen
+ * är den enda källan för vilken status de har på Utvecklingsstatus. De är
+ * kuvertmodellens egna, i Remaining.tsx. De tre som hörde till det gamla flödet
+ * försvann med det (uppgift 15), och uppgift 13 och 11e stängde var sin. Ingen
  * uppgift i planen prövar spärrfrågan (OCSP) fullt ut — uppgift 17b förseglar
  * bara svaret för en senare uppgift — så `no-revocation-check` är "ingår
  * inte", inte "kommer".
  */
 export const LIMITATION_STATUS: Record<string, Status> = {
-  'receipt-proves-choice': statusPlanned('15'),
-  'signing-keys-in-database': statusPlanned('15'),
-  'no-guaranteed-anonymity-set': statusPlanned('15'),
   'no-revocation-check': STATUS_OUT_OF_SCOPE,
   // Uppgift 17d: en riktig underskrift som testfall, som kräver en människa med test-BankID.
   'bankid-reader-untested-against-bankid': statusPlanned('17d'),

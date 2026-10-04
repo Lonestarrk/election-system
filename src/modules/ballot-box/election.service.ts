@@ -60,8 +60,6 @@ export type Ballot = {
   label: string
   areaCode: string | null
   allowsCandidateVote: boolean
-  /** Publiceras öppet — observatörer verifierar röstintyg med den. */
-  signingPublicKeyPem: string
   displayOrder: number
 }
 
@@ -86,7 +84,6 @@ function toElection(row: {
     label: string
     areaCode: string | null
     allowsCandidateVote: boolean
-    signingPublicKeyPem: string
     displayOrder: number
   }>
 }): Election {
@@ -102,7 +99,6 @@ function toElection(row: {
       label: ballot.label,
       areaCode: ballot.areaCode,
       allowsCandidateVote: ballot.allowsCandidateVote,
-      signingPublicKeyPem: ballot.signingPublicKeyPem,
       displayOrder: ballot.displayOrder,
     })),
   }
@@ -121,7 +117,6 @@ const electionSelect = {
       label: true,
       areaCode: true,
       allowsCandidateVote: true,
-      signingPublicKeyPem: true,
       displayOrder: true,
     },
     orderBy: { displayOrder: 'asc' },
@@ -283,98 +278,6 @@ export async function listRegisteredParties(): Promise<
   })
 }
 
-export class BallotValidationError extends Error {}
-
-export type BallotChoiceInput = {
-  ballotId: string
-  ballotPartyId?: string
-  candidateId?: string
-  optionId?: string
-}
-
-/**
- * Kontrollerar att ett val är giltigt på sin valsedel, INNAN väljaren markeras
- * som röstande.
- *
- * Ordningen är avgörande. Utan den här kontrollen först skulle en felformad
- * begäran kunna bränna någons rösträtt på en valsedel utan att någon röst
- * registrerades — väljaren vore markerad som röstande men ingen röst funnes.
- *
- * Funktionen tar emot ett valsedels-id och ett val. Den tar inte emot, och kan
- * inte ta emot, något som identifierar väljaren.
- */
-export async function validateBallotChoice(
-  input: BallotChoiceInput,
-  expectedElectionId?: string,
-): Promise<{ valid: true } | { valid: false; reason: string }> {
-  const ballot = await votesDb.electionBallot.findUnique({
-    where: { id: input.ballotId },
-    select: {
-      electionId: true,
-      kind: true,
-      allowsCandidateVote: true,
-      election: { select: { opensAt: true, closesAt: true } },
-    },
-  })
-
-  if (!ballot) return { valid: false, reason: 'Okänd valsedel.' }
-
-  /**
-   * Vid röstning anges ingen förväntad omröstning, och behöver inte anges:
-   * röstintyget är signerat med valsedelns egen nyckel och binder därmed
-   * rösten till exakt den valsedeln — och därmed till dess omröstning.
-   *
-   * Vid utfärdande av intyg anges den däremot, för att den som legitimerat sig
-   * för en omröstning inte ska kunna begära intyg i en annan som råkar vara
-   * öppen samtidigt.
-   */
-  if (expectedElectionId && ballot.electionId !== expectedElectionId) {
-    return { valid: false, reason: 'Valsedeln hör inte till den här omröstningen.' }
-  }
-
-  const now = new Date()
-  if (ballot.election.opensAt > now) return { valid: false, reason: 'Omröstningen har inte öppnat.' }
-  if (ballot.election.closesAt <= now) return { valid: false, reason: 'Omröstningen är stängd.' }
-
-  if (ballot.kind === 'FRAGA') {
-    if (input.ballotPartyId || input.candidateId) {
-      return { valid: false, reason: 'En fråga besvaras med ett alternativ, inte ett parti.' }
-    }
-    if (!input.optionId) return { valid: false, reason: 'Inget alternativ valt.' }
-
-    const option = await votesDb.ballotOption.count({
-      where: { id: input.optionId, ballotId: input.ballotId },
-    })
-    return option === 1 ? { valid: true } : { valid: false, reason: 'Ogiltigt alternativ.' }
-  }
-
-  if (input.optionId) {
-    return { valid: false, reason: 'En partivalsedel besvaras med ett parti, inte ett alternativ.' }
-  }
-  if (!input.ballotPartyId) return { valid: false, reason: 'Inget parti valt.' }
-
-  const ballotParty = await votesDb.ballotParty.count({
-    where: { id: input.ballotPartyId, ballotId: input.ballotId },
-  })
-  if (ballotParty !== 1) return { valid: false, reason: 'Ogiltigt parti på den här valsedeln.' }
-
-  if (input.candidateId) {
-    if (!ballot.allowsCandidateVote) {
-      return { valid: false, reason: 'Personröst är inte tillåten på den här valsedeln.' }
-    }
-
-    // Kandidaten måste tillhöra det valda partiet på den valda valsedeln. Ett
-    // kryss på någon annans kandidat vore annars en röst som inte går att
-    // räkna konsekvent.
-    const candidate = await votesDb.candidate.count({
-      where: { id: input.candidateId, ballotPartyId: input.ballotPartyId },
-    })
-    if (candidate !== 1) return { valid: false, reason: 'Kandidaten står inte för det partiet.' }
-  }
-
-  return { valid: true }
-}
-
 export type CreateElectionInput = {
   name: string
   kind: ElectionKind
@@ -387,14 +290,6 @@ export type CreateElectionInput = {
     label: string
     areaCode?: string | null
     allowsCandidateVote?: boolean
-    /**
-     * Valsedelns publika signeringsnyckel.
-     *
-     * Skapas av orkestreringslagret, som håller ihop nyckelparet: den privata
-     * halvan går till röstlängden, den publika hit. Modulen genererar den inte
-     * själv — då skulle den privata nyckeln behöva passera röstdatabasen.
-     */
-    signingPublicKeyPem: string
     /** Partier med kandidater. Bara för KOMMUN, LANDSTING och RIKSDAG. */
     parties?: Array<{ partyId: string; candidates?: string[] }>
     /** Svarsalternativ. Bara för FRAGA. */
@@ -441,7 +336,6 @@ export async function createElection(input: CreateElectionInput): Promise<Create
           label: ballot.label,
           areaCode: ballot.areaCode ?? null,
           allowsCandidateVote: ballot.allowsCandidateVote ?? false,
-          signingPublicKeyPem: ballot.signingPublicKeyPem,
           displayOrder: index + 1,
         },
         select: { id: true, kind: true, label: true, areaCode: true },
@@ -486,33 +380,7 @@ export async function createElection(input: CreateElectionInput): Promise<Create
   })
 }
 
-/**
- * Valsedelns publika signeringsnyckel.
- *
- * Används vid inlösen för att verifiera att röstintyget utfärdats av
- * valmyndigheten för just den här valsedeln.
- */
-export async function getBallotPublicKey(ballotId: string): Promise<string | null> {
-  const ballot = await votesDb.electionBallot.findUnique({
-    where: { id: ballotId },
-    select: { signingPublicKeyPem: true },
-  })
-  return ballot?.signingPublicKeyPem ?? null
-}
-
 /** Tar bort en omröstning. Finns för att orkestreringen ska kunna backa. */
 export async function deleteElection(electionId: string): Promise<void> {
   await votesDb.election.deleteMany({ where: { id: electionId } })
-}
-
-/**
- * Läget hos omröstningen som en valsedel hör till (uppgift 17, fixrunda 1), ur röstdatabasen. Null
- * när valsedeln inte finns.
- */
-export async function modeOfBallot(ballotId: string): Promise<string | null> {
-  const ballot = await votesDb.electionBallot.findUnique({
-    where: { id: ballotId },
-    select: { election: { select: { mode: true } } },
-  })
-  return ballot?.election.mode ?? null
 }

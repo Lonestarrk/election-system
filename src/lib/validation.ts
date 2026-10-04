@@ -66,48 +66,6 @@ export const collectAuthSchema = z.object({
 })
 
 /**
- * En röst på en valsedel.
- *
- * Exakt ett av `ballotPartyId` och `optionId` måste vara satt: en
- * partivalsedel besvaras med ett parti, en fråga med ett alternativ. Att
- * skicka båda eller inget är inte en glömska utan en indikation på att
- * anroparen missförstått valsedeln, och avvisas därför vid gränsen i stället
- * för att tolkas välvilligt.
- *
- * `candidateId` är alltid frivillig — personröst är en rättighet, inte ett
- * krav.
- */
-export const castVoteSchema = z
-  .object({
-    ballotId: z.string().uuid('Ogiltig valsedel.'),
-    ballotPartyId: z.string().uuid('Ogiltigt parti.').optional(),
-    candidateId: z.string().uuid('Ogiltig kandidat.').optional(),
-    optionId: z.string().uuid('Ogiltigt alternativ.').optional(),
-    /** Röstintyget. 32 slumpbytes som väljaren valt själv. */
-    credentialId: z.string().regex(/^[0-9a-f]{64}$/, 'Ogiltigt röstintyg.'),
-    /** Avblindad signatur, 2048 bitar som hex. */
-    credentialSignature: z.string().regex(/^[0-9a-f]{512}$/, 'Ogiltig signatur.'),
-  })
-  .refine((value) => Boolean(value.ballotPartyId) !== Boolean(value.optionId), {
-    message: 'Ange antingen ett parti eller ett svarsalternativ, inte båda.',
-  })
-  .refine((value) => !(value.candidateId && !value.ballotPartyId), {
-    message: 'En personröst kräver att du också valt ett parti.',
-  })
-
-/**
- * Begäran om ett röstintyg.
- *
- * `blinded` är väljarens intyg multiplicerat med en slumpfaktor. Servern kan
- * inte utläsa något ur det, och validerar därför bara formatet: 2048 bitar
- * som hex, alltså exakt modulusens bredd.
- */
-export const issueCredentialSchema = z.object({
-  ballotId: z.string().uuid('Ogiltig valsedel.'),
-  blinded: z.string().regex(/^[0-9a-f]{512}$/, 'Ogiltigt blindat värde.'),
-})
-
-/**
  * Talen i den krypterade valsedeln, chiffer och bevis, som decimalsträngar.
  *
  * SAMMA TOLKNING SOM VERIFIERINGEN, INTE EN EGEN (fixrunda 1, uppgift 14b).
@@ -395,19 +353,6 @@ export const pushSubscriptionSchema = z.object({
     p256dh: z.string().min(1).max(200),
     auth: z.string().min(1).max(200),
   }),
-})
-
-/**
- * Token i visningsformat eller utan gruppering.
- * Crockford base32 utan I, L, O och U (tecken som förväxlas vid avläsning).
- */
-export const verifyTokenSchema = z.object({
-  token: z
-    .string()
-    .trim()
-    .min(1, 'Ange din token.')
-    .max(128, 'Ogiltig token.')
-    .regex(/^[0-9ABCDEFGHJKMNPQRSTVWXYZ-]+$/i, 'Ogiltigt tokenformat.'),
 })
 
 /**

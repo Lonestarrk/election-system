@@ -56,10 +56,6 @@ import {
  *   /api/vote/sign-start     BankID-underskrift över ett saltat åtagande om hashen, som servern bygger
  *   /api/vote/encrypted      pollas tills underskriften finns och rösten ligger
  *
- * Det gamla flödets rutter, röstintyg och kvittokoder används inte längre.
- * De finns kvar på servern tills flödet tas bort, men den här sidan anropar
- * dem inte, och e2e-testerna kontrollerar det.
- *
  * NÄR SIDAN LADDAS
  *
  * Sessionen säger vilka valsedlar som gäller, om ett kuvert ligger på var och
@@ -813,12 +809,6 @@ function BallotStatusText({ status }: { status: BallotStatus }) {
       )
     case 'not-voted':
       return <p style={{ marginBottom: 0 }}>Du har inte röstat på den här valsedeln.</p>
-    case 'old-flow':
-      return (
-        <p style={{ marginBottom: 0 }}>
-          Du röstade på den här valsedeln i det gamla röstflödet. Den rösten går inte att byta ut.
-        </p>
-      )
     case 'closed':
       return (
         <p style={{ marginBottom: 0 }}>

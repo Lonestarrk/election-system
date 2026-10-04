@@ -15,8 +15,7 @@ export function Metadata({ limitations }: { limitations: PageLimitations }) {
       <h2 id="metadata">Metadata som skulle kunna underminera valhemligheten</h2>
       <p className="muted small">
         Separationen i databasen är den lätta delen. Det som faktiskt hotar valhemligheten är
-        spåren runtomkring. Tabellen gäller kuvertmodellen; det gamla flödets egna risker står i
-        listan längst ned.
+        spåren runtomkring. Tabellen och listan längst ned säger vad systemet gör åt dem.
       </p>
       <div className="table-wrap">
         <table className="prose-table stack-on-mobile">

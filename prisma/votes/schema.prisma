@@ -35,9 +35,9 @@ model Election {
 
   name String
 
-  /// OPEN | UNDER_REVIEW, och CERTIFIED från det gamla flödet.
+  /// OPEN | UNDER_REVIEW.
   ///
-  /// Sedan uppgift 12b är fastställandet fasen CERTIFIED i röstlängden, och
+  /// Fastställandet är fasen CERTIFIED i röstlängden, och
   /// fältet bär bara markeringen UNDER_REVIEW: en slutkontroll som hittar en
   /// avvikelse sätter den, och en markerad omröstning fastställs inte via
   /// gränssnittet. Se src/orchestration/final-check.usecase.ts. Den som kan
@@ -66,8 +66,7 @@ model Election {
   opensAt  DateTime @map("opens_at")
   closesAt DateTime @map("closes_at")
 
-  ballots     ElectionBallot[]
-  commitments ElectionCommitment[]
+  ballots ElectionBallot[]
 
   /// Valets publika krypteringsnyckel, h = g^x.
   encryptionPublicKey String? @map("encryption_public_key")
@@ -77,53 +76,6 @@ model Election {
   trusteeShares TrusteeShare[]
 
   @@map("election")
-}
-
-/// Ett publicerat åtagande om röstunderlaget vid en viss tidpunkt.
-///
-/// VAD ETT ÅTAGANDE ÄR
-///
-/// Merkleroten över samtliga röster i omröstningen, plus antalet röster. Den
-/// som publicerat en rot har bundit sig vid exakt den mängden röster: ändras,
-/// tas bort eller läggs till en enda röst i efterhand blir roten en annan, och
-/// avvikelsen syns direkt.
-///
-/// Kedjan gör att historiken inte heller går att skriva om. Varje åtagande
-/// hashar in det föregående, så ett utbytt gammalt åtagande gör alla senare
-/// ogiltiga.
-///
-/// Tabellen är append-only i praktiken: ingenting i applikationen uppdaterar
-/// eller raderar rader här. Att den ändå skulle kunna ändras direkt i databasen
-/// är hela skälet till att rötterna ska publiceras externt — ett åtagande som
-/// bara finns i samma databas som det skyddar är inte värt mycket.
-model ElectionCommitment {
-  id String @id @default(uuid())
-
-  electionId String   @map("election_id")
-  election   Election @relation(fields: [electionId], references: [id], onDelete: Cascade)
-
-  /// Löpnummer i kedjan, från 1.
-  sequence Int
-
-  /// Merkleroten över rösterna, sorterade på innehåll — inte på tid.
-  root String
-
-  voteCount Int @map("vote_count")
-
-  /// Föregående åtagandes hash. Null bara för det första.
-  previousHash String? @map("previous_hash")
-
-  /// Det här åtagandets hash, över löpnummer, rot, antal och föregående hash.
-  entryHash String @unique @map("entry_hash")
-
-  /// Här är en exakt tidsstämpel ofarlig och nödvändig: åtagandet säger något
-  /// om MÄNGDEN röster, inte om en enskild röst, och när ett åtagande gjordes
-  /// måste gå att fastställa för att det ska ha något bevisvärde.
-  createdAt DateTime @default(now()) @map("created_at")
-
-  @@unique([electionId, sequence])
-  @@index([electionId])
-  @@map("election_commitment")
 }
 
 /// En valsedel.
@@ -149,19 +101,10 @@ model ElectionBallot {
   /// Om väljaren får kryssa en kandidat utöver partiet (personröst).
   allowsCandidateVote Boolean @default(false) @map("allows_candidate_vote")
 
-  /// Valsedelns publika signeringsnyckel.
-  ///
-  /// Publiceras öppet. Den är det som gör valet oberoende verifierbart: en
-  /// observatör kan hämta nyckeln, gå igenom samtliga registrerade röster och
-  /// själv avgöra att var och en bär ett äkta röstintyg — utan att fråga
-  /// systemet och utan att behöva lita på det.
-  signingPublicKeyPem String @map("signing_public_key_pem")
-
   displayOrder Int @map("display_order")
 
   parties BallotParty[]
   options BallotOption[]
-  votes   Vote[]
 
   encryptedVotes     EncryptedVote[]
   partialDecryptions PartialDecryption[]
@@ -201,7 +144,6 @@ model BallotParty {
   displayOrder Int @map("display_order")
 
   candidates Candidate[]
-  votes      Vote[]
 
   @@unique([ballotId, partyId])
   @@unique([ballotId, displayOrder])
@@ -233,8 +175,6 @@ model Candidate {
 
   displayOrder Int @map("display_order")
 
-  votes Vote[]
-
   @@unique([ballotPartyId, displayOrder])
   @@index([ballotPartyId])
   @@map("candidate")
@@ -251,80 +191,8 @@ model BallotOption {
 
   displayOrder Int @map("display_order")
 
-  votes Vote[]
-
   @@index([ballotId])
   @@map("ballot_option")
-}
-
-/// En anonym röst på en valsedel.
-model Vote {
-  id String @id @default(uuid())
-
-  /// SHA-256 av den token väljaren fick. Klartext-token lagras aldrig.
-  ///
-  /// EN TOKEN PER VALSEDEL, INTE EN PER VÄLJARE.
-  ///
-  /// Det är ett medvetet val. En gemensam token över kommun-, landstings- och
-  /// riksdagsvalsedeln skulle binda ihop de tre till en profil, och en
-  /// kombination av tre partival är betydligt mer identifierande än något
-  /// enskilt av dem. Med separata tokens finns ingen kolumn någonstans som
-  /// säger att de tre rösterna kom från samma person.
-  ///
-  /// Priset är att väljaren får tre kvittokoder i stället för en.
-  ///
-  /// Unikt index: gör en tokenkollision till ett databasfel i stället för
-  /// en tyst överskrivning av någon annans röst.
-  tokenHash String @unique @map("token_hash")
-
-  /// Det inlösta röstintygets identitet.
-  ///
-  /// Väljaren valde värdet själv och blindade det innan myndigheten signerade,
-  /// så myndigheten har aldrig sett det. Det finns alltså ingen tabell någonstans
-  /// som kan säga vem intyget utfärdades till.
-  ///
-  /// UNIKT INDEX = ENGÅNGSANVÄNDNING, OCH DÄRMED IDEMPOTENS.
-  ///
-  /// Ett andra försök att lösa in samma intyg blir en unikhetskonflikt i
-  /// databasen, oavsett när det sker och oavsett hur många parallella
-  /// begäranden som kommer samtidigt. Det är därför ordningen mellan
-  /// röstlängdens och röstdatabasens skrivningar inte längre spelar någon
-  /// roll: en avbruten röstning kan göras om utan risk för dubbelröstning, och
-  /// utan att rösten går förlorad.
-  credentialId String @unique @map("credential_id")
-
-  /// Signaturen över credentialId, utfärdad av valsedelns privata nyckel.
-  ///
-  /// Lagras med rösten så att vem som helst kan verifiera den i efterhand.
-  /// Detta är beviset på att rösten skapats genom den auktoriserade processen
-  /// — ett bevis som inte vilar på att databasen är ärlig.
-  credentialSignature String @map("credential_signature")
-
-  ballotId String         @map("ballot_id")
-  ballot   ElectionBallot @relation(fields: [ballotId], references: [id])
-
-  /// Satt på KOMMUN, LANDSTING och RIKSDAG. Null på FRAGA.
-  ballotPartyId String?      @map("ballot_party_id")
-  ballotParty   BallotParty? @relation(fields: [ballotPartyId], references: [id])
-
-  /// Personröst. Alltid frivillig — null betyder att väljaren röstade på
-  /// partiet utan att kryssa någon.
-  candidateId String?    @map("candidate_id")
-  candidate   Candidate? @relation(fields: [candidateId], references: [id])
-
-  /// Satt på FRAGA. Null på partivalsedlar.
-  optionId String?       @map("option_id")
-  option   BallotOption? @relation(fields: [optionId], references: [id])
-
-  /// AVSIKTLIGT GROVKORNIG: avrundad till hel timme.
-  /// Se kommentaren om tidskorrelation i prisma/voters/schema.prisma.
-  createdAt DateTime @map("created_at")
-
-  @@index([ballotId])
-  @@index([ballotPartyId])
-  @@index([candidateId])
-  @@index([optionId])
-  @@map("vote")
 }
 
 /// Det inre kuvertet, efter att identitetslagret skalats bort.
