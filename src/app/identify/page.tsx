@@ -64,8 +64,9 @@ export default function LegitimeringPage() {
             Ditt personnummer lagras aldrig i klartext. Röstlängden slår upp dig med ett fingeravtryck
             av det, gjort med en hemlighet som systemet håller, och den som har hemligheten kan pröva
             sig fram till numret ur fingeravtrycket. När du röstar sparas din underskrift från BankID,
-            med ditt namn och personnummer, inlåst med samma hemlighet tills röstningen stänger, och
-            den som har hemligheten kan låsa upp den.
+            med ditt namn och personnummer, inlåst med samma hemlighet, och den som har hemligheten
+            kan låsa upp den. Underskriften raderas när kopplingen raderas vid stängningen, men inte
+            ur säkerhetskopior från före det.
           </p>
         </div>
 

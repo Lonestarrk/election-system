@@ -371,6 +371,11 @@ const CLEARED_PHASES: readonly string[] = ['STRIPPED', 'TALLIED', 'CERTIFIED']
  * kuverten i samma transaktion som den skriver roten och kräver att inget
  * ligger kvar före COMMIT, så ett kuvert på omröstningens valsedlar efter det
  * kan bara komma av en skrivning förbi stängningen.
+ *
+ * Räkningen gäller kuvert på de valsedlar röstlängden listar för omröstningen. Ett
+ * kuvert som någon pekat om till ett påhittat valsedels-id räknas inte. Det kräver
+ * samma skrivrätt i röstlängden, och den som har den kan också kopiera kopplingen
+ * själv. "Bevisligen raderad" gäller alltså omröstningens valsedlar.
  */
 function linkAlreadyCleared(state: CloseState): boolean {
   return CLEARED_PHASES.includes(state.phase) && state.envelopeRoot !== null && state.envelopesLeft === 0
