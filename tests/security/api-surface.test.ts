@@ -113,6 +113,12 @@ describe('API-ytan', () => {
        * varje röst med innehåll, finns inte.
        */
       'src/app/api/observer/results/route.ts',
+      /**
+       * OpenAPI-specen, härledd ur valideringsschemana (uppgift 18). Offentlig, bara GET, och bara de
+       * rutter som är offentliga eller ligger bakom en session: aldrig demorutterna.
+       * tests/security/openapi-coverage.test.ts kräver att specen och den här listan täcker varandra.
+       */
+      'src/app/api/openapi/route.ts',
       'src/app/api/push/subscribe/route.ts',
       'src/app/api/vote/ballot/route.ts',
       /**

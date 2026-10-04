@@ -113,6 +113,8 @@ export const RATE_LIMITS = {
   adminStats: { limit: 120, windowMs: 60_000 },
   /** Det offentliga lägessvaret (uppgift 17). Det ger bara läget. */
   publicMode: { limit: 120, windowMs: 60_000 },
+  /** Specen (uppgift 18). Den är statisk, men den är stor nog att inte vara gratis att hämta i en slinga. */
+  publicOpenApi: { limit: 60, windowMs: 60_000 },
 
   /**
    * Det publicerade resultatet (uppgift 13). Varje hämtning räknar om

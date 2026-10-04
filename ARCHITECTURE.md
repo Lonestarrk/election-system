@@ -681,6 +681,44 @@ frågar var trettionde sekund medan den är öppen om fasen lämnat `OPEN`, och 
 
 ---
 
+## 11b. API-specen, och undantaget från regeln om inga nya beroenden
+
+`GET /api/openapi` ger en OpenAPI-spec, och `/api-docs` renderar den. Specen är **härledd ur
+valideringsschemana** i `src/lib/validation.ts`, de som rutterna faktiskt validerar med, och inte
+skriven för hand. En handskriven spec beskriver vad någon trodde att API:et gjorde när den
+skrevs, och de två glider isär tyst. Det som inte finns som ett schema, svarens form och vilken
+åtkomst en rutt kräver, står i `src/lib/openapi.ts` och prövas mot ruttens kod av
+`tests/security/openapi-coverage.test.ts`: varje rutt, varje metod, varje statuskod som koden
+returnerar, och åtkomsten. En rutt som tillkommer utan att stå i specen fäller testet.
+
+Specen beskriver det som är **offentligt eller ligger bakom en session**, och säger vilket som är
+vilket. Demorutterna under `/api/demo` står inte i den: de finns bara när BankID är en attrapp.
+Den innehåller inga exempelvärden, alltså inga personnummer, fraser eller hashar. Sidan är
+skrivskyddad. Den kan inte köra anrop, eftersom ett anrop mot en riktig omröstning har riktiga
+följder.
+
+**Två paket läggs till, och det bryter regeln om inga nya beroenden.** Regeln skrevs för
+kryptot: poängen var att inget kryptobibliotek behövs, eftersom OpenSSL:s modexp nås via
+`node:crypto`, och att varje beroende i just den koden är en angreppsyta där valhemligheten
+bärs. Undantaget gäller exakt de här två, med låsta versioner:
+
+- `@asteasolutions/zod-to-openapi` härleder specen ur de Zod-scheman rutterna validerar med.
+- `swagger-ui-react` renderar den. CSP:n tillåter inga externa skript, så ett Swagger UI som
+  laddas från ett CDN blockeras tyst. Paketerat med appen serveras det från `'self'`.
+
+Paketen läser scheman och renderar en sida. De importeras på ett ställe vardera, specen på
+servern och dokumentationssidan i webbläsaren, och det vaktas av
+`tests/security/openapi-coverage.test.ts`. Röstsidans bunt får fortfarande bara `react` och
+`next/link` (`tests/security/browser-bundle.test.ts`). De är **inte** fria från beroenden: paketen
+drar med sig många andra, och de ligger i `package-lock.json` som resten. Att de inte rör krypto,
+röstdata eller identiteter betyder att ingen kod i de vägarna importerar dem, inte att de är
+riskfria i sig: ett komprometterat paket kunde ändra vad som körs i den sida där
+dokumentationen visas, eller vad som skrivs ut som spec. Dokumentationssidan körs under samma
+CSP som övriga sidor, utan `unsafe-eval` och utan externa källor
+(`tests/e2e/api-docs.spec.ts` prövar det i en riktig webbläsare, mot ett produktionsbygge).
+
+---
+
 ## 12. Läget: demo och skarpt
 
 Läget sätts vid driftsättning med `DEMO_MODE` och kan inte ändras inifrån appen. Ingen knapp
