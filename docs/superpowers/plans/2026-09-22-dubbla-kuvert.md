@@ -5470,6 +5470,10 @@ läge mot produktion (spec 10).
 3. **Läsaren prövas mot den.** Varje antagande från 17b som inte håller rättas utan att läsaren
    blir mindre strikt än underskriften kräver.
 4. **Kundrotens fingeravtryck** låses per `BANKID_ENV` på samma sätt som TLS-roten.
+   Helgrensgranskningen visade att uppstartsvakten bara prövar att roten för underskrifterna inte
+   är attrappens. Skarpt läge mot testmiljön startade med BankID:s TLS-rot som rot för
+   underskrifterna. Vakten ska pröva rotens fingeravtryck, eller dess subject, mot `BANKID_ENV`, så
+   att testmiljöns kundrot aldrig kan hamna i en produktionskonfiguration.
 5. **När läsaren godtar underskriften** blir kravet `bankid-reader-tested` uppfyllt, och posten
    `bankid-reader-untested-against-bankid` tas bort.
 
