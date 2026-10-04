@@ -900,7 +900,11 @@ kontroll mot nuläget skulle förkasta giltiga röster.
 
 - **`signing-keys-in-database`** — det finns inga signeringsnycklar längre.
 - **`receipt-proves-choice`** — klienten kastar slumptalet; hashen bevisar inklusion, inte innehåll.
-- **`single-administrator`** — fastställandet kräver k av n förtroendemän.
+- **`single-administrator`** försvinner bara delvis (ruling 143).
+  - Dekrypteringen kräver två av tre förtroendepersoner.
+  - Fraserna sätts alla tre i samma begäran när omröstningen skapas, och fastställandet är ett
+    klick. En enda administratör som känner alla fraser kan alltså fortfarande driva hela valet.
+  - Posten står kvar i `known-limitations.ts`.
 - **`no-guaranteed-anonymity-set`** — alla röster skalas och infogas i en enda sats,
   sorterade på innehåll. Anonymitetsmängden är hela valet.
 

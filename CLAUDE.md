@@ -141,8 +141,9 @@ förtroendepersoner.
 - **Backticks i ett skalkommando körs.** Skriv text med backticks (till exempel markdown) med
   Edit eller Write, eller i en citerad heredoc. I ett `node -e "..."` med dubbla citattecken
   kör Git Bash allt mellan backticks som ett kommando och lämnar texten tom.
-- **Python finns inte.** `python` är Microsoft Store-genvägen och gör ingenting. Använd `node`,
-  `sed` eller Edit för skriptade ändringar.
+- **Python kan saknas i en underagents skal.** I controllerns Git Bash finns Python 3.11, men i
+  andra skal kan `python` vara Microsoft Store-genvägen, som inte gör någonting. Använd `node`,
+  `sed` eller Edit om `python --version` inte svarar.
 - **Radslut är CRLF i arbetskopian.** Git varnar att LF ersätts av CRLF när det rör en fil.
   Det är inget fel, men en markör över flera rader ska jämföras med `\n` (testerna
   normaliserar redan).
