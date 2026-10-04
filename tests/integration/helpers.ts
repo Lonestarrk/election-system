@@ -304,5 +304,5 @@ export async function disconnect(): Promise<void> {
  */
 export async function signingTextFor(ballotId: string, electionId: string): Promise<string> {
   const subject = await signingSubject(ballotId, electionId)
-  return subject ? signingText(subject.electionName, subject.ballotKind) : 'ingen valsedel i omröstningen'
+  return subject ? signingText(subject.electionName, subject.ballotKind, subject.ballotLabel) : 'ingen valsedel i omröstningen'
 }

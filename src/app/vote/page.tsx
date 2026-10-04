@@ -100,14 +100,24 @@ type PartyChoice = {
 
 type PartyBallot = { kind: 'PARTY'; allowsCandidateVote: boolean; parties: PartyChoice[] }
 
+type QuestionOption = { id: string; label: string; displayOrder: number }
+type QuestionBallot = { kind: 'QUESTION'; options: QuestionOption[] }
+
+/**
+ * Valet blankt på en fråga, i fältet `party` som annars bär partiet. Ett id från servern är en UUID
+ * och kan aldrig vara det här värdet.
+ */
+const BLANK_CHOICE = 'blankt'
+
 type Encryption = { publicKey: string; optionCount: number }
 
 /** Den valsedel väljaren håller på med, från valet till underskriften. */
 type Active = {
   ballotId: string
   step: 'loading' | 'choosing' | 'sealing' | 'signing'
-  choices: PartyBallot | null
+  choices: PartyBallot | QuestionBallot | null
   encryption: Encryption | null
+  /** Partiet, eller för en fråga svarsalternativets id eller `BLANK_CHOICE`. */
   party: string
   candidate: string
   progress: { done: number; total: number } | null
@@ -383,7 +393,7 @@ function VoteContent() {
         body: JSON.stringify({ ballotId: ballot.id }),
       })
       const data = (await response.json()) as {
-        choices?: PartyBallot | { kind: 'QUESTION' }
+        choices?: PartyBallot | QuestionBallot
         encryption?: Encryption | null
         error?: { message?: string }
       }
@@ -394,7 +404,7 @@ function VoteContent() {
         return
       }
 
-      if (data.choices.kind !== 'PARTY' || !data.encryption) {
+      if (!data.encryption) {
         setActive(null)
         setNotice('Den här valsedeln kan inte ta emot en röst här än.')
         return
@@ -424,21 +434,32 @@ function VoteContent() {
     if (!active || !active.choices || !active.encryption || !active.party || !election) return
 
     const { choices, encryption, ballotId } = active
-    const party = choices.parties.find((entry) => entry.ballotPartyId === active.party)
-    if (!party) return
-    const candidate = party.candidates.find((entry) => entry.id === active.candidate)
 
-    const options = canonicalOptions({
-      allowsCandidateVote: choices.allowsCandidateVote,
-      parties: choices.parties.map((entry) => ({
-        id: entry.ballotPartyId,
-        displayOrder: entry.displayOrder,
-        candidates: entry.candidates.map((person) => ({
-          id: person.id,
-          displayOrder: person.displayOrder,
-        })),
-      })),
-    })
+    // En fråga har blankt och sina svar. Listan byggs av samma funktion som servern använder.
+    const party = choices.kind === 'PARTY' ? choices.parties.find((entry) => entry.ballotPartyId === active.party) : undefined
+    const answer = choices.kind === 'QUESTION' ? choices.options.find((entry) => entry.id === active.party) : undefined
+    if (choices.kind === 'PARTY' ? !party : !answer && active.party !== BLANK_CHOICE) return
+    const candidate = party?.candidates.find((entry) => entry.id === active.candidate)
+
+    const options = canonicalOptions(
+      choices.kind === 'PARTY'
+        ? {
+            allowsCandidateVote: choices.allowsCandidateVote,
+            parties: choices.parties.map((entry) => ({
+              id: entry.ballotPartyId,
+              displayOrder: entry.displayOrder,
+              candidates: entry.candidates.map((person) => ({
+                id: person.id,
+                displayOrder: person.displayOrder,
+              })),
+            })),
+          }
+        : {
+            allowsCandidateVote: false,
+            parties: [],
+            options: choices.options.map((entry) => ({ id: entry.id, displayOrder: entry.displayOrder })),
+          },
+    )
 
     if (options.length !== encryption.optionCount) {
       setActive({
@@ -448,11 +469,18 @@ function VoteContent() {
       return
     }
 
-    const choice: BallotOption =
-      candidate && choices.allowsCandidateVote
-        ? { kind: 'CANDIDATE', ballotPartyId: party.ballotPartyId, candidateId: candidate.id }
-        : { kind: 'PARTY', ballotPartyId: party.ballotPartyId }
-    const label = candidate ? `${party.name}, personröst på ${candidate.name}` : party.name
+    let choice: BallotOption
+    let label: string
+    if (choices.kind === 'QUESTION') {
+      choice = answer ? { kind: 'OPTION', optionId: answer.id } : { kind: 'BLANK' }
+      label = answer ? answer.label : 'Blankt'
+    } else {
+      choice =
+        candidate && choices.allowsCandidateVote
+          ? { kind: 'CANDIDATE', ballotPartyId: party!.ballotPartyId, candidateId: candidate.id }
+          : { kind: 'PARTY', ballotPartyId: party!.ballotPartyId }
+      label = candidate ? `${party!.name}, personröst på ${candidate.name}` : party!.name
+    }
 
     setActive({ ...active, step: 'sealing', progress: { done: 0, total: options.length + 1 }, error: '' })
 
@@ -791,13 +819,6 @@ function BallotStatusText({ status }: { status: BallotStatus }) {
           Du röstade på den här valsedeln i det gamla röstflödet. Den rösten går inte att byta ut.
         </p>
       )
-    case 'unsupported':
-      return (
-        <p style={{ marginBottom: 0 }}>
-          Den här valsedeln kan inte ta emot en röst här än. Kuvertmodellen hanterar ännu inte
-          frågor i en allmän omröstning.
-        </p>
-      )
     case 'closed':
       return (
         <p style={{ marginBottom: 0 }}>
@@ -811,7 +832,7 @@ function BallotStatusText({ status }: { status: BallotStatus }) {
 
 type ChoiceFormProps = {
   ballotId: string
-  choices: PartyBallot
+  choices: PartyBallot | QuestionBallot
   party: string
   candidate: string
   error: string
@@ -832,6 +853,46 @@ function ChoiceForm({
   onSeal,
   onCancel,
 }: ChoiceFormProps) {
+  if (choices.kind === 'QUESTION') {
+    return (
+      <>
+        <fieldset className="vote-choices">
+          <legend>Välj ditt svar</legend>
+          {[
+            ...choices.options.map((option) => ({ value: option.id, label: option.label })),
+            { value: BLANK_CHOICE, label: 'Blankt' },
+          ].map((option) => (
+            <label key={option.value} className="vote-option">
+              <input
+                type="radio"
+                name={`svar-${ballotId}`}
+                value={option.value}
+                checked={party === option.value}
+                onChange={() => onSelectParty(option.value)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </fieldset>
+
+        {error && (
+          <div className="notice danger" role="alert" style={{ marginTop: '0.75rem' }}>
+            {error}
+          </div>
+        )}
+
+        <div className="button-row" style={{ marginTop: '1rem' }}>
+          <button type="button" disabled={!party} onClick={onSeal}>
+            Lägg rösten
+          </button>
+          <button type="button" className="secondary" onClick={onCancel}>
+            Avbryt
+          </button>
+        </div>
+      </>
+    )
+  }
+
   const selected = choices.parties.find((entry) => entry.ballotPartyId === party)
 
   return (

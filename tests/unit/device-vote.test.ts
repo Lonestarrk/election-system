@@ -247,15 +247,32 @@ describe('vad valsedeln visar', () => {
     ).toEqual({ kind: 'old-flow' })
   })
 
-  it('en fråga i en allmän omröstning kan kuvertmodellen inte ta emot', () => {
+  const ANSWER: DeviceVote = {
+    ciphertextHash: 'b'.repeat(64),
+    choice: { kind: 'OPTION', optionId: '66666666-6666-4666-8666-666666666666' },
+    label: 'Ja',
+  }
+
+  it('en fråga i en allmän omröstning går att rösta på som en valsedel, och svaret visas', () => {
+    const question = ballot(RIKSDAG, { kind: 'FRAGA' })
+    expect(
+      ballotStatus({ ballot: question, acceptsVotes: true, deviceVote: undefined, comparison: undefined }),
+    ).toEqual({ kind: 'not-voted' })
+
     expect(
       ballotStatus({
-        ballot: ballot(RIKSDAG, { kind: 'FRAGA' }),
+        ballot: { ...question, hasPendingVote: true },
         acceptsVotes: true,
-        deviceVote: undefined,
-        comparison: undefined,
+        deviceVote: ANSWER,
+        comparison: 'same',
       }),
-    ).toEqual({ kind: 'unsupported' })
+    ).toEqual({ kind: 'current', label: 'Ja' })
+  })
+
+  it('enheten sparar ett svar på en fråga och läser tillbaka det, fält för fält', () => {
+    const storage = new MemoryStorage()
+    rememberDeviceVote(storage, ELECTION, RIKSDAG, ANSWER)
+    expect(readDeviceVotes(storage, ELECTION)).toEqual({ [RIKSDAG]: ANSWER })
   })
 
   it('frågar servern bara om valsedlar där ett kuvert ligger', () => {

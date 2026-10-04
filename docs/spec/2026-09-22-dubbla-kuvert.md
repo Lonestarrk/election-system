@@ -223,6 +223,8 @@ En valsedels alternativ ordnas kanoniskt och numreras `0 … M-1`:
 - index `0` är alltid **blank röst**
 - därefter varje parti i `displayOrder`
 - därefter varje (parti, kandidat) i `displayOrder`, för valsedlar som tillåter personröst
+- på en fråga i en allmän omröstning (`FRAGA`) finns inga partier: efter blankt kommer varje
+  svarsalternativ i `displayOrder`
 
 Väljarens val kodas som en vektor där exakt en komponent är `1` och övriga `0`. Varje
 komponent krypteras för sig.

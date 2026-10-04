@@ -160,7 +160,7 @@ export async function POST(request: Request) {
       endUserIp: clientIp,
       // Texten visas i BankID-appen innan väljaren skriver sin kod — ett skydd
       // mot att bli lurad att signera något annat än man tror.
-      userVisibleData: signingText(subject.electionName, subject.ballotKind),
+      userVisibleData: signingText(subject.electionName, subject.ballotKind, subject.ballotLabel),
       // Osynligt fält: valsedeln, åtagandet över chifferhashen och räknaren. Det
       // som binder signaturen till precis den här rösten och precis det här
       // tillfället, utan att BankID får något som går att matcha mot urnan.

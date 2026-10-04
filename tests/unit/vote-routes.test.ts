@@ -66,7 +66,7 @@ vi.mock('@/modules/eligibility/voting-session.service', () => ({
 }))
 vi.mock('@/modules/eligibility/election.service', () => ({
   ballotBelongsToElection: async () => true,
-  signingSubject: async () => ({ electionName: 'Valet 2026', ballotKind: 'RIKSDAG' }),
+  signingSubject: async () => ({ electionName: 'Valet 2026', ballotKind: 'RIKSDAG', ballotLabel: 'Riksdagen' }),
 }))
 vi.mock('@/modules/eligibility/pending-vote.service', () => ({
   nextCastSequence: async () => 1,

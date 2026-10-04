@@ -244,12 +244,14 @@ export async function getBallotSigningKey(
 export async function signingSubject(
   ballotId: string,
   electionId: string,
-): Promise<{ electionName: string; ballotKind: string } | null> {
+): Promise<{ electionName: string; ballotKind: string; ballotLabel: string } | null> {
   const ballot = await votersDb.electionBallot.findFirst({
     where: { id: ballotId, electionId },
-    select: { kind: true, election: { select: { name: true } } },
+    select: { kind: true, label: true, election: { select: { name: true } } },
   })
-  return ballot ? { electionName: ballot.election.name, ballotKind: ballot.kind } : null
+  return ballot
+    ? { electionName: ballot.election.name, ballotKind: ballot.kind, ballotLabel: ballot.label }
+    : null
 }
 
 /**

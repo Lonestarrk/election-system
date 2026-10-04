@@ -160,6 +160,8 @@ async function main() {
       { kind: 'KOMMUN', label: 'Kommunfullmäktige, Stockholms kommun', areaCode: MUNICIPALITY },
       { kind: 'LANDSTING', label: 'Regionfullmäktige, Region Stockholm', areaCode: REGION },
       { kind: 'RIKSDAG', label: 'Riksdagen', areaCode: null },
+      // En fråga, så att demon visar en folkomröstning i kuvertmodellen (uppgift 14c).
+      { kind: 'FRAGA', label: 'Folkomröstning: Ska det införas ett nytt biblioteksbidrag?', areaCode: null },
     ]
 
     // Ett nyckelpar per valsedel. Bindningen mellan röstintyg och valsedel
@@ -224,7 +226,16 @@ async function main() {
         },
       })
 
-      for (const [partyIndex, party] of parties.entries()) {
+      if (spec.kind === 'FRAGA') {
+        for (const [optionIndex, label] of ['Ja', 'Nej'].entries()) {
+          await votesDb.ballotOption.create({
+            data: { ballotId: ballot.id, label, displayOrder: optionIndex + 1 },
+          })
+        }
+      }
+
+      // En fråga har inga partier.
+      for (const [partyIndex, party] of (spec.kind === 'FRAGA' ? [] : parties).entries()) {
         const ballotParty = await votesDb.ballotParty.create({
           data: { ballotId: ballot.id, partyId: party.id, displayOrder: partyIndex + 1 },
         })

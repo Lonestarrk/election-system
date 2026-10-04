@@ -41,8 +41,9 @@ export const dynamic = 'force-dynamic'
  * jämför längden med `optionCount` innan den krypterar, så att en lista som
  * glidit isär stoppas i webbläsaren i stället för som ett underkänt bevis.
  *
- * `encryption` är null för en valsedel som kuvertmodellen inte kan ta emot,
- * i dag en fråga i en allmän omröstning. Se `getEncryptedBallotShape`.
+ * `encryption` är null för en valsedel vars omröstning saknar krypteringsnyckel.
+ * Se `getEncryptedBallotShape`. En fråga i en allmän omröstning har en form
+ * som en partivalsedel: blankt och sina svar.
  */
 export async function POST(request: Request) {
   // Origin-kontroll och hastighetsbegränsning även här, trots att rutten bara

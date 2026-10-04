@@ -315,11 +315,20 @@ export async function getElectionTallyResults(electionId: string): Promise<Elect
 
 /**
  * Alternativens namn i den kanoniska ordning räkningen använder (blankt,
- * partierna, sedan kandidaterna), som `getEncryptedBallotShape` bygger den.
+ * partierna, sedan kandidaterna, eller för en fråga blankt och svaren), som `getEncryptedBallotShape` bygger den.
  */
 export async function optionLabelsOf(ballotId: string): Promise<string[]> {
   const choices = await getBallotChoices(ballotId)
-  if (!choices || choices.kind !== 'PARTY') return []
+  if (!choices) return []
+
+  if (choices.kind === 'QUESTION') {
+    const labelById = new Map(choices.options.map((option) => [option.id, option.label]))
+    return canonicalOptions({
+      allowsCandidateVote: false,
+      parties: [],
+      options: choices.options.map((option) => ({ id: option.id, displayOrder: option.displayOrder })),
+    }).map((option) => (option.kind === 'OPTION' ? (labelById.get(option.optionId) ?? 'Okänt alternativ') : 'Blankt'))
+  }
 
   const parties = choices.parties.map((party) => ({
     id: party.ballotPartyId,
@@ -333,6 +342,8 @@ export async function optionLabelsOf(ballotId: string): Promise<string[]> {
 
   return canonicalOptions({ allowsCandidateVote: choices.allowsCandidateVote, parties }).map((option) => {
     if (option.kind === 'BLANK') return 'Blankt'
+    // En partivalsedel har inga svarsalternativ. Raden finns för typens skull.
+    if (option.kind === 'OPTION') return 'Okänt alternativ'
     const party = partyById.get(option.ballotPartyId)
     if (option.kind === 'PARTY') return party?.name ?? 'Okänt parti'
     return `${candidateById.get(option.candidateId) ?? 'Okänd kandidat'} (${party?.abbreviation ?? '?'})`

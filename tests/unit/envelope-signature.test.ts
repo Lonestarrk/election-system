@@ -291,6 +291,16 @@ describe('texten väljaren ser i BankID-appen', () => {
     expect(signingText('Valet 2026', 'KOMMUN')).toMatch(/kommunfullmäktige/)
     expect(signingText('Valet 2026', 'LANDSTING')).toMatch(/regionfullmäktige/)
   })
+
+  it('för en fråga namnges frågan, och texten säger inte vad väljaren svarat', () => {
+    const text = signingText('Folkomröstningen 2026', 'FRAGA', 'Ska Sverige införa ett nytt biblioteksbidrag?')
+
+    expect(text).toContain('Folkomröstningen 2026')
+    expect(text).toContain('Ska Sverige införa ett nytt biblioteksbidrag?')
+    expect(text).toMatch(/krypterat/)
+    expect(text).not.toMatch(/valet till/)
+    expect(text).not.toMatch(/[0-9a-f]{16}/)
+  })
 })
 
 /**

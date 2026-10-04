@@ -322,9 +322,10 @@ async function tallyGate(ballotId: string): Promise<Gate> {
   }
 
   /**
-   * Formen läses sist, efter fasen. En valsedel som saknar form finns inte i
-   * kuvertmodellen: en fråga i en allmän omröstning räknas inte här förrän
-   * uppgift 14c, och en omröstning utan krypteringsnyckel har inga kuvert.
+   * Formen läses sist, efter fasen. En valsedel som saknar form har ingen
+   * krypteringsnyckel att räkna med, och en omröstning utan nyckel har inga
+   * kuvert. En fråga i en allmän omröstning har en form som en partivalsedel
+   * (uppgift 14c), så den når TALLIED som de andra.
    */
   const shape = await getEncryptedBallotShape(ballotId)
   if (!shape) return { open: false, outcome: { status: 'unknown_ballot' } }

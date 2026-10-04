@@ -81,3 +81,39 @@ describe('enhetsvektor', () => {
     ).toThrow()
   })
 })
+
+describe('en fråga i en allmän omröstning', () => {
+  const QUESTION: BallotShape = {
+    allowsCandidateVote: false,
+    parties: [],
+    options: [
+      { id: 'alt-nej', displayOrder: 2 },
+      { id: 'alt-ja', displayOrder: 1 },
+    ],
+  }
+
+  it('har blankt först och därefter svarsalternativen i displayOrder', () => {
+    expect(canonicalOptions(QUESTION)).toEqual([
+      { kind: 'BLANK' },
+      { kind: 'OPTION', optionId: 'alt-ja' },
+      { kind: 'OPTION', optionId: 'alt-nej' },
+    ])
+  })
+
+  it('ger varje svarsalternativ sin plats, och blankt plats 0', () => {
+    const options = canonicalOptions(QUESTION)
+    expect(indexOfChoice(options, { kind: 'BLANK' })).toBe(0)
+    expect(indexOfChoice(options, { kind: 'OPTION', optionId: 'alt-ja' })).toBe(1)
+    expect(indexOfChoice(options, { kind: 'OPTION', optionId: 'alt-nej' })).toBe(2)
+  })
+
+  it('kastar på ett alternativ som inte finns, och ett parti är inget svarsalternativ', () => {
+    const options = canonicalOptions(QUESTION)
+    expect(() => indexOfChoice(options, { kind: 'OPTION', optionId: 'alt-okänt' })).toThrow()
+    expect(() => indexOfChoice(options, { kind: 'PARTY', ballotPartyId: 'alt-ja' })).toThrow()
+  })
+
+  it('en partivalsedel utan alternativ ändras inte av att fältet finns', () => {
+    expect(canonicalOptions({ ...SHAPE, options: [] })).toEqual(canonicalOptions(SHAPE))
+  })
+})

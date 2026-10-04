@@ -124,8 +124,7 @@ export type EncryptedBallotShape = { publicKey: string; optionCount: number }
  *
  * @param shape Valsedelns kryptonyckel och antal alternativ, hämtad av
  *   anroparen via den anonyma modulens publika API. Null betyder att
- *   valsedeln inte finns, inte stöds av det krypterade flödet (en
- *   FRAGA-valsedel), eller att omröstningen saknar krypteringsnyckel.
+ *   valsedeln inte finns, eller att omröstningen saknar krypteringsnyckel.
  * @param signal Begärans signal, när rösten läggs åt en besökare. Då
  *   gäller verifieringsköns tak, och kastar funktionen `VerificationQueueFull`
  *   när kön är full. Ger besökaren upp kastar den `VerificationAborted`, och
@@ -297,7 +296,7 @@ export async function castEncryptedBallot(
    * riktigt certifikat att jämföra med.
    */
   const subject = await signingSubject(ballotId, electionId)
-  if (!subject || signed.usrVisibleData !== signingText(subject.electionName, subject.ballotKind)) {
+  if (!subject || signed.usrVisibleData !== signingText(subject.electionName, subject.ballotKind, subject.ballotLabel)) {
     return { status: 'invalid_signature' }
   }
 

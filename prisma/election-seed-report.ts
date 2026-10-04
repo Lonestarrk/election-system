@@ -41,7 +41,7 @@ export function describeElectionSeed(
   if (!existing) {
     return {
       status: 'created',
-      message: 'Omröstning: Valet 2026 skapad med tre valsedlar.',
+      message: 'Omröstning: Valet 2026 skapad med fyra valsedlar.',
     }
   }
 

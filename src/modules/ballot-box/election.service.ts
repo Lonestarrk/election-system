@@ -52,7 +52,7 @@ export type PartyChoice = {
 
 export type BallotChoices =
   | { kind: 'PARTY'; allowsCandidateVote: boolean; parties: PartyChoice[] }
-  | { kind: 'QUESTION'; options: Array<{ id: string; label: string }> }
+  | { kind: 'QUESTION'; options: Array<{ id: string; label: string; displayOrder: number }> }
 
 export type Ballot = {
   id: string
@@ -175,7 +175,7 @@ export async function getBallotChoices(ballotId: string): Promise<BallotChoices 
         orderBy: { displayOrder: 'asc' },
       },
       options: {
-        select: { id: true, label: true },
+        select: { id: true, label: true, displayOrder: true },
         orderBy: { displayOrder: 'asc' },
       },
     },
@@ -219,12 +219,11 @@ export type EncryptedBallotShape = { publicKey: string; optionCount: number }
  * en parameter, i stället för att den anonyma modulens funktion importeras
  * där rösten läggs.
  *
- * Bara PARTY-formade valsedlar (KOMMUN, LANDSTING, RIKSDAG) stöds av det
- * krypterade flödet — en FRAGA-valsedel har inte någon motsvarande
- * `BallotOption`-variant i den kanoniska kodningen (`ballot-encoding.ts`).
- * Returnerar null för en sådan, för en okänd valsedel, och för en omröstning
- * utan krypteringsnyckel (skulle bara kunna inträffa om tröskelnyckeln av
- * något skäl inte skapades — se uppgift 6).
+ * Alla valsedlar har en form: en partivalsedel (KOMMUN, LANDSTING, RIKSDAG) har
+ * blankt, partierna och eventuellt kandidaterna, och en fråga (FRAGA) har blankt
+ * och sina svarsalternativ (uppgift 14c). Returnerar null för en okänd
+ * valsedel, och för en omröstning utan krypteringsnyckel (skulle bara kunna
+ * inträffa om tröskelnyckeln av något skäl inte skapades — se uppgift 6).
  */
 export async function getEncryptedBallotShape(
   ballotId: string,
@@ -242,10 +241,11 @@ export async function getEncryptedBallotShape(
         },
         orderBy: { displayOrder: 'asc' },
       },
+      options: { select: { id: true }, orderBy: { displayOrder: 'asc' } },
     },
   })
 
-  if (!ballot || ballot.kind === 'FRAGA' || !ballot.election.encryptionPublicKey) return null
+  if (!ballot || !ballot.election.encryptionPublicKey) return null
 
   /**
    * Frågorna redan sorterade av Prisma (orderBy ovan) — displayOrder byggs
@@ -262,6 +262,7 @@ export async function getEncryptedBallotShape(
         displayOrder: candidateIndex,
       })),
     })),
+    options: ballot.options.map((option, optionIndex) => ({ id: option.id, displayOrder: optionIndex })),
   })
 
   return { publicKey: ballot.election.encryptionPublicKey, optionCount: options.length }

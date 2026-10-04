@@ -117,7 +117,7 @@ function responseFor(outcome: TallyOutcome) {
       return jsonResponse({ status: 'wrong_mode', message: outcome.message }, 409)
     case 'unknown_ballot':
       return jsonResponse(
-        { status: 'unknown_ballot', message: 'Valsedeln finns inte, eller räknas inte i kuvertmodellen.' },
+        { status: 'unknown_ballot', message: 'Valsedeln finns inte, eller omröstningen saknar krypteringsnyckel.' },
         404,
       )
   }

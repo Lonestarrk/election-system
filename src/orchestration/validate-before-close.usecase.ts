@@ -718,7 +718,7 @@ export async function readEnvelopes(electionId: string) {
   const election = await votersDb.election.findUnique({ where: { id: electionId }, select: { name: true } })
   const ballots = await votersDb.electionBallot.findMany({
     where: { electionId },
-    select: { id: true, kind: true, areaCode: true },
+    select: { id: true, kind: true, label: true, areaCode: true },
   })
   const ballotIds = ballots.map((ballot) => ballot.id)
 
@@ -883,7 +883,7 @@ export async function validateEnvelopes(snapshot: EnvelopeSnapshot): Promise<Val
     // kedjan i det vanliga fallet, och en hashning per väljare. Körs OAVSETT om
     // WRONG_BALLOT redan träffade.
     // En valsedel som inte finns ger en text som ingen underskrift har, och raden är redan WRONG_BALLOT.
-    const expectedVisibleText = signingText(electionName, ballot?.kind ?? '')
+    const expectedVisibleText = signingText(electionName, ballot?.kind ?? '', ballot?.label)
     const signature = await judgeSignature(electionId, vote, expectedVisibleText, roots, service, identityHashOf, staleProbeBudget)
     if (signature.verdict === 'stale') {
       anomalies.push(anomaly('STALE_SEQUENCE'))

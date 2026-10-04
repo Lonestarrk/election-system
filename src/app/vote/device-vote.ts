@@ -75,6 +75,9 @@ function asChoice(value: unknown): BallotOption | null {
   if (candidate.kind === 'PARTY' && typeof candidate.ballotPartyId === 'string') {
     return { kind: 'PARTY', ballotPartyId: candidate.ballotPartyId }
   }
+  if (candidate.kind === 'OPTION' && typeof candidate.optionId === 'string') {
+    return { kind: 'OPTION', optionId: candidate.optionId }
+  }
   if (
     candidate.kind === 'CANDIDATE' &&
     typeof candidate.ballotPartyId === 'string' &&
@@ -295,7 +298,6 @@ export type ServerBallot = {
  */
 export type BallotStatus =
   | { kind: 'closed'; hasPendingVote: boolean }
-  | { kind: 'unsupported' }
   | { kind: 'old-flow' }
   | { kind: 'current'; label: string }
   | { kind: 'changed-elsewhere' }
@@ -324,9 +326,6 @@ export function ballotStatus(input: {
   const { ballot, acceptsVotes, deviceVote, comparison } = input
 
   if (!acceptsVotes) return { kind: 'closed', hasPendingVote: ballot.hasPendingVote }
-  // En fråga i en allmän omröstning har ingen plats i kuvertmodellens
-  // kodning, och servern tar inte emot den (getEncryptedBallotShape).
-  if (ballot.kind === 'FRAGA') return { kind: 'unsupported' }
   if (ballot.votedInOldFlow) return { kind: 'old-flow' }
 
   if (ballot.hasPendingVote) {

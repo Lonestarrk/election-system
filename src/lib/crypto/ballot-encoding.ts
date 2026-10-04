@@ -17,6 +17,8 @@ export type BallotOption =
   | { kind: 'BLANK' }
   | { kind: 'PARTY'; ballotPartyId: string }
   | { kind: 'CANDIDATE'; ballotPartyId: string; candidateId: string }
+  /** Ett svarsalternativ på en fråga i en allmän omröstning. */
+  | { kind: 'OPTION'; optionId: string }
 
 export type BallotShape = {
   allowsCandidateVote: boolean
@@ -25,6 +27,12 @@ export type BallotShape = {
     displayOrder: number
     candidates: Array<{ id: string; displayOrder: number }>
   }>
+  /**
+   * Svarsalternativen på en fråga (FRAGA). Utelämnat eller tomt på en
+   * partivalsedel. En fråga har inga partier, så listan blir blankt och sedan
+   * svaren i displayOrder, och blankt är alternativ 0 som på varje valsedel.
+   */
+  options?: Array<{ id: string; displayOrder: number }>
 }
 
 export function canonicalOptions(shape: BallotShape): BallotOption[] {
@@ -45,6 +53,10 @@ export function canonicalOptions(shape: BallotShape): BallotOption[] {
     }
   }
 
+  for (const option of [...(shape.options ?? [])].sort((a, b) => a.displayOrder - b.displayOrder)) {
+    options.push({ kind: 'OPTION', optionId: option.id })
+  }
+
   return options
 }
 
@@ -59,6 +71,9 @@ function sameOption(a: BallotOption, b: BallotOption): boolean {
   if (a.kind !== b.kind) return false
   if (a.kind === 'BLANK') return true
   if (b.kind === 'BLANK') return false
+  if (a.kind === 'OPTION' || b.kind === 'OPTION') {
+    return a.kind === 'OPTION' && b.kind === 'OPTION' && a.optionId === b.optionId
+  }
   if (a.ballotPartyId !== b.ballotPartyId) return false
   if (a.kind === 'CANDIDATE' && b.kind === 'CANDIDATE') return a.candidateId === b.candidateId
   return a.kind === b.kind

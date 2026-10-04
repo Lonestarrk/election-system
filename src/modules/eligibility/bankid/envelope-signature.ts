@@ -100,7 +100,17 @@ export function newCommitmentSalt(): string {
  * att slå upp i det publicerade resultatet. Texten ska bara inte säga mer än
  * väljaren behöver läsa.
  */
-export function signingText(electionName: string, ballotKind: string): string {
+export function signingText(electionName: string, ballotKind: string, ballotLabel?: string): string {
+  // En fråga namnges efter sin text. Frågan är offentlig och säger inget om svaret, och utan den
+  // går det inte att se vilken av en omröstnings frågor man skriver under.
+  if (ballotKind === 'FRAGA') {
+    return (
+      `Jag svarar på frågan "${ballotLabel ?? ''}" i ${electionName}. ` +
+      'Svaret är krypterat. Det jag skriver under är ett åtagande om det, och det visar inte vad ' +
+      'jag har svarat. Jag kan ändra svaret fram till att röstningen stänger.'
+    )
+  }
+
   const ballot = BALLOT_KIND_TEXT[ballotKind] ?? 'omröstningen'
   return (
     `Jag lägger min röst i ${electionName}, ${ballot}. ` +
