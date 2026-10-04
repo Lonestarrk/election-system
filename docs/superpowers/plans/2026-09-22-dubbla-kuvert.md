@@ -4021,7 +4021,8 @@ och controllern stoppar och startar om den.
 
 **Exekveringsordning efter uppgift 11:** 11a (testdatabaser) → 11b → 11c → **11f** →
 **14** → **14b** → **14f** → **11g** → **11h** → 11d → **14d** → 12 → 12b → **12c** → 13 → 17 →
-**14e** → 11e → **17b** → **17c** → **14c** → 15 → 16 → 18.
+**14e** → 11e → **17b** → **17c** → **14c** → 15 → 16 → 18, och **17d** när en människa med
+test-BankID kan göra den.
 Ordningen ändrades 2026-09-24 på användarens begäran: *"Gör klart ... allt som behövs för
 att slutföra hela processen så röster kan valideras och räknas"*. Det som behövs för att
 stänga, räkna och fastställa ett val går därför först, till och med adminsidan (12c) och
@@ -5445,6 +5446,34 @@ kan senare pekas mot produktion, med ett eget certifikat och ett avtal med en ba
    controllern meddelar den.
 
 - [ ] Tester först, implementation, hela sviten, committa med uttryckliga sökvägar.
+
+---
+
+## Task 17d: En riktig BankID-underskrift som testfall
+
+**Varför:** läsaren från 17b är byggd efter BankID:s signaturprofil, men BankID publicerar inget
+fullständigt exempel. 17c byggde klienten och ett sätt att fånga en riktig underskrift, men det
+kräver en människa med ett test-BankID. Till dess stoppar kravet `bankid-reader-tested` skarpt
+läge mot produktion (spec 10).
+
+**Kräver en människa.** Uppgiften kan inte köras av en agent ensam.
+
+1. **Användaren eller en utsedd person** gör följande:
+   - skaffar ett test-BankID på demo.bankid.com och ställer in appen för testmiljön
+   - begär BankID:s kundrot för testmiljön
+   - kör appen i skarpt läge mot testmiljön med `BANKID_CAPTURE_SIGNATURES_DIR` satt, enligt
+     README från 17c
+   - legitimerar sig och röstar en gång
+2. **Den fångade underskriften** läggs som fixtur i `tests/unit/bankid/fixtures/real/`, med
+   personnummer och namn utbytta om det går utan att bryta underskriften. Annars hålls den
+   utanför repot.
+3. **Läsaren prövas mot den.** Varje antagande från 17b som inte håller rättas utan att läsaren
+   blir mindre strikt än underskriften kräver.
+4. **Kundrotens fingeravtryck** låses per `BANKID_ENV` på samma sätt som TLS-roten.
+5. **När läsaren godtar underskriften** blir kravet `bankid-reader-tested` uppfyllt, och posten
+   `bankid-reader-untested-against-bankid` tas bort.
+
+- [ ] Fånga, lägg som fixtur, pröva, lås kundroten, hela sviten, committa.
 
 ---
 
