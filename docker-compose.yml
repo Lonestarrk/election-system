@@ -35,7 +35,8 @@ services:
       MOCK_BANKID_POLLS_UNTIL_COMPLETE: '2'
       NODE_ENV: production
       # Lokalt demoläge (uppgift 17). Skarpt läge är förvalt, och en compose-fil som lämnar det
-      # osatt skulle inte starta: skarpt läge saknar än så länge en riktig BankID-klient.
+      # osatt skulle inte starta, eftersom skarpt läge kräver en riktig BankID-klient och en komplett
+      # konfiguration (se README, Läget).
       DEMO_MODE: 'true'
     ports:
       - '3000:3000'

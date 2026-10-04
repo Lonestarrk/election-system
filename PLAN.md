@@ -1,5 +1,33 @@
 # Implementationsplan — Digitalt valsystem (POC)
 
+> **Den här planen är historisk.** Den beskriver den första konstruktionen: en session som följer
+> väljaren in i röstläggningen, en anonym röst per parti och ett kvittotoken. Systemet har sedan
+> byggts om, först med blinda signaturer och sedan till **dubbla kuvert**, och den modellen är den
+> som gäller. Läs i stället:
+>
+> - [docs/spec/2026-09-22-dubbla-kuvert.md](docs/spec/2026-09-22-dubbla-kuvert.md), som är bindande
+> - [ARCHITECTURE.md](ARCHITECTURE.md), [VERIFIABILITY.md](VERIFIABILITY.md) och
+>   [SECURITY.md](SECURITY.md)
+> - [docs/superpowers/plans/2026-09-22-dubbla-kuvert.md](docs/superpowers/plans/2026-09-22-dubbla-kuvert.md),
+>   planen för den nuvarande modellen
+>
+> Texten nedan är oförändrad, så att det går att se vad som beslutades då och varför. Den säger
+> emot specen på de punkter som listas här, och där gäller specen.
+
+| Punkt i planen | Vad som gäller nu |
+|---|---|
+| "Bärande princip: identitet och röst får aldrig lagras tillsammans eller kunna länkas efter att rösten lagts" | Kopplingen finns medan röstningen pågår, med avsikt, så att väljaren kan ändra sig. Den raderas vid stängningen. Raderingen omfattar inte backuper, läsreplikor och WAL (spec 10). |
+| 1.2 Röstmodulens enda funktion är `castVote({ partyId })` | Funktionen och blindsigneringen är borttagna. Rader i urnan skrivs av skalningen vid stängningen. |
+| 1.3 Ordningsproblemet: markera först, rösta sedan | Finns inte längre. Kuvertet och väljaren ligger i samma databas och samma rad. Se SECURITY.md avsnitt 5. |
+| 1.4 och 10.1 `POST /api/verify` med token | Tokens finns inte. `/verify` visar att väljaren röstat, inte vad. |
+| 1.5 Slumpmässig fördröjning mellan skrivningarna | Finns inte. Stängningen infogar alla chiffer i en sats, sorterade på innehåll. |
+| 1.6 Tokendesign | Finns inte. Ingen verifikationskod visas (spec 3.1). |
+| 3 och 4 `has_voted`, `VotingSession` som konsumeras vid röstläggning, adminlösenord | Se ARCHITECTURE.md avsnitt 5. Administratören legitimerar sig med BankID. |
+| 10.2 Ingen Playwright | Playwright finns. |
+| 10.3 Partier | Riksdagens åtta partier, som planen sa. |
+
+---
+
 Baserad på `digitalt_valsystem_prompt.txt`.
 
 Bärande princip: **identitet och röst får aldrig lagras tillsammans eller kunna länkas

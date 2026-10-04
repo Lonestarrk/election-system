@@ -21,9 +21,11 @@ export type ExistingElection = { opensAt: Date; closesAt: Date }
 export type ElectionSeedReport = {
   /**
    * `existing_closed` är det farliga utfallet. Seedningen har då inte gjort
-   * någonting, appen kommer att visa "ingen omröstning är öppen", och
-   * `reset:votes` hjälper inte — det skriptet bevarar just Valet 2026 med
-   * namn. Anropare som kan avbryta bör göra det på det här värdet.
+   * någonting, och appen kommer att visa "ingen omröstning är öppen".
+   * `npm run reset:votes` rättar det: skriptet sätter fasen till OPEN och
+   * flyttar fram demovalets tider (uppgift 12c). Det gör också en borttagning
+   * följd av ny seedning. Anropare som kan avbryta bör göra det på det här
+   * värdet.
    */
   status: 'created' | 'existing_open' | 'existing_closed'
   message: string
@@ -61,7 +63,8 @@ export function describeElectionSeed(
     message:
       `${SEED_WARNING_PREFIX} Valet 2026 fanns redan men är INTE öppen ` +
       `(${day(existing.opensAt)} – ${day(existing.closesAt)}).\n` +
-      '  Appen kommer att visa "ingen omröstning är öppen". Ta bort den och seeda om:\n' +
+      '  Appen kommer att visa "ingen omröstning är öppen". Kör `npm run reset:votes`, som sätter\n' +
+      '  fasen till OPEN och flyttar fram tiderna, eller ta bort omröstningen och seeda om:\n' +
       '  docker exec election-postgres psql -U election -d votes_db ' +
       `-c "delete from election where name = 'Valet 2026'"\n` +
       '  docker exec election-postgres psql -U election -d voters_db ' +

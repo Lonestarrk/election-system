@@ -711,13 +711,21 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
     id: 'single-administrator',
     title: 'En ensam administratör',
     why:
-      'Att skapa eller fastställa en omröstning borde kräva att flera behöriga personer agerar ' +
-      'tillsammans. I dag räcker en.',
-    // Försvinner när fastställandet kräver flera godkännanden.
-    stillTrueIf: {
-      file: 'src/orchestration/final-check.usecase.ts',
-      contains: 'export async function certifyElection',
-    },
+      'Att öppna resultatet kräver två av tre förtroendepersoner, men att skapa och fastställa en ' +
+      'omröstning gör en administratör ensam. Skapandet tar emot alla tre förtroendepersonernas ' +
+      'lösenfraser i en och samma begäran, så den som skapar omröstningen och servern ser dem alla. ' +
+      'Fastställandet är ett klick av en administratör, och ingen annan behöver godkänna det. Att ' +
+      'skapandet och fastställandet borde kräva att flera behöriga personer agerar tillsammans är ' +
+      'kvar, medan resultatets öppnande inte längre vilar på en enda person.',
+    // Försvinner när skapandet och fastställandet kräver flera godkännanden.
+    stillTrueIf: [
+      {
+        file: 'src/orchestration/final-check.usecase.ts',
+        contains: 'export async function certifyElection',
+      },
+      // Alla tre fraser kommer i en och samma begäran.
+      { file: 'src/lib/validation.ts', contains: 'trusteePassphrases: trusteePassphrasesSchema,' },
+    ],
   },
   {
     id: 'admission-queue-per-process',

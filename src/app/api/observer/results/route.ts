@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic'
  *
  * Svaret är det som tools/verify-election.mjs läser: per valsedel summan per
  * alternativ, förtroendepersonernas partiella dekrypteringar med bevis och
- * resultatet, och per omröstning kuvertroten, urnroten och antalet kuvert. Se
+ * resultatet, och per omröstning kuvertroten, urnroten och summan av markeringarna "har röstat". Se
  * src/orchestration/publish-results.usecase.ts för formatet och för vad som
  * aldrig publiceras: ingenting per röst.
  *

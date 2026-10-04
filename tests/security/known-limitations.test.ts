@@ -106,7 +106,7 @@ describe('ingen dokumentation upprepar listan', () => {
    * Dokumenten får beskriva PROBLEMOMRÅDET och peka på källan. De får inte
    * numrera avvikelserna som en egen lista — det är då kopiorna glider isär.
    */
-  const docs = ['README.md', 'SECURITY.md', 'VERIFIABILITY.md']
+  const docs = ['README.md', 'ARCHITECTURE.md', 'SECURITY.md', 'VERIFIABILITY.md']
 
   it.each(docs)('%s numrerar inte avvikelserna som en egen lista', (doc) => {
     const content = readFileSync(join(process.cwd(), doc), 'utf8')

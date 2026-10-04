@@ -126,8 +126,9 @@ describe.skipIf(!databaseAvailable)('listOpenElections', () => {
     /**
      * Skillnaden spelar roll för rättningen. Vore raden borta skulle en
      * omseedning skapa en ny; eftersom den finns kvar hoppar seedningen över
-     * steget, och `reset:votes` bevarar dessutom Valet 2026 med namn. Därför
-     * måste beskedet från seedningen innehålla en åtgärd.
+     * steget. Därför måste beskedet från seedningen innehålla en åtgärd, och
+     * `reset:votes` rättar det genom att sätta fasen till OPEN och flytta
+     * fram demovalets tider.
      */
     await electionWithWindow(
       'Stängd men kvar',

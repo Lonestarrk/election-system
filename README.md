@@ -1,36 +1,56 @@
 # Digitalt valsystem — proof of concept
 
-Teknisk demonstration av ett valsystem där väljarens identitet och röst aldrig kan
-kopplas ihop.
+Teknisk demonstration av digital röstning i Sverige, byggd enligt modellen med **dubbla
+kuvert**, som Estland använder. Väljarens röst är en valsedel krypterad så att ingen enskild kan
+öppna den (det inre kuvertet). Väljarens BankID-underskrift över den är det yttre kuvertet. Vid
+stängningen kontrolleras de yttre kuverten, kopplingen mellan namn och röst raderas, och bara
+summorna öppnas, av två av tre förtroendepersoner.
 
 > **Detta är inte ett valsystem redo för användning.** Det är en demonstration av en
 > arkitekturprincip. Se [SECURITY.md](SECURITY.md) för vad som fattas och varför.
 
 **Prova demon:** <https://election-app.politesmoke-5b452a89.swedencentral.azurecontainerapps.io>
 
-Demon körs i Azure med BankID-attrappen, så vem som helst kan legitimera sig som
+Demon körs i Azure i **demoläge**, med en BankID-attrapp, så vem som helst kan legitimera sig som
 demopersonerna. Hur den distribueras står i [infra/azure/README.md](infra/azure/README.md).
 
 ---
 
-## Idén
+## Idén, och när den gäller
 
-Systemet är byggt kring en enda egenskap:
+Specen, [docs/spec/2026-09-22-dubbla-kuvert.md](docs/spec/2026-09-22-dubbla-kuvert.md), är
+bindande. Den här sidan återger den, och säger emot den ingenstans.
 
-> Den del som vet **"person X har röstat"** kan inte ta reda på
-> **"person X röstade på parti Y"**.
+Systemet kan inte hålla löftet att den som vet **"person X har röstat"** aldrig kan ta reda på
+**"person X röstade på parti Y"** hela tiden. Vad som gäller beror på fasen:
 
-Det uppnås genom två åtskilda delar med varsin databas:
+| När | Vad som gäller |
+|---|---|
+| **Under röstningen** | Kopplingen finns, och rösten kan ändras. Det är avsikten. Kopplingen finns i `voters_db`, i tabellen `pending_vote`, och rösten i den är ett chiffer som ingen kan läsa utan två av tre andelar av valets nyckel. Det är det som gör att en köpt röst kan ersättas ända fram till stängningen. |
+| **Vid stängningen** | Kuverten kontrolleras. Chiffren flyttas till `votes_db`, sorterade på innehåll. Kopplingen raderas i en transaktion, och kuvertroten och urnroten skrivs. |
+| **Efter stängningen** | Ingen koppling finns kvar i den levande databasen. Bara summorna öppnas, och de publiceras med bevis. Väljaren ser att hon röstat, men inte på vad. |
 
-| | Röstlängdssystemet | Anonyma röstsystemet |
-|---|---|---|
-| Vet | vem du är, om du fått rösta | vad som röstats, hur många röster |
-| Vet inte | vad du röstat på | vem som röstat |
-| Databas | `voters_db` | `votes_db` |
+**Raderingen omfattar inte backuper, läsreplikor och WAL-loggen.** En kopia från före stängningen
+har kvar kuverten bredvid namnen, och två andelar öppnar dem då. Det är den huvudsakliga
+akademiska invändningen mot Estlands system, och den är verklig. Den står som
+`link-exists-during-voting` i [src/lib/known-limitations.ts](src/lib/known-limitations.ts), och i
+spec 10.
 
-De ligger i **olika PostgreSQL-databaser**. En foreign key mellan dem är inte bara
-oskriven — den är omöjlig att skapa. Det enda som passerar gränsen när en röst läggs är
-ett parti-id.
+Valsedeln ligger i en databas (`voters_db`, röstlängden) medan den är ett yttre kuvert, och i en
+annan (`votes_db`, urnan) när den är ett inre. De ligger i **olika PostgreSQL-databaser**, och en
+foreign key mellan dem är fysiskt omöjlig. Det betyder att en räknad röst inte kan peka på en
+väljare. Det betyder inte att kopplingen aldrig funnits.
+
+Vad systemet bygger på, från specens avsnitt 3.1:
+
+- **Alla röster är förtidsröster.** Fram till stängningen kan väljaren se, kontrollera och ändra sin
+  röst, på enheten hon röstade från.
+- **Ingen verifikationskod visas.** En kod på skärmen är det handtag en köpare antecknar.
+- **Efter stängningen publiceras bara summorna, med bevis.** Enskilda chiffer och deras hashar
+  publiceras aldrig. Väljaren ser att hon röstat, inte på vad, och markeringen har ingen tidsstämpel.
+
+Hur det hänger ihop beskrivs i [ARCHITECTURE.md](ARCHITECTURE.md), och på `/architecture` i appen för
+den som aldrig hört ordet kryptering.
 
 ---
 
@@ -42,19 +62,25 @@ docker compose up
 
 Öppna <http://localhost:3000>.
 
-Uppstarten migrerar båda databaserna, seedar demodata och startar applikationen. Första
-bygget tar några minuter.
+Uppstarten migrerar båda databaserna, seedar demodata och startar applikationen. Första bygget tar
+några minuter. `docker-compose.yml` sätter `DEMO_MODE=true`, och det är bara i demoläget som
+uppstarten seedar.
 
 ### Sidor
 
 | Sida | Vad den gör |
 |---|---|
 | `/` | Start |
-| `/legitimera` | BankID-legitimering (attrapp) |
-| `/rosta` | Partival, bekräftelse och kvitto med token |
-| `/verifiera` | Kontrollera en röst med sin token (`/verify` omdirigerar hit) |
-| `/admin` | Aggregerad statistik (lösenord: `admin`) |
-| `/demo` | Arkitektur, båda databasernas innehåll, metadatarisker |
+| `/identify` | BankID-legitimering. I demoläget en panel med demopersoner. |
+| `/vote` | Välj omröstning och valsedel, kryptera i webbläsaren, skriv under med BankID. Du ser din nuvarande röst på enheten du röstade från, och kan ändra den fram till stängningen. |
+| `/verify` | Efter stängningen: *"Du har röstat"* eller *"Du har inte röstat"* per valsedel, utan tid. Länkar till det publicerade resultatet och säger hur du kontrollerar det. |
+| `/admin` | Läget, stängningen, räkningen, slutkontrollen och fastställandet. Du legitimerar dig med BankID som administratör. |
+| `/architecture` | Hur modellen fungerar, utan fackord. I demoläget visar den databasernas innehåll och "Följ en röst". |
+| `/architecture/technical` | Faserna, kryptografin, databasgränsen, metadatarisker och hela listan över kända begränsningar |
+| `/architecture/status` | Vad som är byggt och vad som återstår |
+
+De gamla svenska sökvägarna `/legitimera`, `/rosta`, `/verifiera` och `/demo` omdirigeras till de
+nya. Det finns inga tokens och inga kvitton i modellen.
 
 ---
 
@@ -62,46 +88,90 @@ bygget tar några minuter.
 
 ### 1. Rösta
 
-Gå till `/legitimera` och ange ett demopersonnummer:
+Gå till `/identify`, välj omröstningen och en demoperson:
 
 | Personnummer | Utfall |
 |---|---|
-| `19900101-1234` | Röstberättigad — kan rösta |
-| `19850515-2345` | Röstberättigad — kan rösta |
-| `19701212-3456` | Röstberättigad — kan rösta |
-| `20100101-4567` | Ej röstberättigad — avvisas |
-| `19420404-8901` | Har redan röstat — avvisas |
-| valfritt annat | Finns inte i röstlängden — avvisas |
+| `19900101-1234`, `19850515-2345`, `19701212-3456`, `19600301-5678`, `19550707-6789`, `19991231-7890` | Röstberättigade, folkbokförda i kommunen. Fyra valsedlar: kommun, region, riksdag och en fråga. |
+| `19420404-8901` | Röstberättigad men folkbokförd i en annan kommun och region. Kommun- och regionvalsedlarna gäller inte, så hon får riksdagsvalet och frågan. |
+| `20100101-4567` | Ej röstberättigad. Avvisas. |
+| `19800101-9876` | Administratör, och röstberättigad. Används för `/admin`. |
+| valfritt annat | Finns inte i röstlängden. Avvisas. |
 
-BankID-attrappen blir klar efter ett par sekunders polling. Välj parti, bekräfta, och
-**spara token** — den visas en enda gång.
+Välj en valsedel, kryssa, och skriv under i BankID-attrappen. Skärmen visar vad du skriver under, och
+ingen kod att spara. Det är ett `/sign`-anrop per läggning.
 
-### 2. Verifiera
+### 2. Ändra din röst
 
-Gå till `/verifiera` och klistra in din token. Svaret blir *"Din röst är registrerad"*
-plus partiet. Bindestreck och versaler spelar ingen roll.
+Rösta på samma valsedel igen. Kuvertet ersätts och räknaren i underskriften ökar. Röstsidan visar din
+nuvarande röst bara om hashen enheten sparat fortfarande är den som servern håller. Röstar du från en
+annan webbläsare ändras rösten, och den första enheten får svaret att rösten ändrats, utan att se
+vilken.
 
-### 3. Försök rösta igen
+### 3. Se kopplingen medan röstningen pågår
 
-Legitimera dig med samma personnummer. Du avvisas med *"Du har redan röstat i det här
-valet."*
+Det är modellens pris, och den visas rakt ut. Gå till `/architecture` (i demoläget) eller fråga
+databasen, som nedan. Raderna i `pending_vote` bär väljarens id bredvid ett chiffer. Raderna i
+`votes_db` är tomma tills omröstningen stängts.
 
-### 4. Se att kopplingen saknas
+### 4. Stäng omröstningen
 
-Gå till `/demo`. Där visas båda databasernas innehåll sida vid sida, samtliga foreign
-keys hämtade direkt ur `information_schema`, och en knapp som demonstrerar varför frågan
-"vem röstade på vad?" inte går att formulera som SQL.
-
-### 5. Kontrollera själv, i databasen
+Demovalet öppnar vid dygnets början och stänger trettio dygn senare, och stängningen vägrar före
+stängningstiden. För att prova den lokalt, flytta stängningstiden i båda databaserna:
 
 ```bash
-# Röstlängden: vem som röstat. Ingen token, inget parti.
-docker exec -it election-postgres psql -U election -d voters_db -c "SELECT * FROM voter_status;"
+docker exec -it election-postgres psql -U election -d voters_db -c \
+  "UPDATE election SET closes_at = now() - interval '1 minute' WHERE name = 'Valet 2026';"
+docker exec -it election-postgres psql -U election -d votes_db -c \
+  "UPDATE election SET closes_at = now() - interval '1 minute' WHERE name = 'Valet 2026';"
+```
 
-# Rösterna: vad som röstats. Ingen identitet.
-docker exec -it election-postgres psql -U election -d votes_db -c "SELECT * FROM anonymous_vote;"
+Gå sedan till `/admin`, legitimera dig som administratör och gå igenom stegen:
 
-# Samtliga foreign keys — alla pekar inom sin egen databas.
+- **Stäng, validera och radera kopplingen.** Valideringen kontrollerar varje kuvert medan kopplingen
+  finns, och avbryter utan att radera något om den hittar en allvarlig avvikelse.
+- **Räkna.** Två av tre förtroendepersoner lämnar sin lösenfras, och bara summan öppnas. I demoläget
+  fyller en knapp i demofraserna, som står i repot och därför inte skyddar något.
+- **Slutkontroll och fastställande.**
+
+Efteråt syns resultatet på adminsidan, och det publiceras, med bevis, på
+`/api/observer/results?electionId=<id>`. **Återställ demovalet** med knappen på adminsidan för att
+börja om.
+
+### 5. Kontrollera resultatet utifrån
+
+```bash
+node tools/verify-election.mjs http://localhost:3000/api/observer/results?electionId=<omröstningens id>
+node tools/verify-election.mjs resultat.json <omröstningens id>
+```
+
+Omröstningens id ger `SELECT id FROM election;` i `votes_db`. Verktyget är fristående, importerar
+ingenting ur appen och kräver ingen inloggning. Det kontrollerar förtroendepersonernas bevis, att
+Lagrange-kombinationen ger rätt antal, att räkneverken summerar till antalet rader i urnan och att
+rötterna har formen av en rot. Utfallet är 0 när allt stämmer, 1 när något inte gör det och 2 när
+underlaget inte gick att läsa.
+
+**Verktyget kan inte kontrollera att summan består av exakt de giltiga rösterna.** De enskilda
+chiffren publiceras inte, så summan går inte att räkna om. Det vilar på valideringen och
+slutkontrollen, som den som driver systemet kör. Det kan inte heller räkna om rötterna, och
+varje utskrift säger vad mer det inte kan. Se [VERIFIABILITY.md](VERIFIABILITY.md) avsnitt 5.
+
+### 6. Kontrollera själv, i databasen
+
+```bash
+# Röstlängden, medan röstningen pågår: vem som röstat, och vilket chiffer som är hennes.
+# Kopplingen finns här med avsikt, men chiffret går inte att läsa.
+docker exec -it election-postgres psql -U election -d voters_db -c \
+  "SELECT voter_status_id, ballot_id, left(ciphertext_hash, 12) AS hash, cast_sequence, updated_at FROM pending_vote;"
+
+# Efter stängningen: markeringarna "har röstat". Ingen tid, inget chiffer.
+docker exec -it election-postgres psql -U election -d voters_db -c "SELECT * FROM voted_marker;"
+
+# Urnan: chiffren. Ingen identitet, ingen tid. Tom tills omröstningen stängts.
+docker exec -it election-postgres psql -U election -d votes_db -c \
+  "SELECT id, ballot_id, left(ciphertext_hash, 12) AS hash FROM encrypted_vote;"
+
+# Samtliga foreign keys i en databas. Alla pekar inom sin egen databas.
 docker exec -it election-postgres psql -U election -d votes_db -c "
   SELECT tc.table_name, ccu.table_name AS refererar
   FROM information_schema.table_constraints tc
@@ -110,8 +180,9 @@ docker exec -it election-postgres psql -U election -d votes_db -c "
   WHERE tc.constraint_type = 'FOREIGN KEY';"
 ```
 
-Det finns ingen kolumn i den ena tabellen som förekommer i den andra. Tidsstämplarna är
-avrundade (dygn respektive timme) just för att de annars skulle gå att para ihop.
+I `votes_db` finns ingen kolumn för identitet, och ett test (`tests/security/schema-separation.test.ts`)
+går rött om någon läggs till. Tidsstämplarna är avrundade: `updated_at` på kuvertet till dygn, och
+markeringen "har röstat" har ingen tid alls.
 
 ---
 
@@ -120,13 +191,17 @@ avrundade (dygn respektive timme) just för att de annars skulle gå att para ih
 Kräver Node 22+ och en PostgreSQL med databaserna `voters_db` och `votes_db`.
 
 ```bash
-docker compose up -d postgres   # enklaste sättet att få båda databaserna
+docker compose up -d postgres   # enklaste sättet att få databaserna
 cp .env.example .env
 npm install                     # genererar Prisma-klienterna via postinstall
 npm run migrate                 # migrerar båda databaserna
 npm run seed
 npm run dev
 ```
+
+Dev-servern (`npx next dev -H 0.0.0.0 -p 3000`) bygger till `.next-dev`, så ett produktionsbygge
+(`npx next build`, som bygger till `.next`) kan köra medan den kör. Bygget skriver om `next-env.d.ts`,
+som återställs efteråt med `git checkout -- next-env.d.ts`.
 
 ### Skript
 
@@ -136,11 +211,15 @@ npm run dev
 | `npm run build` | Produktionsbygge |
 | `npm run generate` | Genererar båda Prisma-klienterna |
 | `npm run migrate` | Migrerar båda databaserna |
-| `npm run seed` | Lägger in demodata |
-| `npm test` | Hela testsviten |
-| `npm run test:unit` | Endast enhetstester (kräver ingen databas) |
+| `npm run seed` | Lägger in demodata. Vägrar i skarpt läge. |
+| `npm run reset:votes` | Nollställer röstdata, sätter fasen till `OPEN` och flyttar fram demovalets tider |
+| `npm test` | Hela vitest-sviten |
+| `npm run test:unit` | Enhetstester (kräver ingen databas) |
 | `npm run test:security` | Arkitektur- och API-ytegranskning |
 | `npm run test:integration` | Integrationstester mot riktig databas |
+| `npm run test:e2e` | Playwright mot en körande app |
+| `npm run verify -- <url eller fil>` | `node tools/verify-election.mjs`, se ovan |
+| `npx tsc --noEmit` | Typkontroll, ska ge noll fel |
 
 ---
 
@@ -151,18 +230,21 @@ docker compose up -d postgres
 npm test
 ```
 
-119 tester i tre nivåer:
+Testerna är i tre nivåer:
 
-- **Enhetstester** — tokenentropi och format, identitetshashning, tidsavrundning,
-  loggmaskering, BankID-attrappen, validering
-- **Integrationstester** — fullständiga röstningsflöden mot riktig PostgreSQL, med
-  inspektion av det faktiska databastillståndet efteråt
-- **Säkerhetstester** — modulgränser, schemaseparation, API-yta, token i loggar
+- **Enhetstester**: kryptot (gruppen, ElGamal, bevisen, tröskeln), BankID-attrappen och klienten,
+  XML-signaturens läsare, identitetshashning, urnroten, tidsavrundning, loggmaskering, valideringen
+  av indata
+- **Integrationstester** mot riktig PostgreSQL: hela kuvertflödet, stängningen och dess faser,
+  valideringen, räkningen, slutkontrollen och den oberoende kontrollen, med inspektion av det faktiska
+  databastillståndet efteråt
+- **Säkerhetstester**: modulgränser, schemaseparation, API-yta, hur läget når rutterna, kända
+  begränsningar och arkitektursidans påståenden
 
-De statiska testerna läser källkoden i stället för att köra den. De svarar på en annan
-fråga än integrationstesterna: inte "saknas kopplingen just nu?" utan "kan den införas av
-misstag?". Ett test misslyckas till exempel om en ny fil börjar importera från båda
-modulerna, eller om någon lägger in ett `console.log` som kringgår loggmaskeringen.
+De statiska testerna läser källkoden i stället för att köra den. De svarar på en annan fråga än
+integrationstesterna: inte "saknas kopplingen just nu?" utan "kan den införas av misstag?". Ett test
+misslyckas till exempel om en ny fil börjar importera från båda modulerna, om identitet dyker upp i
+`votes_db`, eller om någon lägger in ett `console.log` som kringgår loggmaskeringen.
 
 > **Integrationstesterna kör mot egna databaser, `voters_test` och `votes_test`,** och
 > tömmer dem före varje test. Adresserna härleds ur `VOTERS_DATABASE_URL` och
@@ -179,43 +261,56 @@ inte — Docker är stoppat, värden eller porten är fel, en tjänstecontainer 
 startat — eller går testdatabaserna inte att migrera, fallerar de i stället. En trasig
 uppsättning ska inte se ut som en grön körning.
 
-### De sexton testpunkterna
+### E2E-tester
 
-| # | Krav | Var |
-|---|---|---|
-| 1 | Väljare kan legitimera sig | `unit/bankid.test.ts` |
-| 2 | Röstberättigad kan rösta | `integration/voting-flow.test.ts` |
-| 3 | Kan inte rösta två gånger | `integration/voting-flow.test.ts` |
-| 4 | Icke röstberättigad kan inte rösta | `integration/voting-flow.test.ts` |
-| 5 | Token genereras säkert | `unit/token.test.ts` |
-| 6 | Token verifierar rätt röst | `integration/voting-flow.test.ts` |
-| 7 | Token avslöjar inte väljaren | `integration/voting-flow.test.ts` |
-| 8 | Identitet ger inte token | `integration/voting-flow.test.ts`, `security/api-surface.test.ts` |
-| 9 | Ingen relation identitet↔röst | `integration/voting-flow.test.ts`, `security/schema-separation.test.ts` |
-| 10 | Token hamnar aldrig i loggen | `security/no-token-in-logs.test.ts` |
-| 11 | Token visas bara en gång | `security/no-token-in-logs.test.ts` |
-| 12 | Verifiering avslöjar inte identitet | `integration/voting-flow.test.ts` |
-| 13 | Inga tokenkollisioner | `unit/token.test.ts`, `integration/voting-flow.test.ts` |
-| 14 | Partival påverkar inte röstlängden | `integration/voting-flow.test.ts` |
-| 15 | Röstlängdstabellen avslöjar ingen röst | `integration/voting-flow.test.ts` |
-| 16 | Rösttabellen avslöjar ingen väljare | `integration/voting-flow.test.ts` |
+Playwright kör mot appen i en riktig webbläsare på <http://localhost:3000>, och använder en
+dev-server som redan kör (`E2E_BASE_URL` pekar om den). Det prövar det som ingen annan svit kan: att
+krypteringen och bevisen fungerar med BigInt i en riktig webbläsare, mot serverns kontroll.
+
+```bash
+docker compose up -d postgres
+npm run migrate && npm run seed
+npx playwright install chromium
+npm run test:e2e
+```
+
+> **E2E-sviten nollställer med flit röster och seedar om dev-databasen.** Den testar den körande
+> appen, som läser dev-databasen, så testerna röstar på riktigt, och `prisma/reset-votes.ts` och
+> `prisma/seed.ts` körs före sviten. Allt du röstat där försvinner. Det är inte testdatabaserna ovan
+> som rörs.
 
 ---
 
 ## Teknik
 
-Next.js 15 (App Router) · TypeScript · PostgreSQL 17 · Prisma 6 · React 19 · Vitest ·
-Docker Compose
+Next.js 15 (App Router) · TypeScript · PostgreSQL 17 · Prisma 6 · React 19 · Vitest · Playwright ·
+Docker Compose. Inga kryptobibliotek: kryptot i `src/lib/crypto` bygger på `BigInt` och `node:crypto`.
 
-Två Prisma-scheman genererar två klienter mot två databaser. Den anonyma röstmodulens
-publika kontrakt är:
+Två Prisma-scheman genererar två klienter mot två databaser.
 
-```ts
-castVote(input: { partyId: string }): Promise<{ token: string }>
-```
+- `prisma/voters/schema.prisma`: röstlängden, det yttre kuvertet (`pending_vote`), markeringen
+  (`voted_marker`), sessioner och revisionsloggen
+- `prisma/votes/schema.prisma`: urnan, det inre kuvertet (`encrypted_vote`), förtroendepersonernas
+  andelar, bidrag och räkneverk
 
-Ingen parameter kan bära en identitet, så en utvecklare kan inte skicka med sådant ens av
-misstag — kompilatorn stoppar det.
+### Läget: demo eller skarpt
+
+Läget sätts med `DEMO_MODE` vid driftsättning och kan inte ändras inifrån appen. **Skarpt läge är
+förvalt**: allt utom exakt `DEMO_MODE=true` ger det. Det gäller oavsett `NODE_ENV`, så den publika
+demon är ett produktionsbygge i demoläge. Läget skrivs i loggen vid varje start, och adminsidan visar
+det.
+
+- **Demoläget** använder BankID-attrappen, så vem som helst kan legitimera sig som en demoperson.
+  Demogenvägarna under `/api/demo` finns, och varje sida bär en banderoll. Lokal utveckling och
+  testerna körs i demoläget.
+- **Skarpt läge** kräver en riktig BankID-klient och en komplett konfiguration, och appen vägrar
+  starta med en lista på det som saknas: `COOKIE_SECURE=true`, https i `APP_ORIGIN`, en egen
+  `IDENTITY_PEPPER`, `BANKID_ENV`, `BANKID_ROOT_CERTIFICATES`, `BANKID_CERT_PATH` och
+  `BANKID_CERT_PASSPHRASE`. Skarpt läge vägrar också attrappens rot, demons kända lösenfraser och
+  seedningen.
+
+Varje omröstning bär det läge den skapades i, och läggning, stängning, räkning, publicering och
+fastställande vägrar en omröstning i ett annat läge än serverns.
 
 ### BankID
 
@@ -228,6 +323,14 @@ Implementationen av `IBankIdService` väljs på ett enda ställe,
   ömsesidig TLS. `BANKID_ENV=test` går mot BankID:s testmiljö och `BANKID_ENV=production`
   mot produktionen. Serverroten för varje miljö är förankrad i koden med ett låst
   SHA-256-fingeravtryck, och systemets CA-lager används aldrig.
+
+**Skarpt läge mot BankID:s testmiljö säkrar inte identiteten.** Vem som helst kan skaffa ett test-BankID
+med vilket personnummer och namn som helst. Läget finns för att pröva den riktiga klienten, inte för ett
+riktigt val, och varje sida bär en banderoll som säger det.
+
+**Produktionen är inte klar.** Skarpt läge med `BANKID_ENV=production` vägrar starta tills läsaren av
+BankID:s underskrift har prövats mot en riktig underskrift (kravet `bankid-reader-tested`). Det är
+uppgift 17d, och den kräver en människa med test-BankID.
 
 #### Skarpt läge mot BankID:s testmiljö
 
@@ -269,6 +372,7 @@ Implementationen av `IBankIdService` väljs på ett enda ställe,
    COOKIE_SECURE=true
    APP_ORIGIN=https://...
    IDENTITY_PEPPER=...            # minst 32 tecken, inte exempelvärdet
+   TRUSTED_PROXY_HOPS=1           # bakom en proxy, se SECURITY.md 4.3
    ```
 
    Appen vägrar starta med en lista på det som saknas. Adminsidan visar då
@@ -289,52 +393,36 @@ underskrift från testmiljön till en egen fil där, men bara i skarpt läge med
 `BANKID_ENV=production` vägrar starta tills en sådan underskrift har lagts in som testfall
 (kravet `bankid-reader-tested`).
 
-### Avvikelse från specifikationen
+### Azure och drift
 
-Specifikationen beskriver `GET /api/verify/{token}` men kräver samtidigt att token aldrig
-hamnar i en URL. Kraven är oförenliga: en token i sökvägen skrivs till accessloggar,
-proxyloggar och webbläsarhistorik, och följer med i Referer-headern. Verifieringen sker
-därför med **POST** och token i begärans kropp. Svarsformatet följer specen exakt:
+Demon körs som Container Apps, PostgreSQL och Key Vault i prenumerationen "Election System". Drift
+sköts med skillen `azure-drift`, och filerna under `infra/azure/` är Azure-sessionens.
 
-```json
-{ "registered": true, "party": "Exempelpartiet" }
-```
+- **`DEMO_MODE=true` krävs** för demon. Utan den startar appen i skarpt läge och dör på de
+  ouppfyllda kraven, och uppstarten seedar inte.
+- **Efter en driftsättning med nya format** ska demovalet återställas med knappen på adminsidan. Ett
+  kuvert som lades före driftsättningen har det gamla formatet, blir `OLD_SIGNATURE_FORMAT` eller
+  `BAD_SIGNATURE`, och stoppar stängningen. Återställningen raderar kuverten.
+- **BankID-hemligheterna för skarpt läge mot testmiljön** (RP-certifikatet, frasen och rotfilen för
+  kundcertifikat) ska ligga i Key Vault, och `TRUSTED_PROXY_HOPS` ska vara rätt satt bakom Container
+  Apps. Annars blir `endUserIp` `okand`, och varje BankID-anrop avvisas lokalt.
+- **Key Vault skyddar inte mot den som får läsa det**, och inte mot appen, som har hemligheterna i
+  minnet. Se `pepper-holder-reads-voter-names` och SECURITY.md avsnitt 9.
 
 ---
 
 ## Dokumentation
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — komponenter, dataflöde, modulkontrakt,
-  datamodell, testarkitektur
-> **Kör inte `npm run build` medan `npm run dev` är igång.**
->
-> Båda använder samma `.next`-katalog. Produktionsbygget skriver över de filer
-> dev-servern har i sitt minnesmanifest, och resultatet är svårtolkat: sidan
-> svarar 200 men stilmallen ger 404, och webbläsaren vägrar tillämpa den som
-> `text/plain` eftersom `X-Content-Type-Options: nosniff` hindrar den från att
-> gissa. Det ser ut som ett CSS-fel men är ett trasigt bygge.
->
-> Starta om dev-servern efter ett produktionsbygge, eller rensa med
-> `rm -rf .next` först.
-
-### E2E-tester
-
-Playwright kör mot appen i en riktig webbläsare. Det prövar det som ingen annan
-svit kan: att blindningen av röstintyget fungerar med WebCrypto och BigInt på
-klienten, mot serverns Node-RSA.
-
-```bash
-docker compose up -d postgres
-npm run migrate && npm run seed
-npx playwright install chromium
-npm run test:e2e
-```
-
-- **[VERIFIABILITY.md](VERIFIABILITY.md)** — oberoende verifierbarhet: blinda
-  röstintyg, Merkleåtaganden, automatisk slutkontroll, observatörsgränssnitt och
-  vad som fortfarande kräver tillit
-- **[SECURITY.md](SECURITY.md)** — hotmodell, anonymitetsmodell, tokendesign,
-  metadatarisker, och vad som saknas utöver kod för ett riktigt val
+- **[docs/spec/2026-09-22-dubbla-kuvert.md](docs/spec/2026-09-22-dubbla-kuvert.md)** — specen.
+  Bindande. Hotmodellen står i avsnitt 10.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — komponenter, dataflöde, faser, datamodell, modulkontrakt
+- **[VERIFIABILITY.md](VERIFIABILITY.md)** — den signerade kuvertläggningen, rötterna, slutkontrollen,
+  verktyget och vad det inte kan kontrollera
+- **[SECURITY.md](SECURITY.md)** — hotmodell, metadatarisker, vad som lagras, läge och drift, och vad
+  som saknas utöver kod för ett riktigt val
+- **`/architecture`** i appen — samma sak utan fackord, med tekniska detaljer och status på
+  undersidor
+- **[PLAN.md](PLAN.md)** — den första planen. Den beskriver en tidigare modell och är historisk.
 
 ---
 
@@ -342,33 +430,25 @@ npm run test:e2e
 
 **Listan står inte här, och det är ett medvetet val.**
 
-Den fanns tidigare i prosa på fyra ställen: här, i SECURITY.md, i
-arkitektursidan och i VERIFIABILITY.md. Följden blev att den blev fel. Den här
-filen beskrev ända fram till nyligen blinda signaturer som något "ett riktigt
-system skulle göra i stället" — de är implementerade och bär nu hela
-konstruktionen. Och påståendet att identitet och partival finns i samma minne
-under röstningen slutade vara sant den dag röstläggningen tappade sin session.
+Den fanns tidigare i prosa på fyra ställen, och de hann bli olika. Ett löst problem stod kvar som olöst,
+och ett påstående som slutat vara sant stod kvar ändå. En demonstration som påstår att systemet är
+sämre än det är underminerar tilliten lika säkert som en som påstår motsatsen.
 
-En demonstration som påstår att systemet är sämre än det är underminerar
-tilliten lika säkert som en som påstår motsatsen.
-
-Kända avvikelser finns därför i **`src/lib/known-limitations.ts`**, som läses av
-både arkitektursidan och ett säkerhetstest. Varje post pekar ut en markör i
-källkoden som är sann så länge problemet finns kvar — löser någon problemet
-failar testet tills posten tagits bort.
+Kända avvikelser finns därför i **`src/lib/known-limitations.ts`**, grundade i spec 10, och de
+visas på `/architecture/technical`. Varje post pekar ut en markör i källkoden som är sann så länge
+problemet finns kvar. Löser någon problemet failar testet tills posten tagits bort.
 
 | Läs om | I |
 |---|---|
-| Specifikationen och var koden avviker | [ARCHITECTURE.md](ARCHITECTURE.md), avsnitt 10 |
-| Brister som inte syns i koden — WAL, nyckelceremoni | [SECURITY.md](SECURITY.md), avsnitt 8 |
-| Vad som saknas utöver kod — granskning, juridik, WCAG | [SECURITY.md](SECURITY.md), avsnitt 8 |
-| Anonymitetsavvägningar med flera valsedlar | [VERIFIABILITY.md](VERIFIABILITY.md), avsnitt 7 |
-
-De tre som betyder mest just nu: klientkoden levereras av servern,
-signeringsnycklarna ligger i databasen, och kvittot bevisar hur du röstat.
+| Specen och hotmodellen | [docs/spec/2026-09-22-dubbla-kuvert.md](docs/spec/2026-09-22-dubbla-kuvert.md), avsnitt 10 |
+| Var koden avviker från specen | [ARCHITECTURE.md](ARCHITECTURE.md), avsnitt 10 |
+| Kopplingen under röstningen, WAL, backuper och nyckelceremoni | [SECURITY.md](SECURITY.md), avsnitt 2 och 4.6 |
+| Vad som saknas utöver kod: granskning, juridik, WCAG | [SECURITY.md](SECURITY.md), avsnitt 8 |
+| Vad som går att kontrollera utifrån, och vad som inte gör det | [VERIFIABILITY.md](VERIFIABILITY.md), avsnitt 5 och 8 |
 
 ---
 
-Syftet är att visa **en princip**: legitimera väljaren separat, låt väljaren
-själv bära ett blint signerat intyg över gränsen, registrera rösten anonymt, och
-publicera underlaget så att vem som helst kan räkna om valet.
+Syftet är att visa **en princip**: låt väljaren lägga en krypterad röst som hon kan ändra fram till
+stängningen, skriv under den med BankID, radera kopplingen vid stängningen och öppna bara summan, med två
+av tre förtroendepersoner. Principen är Estlands. Den är svagare på valhemlighet än en konstruktion där
+kopplingen aldrig finns, och det är priset för att en köpt röst ska gå att ersätta.

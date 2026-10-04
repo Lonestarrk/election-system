@@ -20,12 +20,20 @@ förtroendepersoner.
   - Efter stängningen publiceras bara summorna med bevis. Väljaren ser att den röstat,
     men inte på vad.
   - Markeringen "har röstat" har ingen tidsstämpel.
-- **Demoläge och skarpt läge** sätts vid driftsättning (uppgift 17). Ingen knapp i appen
-  byter läge.
-- **README, ARCHITECTURE.md, VERIFIABILITY.md, SECURITY.md och PLAN.md** beskriver till
-  stor del den gamla modellen med blindsignering och röstintyg. De skrivs om i uppgift 16,
-  och till dess gäller specen där de säger emot den. Arkitektursidan i appen följer den nya
-  modellen.
+- **Läget:** demoläge eller skarpt läge sätts vid driftsättning med `DEMO_MODE`. Ingen knapp
+  i appen byter läge. **Skarpt är förvalt**: bara exakt `DEMO_MODE=true` ger demoläge, och
+  `NODE_ENV` läses inte. Den publika demon i Azure är ett produktionsbygge i demoläge.
+  - Skarpt läge mot BankID:s testmiljö (`BANKID_ENV=test`) säkrar inte identiteten, eftersom
+    vem som helst kan skaffa ett test-BankID med vilket personnummer som helst.
+  - Skarpt läge mot produktionen vägrar starta tills läsaren av BankID:s underskrift är
+    prövad mot en riktig underskrift (kravet `bankid-reader-tested`, uppgift 17d). Den
+    kräver en människa med test-BankID.
+  - Varje omröstning bär det läge den skapades i, och spärrarna ger `wrong_mode`.
+- **Dokumenten** README, ARCHITECTURE.md, VERIFIABILITY.md och SECURITY.md beskriver sedan
+  uppgift 16 kuvertmodellen, och de får inte säga emot specen. PLAN.md är den första planen
+  och är märkt som historisk. Listan över kända begränsningar står bara i
+  `src/lib/known-limitations.ts`. Dokumenten hänvisar dit i stället för att numrera den, och
+  `tests/security/known-limitations.test.ts` vaktar det.
 
 ## Kommandon
 
@@ -38,7 +46,19 @@ förtroendepersoner.
   `tests/test-databases.ts` kontrollerar det med `current_database()`. `SKIP_DB_TESTS=1`
   hoppar över databastesterna.
 - **E2E:** `npx playwright test` kör mot <http://localhost:3000> och använder en dev-server
-  som redan kör. `E2E_BASE_URL` pekar om den.
+  som redan kör. `E2E_BASE_URL` pekar om den. Före sviten nollställer `prisma/reset-votes.ts`
+  rösterna och `prisma/seed.ts` seedar om **dev**-databasen, med flit.
+- **Oberoende kontroll av ett publicerat resultat:**
+  `node tools/verify-election.mjs <url|fil> [omröstningens id]` (uppgift 13). Verktyget är
+  fristående och importerar ingenting ur `src`. Det kan inte kontrollera att summan består av
+  exakt de giltiga rösterna, och utskriften säger vad mer det inte kan.
+- **BankID:** `DEMO_MODE=true` ger attrappen. Skarpt läge mot testmiljön (uppgift 17c) beskrivs
+  i README, och `BANKID_LIVE_TEST=1 npx vitest run tests/live` kör det frivilliga provet.
+  Certifikatet hämtas med `npx tsx scripts/fetch-bankid-test-cert.ts` till `certs/`, som är
+  git-ignorerad.
+- **Nollställning av demovalet:** `npm run reset:votes` lokalt, och knappen på adminsidan i
+  demoläget. Efter en driftsättning i Azure med nya format ska demovalet återställas, annars
+  stoppar kuvert i det gamla formatet stängningen.
 - **Bygget:** `npx next build` bygger till `.next` och kan köra medan dev-servern kör.
   Det skriver om `next-env.d.ts`, så återställ filen efteråt med
   `git checkout -- next-env.d.ts`. Bygget kör inte `prisma generate`.
@@ -118,3 +138,15 @@ förtroendepersoner.
 - **C: är liten.** Dockers diskavbild
   (`%LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx`) och npm-cachen växer där. När C: är
   full felar verktygen med "No space left on device", och Docker hänger sig.
+- **Backticks i ett skalkommando körs.** Skriv text med backticks (till exempel markdown) med
+  Edit eller Write, eller i en citerad heredoc. I ett `node -e "..."` med dubbla citattecken
+  kör Git Bash allt mellan backticks som ett kommando och lämnar texten tom.
+- **Python finns inte.** `python` är Microsoft Store-genvägen och gör ingenting. Använd `node`,
+  `sed` eller Edit för skriptade ändringar.
+- **Radslut är CRLF i arbetskopian.** Git varnar att LF ersätts av CRLF när det rör en fil.
+  Det är inget fel, men en markör över flera rader ska jämföras med `\n` (testerna
+  normaliserar redan).
+- **`prisma generate` kan ge EPERM** när en dev-server kör, eftersom den håller motorns DLL.
+  Klientens JS skrivs ändå, men servern måste startas om för att använda den nya klienten.
+- **`git worktree remove` genom en `node_modules`-junction** kan radera `node_modules/.bin`
+  och Prisma-klienten. Återskapa dem med `npm rebuild --ignore-scripts` och `npm run generate`.

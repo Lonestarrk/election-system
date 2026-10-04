@@ -286,7 +286,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     expect(result.output).toContain('dekrypteringen stämmer')
   })
 
-  it('publiceringen bär kuvertroten och urnroten som stängningen skrev, och antalet kuvert', async () => {
+  it('publiceringen bär kuvertroten och urnroten som stängningen skrev, och summan av markeringarna', async () => {
     await castTheVotes()
     await closeAndTally()
 

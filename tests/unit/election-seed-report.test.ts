@@ -49,9 +49,9 @@ describe('när omröstningen finns men inte är öppen', () => {
    * DET FARLIGA UTFALLET.
    *
    * Seedningen har då inte gjort någonting, appen visar "ingen omröstning är
-   * öppen", och `npm run reset:votes` hjälper inte — det skriptet bevarar just
-   * Valet 2026 med namn. Beskedet måste därför bära åtgärden, inte bara
-   * konstaterandet.
+   * öppen". `npm run reset:votes` rättar det, eftersom skriptet sätter fasen
+   * till OPEN och flyttar fram demovalets tider. Beskedet måste därför bära
+   * åtgärden, inte bara konstaterandet.
    */
   const STÄNGD = {
     opensAt: new Date('2026-09-01T00:00:00Z'),
