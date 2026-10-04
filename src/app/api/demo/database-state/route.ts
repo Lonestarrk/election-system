@@ -1,6 +1,7 @@
 import { Prisma as VotersPrisma } from '.prisma/voters'
 import { isDemoMode } from '@/lib/demo-mode'
-import { errorResponse, jsonResponse } from '@/lib/http'
+import { errorResponse, getClientIp, jsonResponse } from '@/lib/http'
+import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
 
@@ -305,9 +306,17 @@ async function awaitAll<T extends Record<string, PromiseLike<unknown>>>(
   return Object.fromEntries(entries) as { [K in keyof T]: Awaited<T[K]> }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   if (!isDemoMode()) {
     return errorResponse('NOT_FOUND', 'Rutten finns inte.', 404)
+  }
+
+  // Offentlig i demon, och ett tjugotal frågor per anrop (helgrensgranskningen, B10).
+  const rate = checkRateLimit('demo-database-state', getClientIp(request), RATE_LIMITS.demoDatabaseState)
+  if (!rate.allowed) {
+    return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
+      'Retry-After': String(rate.retryAfterSeconds),
+    })
   }
 
   /**

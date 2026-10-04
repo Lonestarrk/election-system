@@ -68,7 +68,7 @@ function shortened(value: string): string {
 }
 
 async function readState(): Promise<DatabaseState> {
-  const response = await GET()
+  const response = await GET(new Request('http://localhost:3000/api/demo/database-state'))
   expect(response.status).toBe(200)
   return (await response.json()) as DatabaseState
 }
@@ -212,7 +212,7 @@ describe.skipIf(!databaseAvailable)('livevyns underlag, /api/demo/database-state
     await castFor(anna, 'S')
     demoControl.demo = false
 
-    const response = await GET()
+    const response = await GET(new Request('http://localhost:3000/api/demo/database-state'))
     const body = JSON.stringify(await response.json())
 
     expect(response.status).toBe(404)

@@ -856,12 +856,37 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
     })
 
     it.each(['STRIPPED', 'TALLIED', 'CERTIFIED'])(
-      'already_closed betyder fas %s med skriven kuvertrot, och stängningen rör då ingenting',
+      'already_closed betyder fas %s med skriven kuvertrot och inget kuvert kvar, och stängningen rör då ingenting',
       async (from) => {
-        await castFor(anna, 'bp-s')
         await setPhase(from, 'f'.repeat(64))
 
         expect(await closeElection(electionId)).toEqual({ status: 'already_closed' })
+        expect(await phase()).toBe(from)
+        expect(await urn()).toEqual([])
+      },
+    )
+
+    it.each(['STRIPPED', 'TALLIED', 'CERTIFIED'])(
+      'fas %s med skriven kuvertrot men ett kuvert kvar ger inget already_closed (prob S5)',
+      async (from) => {
+        /**
+         * Helgrensgranskningen, Viktigt 2. Den som kan skriva i röstlängden
+         * satte fasen och roten men lät kuverten ligga. Stängningen svarade
+         * already_closed, och rutten "kopplingen raderad", fast namn och chiffer
+         * låg kvar bredvid varandra. Invariant 3 säger "bevisligen raderad", så
+         * beskedet kräver nu också att inget kuvert ligger på omröstningens
+         * valsedlar.
+         */
+        await castFor(anna, 'bp-s')
+        await setPhase(from, 'f'.repeat(64))
+
+        const { outcome, error } = await attempt()
+
+        expect(outcome).toBeNull()
+        expect(error).toBeInstanceOf(CloseAbortedError)
+        expect(linkStateOf(error)).toBe('unknown')
+        expect((error as Error).message).toContain('1 kuvert ligger kvar')
+        expect(abortedMessageFor(error)).not.toMatch(/ORÖRD|kopplingen raderad/)
         expect(await phase()).toBe(from)
         expect(await votersDb.pendingVote.count()).toBe(1)
         expect(await urn()).toEqual([])
@@ -962,6 +987,8 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       expect(after.phase).toBe('STRIPPED')
       expect(after.envelopeRoot).not.toBeNull()
       expect(after.linkClearedAt).not.toBeNull()
+      // Grovkornad till hel timme, som övrig tid (helgrensgranskningen, Mindre).
+      expect(after.linkClearedAt!.getTime() % 3_600_000).toBe(0)
       expect(await votersDb.pendingVote.count()).toBe(0)
       expect(await urn()).toEqual([annas])
     })
@@ -1488,6 +1515,27 @@ describe.skipIf(!databaseAvailable)('faserna i stängningen', () => {
       expect(linkStateOf(error)).toBe('unknown')
       expect((error as Error).message).toContain('TALLIED')
       expect((error as Error).message).not.toContain('finns inte i röstlängden')
+    })
+
+    it('efterkontrollen säger inte att skalningen saknas när fasen skrivits bakåt efter den (prob S6)', async () => {
+      /**
+       * Helgrensgranskningen, parkerad punkt. Skrevs fasen tillbaka till
+       * VALIDATED efter låsets COMMIT sade texten att skalningens skrivningar
+       * inte fanns i röstlängden, fast roten, markeringarna och raderingen fanns.
+       */
+      await castFor(anna, 'bp-s')
+      hooks.afterLockCommit = async () => {
+        await votersDb.election.update({ where: { id: electionId }, data: { phase: 'VALIDATED' } })
+      }
+
+      const { outcome, error } = await attempt()
+
+      expect(outcome).toBeNull()
+      expect(linkStateOf(error)).toBe('unknown')
+      expect((error as Error).message).toContain('VALIDATED')
+      expect((error as Error).message).toContain('kuvertroten är skriven')
+      expect((error as Error).message).not.toContain('finns inte i röstlängden')
+      expect(await votersDb.pendingVote.count()).toBe(0)
     })
   })
 

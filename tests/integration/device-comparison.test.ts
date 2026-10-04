@@ -18,6 +18,7 @@ import {
 } from '@/modules/eligibility/bankid/envelope-signature'
 import {
   castEncryptedBallot,
+  castWindow,
   nextCastSequence,
   type CastOutcome,
 } from '@/modules/eligibility/pending-vote.service'
@@ -394,5 +395,79 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
 
     const body = JSON.parse(await (await post(session, {})).text())
     expect(body).toMatchObject({ phase: 'STRIPPED', acceptsVotes: false })
+  })
+
+  /**
+   * EFTER STÄNGNINGEN SVARAR JÄMFÖRELSEN INTE (helgrensgranskningen, ruling 144).
+   *
+   * Spec 3.1: efter stängningen kan ingen se eller ändra något. Svarade
+   * jämförelsen fortfarande var `same` ett slutgiltigt kvitto. En köpare som
+   * sett läggningen och sparat hashen loggar in på sin egen enhet efter
+   * closesAt och får veta att den röst han såg är den som räknas. Fönstret kan
+   * vara långt, eftersom en stängning som stoppas av en avvikelse lämnar
+   * omröstningen i CLOSED med kopplingen kvar.
+   *
+   * Villkoret är sessionens `acceptsVotes`, och båda svaren prövas: rätt hash
+   * och fel hash ska ge samma svar, så att inte heller skillnaden mellan dem
+   * säger något.
+   */
+  describe('efter stängningen', () => {
+    const past = () => new Date(Date.now() - 1000)
+
+    async function moveTo(phase: 'OPEN' | 'CLOSED' | 'VALIDATED', closesAt: Date): Promise<void> {
+      await votersDb.election.update({ where: { id: electionId }, data: { phase, closesAt } })
+      await votesDb.election.update({ where: { id: electionId }, data: { closesAt } })
+    }
+
+    it.each([
+      ['OPEN efter closesAt', 'OPEN', past],
+      ['CLOSED', 'CLOSED', past],
+      ['VALIDATED', 'VALIDATED', past],
+      ['CLOSED före closesAt', 'CLOSED', () => new Date(Date.now() + 3_600_000)],
+    ] as const)('i %s svarar den varken lika eller olika', async (_, phase, closesAt) => {
+      const { ballot, outcome } = await cast(bpS)
+      expect(outcome.status).toBe('recorded')
+      await moveTo(phase, closesAt())
+
+      // Samma villkor som sessionen säger till sidan.
+      const sessionBody = JSON.parse(await (await post(session, {})).text())
+      expect(sessionBody).toMatchObject({ phase, acceptsVotes: false })
+
+      const right = await compareWith(ballot.ciphertextHash)
+      const wrong = await compareWith('0'.repeat(64))
+
+      expect(right.status).toBe(409)
+      expect(wrong.status).toBe(409)
+      expect(right.text).toBe(wrong.text)
+      expect(right.text).not.toMatch(/same|different|none/)
+      expect(right.text).not.toMatch(ANY_HASH)
+    })
+
+    /**
+     * Underskriftens start frågar samma villkor innan BankID får en order (B8). Läget
+     * prövas efter fasen, som i läggningen.
+     */
+    it('underskriftens start ser samma villkor, och läget', async () => {
+      expect(await castWindow(electionId)).toBe('open')
+
+      await moveTo('OPEN', past())
+      expect(await castWindow(electionId)).toBe('closed')
+      await moveTo('CLOSED', new Date(Date.now() + 3_600_000))
+      expect(await castWindow(electionId)).toBe('closed')
+      await moveTo('OPEN', new Date(Date.now() + 3_600_000))
+      expect(await castWindow(electionId)).toBe('open')
+
+      await votersDb.election.update({ where: { id: electionId }, data: { mode: 'SHARP' } })
+      expect(await castWindow(electionId)).toBe('wrong_mode')
+      expect(await castWindow('00000000-0000-4000-8000-000000000000')).toBe('closed')
+    })
+
+    it('kontrasten: samma kuvert före closesAt ger lika', async () => {
+      const { ballot } = await cast(bpS)
+      const reply = await compareWith(ballot.ciphertextHash)
+
+      expect(reply.status).toBe(200)
+      expect(JSON.parse(reply.text)).toEqual({ ballots: [{ ballotId, result: 'same' }] })
+    })
   })
 })

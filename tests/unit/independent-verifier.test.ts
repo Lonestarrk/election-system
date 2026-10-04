@@ -279,6 +279,8 @@ describe('en ärlig publicering', () => {
     // Urnroten och kuvertroten går inte att räkna om utan de enskilda chiffren.
     expect(result.output).toMatch(/kan inte räknas om/i)
     expect(result.output).toMatch(/att summan består av exakt de giltiga rösterna/i)
+    // BankID-miljön publiceras inte (helgrensgranskningen): ett prov mot testmiljön ser ut som produktion.
+    expect(result.output).toMatch(/Vilken BankID-miljö underskrifterna kom från/)
   })
 
   it('godkänns också med alla tre förtroendepersonernas bidrag', () => {

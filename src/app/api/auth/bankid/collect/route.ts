@@ -4,7 +4,7 @@ import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { collectAuthSchema, parseJsonBody } from '@/lib/validation'
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { collectErrorReply, failedReply, pendingReply } from '@/modules/eligibility/bankid/replies'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, recordRejectedOrigin } from '@/modules/eligibility/audit.service'
 import { AdmissionQueueFull, admissionStats } from '@/lib/admission-queue'
 import { evaluateEligibility } from '@/modules/eligibility/voter-status.service'
 import { createVotingSession } from '@/modules/eligibility/voting-session.service'
@@ -24,14 +24,15 @@ export const dynamic = 'force-dynamic'
  * loggen och inte till databasen.
  */
 export async function POST(request: Request) {
+  // Posten om fel Origin har en egen gräns per adress (helgrensgranskningen, ruling 145).
   if (!hasValidOrigin(request)) {
-    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    await recordRejectedOrigin(request)
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
   const rate = checkRateLimit('auth-collect', getClientIp(request), RATE_LIMITS.authCollect)
   if (!rate.allowed) {
-    await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+    if (rate.firstRejection) await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
       'Retry-After': String(rate.retryAfterSeconds),
     })

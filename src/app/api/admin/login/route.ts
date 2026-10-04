@@ -6,7 +6,7 @@ import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { adminLoginSchema, parseJsonBody } from '@/lib/validation'
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { collectErrorReply, failedReply, pendingReply } from '@/modules/eligibility/bankid/replies'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, recordRejectedOrigin } from '@/modules/eligibility/audit.service'
 import {
   createAdminSession,
   destroyAdminSession,
@@ -35,8 +35,9 @@ export const dynamic = 'force-dynamic'
  * där.
  */
 export async function POST(request: Request) {
+  // Posten om fel Origin har en egen gräns per adress (helgrensgranskningen, ruling 145).
   if (!hasValidOrigin(request)) {
-    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    await recordRejectedOrigin(request)
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
    */
   const pollRate = checkRateLimit('admin-poll', getClientIp(request), RATE_LIMITS.authCollect)
   if (!pollRate.allowed) {
-    await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+    if (pollRate.firstRejection) await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
       'Retry-After': String(pollRate.retryAfterSeconds),
     })
@@ -105,7 +106,7 @@ export async function POST(request: Request) {
     )
 
     if (!attemptRate.allowed) {
-      await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+      if (attemptRate.firstRejection) await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
       return errorResponse('RATE_LIMITED', 'För många försök.', 429, {
         'Retry-After': String(attemptRate.retryAfterSeconds),
       })

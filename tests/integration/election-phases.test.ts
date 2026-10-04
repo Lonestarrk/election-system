@@ -45,7 +45,7 @@ async function openElection(name: string): Promise<string> {
 
 type Phase = { id: string; name: string; phase: string }
 const phasesOf = async (): Promise<Phase[]> =>
-  ((await (await GET()).json()) as { phases: Phase[] }).phases
+  ((await (await GET(new Request('http://localhost:3000/api/elections'))).json()) as { phases: Phase[] }).phases
 
 describe.skipIf(!databaseAvailable)('GET /api/elections: fasen', () => {
   beforeEach(async () => {
@@ -66,7 +66,7 @@ describe.skipIf(!databaseAvailable)('GET /api/elections: fasen', () => {
       expect(Object.values(entry).every((value) => typeof value === 'string')).toBe(true)
     }
     // Och ingenting annat i listan om fasen: inga räknare på svaret som helhet.
-    expect(Object.keys(await (await GET()).json()).sort()).toEqual(['elections', 'phases'])
+    expect(Object.keys(await (await GET(new Request('http://localhost:3000/api/elections'))).json()).sort()).toEqual(['elections', 'phases'])
   })
 
   it('en omröstning som stängts före sin tid syns med sin nya fas', async () => {
@@ -74,7 +74,7 @@ describe.skipIf(!databaseAvailable)('GET /api/elections: fasen', () => {
     await votersDb.election.update({ where: { id }, data: { phase: 'CLOSED' } })
 
     // Tiden har inte gått ut, så den står kvar i listan över öppna...
-    const body = (await (await GET()).json()) as {
+    const body = (await (await GET(new Request('http://localhost:3000/api/elections'))).json()) as {
       elections: Array<{ id: string }>
       phases: Phase[]
     }

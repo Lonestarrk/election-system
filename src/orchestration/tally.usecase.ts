@@ -153,7 +153,11 @@ export type PartialDecryptionOutcome =
   | { status: 'accepted' }
   | { status: 'rejected'; message: string }
   | { status: 'duplicate' }
-  | { status: 'wrong_passphrase' }
+  /**
+   * `recorded` säger om posten TRUSTEE_PASSPHRASE_REJECTED skrevs. Rutten säger att
+   * försöket står i revisionsloggen bara när den gjorde det (helgrensgranskningen).
+   */
+  | { status: 'wrong_passphrase'; recorded: boolean }
   | WrongPhase
   | WrongMode
   | { status: 'unknown_ballot' }
@@ -595,22 +599,33 @@ async function verifyAndStore(
     await yieldToEventLoop()
   }
 
+  /**
+   * BIDRAGET OCH POSTEN HÖR IHOP (helgrensgranskningen, Viktigt 1). Posten skrevs
+   * förut efter bidraget och utan transaktion, och efter fem krockar om löpnumret
+   * svaldes felet. Bidraget stod då kvar utan post. Nu skrivs bidraget i
+   * röstdatabasens transaktion, och posten i röstlängdens inuti den, som
+   * räkneverken och BALLOT_TALLIED i `saveTally`. Går posten inte att skriva förs
+   * bidraget tillbaka, och anropet kastar. Kvar är fönstret mellan de två COMMIT,
+   * där posten kan finnas utan bidraget. Då kan förtroendepersonen lämna det igen.
+   */
   try {
-    await votesDb.partialDecryption.createMany({
-      data: partials.map((partial, optionIndex) => ({
-        ballotId: gate.ballotId,
-        optionIndex,
-        trusteeIndex,
-        value: partial.value.toString(),
-        proof: serialisePartialDecryptionProof(partial.proof) as Prisma.InputJsonValue,
-      })),
+    await votesDb.$transaction(async (tx) => {
+      await tx.partialDecryption.createMany({
+        data: partials.map((partial, optionIndex) => ({
+          ballotId: gate.ballotId,
+          optionIndex,
+          trusteeIndex,
+          value: partial.value.toString(),
+          proof: serialisePartialDecryptionProof(partial.proof) as Prisma.InputJsonValue,
+        })),
+      })
+      await recordTallyAuditEvent(AUDIT_EVENTS.PARTIAL_DECRYPTION_RECORDED)
     })
   } catch (error) {
     if (isUniqueViolation(error)) return { status: 'duplicate' }
     throw error
   }
 
-  await recordAuditEvent(AUDIT_EVENTS.PARTIAL_DECRYPTION_RECORDED)
   return { status: 'accepted' }
 }
 
@@ -728,10 +743,26 @@ export async function submitPartialDecryption(
   await requireUrnRoot(gate, hashes)
   const unlocked = unlockShare(trustee.encryptedShare, passphrase, gate.electionId, trusteeIndex)
   if (unlocked.status === 'wrong_passphrase') {
-    // En angreppssignal, som syns i revisionsloggen (ruling 64). Posten säger
-    // inte vem, och frasen står aldrig någonstans.
-    await recordAuditEvent(AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED)
-    return { status: 'wrong_passphrase' }
+    /**
+     * En angreppssignal, som syns i revisionsloggen (ruling 64). Posten säger
+     * inte vem, och frasen står aldrig någonstans.
+     *
+     * POSTEN SVÄLJS INTE (helgrensgranskningen, Viktigt 1). Den skrevs förut utan
+     * transaktion, och efter fem krockar om löpnumret svaldes felet, medan rutten
+     * sa att försöket stod i loggen. Den som gissade fraser kunde då dölja sina
+     * försök bakom en ström av andra poster. Nu skrivs posten under tabellens lås,
+     * så att ingen annan post kan ta numret, och går den ändå inte att skriva
+     * säger svaret det. Frasen är fel i båda fallen, och ingenting är sparat.
+     */
+    try {
+      await recordTallyAuditEvent(AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED)
+      return { status: 'wrong_passphrase', recorded: true }
+    } catch (error) {
+      logger.error('Posten om en fel fras gick inte att skriva', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+      return { status: 'wrong_passphrase', recorded: false }
+    }
   }
   if (unlocked.status === 'malformed') {
     abort(
@@ -931,8 +962,10 @@ async function settleElectionPhase(electionId: string): Promise<string> {
       where: { id: electionId, phase: 'STRIPPED', envelopeRoot: { not: null } },
       data: { phase: 'TALLIED' },
     })
-    if (cas.count === 1) await recordAuditEvent(AUDIT_EVENTS.ELECTION_TALLIED, tx)
-    return cas.count === 1
+    if (cas.count !== 1) return false
+    await lockAuditTable(tx)
+    await recordAuditEvent(AUDIT_EVENTS.ELECTION_TALLIED, tx)
+    return true
   })
   if (moved) return 'TALLIED'
 
@@ -1022,6 +1055,25 @@ async function lockForTransaction(
 }
 
 /**
+ * Låser tabellen audit_event mot andra skrivare till transaktionens slut
+ * (helgrensgranskningen, Viktigt 1, ruling 145).
+ *
+ * Räkningens lås för revisionsposter höll bara räkningens egna poster isär. En
+ * post från något annat, till exempel en inloggning eller ett anrop med fel
+ * Origin, kunde ta löpnumret mellan läsningen och skrivningen. Då avvisade det
+ * unika indexet posten, transaktionen avbröts, och räkningen svarade 500.
+ * Låset väntar in en post som redan skrivs och håller nästa borta tills posten
+ * är skriven, som i fastställandet och skalningen. Andra läsare påverkas inte.
+ *
+ * Tas sist före posten, efter jämför-och-sätt på omröstningens rad när det
+ * finns ett, i samma ordning som skalningen och fastställandet: rad först,
+ * tabell sedan.
+ */
+async function lockAuditTable(tx: VotersPrisma.TransactionClient): Promise<void> {
+  await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`
+}
+
+/**
  * Kör `run` i en transaktion i röstlängden, under räkningens lås för
  * revisionsposter.
  *
@@ -1031,20 +1083,32 @@ async function lockForTransaction(
  * transaktionen, och den förs tillbaka. Av två räkningar som skrev sina poster
  * samtidigt hade då den ena förts tillbaka, och testet med två valsedlar som
  * räknas samtidigt visar det. Under låset skriver räkningens poster en i taget.
- * En post från något annat än räkningen kan fortfarande ta numret emellan. Då
- * kastar anropet, ingenting av det steget skrev står kvar, och en ny räkning
- * gör klart.
+ * En post från något annat än räkningen höll låset inte borta, och sedan
+ * helgrensgranskningen tar posten dessutom tabellens lås, se `lockAuditTable`.
+ *
+ * READ COMMITTED, UTTRYCKLIGEN. Läsningen av det senaste numret görs efter
+ * tabellens lås och ska se en post som gjorde COMMIT medan låset väntade.
  */
 function withTallyAuditLock<T>(run: (tx: VotersPrisma.TransactionClient) => Promise<T>): Promise<T> {
-  return votersDb.$transaction(async (tx) => {
-    await lockForTransaction(tx, 'tally-audit')
-    return run(tx)
-  })
+  return votersDb.$transaction(
+    async (tx) => {
+      await lockForTransaction(tx, 'tally-audit')
+      return run(tx)
+    },
+    { isolationLevel: 'ReadCommitted' },
+  )
 }
 
-/** En av räkningens revisionsposter, i en egen transaktion under räkningens lås. */
+/**
+ * En av räkningens revisionsposter, i en egen transaktion under räkningens lås
+ * och tabellens. Ett fel sväljs inte: posten skrivs med `tx`, och då kastar
+ * `recordAuditEvent` i stället för att logga och gå vidare.
+ */
 async function recordTallyAuditEvent(eventType: AuditEventType): Promise<void> {
-  await withTallyAuditLock((tx) => recordAuditEvent(eventType, tx))
+  await withTallyAuditLock(async (tx) => {
+    await lockAuditTable(tx)
+    await recordAuditEvent(eventType, tx)
+  })
 }
 
 /**

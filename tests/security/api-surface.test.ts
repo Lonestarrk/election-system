@@ -231,6 +231,25 @@ describe('skydd på tillståndsändrande rutter', () => {
     }
   })
 
+  it('också varje GET hastighetsbegränsar, i sin egen hanterare (helgrensgranskningen, B10)', () => {
+    /**
+     * GET /api/elections, GET /api/push/subscribe och /api/demo/database-state
+     * saknade gräns. Den sista är offentlig i demon och gör många frågor per
+     * anrop. Prövningen gäller hanteraren och inte filen: push/subscribe hade
+     * en gräns i POST men ingen i GET.
+     */
+    const missing: string[] = []
+    for (const route of routes) {
+      const start = route.content.search(/export async function GET\b/)
+      if (start < 0) continue
+      const rest = route.content.slice(start + 1)
+      const next = rest.search(/export async function [A-Z]+\b/)
+      const handler = next < 0 ? rest : rest.slice(0, next)
+      if (!/checkRateLimit\(/.test(handler)) missing.push(route.path)
+    }
+    expect(missing).toEqual([])
+  })
+
   it('rutterna som tar emot ett kuvert eller startar dess underskrift kräver dessutom CSRF-token', () => {
     // CSRF-skyddet bygger på en hemlighet knuten till röstsessionen, och båda rutterna kräver
     // en session. En angripande sajt kan inte framkalla en underskrift i någon annans BankID,
@@ -276,7 +295,10 @@ describe('jämförelsen av enhetens röst', () => {
 
   it('läser aldrig själv ut ett kuvert, och jämför bara för sessionens väljare', () => {
     expect(compare).not.toMatch(/pendingVoteFor|votersDb|pendingVote\./)
-    expect(compare).toMatch(/compareWithPendingVotes\(session\.voterStatusId, body\.data\.ballots\)/)
+    // Omröstningen kommer också ur sessionen: jämförelsen svarar bara medan den tar emot röster.
+    expect(compare).toMatch(
+      /compareWithPendingVotes\(session\.voterStatusId, session\.electionId, body\.data\.ballots\)/,
+    )
     expect(compare).not.toMatch(/body\.data\.(voterStatusId|electionId)/)
   })
 

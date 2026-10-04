@@ -1101,16 +1101,21 @@ function tallyCheck(
  * annan kontroll passerar för det. Den gamla texten sa att ingen tidigare
  * slutkontroll hade markerat omröstningen, och det kan kontrollen inte veta.
  * När fastställandet markerar en omröstning skriver det sedan fixrundan också
- * en post i revisionskedjan i röstlängden, så att en borttagen markering syns
- * där, se `markUnderReview`.
+ * en post i revisionskedjan i röstlängden, se `markUnderReview`. Ingen kontroll
+ * jämför posten med markeringen (helgrensgranskningen), och posten säger inte
+ * vilken omröstning den gällde. En borttagen markering syns alltså bara för den
+ * som läser kedjan och ser en post utan markering, och posten kan saknas om den
+ * inte gick att skriva.
  */
 function underReviewCheck(underReview: boolean): CheckResult {
   const id = 'not_under_review'
   const question = 'Saknar röstdatabasen en markering om avvikelse från en tidigare slutkontroll?'
   const stored =
     'Markeringen står i röstdatabasen, och den som kan skriva där kan ta bort den. När en slutkontroll ' +
-    'markerar en omröstning skrivs också en post i revisionskedjan i röstlängden, så att en borttagen ' +
-    'markering syns där. Posten säger inte vilken omröstning det gällde.'
+    'markerar en omröstning skrivs också en post i revisionskedjan i röstlängden. Ingen kontroll jämför ' +
+    'posten med markeringen, och posten säger inte vilken omröstning det gällde, så en borttagen ' +
+    'markering syns bara för den som läser kedjan och hittar en post utan markering. Gick posten inte ' +
+    'att skriva finns den inte heller där.'
 
   return underReview
     ? {
@@ -1233,7 +1238,8 @@ async function refuse(electionId: string, report: FinalCheckReport): Promise<Cer
  *
  * Markeringen står i röstdatabasen, där den som kan skriva kan ta bort den
  * utan att något märks. Posten ELECTION_UNDER_REVIEW står i röstlängdens kedja,
- * så att en borttagen markering syns där. Den skrivs bara när markeringen
+ * där den som läser kedjan kan se att en omröstning markerats. Ingen kontroll
+ * jämför posten med markeringen. Den skrivs bara när markeringen
  * sätts, inte vid varje nytt försök att fastställa ett redan markerat val.
  * Posten har inget omröstnings-id, som ingen post i kedjan har, så den säger
  * att en omröstning markerades och vilken timme, inte vilken.

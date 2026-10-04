@@ -656,6 +656,9 @@ export function verifyPublication(publication, options = {}) {
       '    och underkänner en valsedel som står två gånger, men ser inte om en valsedel saknas.',
       '  – Att valets publika nyckel och förtroendepersonernas andelar är de som fanns när rösterna',
       '    krypterades. Den som sparade nyckeln medan röstningen pågick kan jämföra med den.',
+      '  – Vilken BankID-miljö underskrifterna kom från. Publiceringen bär inte miljön, så ett prov mot',
+      '    BankID:s testmiljö, där vem som helst kan skaffa ett BankID med vilket personnummer som helst,',
+      '    ser likadant ut som ett val med produktionen.',
       '',
     )
     return { ok: failures === 0, lines }

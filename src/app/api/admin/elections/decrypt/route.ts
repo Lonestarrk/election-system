@@ -125,10 +125,14 @@ function responseFor(outcome: PartialDecryptionOutcome) {
         409,
       )
     case 'wrong_passphrase':
+      // Att försöket står i loggen sägs bara när posten bevisligen skrevs (helgrensgranskningen).
       return jsonResponse(
         {
           status: 'wrong_passphrase',
-          message: 'Frasen låste inte upp andelen, och ingenting sparades. Försöket står i revisionsloggen.',
+          message: outcome.recorded
+            ? 'Frasen låste inte upp andelen, och ingenting sparades. Försöket står i revisionsloggen.'
+            : 'Frasen låste inte upp andelen, och ingenting sparades. Försöket kunde inte skrivas i ' +
+              'revisionsloggen, och felet står i serverloggen.',
         },
         403,
       )

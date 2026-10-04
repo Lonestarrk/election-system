@@ -108,6 +108,10 @@ export const NOT_CHECKABLE: readonly string[] = [
   'Att antalet rader i urnan och markeringarna är riktiga. De går att jämföra med varandra och med ' +
     'räkneverken, inte med något utanför systemet. Antalet kuvert som skalades publiceras inte för sig.',
   'Vilka valsedlar omröstningen har. En valsedel som saknas i publiceringen syns inte här.',
+  // Helgrensgranskningen: miljön står i fastställandets revisionspost men inte här.
+  'Vilken BankID-miljö underskrifterna kom från. Publiceringen bär inte miljön, så en omröstning ' +
+    'med BankID:s testmiljö, där vem som helst kan skaffa ett BankID med vilket personnummer som ' +
+    'helst, ser likadan ut som en med produktionen. Fastställandets post i revisionskedjan bär miljön.',
 ]
 
 /**
@@ -196,8 +200,17 @@ export async function publishedResults(electionId: string): Promise<PublicationO
 
   const ballots: PublishedBallot[] = []
   for (const ballot of election.ballots) {
-    // En valsedel utan form räknas inte i kuvertmodellen, se `getEncryptedBallotShape`.
-    if (!(await getEncryptedBallotShape(ballot.id))) continue
+    /**
+     * EN VALSEDEL UTAN FORM PUBLICERAS INTE TYST BORT (helgrensgranskningen, Mindre).
+     * Räkningen skriver inte TALLIED förrän varje valsedel i röstlängdens lista har
+     * sin form och sina räkneverk, så en valsedel som saknar form nu har ändrats i
+     * röstdatabasen efteråt. Förut hoppades den över. Har den rader fäller urnroten
+     * borttagningen, men en tom valsedel kunde försvinna ur publiceringen utan att
+     * något märktes.
+     */
+    if (!(await getEncryptedBallotShape(ballot.id))) {
+      return mismatch('en valsedel i röstlängdens lista saknar form i röstdatabasen')
+    }
 
     let recounted: RecountedBallot
     try {

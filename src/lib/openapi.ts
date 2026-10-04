@@ -163,6 +163,30 @@ function rateLimited(): Responses[string] {
   } as Responses[string]
 }
 
+/**
+ * BankID svarade med ett fel när en order skulle startas (uppgift 17c). Svaret byggs av
+ * `startErrorReply` i src/modules/eligibility/bankid/replies.ts, och meddelandet är
+ * BankID:s text för felet (helgrensgranskningen, B6).
+ */
+function bankIdStartFailed(): Responses[string] {
+  return error('BankID svarade med ett fel, och ordern startades inte. Meddelandet är BankID:s text för felet.', [
+    'BANKID_ERROR',
+  ]) as Responses[string]
+}
+
+/**
+ * BankID svarade med ett fel under en pollning, som inte går över av sig självt. Ordern
+ * avslutas och avbryts hos BankID. Se `collectErrorReply` i samma fil.
+ */
+function bankIdCollectFailed(): Responses[string] {
+  return {
+    description: 'BankID svarade med ett fel. Ordern är avslutad, och meddelandet är BankID:s text för felet.',
+    content: {
+      'application/json': { schema: z.object({ status: z.literal('failed'), message: z.string() }) },
+    },
+  } as Responses[string]
+}
+
 /** BankID:s svar under en pollning: pågår, misslyckades, eller klart. */
 const pollingFields = {
   hintCode: z.string().nullable().optional().describe('BankID:s hintCode, om en publik sådan finns.'),
@@ -310,7 +334,8 @@ register({
   description:
     'Omröstningar som är öppna just nu, med alla sina valsedlar, och fasen för varje omröstning. ' +
     'Vilka valsedlar som gäller en viss väljare avgörs först efter legitimering. Inget antal och ' +
-    'inget tal lämnas ut medan röstningen pågår. Rutten har ingen hastighetsgräns.',
+    'inget tal lämnas ut medan röstningen pågår. Gränsen är generös, 600 i minuten per adress, eftersom ' +
+    'röstsidan frågar efter fasen medan den är öppen.',
   tags: ['Offentligt'],
   access: 'public',
   ok: json(
@@ -332,6 +357,7 @@ register({
       ),
     }),
   ),
+  responses: { 429: rateLimited() },
 })
 
 register({
@@ -447,10 +473,11 @@ register({
   path: '/api/push/subscribe',
   summary: 'Den publika VAPID-nyckeln',
   description:
-    'Nyckeln webbläsaren behöver för att skapa en prenumeration på notiser. Publik per definition. Rutten har ingen hastighetsgräns.',
+    'Nyckeln webbläsaren behöver för att skapa en prenumeration på notiser. Publik per definition.',
   tags: ['Notiser'],
   access: 'public',
   ok: json('Nyckeln.', z.object({ enabled: z.boolean(), publicKey: z.string().nullable() })),
+  responses: { 429: rateLimited() },
 })
 
 register({
@@ -512,7 +539,7 @@ register({
       qrImage: z.string().nullable().describe('Första QR-koden som en data-URI. Null om ingen finns.'),
     }),
   ),
-  responses: { 429: rateLimited() },
+  responses: { 429: rateLimited(), 502: bankIdStartFailed() },
 })
 
 register({
@@ -557,7 +584,7 @@ register({
       }),
     ]),
   ),
-  responses: { 429: rateLimited() },
+  responses: { 429: rateLimited(), 502: bankIdCollectFailed() },
 })
 
 // --- Väljarens session ----------------------------------------------------
@@ -614,7 +641,8 @@ register({
   summary: 'Jämför enhetens sparade röst',
   description:
     'Enheten skickar den chifferhash den sparade för varje valsedel. Servern svarar lika, olika eller ingen röst, ' +
-    'och lämnar aldrig ut sin egen hash. Högst en post per valsedel.',
+    'och lämnar aldrig ut sin egen hash. Högst en post per valsedel. Bara medan omröstningen tar emot röster: ' +
+    'efter closesAt, eller när fasen lämnat OPEN, svarar rutten 409 utan att jämföra.',
   tags: ['Väljare'],
   access: 'voter',
   csrf: true,
@@ -635,6 +663,7 @@ register({
       'INVALID_INPUT',
       'INVALID_BALLOT',
     ]),
+    409: error('Omröstningen tar inte längre emot röster, och ingenting jämförs (spec 3.1).', ['VOTING_CLOSED']),
     429: rateLimited(),
   },
 })
@@ -659,7 +688,13 @@ register({
       'INVALID_INPUT',
       'INVALID_BALLOT',
     ]),
+    409: error(
+      'Omröstningen tar inte emot röster: fasen har lämnat OPEN eller closesAt har passerats, eller så hör den ' +
+        'till ett annat läge än serverns. Ingen BankID-order skapades.',
+      ['VOTING_CLOSED', 'WRONG_MODE'],
+    ),
     429: rateLimited(),
+    502: bankIdStartFailed(),
     503: error('Servern har för mycket att göra, och rösten lades inte. Rubriken Retry-After anger sekunder.', ['BUSY']),
   },
 })
@@ -722,6 +757,7 @@ register({
     429: rateLimited(),
     499: error('Besökaren stängde begäran innan rösten lades. Ingenting lades.', ['CLIENT_CLOSED']),
     500: statusReply('BankID:s underskrift är större än servern tar emot. Ett fel i serverns tak, inte väljarens.', 'signature_too_large'),
+    502: bankIdCollectFailed(),
     503: statusReply('Många röstar just nu. Rösten prövas så fort det finns plats. Rubriken Retry-After anger sekunder.', 'queued'),
   },
 })
@@ -749,7 +785,7 @@ register({
       z.object({ status: z.literal('complete'), name: z.string() }),
     ]),
   ),
-  responses: { 429: rateLimited() },
+  responses: { 429: rateLimited(), 502: bankIdCollectFailed() },
 })
 
 register({

@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
+import { getClientIp } from '@/lib/http'
 import { truncateToHour } from '@/lib/time'
 import { logger } from '@/lib/logger'
+import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import type { BankIdKind } from './bankid/kind'
 import { votersDb } from './db'
 
@@ -128,7 +130,8 @@ export const AUDIT_EVENTS = {
    * En slutkontroll fann en avvikelse, och fastställandet markerade
    * omröstningen UNDER_REVIEW (fixrunda 1 av uppgift 12b). Markeringen står i
    * röstdatabasen, där den som kan skriva kan ta bort den. Posten står här, i
-   * röstlängdens kedja, så att en borttagen markering syns. Posten säger inte
+   * röstlängdens kedja, där den som läser kedjan ser att en omröstning
+   * markerats. Ingen kontroll jämför posten med markeringen. Posten säger inte
    * vilken omröstning det gällde, som ingen post i kedjan gör.
    */
   ELECTION_UNDER_REVIEW: 'ELECTION_UNDER_REVIEW',
@@ -306,6 +309,26 @@ export async function recordAuditEvent(
       return
     }
   }
+}
+
+/**
+ * Posten CSRF_REJECTED för en begäran med fel Origin, under en egen gräns per adress
+ * (helgrensgranskningen, Viktigt 1, ruling 145).
+ *
+ * Posten skrevs förut för varje POST med fel Origin, före hastighetsgränsen och utan
+ * inloggning. Varje post tar ett löpnummer i kedjan, så vem som helst kunde skriva
+ * poster utan gräns. Granskarens prob P6 avbröt fyra av fem stängningar så, innan
+ * skalningen tog tabellens lås.
+ *
+ * VARFÖR EN EGEN GRÄNS OCH INTE RUTTENS. Prövades Origin efter ruttens gräns kunde
+ * en främmande sida som väljaren besöker förbruka väljarens gräns, och allas bakom
+ * samma adress, med anrop som ändå avvisas. Nu avvisas begäran fortfarande först, och
+ * bara posten om den går genom gränsen `rejectedOrigin`. Avvisningen sker oavsett
+ * gräns, och över gränsen skrivs ingen post.
+ */
+export async function recordRejectedOrigin(request: Request): Promise<void> {
+  const rate = checkRateLimit('rejected-origin', getClientIp(request), RATE_LIMITS.rejectedOrigin)
+  if (rate.allowed) await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
 }
 
 export type AuditChainVerdict =

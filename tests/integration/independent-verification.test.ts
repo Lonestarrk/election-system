@@ -352,6 +352,25 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     expect(body).not.toHaveProperty('ballots')
   })
 
+  it('en valsedel i röstlängdens lista som saknar form i röstdatabasen ger ingen publicering', async () => {
+    /**
+     * Helgrensgranskningen, Mindre. Publiceringen hoppade tyst över en sådan
+     * valsedel. Har den rader fäller urnroten borttagningen, men en tom valsedel
+     * kunde försvinna ur publiceringen utan att något märktes.
+     */
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    await closeAndTally()
+    expect((await published()).status).toBe(200)
+
+    await votesDb.electionBallot.delete({ where: { id: second.id } })
+
+    const { status, body } = await published()
+    expect(status).toBe(409)
+    expect(body.status).toBe('result_mismatch')
+    expect(body).not.toHaveProperty('ballots')
+  })
+
   it('en manipulerad partiell dekryptering i databasen ger ingen publicering', async () => {
     await castTheVotes()
     await closeAndTally()
@@ -384,6 +403,15 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     const { status, body } = await published()
     expect(status).toBe(409)
     expect(body.status).toBe('result_mismatch')
+  })
+
+  it('publiceringen säger att den inte bär BankID-miljön', async () => {
+    // Helgrensgranskningen: en publicering från testmiljön ser likadan ut som en från produktion.
+    await castTheVotes()
+    await closeAndTally()
+
+    const { body } = await published()
+    expect((body.notCheckable as string[]).some((entry) => /Vilken BankID-miljö underskrifterna kom från/.test(entry))).toBe(true)
   })
 
   it('fältet för antalet heter efter vad det är: markeringarna, inte kuverten (fixrunda 1, Mindre 3)', async () => {
@@ -553,7 +581,7 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     await close()
     await tallyBallot(first.id)
 
-    const read = async () => (await (await databaseStateRoute()).json()) as DatabaseState
+    const read = async () => (await (await databaseStateRoute(new Request('http://localhost:3000/api/demo/database-state'))).json()) as DatabaseState
     // Den första valsedeln är räknad, men omröstningen står i STRIPPED.
     expect((await read()).votesDb.ballotTally).toEqual([])
 

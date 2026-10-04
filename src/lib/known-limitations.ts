@@ -282,7 +282,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       { file: 'src/orchestration/close-election.usecase.ts', contains: 'const urnRoot = urnRootOf(placed)' },
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },",
+        contains: "data: { phase: 'STRIPPED', linkClearedAt: truncateToHour(new Date()), envelopeRoot, urnRoot },",
       },
       // Räkningen jämför med roten i omröstningens rad i röstlängden, en
       // kolumn som den som kan skriva där kan skriva om, och spärren läser
@@ -726,6 +726,32 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       },
       // Alla tre fraser kommer i en och samma begäran.
       { file: 'src/lib/validation.ts', contains: 'trusteePassphrases: trusteePassphrasesSchema,' },
+    ],
+  },
+  {
+    id: 'closing-lock-connection-idles',
+    title: 'Stängningens lås står stilla på sin anslutning under en stor stängning',
+    why:
+      'Stängningen håller sitt lås i en egen transaktion i röstlängden, och den anslutningen gör ' +
+      'ingenting medan kuverten valideras och flyttas på andra anslutningar, i ett stort val i ' +
+      'timmar. Databasens egen gräns för en transaktion som står stilla stängs av för just den, men ' +
+      'nätet emellan har egna tomgångsgränser, till exempel omkring fyra minuter för SNAT i Azure, ' +
+      'och systemet skickar inga keepalive-paket och frågar inte låset med jämna mellanrum. Avbryts ' +
+      'anslutningen släpps låset, och stängningen märker det vid nästa fråga till låset eller i ' +
+      'skalningen. Den avbryts då åt det säkra hållet, utan att ha raderat något och med det ' +
+      'försiktiga beskedet, och kan köras om. Men ett tillräckligt stort val kan bli omöjligt att ' +
+      'stänga i ett nät med en kort tomgångsgräns.',
+    stillTrueIf: [
+      // Låsets transaktion står stilla med avsikt, och databasens tomgångsgräns stängs av för den.
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: "await tx.$queryRaw`SELECT set_config('idle_in_transaction_session_timeout', '0', true)`",
+      },
+      // Låset frågas bara före de steg det skyddar, inte med jämna mellanrum.
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: 'stillHeld: async () => {\n            try {\n              await tx.$queryRaw`SELECT 1`',
+      },
     ],
   },
   {

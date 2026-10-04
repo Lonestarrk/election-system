@@ -11,7 +11,7 @@ import { attachCompletion, getOrder, takeOrder } from '@/lib/order-state'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { castEncryptedBallotSchema, parseJsonBody } from '@/lib/validation'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, recordRejectedOrigin } from '@/modules/eligibility/audit.service'
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { collectErrorReply, failedReply, pendingReply } from '@/modules/eligibility/bankid/replies'
 import { castEncryptedBallot, type CastOutcome } from '@/modules/eligibility/pending-vote.service'
@@ -63,8 +63,9 @@ export const dynamic = 'force-dynamic'
  * modulerna — hämtar den via `getEncryptedBallotShape` och skickar med den.
  */
 export async function POST(request: Request) {
+  // Posten om fel Origin har en egen gräns per adress (helgrensgranskningen, ruling 145).
   if (!hasValidOrigin(request)) {
-    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    await recordRejectedOrigin(request)
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
@@ -74,7 +75,7 @@ export async function POST(request: Request) {
     RATE_LIMITS.castEncryptedBallot,
   )
   if (!rate.allowed) {
-    await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+    if (rate.firstRejection) await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många försök.', 429, {
       'Retry-After': String(rate.retryAfterSeconds),
     })

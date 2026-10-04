@@ -435,6 +435,10 @@ describe.skipIf(!databaseAvailable)('slutkontrollen i kuvertmodellen', () => {
     expect(checkOf(result, 'link_cleared').detail).toMatch(/Säkerhetskopior, läsreplikor och WAL-loggen/)
     expect(checkOf(result, 'partial_decryptions_verify').detail).toMatch(/publika andelarna ligger i röstdatabasen/)
     expect(checkOf(result, 'not_under_review').detail).toMatch(/^Röstdatabasen bär ingen markering om avvikelse/)
+    // Ingenting jämför posten med markeringen (helgrensgranskningen), så texten lovar inte att en
+    // borttagen markering syns, bara att posten finns att läsa.
+    expect(checkOf(result, 'not_under_review').detail).not.toMatch(/så att en borttagen markering syns/)
+    expect(checkOf(result, 'not_under_review').detail).toMatch(/Ingen kontroll jämför posten med markeringen/)
   })
 
   it('ingen kontroll läser det gamla flödet', async () => {

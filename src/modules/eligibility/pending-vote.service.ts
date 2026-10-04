@@ -557,7 +557,7 @@ export async function pendingVoteFor(
  * `acceptsVotes` har samma villkor som `castEncryptedBallot` avvisar på, i
  * omvänd form: fasen är OPEN, kopplingen är inte raderad och `closesAt` har
  * inte passerats. Sidan ska inte erbjuda en röstning som servern sedan
- * vägrar ta emot. Ändras villkoret där ska det ändras här.
+ * vägrar ta emot. Ändras villkoret där ska det ändras här, i `acceptsVotesNow`.
  */
 export type EnvelopeOverview = {
   phase: string
@@ -590,16 +590,56 @@ export async function envelopeOverview(
   return {
     phase: election.phase,
     closesAt: election.closesAt,
-    acceptsVotes:
-      election.phase === 'OPEN' &&
-      election.linkClearedAt === null &&
-      election.closesAt > new Date(),
+    acceptsVotes: acceptsVotesNow(election),
     ballotIdsWithEnvelope: envelopes.map((envelope) => envelope.ballotId),
   }
 }
 
+/**
+ * Tar omröstningen emot röster just nu? Fasen är OPEN, kopplingen är inte
+ * raderad och `closesAt` har inte passerats.
+ *
+ * Det är villkoret `castEncryptedBallot` avvisar på, i omvänd form, och det
+ * enda villkoret för det som bara får ske medan röstningen pågår: sessionens
+ * `acceptsVotes`, jämförelsen av enhetens röst och starten av en underskrift.
+ * Funktionen finns för att de tre inte ska kunna glida isär. Läggningen prövar
+ * samma villkor en gång till i transaktionen som skriver kuvertet.
+ */
+export function acceptsVotesNow(
+  election: { phase: string; linkClearedAt: Date | null; closesAt: Date },
+  now: Date = new Date(),
+): boolean {
+  return election.phase === 'OPEN' && election.linkClearedAt === null && election.closesAt > now
+}
+
+/**
+ * Får en röst läggas i omröstningen nu, och hör den till serverns läge?
+ *
+ * För underskriftens start (helgrensgranskningen, B8). BankID får en order med
+ * väljarens identitet så snart den startas, och läggningen avvisade rösten först
+ * efteråt. Nu prövas samma villkor som läggningens, `acceptsVotesNow` och läget, i
+ * samma ordning, innan ordern skapas. Läggningen prövar dem ändå igen.
+ */
+export async function castWindow(electionId: string): Promise<'open' | 'closed' | 'wrong_mode'> {
+  const election = await votersDb.election.findUnique({
+    where: { id: electionId },
+    select: { phase: true, closesAt: true, linkClearedAt: true, mode: true },
+  })
+  if (!election || !acceptsVotesNow(election)) return 'closed'
+  if (!electionBelongsToThisMode(election.mode)) return 'wrong_mode'
+  return 'open'
+}
+
 /** Utfallet av en jämförelse: samma kuvert, ett annat kuvert, eller inget kuvert alls. */
 export type DeviceComparison = 'same' | 'different' | 'none'
+
+/**
+ * Jämförelsens svar. `closed` betyder att omröstningen inte längre tar emot
+ * röster, och då jämförs ingenting, se `compareWithPendingVotes`.
+ */
+export type DeviceComparisonOutcome =
+  | { status: 'compared'; ballots: Array<{ ballotId: string; result: DeviceComparison }> }
+  | { status: 'closed' }
 
 /**
  * Jämför enhetens sparade chifferhashar med väljarens liggande kuvert.
@@ -620,11 +660,28 @@ export type DeviceComparison = 'same' | 'different' | 'none'
  * Jämförelsen görs i konstant tid, så att svarstiden inte berättar hur många
  * tecken i början som stämde. Utan det hade hashen gått att gissa fram tecken
  * för tecken över tillräckligt många anrop, och då vore den utlämnad ändå.
+ *
+ * BARA MEDAN RÖSTNINGEN PÅGÅR (helgrensgranskningen, ruling 144). Spec 3.1:
+ * efter stängningen kan ingen se eller ändra något. Svarade jämförelsen efter
+ * closesAt var `same` ett slutgiltigt kvitto: en köpare som sett läggningen och
+ * sparat hashen loggar in på sin egen enhet efter stängningen och får veta att
+ * den röst han såg är den som räknas. Fönstret kunde vara långt, eftersom en
+ * stängning som stoppas av en avvikelse lämnar omröstningen i CLOSED med
+ * kopplingen kvar. Villkoret är `acceptsVotesNow`, samma som sessionens
+ * `acceptsVotes`. Är det falskt jämförs ingenting, och svaret är detsamma för
+ * rätt och fel hash.
  */
 export async function compareWithPendingVotes(
   voterStatusId: string,
+  electionId: string,
   deviceHashes: Array<{ ballotId: string; ciphertextHash: string }>,
-): Promise<Array<{ ballotId: string; result: DeviceComparison }>> {
+): Promise<DeviceComparisonOutcome> {
+  const election = await votersDb.election.findUnique({
+    where: { id: electionId },
+    select: { phase: true, closesAt: true, linkClearedAt: true },
+  })
+  if (!election || !acceptsVotesNow(election)) return { status: 'closed' }
+
   const envelopes = await votersDb.pendingVote.findMany({
     where: { voterStatusId, ballotId: { in: deviceHashes.map((entry) => entry.ballotId) } },
     select: { ballotId: true, ciphertextHash: true },
@@ -632,14 +689,17 @@ export async function compareWithPendingVotes(
 
   const held = new Map(envelopes.map((envelope) => [envelope.ballotId, envelope.ciphertextHash]))
 
-  return deviceHashes.map((entry): { ballotId: string; result: DeviceComparison } => {
-    const current = held.get(entry.ballotId)
-    if (current === undefined) return { ballotId: entry.ballotId, result: 'none' }
-    return {
-      ballotId: entry.ballotId,
-      result: safeEqual(current, entry.ciphertextHash) ? 'same' : 'different',
-    }
-  })
+  return {
+    status: 'compared',
+    ballots: deviceHashes.map((entry): { ballotId: string; result: DeviceComparison } => {
+      const current = held.get(entry.ballotId)
+      if (current === undefined) return { ballotId: entry.ballotId, result: 'none' }
+      return {
+        ballotId: entry.ballotId,
+        result: safeEqual(current, entry.ciphertextHash) ? 'same' : 'different',
+      }
+    }),
+  }
 }
 
 /**

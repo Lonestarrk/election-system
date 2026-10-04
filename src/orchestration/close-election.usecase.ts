@@ -7,13 +7,14 @@ import { removeOrdersForBallots } from '@/lib/order-state'
 import { forgetMockOrdersForElection } from '@/modules/eligibility/bankid/mock-orders'
 import { checkElectionMode } from './election-mode'
 import { urnRootOf } from '@/lib/urn-root'
+import { truncateToHour } from '@/lib/time'
 import { verifyEncryptedBallotOnServer } from '@/lib/crypto/server'
 import type { EncryptedBallot } from '@/lib/crypto/verify-ballot'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { votesDb } from '@/modules/ballot-box/db'
 import { votersDb } from '@/modules/eligibility/db'
 import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
-import { closeStateOf, type CloseState } from '@/modules/eligibility/election.service'
+import { closeStateOf, envelopesLeftOn, type CloseState } from '@/modules/eligibility/election.service'
 import {
   clearPendingVotes,
   markEnvelopesAsVoted,
@@ -344,8 +345,8 @@ type Envelope = {
  * Faserna där kopplingen finns kvar, och faserna efter att den raderats
  * (spec 6.1).
  *
- * `already_closed` betyder fas STRIPPED eller senare MED KUVERTROTEN SKRIVEN,
- * här och ingen annanstans. STRIPPED skrivs bara i skalningens transaktion, i
+ * `already_closed` betyder fas STRIPPED eller senare MED KUVERTROTEN SKRIVEN OCH
+ * INGET KUVERT KVAR på omröstningens valsedlar, här och ingen annanstans. STRIPPED skrivs bara i skalningens transaktion, i
  * samma sats som roten och tillsammans med raderingen, och de senare faserna
  * bara efter den. En omröstning i CLOSED eller VALIDATED har kvar sina kuvert,
  * och en omkörning ska ta dem. Fram till uppgift 11d räknades allt som inte var
@@ -362,8 +363,17 @@ type Envelope = {
 const LINKED_PHASES: readonly string[] = ['OPEN', 'CLOSED', 'VALIDATED']
 const CLEARED_PHASES: readonly string[] = ['STRIPPED', 'TALLIED', 'CERTIFIED']
 
+/**
+ * INGET KUVERT FÅR LIGGA KVAR (helgrensgranskningen, Viktigt 2, prob S5). Den som
+ * kan skriva i röstlängden kunde sätta fasen och roten och låta kuverten ligga.
+ * Stängningen svarade då `already_closed`, och rutten att kopplingen var
+ * raderad, fast namn och chiffer låg kvar bredvid varandra. Skalningen raderar
+ * kuverten i samma transaktion som den skriver roten och kräver att inget
+ * ligger kvar före COMMIT, så ett kuvert på omröstningens valsedlar efter det
+ * kan bara komma av en skrivning förbi stängningen.
+ */
 function linkAlreadyCleared(state: CloseState): boolean {
-  return CLEARED_PHASES.includes(state.phase) && state.envelopeRoot !== null
+  return CLEARED_PHASES.includes(state.phase) && state.envelopeRoot !== null && state.envelopesLeft === 0
 }
 
 function linkStillExists(state: CloseState): boolean {
@@ -404,6 +414,14 @@ function describeUnexpectedState(state: CloseState): string {
       `Fasen står i ${state.phase} men kuvertroten är oskriven. STRIPPED skrivs bara tillsammans ` +
       'med roten, så någon har skrivit i röstlängden förbi stängningen, och det går inte att ' +
       'säga om kopplingen raderats. Ingenting raderas nu.'
+    )
+  }
+  if (state.envelopesLeft !== 0) {
+    return (
+      `Fasen står i ${state.phase} och kuvertroten är skriven, men ${state.envelopesLeft} kuvert ligger ` +
+      'kvar på omröstningens valsedlar. Skalningen raderar kuverten i samma transaktion som den ' +
+      'skriver roten, så någon har skrivit i röstlängden förbi stängningen, och kopplingen är inte ' +
+      'raderad för de kuverten. Ingenting raderas nu.'
     )
   }
   return (
@@ -833,7 +851,8 @@ function afterChangedEnvelopes(change: EnvelopesChangedError | PhaseMovedError):
  * Före fixrundan fattades samma beslut i två kopior, och ett villkor som det om
  * roten i `linkAlreadyCleared` kunde ändras i den ena men inte i den andra.
  *
- *   `cleared`    fasen står i STRIPPED eller senare och roten är skriven.
+ *   `cleared`    fasen står i STRIPPED eller senare, roten är skriven och
+ *                inget kuvert ligger kvar på omröstningens valsedlar.
  *                Kopplingen är raderad, och svaret är `already_closed`.
  *   `intact`     fasen står i OPEN, CLOSED eller VALIDATED, roten är
  *                oskriven, och stängningens lås hålls. Kopplingen finns kvar,
@@ -1171,6 +1190,14 @@ type UrnChanges = { residueRemoved: string[]; urnRowsReplaced: string[] }
  * validerade innehållet i dess ställe. Det tyder på ett angrepp, så det
  * larmas i loggen, med antal, och chifferhasharna står i stängningens svar.
  * Loggen maskerar chifferhashar, så de står inte där.
+ *
+ * LARMET PEKAR INTE ALLTID UT RÄTT DATABAS (ruling 131, helgrensgranskningen).
+ * Platsen räknas ur valsedel, chifferhash och löpnummer bland kuvert med samma
+ * chiffer, men inte ur bevisen. Har två kuvert samma chiffer och olika bevis,
+ * och försvinner det ena ur röstlängden mellan två körningar, hamnar det andra
+ * på en plats där en rad med andra bevis redan står. Då är det röstlängden som
+ * skrivits, inte röstdatabasen. Urnan blir rätt i båda fallen, och texten säger
+ * att någon av databaserna skrivits förbi stängningen.
  */
 async function findUrnDeviations(ballotIds: string[], envelopes: readonly UrnEnvelope[]): Promise<UrnDeviations> {
   const places = new Set(envelopes.map((envelope) => envelope.urnId))
@@ -1224,8 +1251,10 @@ async function findUrnDeviations(ballotIds: string[], envelopes: readonly UrnEnv
   if (forgedRowIds.length > 0) {
     logger.error(
       'LARM: stängningen hittade rader i röstdatabasen på ett validerat kuverts plats men med ett ' +
-        'annat innehåll. Ingen legitim väg skriver en sådan rad. De ersätts med det validerade ' +
-        'innehållet före infogningen, och chifferhasharna står i stängningens svar.',
+        'annat innehåll. Ingen legitim väg skriver en sådan rad: någon har skrivit i röstdatabasen, ' +
+        'eller tagit bort ett kuvert med samma chiffer ur röstlängden sedan en tidigare körning. De ' +
+        'ersätts med det validerade innehållet före infogningen, och chifferhasharna står i ' +
+        'stängningens svar.',
       { found: forgedRowIds.length },
     )
   }
@@ -1568,7 +1597,7 @@ async function prepareClose(electionId: string, lock: ClosingLock, urn: UrnChang
    * `verdictFor`. Låset är nyss taget, och här sägs ingenting om att kopplingen
    * är orörd, så låset behöver inte frågas.
    */
-  const start = verdictFor(election, true)
+  const start = verdictFor({ ...election, envelopesLeft: await envelopesLeftOn(electionId) }, true)
 
   if (start.kind === 'cleared') {
     return { kind: 'settled', outcome: { status: 'already_closed' } }
@@ -1999,6 +2028,21 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
    * — en logg som påstår att kopplingen raderats när den ligger kvar vore
    * värre än ingen logg alls.
    *
+   * REVISIONSPOSTEN TAR TABELLENS LÅS FÖRST (helgrensgranskningen, Viktigt 1,
+   * ruling 145). Posten tar nästa löpnummer i kedjan. Skrevs en annan post
+   * mellan att transaktionen läste det senaste numret och skrev sitt, avvisade
+   * det unika indexet posten, PostgreSQL avbröt transaktionen och skalningen
+   * fördes tillbaka. Granskarens prob P6 gjorde det med anrop med fel Origin,
+   * utan inloggning: fyra av fem stängningar avbröts. Låset väntar in en post
+   * som redan skrivs och håller nästa borta till COMMIT, som fastställandet och
+   * demoåterställningen redan gjorde. Det tas efter jämför-och-sätt, alltså
+   * efter omröstningens rad, i samma ordning som räkningen och fastställandet:
+   * rad först, tabell sedan, så att två transaktioner inte väntar på varandra
+   * i kors. Väntar låset längre än `STRIP_LOCK_TIMEOUT_MS` förs skalningen
+   * tillbaka som vid varje annat fel, och kopplingen är orörd. Låsets
+   * transaktion är READ COMMITTED, så läsningen av det senaste numret efter
+   * låset ser en post som gjorde COMMIT medan låset väntade.
+   *
    * TIDSGRÄNSEN är låsets, sex timmar. Före ruling 128 hade skalningen egna två
    * minuter, valda för att rymma en radering av hundratusentals kuvert. Låsets
    * gräns är längre än så, och ett lås som går ut tar skalningen med sig.
@@ -2006,7 +2050,7 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
   const stripping = await lock.strip(async (tx) => {
     const stripped = await tx.election.updateMany({
       where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },
-      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },
+      data: { phase: 'STRIPPED', linkClearedAt: truncateToHour(new Date()), envelopeRoot, urnRoot },
     })
     if (stripped.count !== 1) throw new PhaseMovedError()
 
@@ -2024,6 +2068,8 @@ async function closeUnderLock(electionId: string, lock: ClosingLock, urn: UrnCha
       throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })
     }
 
+    // Ingen annan post kan ta löpnumret, se REVISIONSPOSTEN ovan (ruling 145).
+    await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`
     await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx, { urnRoot })
 
     return removed
@@ -2168,6 +2214,15 @@ async function confirmStripped(
       'Stängningen kunde inte bekräftas: låsets transaktion gjorde COMMIT, och kuvertroten är ' +
         `skriven, men fasen står i ${after.phase} i stället för STRIPPED. Någon har skrivit fasen ` +
         'förbi stängningen efter skalningen.',
+    )
+  }
+  // Roten skrivs bara av skalningen. Står den där har skalningen gått igenom, och det är
+  // fasen eller kuverten som skrivits förbi stängningen efteråt (prob S6).
+  if (after.envelopeRoot !== null) {
+    throw new CloseAbortedError(
+      'unknown',
+      'Stängningen kunde inte bekräftas: låsets transaktion gjorde COMMIT, och kuvertroten är skriven, ' +
+        `men omröstningen står inte som skalningen lämnade den. ${verdict.statement}`,
     )
   }
   throw new CloseAbortedError(

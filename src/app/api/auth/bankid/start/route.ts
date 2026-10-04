@@ -5,7 +5,7 @@ import { parseJsonBody, startAuthSchema } from '@/lib/validation'
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { startErrorReply } from '@/modules/eligibility/bankid/replies'
 import { launchUrl, renderQrPng } from '@/modules/eligibility/bankid/qr'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, recordRejectedOrigin } from '@/modules/eligibility/audit.service'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -50,8 +50,9 @@ const RETURN_PATH = { vote: '/identify', verify: '/verify', admin: '/admin' } as
  * sekund.
  */
 export async function POST(request: Request) {
+  // Posten om fel Origin har en egen gräns per adress (helgrensgranskningen, ruling 145).
   if (!hasValidOrigin(request)) {
-    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    await recordRejectedOrigin(request)
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
@@ -63,7 +64,7 @@ export async function POST(request: Request) {
 
   const rate = checkRateLimit('auth-start', clientIp, RATE_LIMITS.authStart)
   if (!rate.allowed) {
-    await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+    if (rate.firstRejection) await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många försök. Försök igen om en stund.', 429, {
       'Retry-After': String(rate.retryAfterSeconds),
     })

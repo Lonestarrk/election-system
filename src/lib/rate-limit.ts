@@ -13,7 +13,8 @@
 
 import { sha256Hex } from './crypto'
 
-type Bucket = { tokens: number; lastRefill: number }
+/** `refused`: hinken har avvisat ett anrop sedan den senast släppte igenom ett. */
+type Bucket = { tokens: number; lastRefill: number; refused?: boolean }
 
 const buckets = new Map<string, Bucket>()
 
@@ -158,9 +159,42 @@ export const RATE_LIMITS = {
    * Gränsen hindrar att tabellen fylls med påhittade endpoints.
    */
   pushSubscribe: { limit: 5, windowMs: 300_000 },
+
+  /**
+   * Läsrutterna som saknade gräns (helgrensgranskningen, B10). Gränserna finns mot
+   * att en slinga blir ett billigt lastangrepp, inte för att skydda innehållet, som
+   * är offentligt.
+   *
+   * `publicElections` är GET /api/elections. Röstsidan frågar den var trettionde
+   * sekund medan den är öppen, för att se om röstningen stängt, alltså två gånger i
+   * minuten per flik. 600 i minuten rymmer trehundra flikar bakom samma adress, som
+   * på ett bibliotek eller bakom en mobiloperatörs NAT.
+   */
+  publicElections: { limit: 600, windowMs: 60_000 },
+  /** GET /api/push/subscribe, den publika VAPID-nyckeln. Hämtas en gång per sidvisning. */
+  pushPublicKey: { limit: 60, windowMs: 60_000 },
+  /**
+   * GET /api/demo/database-state, livevyn i demoläget. Den frågar var tionde sekund,
+   * sex gånger i minuten per flik, och varje anrop gör ett tjugotal frågor mot båda
+   * databaserna. 60 i minuten rymmer tio flikar bakom samma adress.
+   */
+  demoDatabaseState: { limit: 60, windowMs: 60_000 },
+
+  /**
+   * Revisionsposten CSRF_REJECTED för en begäran med fel Origin, per adress
+   * (helgrensgranskningen, ruling 145). Gäller posten, inte avvisningen, se
+   * `recordRejectedOrigin` i src/modules/eligibility/audit.service.ts.
+   */
+  rejectedOrigin: { limit: 10, windowMs: 60_000 },
 } as const satisfies Record<string, RateLimitRule>
 
-export type RateLimitResult = { allowed: boolean; retryAfterSeconds: number }
+/**
+ * `firstRejection` är sant för det första avvisade anropet efter ett som släpptes
+ * igenom, och falskt för resten (helgrensgranskningen, ruling 145). Rutterna skriver
+ * revisionsposten RATE_LIMITED bara då. Skrevs den för varje avvisat anrop kunde en
+ * oinloggad skriva poster utan gräns, och varje post tar ett löpnummer i kedjan.
+ */
+export type RateLimitResult = { allowed: boolean; retryAfterSeconds: number; firstRejection: boolean }
 
 /**
  * Tak för antal spårade nycklar.
@@ -208,11 +242,14 @@ export function checkRateLimit(scope: string, rawKey: string, rule: RateLimitRul
 
   if (bucket.tokens < 1) {
     const msUntilNextToken = (1 - bucket.tokens) / refillRate
-    return { allowed: false, retryAfterSeconds: Math.ceil(msUntilNextToken / 1000) }
+    const firstRejection = bucket.refused !== true
+    bucket.refused = true
+    return { allowed: false, retryAfterSeconds: Math.ceil(msUntilNextToken / 1000), firstRejection }
   }
 
   bucket.tokens -= 1
-  return { allowed: true, retryAfterSeconds: 0 }
+  bucket.refused = false
+  return { allowed: true, retryAfterSeconds: 0, firstRejection: false }
 }
 
 /** Endast för tester. */

@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({ auth: vi.fn(), collect: vi.fn(), cancel: vi.fn
 vi.mock('@/modules/eligibility/audit.service', () => ({
   AUDIT_EVENTS: new Proxy({}, { get: (_target, name) => String(name) }),
   recordAuditEvent: async () => undefined,
+  recordRejectedOrigin: async () => undefined,
 }))
 vi.mock('@/modules/eligibility/bankid', () => ({
   bankIdService: {

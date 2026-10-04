@@ -7,7 +7,7 @@ import { hashCiphertext } from '@/lib/crypto/verify-ballot'
 import { putOrder } from '@/lib/order-state'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { parseJsonBody, signStartSchema } from '@/lib/validation'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, recordRejectedOrigin } from '@/modules/eligibility/audit.service'
 import { bankIdService } from '@/modules/eligibility/bankid'
 import { startErrorReply } from '@/modules/eligibility/bankid/replies'
 import {
@@ -19,7 +19,7 @@ import {
 import { launchUrl, renderQrPng } from '@/modules/eligibility/bankid/qr'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
 import { signingSubject } from '@/modules/eligibility/election.service'
-import { nextCastSequence } from '@/modules/eligibility/pending-vote.service'
+import { castWindow, nextCastSequence } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
 
 export const runtime = 'nodejs'
@@ -76,8 +76,9 @@ export const dynamic = 'force-dynamic'
  * nyttolasten — se den ruttens dokumentation.
  */
 export async function POST(request: Request) {
+  // Posten om fel Origin har en egen gräns per adress (helgrensgranskningen, ruling 145).
   if (!hasValidOrigin(request)) {
-    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    await recordRejectedOrigin(request)
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
@@ -85,7 +86,7 @@ export async function POST(request: Request) {
 
   const rate = checkRateLimit('vote-sign-start', clientIp, RATE_LIMITS.signStart)
   if (!rate.allowed) {
-    await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+    if (rate.firstRejection) await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många försök.', 429, {
       'Retry-After': String(rate.retryAfterSeconds),
     })
@@ -117,6 +118,15 @@ export async function POST(request: Request) {
   const body = await parseJsonBody(request, signStartSchema)
   if (!body.ok) {
     return errorResponse('INVALID_INPUT', body.message, 400)
+  }
+
+  // Fasen, closesAt och läget innan BankID får en order (B8). Läggningen prövar dem igen.
+  const window = await castWindow(session.electionId)
+  if (window === 'closed') {
+    return errorResponse('VOTING_CLOSED', 'Röstningen har stängt, och ingen röst kan läggas.', 409)
+  }
+  if (window === 'wrong_mode') {
+    return errorResponse('WRONG_MODE', 'Omröstningen hör inte till det läge servern kör i.', 409)
   }
 
   const subject = await signingSubject(body.data.ballotId, session.electionId)

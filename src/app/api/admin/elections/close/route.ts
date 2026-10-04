@@ -319,8 +319,9 @@ function replacedNote(urnRowsReplaced: readonly string[]): string {
   return (
     ` LARM: ${urnRowsReplaced.length} rader i röstdatabasen stod på ett validerat kuverts ` +
     'plats men med ett annat innehåll. Stängningen tog bort dem för att infoga det validerade i ' +
-    'stället. Ingen legitim väg skriver en sådan rad, så någon har skrivit i röstdatabasen förbi ' +
-    'stängningen. Chifferhasharna står i urnRowsReplaced.'
+    'stället. Ingen legitim väg skriver en sådan rad, så någon har skrivit förbi stängningen: i ' +
+    'röstdatabasen, eller i röstlängden, där ett kuvert med samma chiffer men andra bevis kan ha ' +
+    'tagits bort sedan en tidigare körning. Chifferhasharna står i urnRowsReplaced.'
   )
 }
 

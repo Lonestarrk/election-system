@@ -47,6 +47,42 @@ function withoutComments(source: string): string {
     .join('\n')
 }
 
+/**
+ * Kropparna för de funktioner rutten importerar ur src och som själva bygger ett svar,
+ * med `errorResponse`, `jsonResponse` eller en `Response`. En funktion som bara räknar
+ * eller läser bär inga statuskoder, och tas inte med.
+ */
+function responseHelpersOf(routeSource: string): string[] {
+  const bodies: string[] = []
+  for (const match of routeSource.matchAll(/import\s*\{([^}]+)\}\s*from\s*'@\/([^']+)'/g)) {
+    const names = match[1]!
+      .split(',')
+      .map((name) => name.replace(/^\s*type\s+/, '').split(/\s+as\s+/)[0]!.trim())
+      .filter((name) => name.length > 0)
+    // Byggstenarna själva, med sina förval, är inte en rutts svar.
+    if (match[2] === 'lib/http') continue
+    const base = join(ROOT, 'src', match[2]!)
+    const file = [`${base}.ts`, `${base}.tsx`, join(base, 'index.ts')].find((candidate) => {
+      try {
+        return statSync(candidate).isFile()
+      } catch {
+        return false
+      }
+    })
+    if (!file) continue
+    const helper = withoutComments(readFileSync(file, 'utf8'))
+    for (const name of names) {
+      const start = helper.search(new RegExp(`export (?:async )?function ${name}\\b`))
+      if (start < 0) continue
+      const rest = helper.slice(start + 1)
+      const next = rest.search(/\nexport /)
+      const body = next < 0 ? rest : rest.slice(0, next)
+      if (/errorResponse\(|jsonResponse\(|Response\(/.test(body)) bodies.push(body)
+    }
+  }
+  return bodies
+}
+
 type Operation = {
   responses?: Record<string, unknown>
   security?: Array<Record<string, string[]>>
@@ -114,8 +150,12 @@ describe('OpenAPI-specen mot den faktiska ruttinventeringen', () => {
      */
     for (const route of routes) {
       const source = withoutComments(readFileSync(join(API_ROOT, route, 'route.ts'), 'utf8'))
+      // Hjälparna som bygger svar åt rutten räknas med (helgrensgranskningen, B6): BankID-felen
+      // ger 502 ur src/modules/eligibility/bankid/replies.ts, och den koden stod inte i rutterna.
       const returned = new Set(
-        [...source.matchAll(/(?<![\w.'"-])([2-5]\d\d)(?![\w'"-])/g)].map((match) => match[1]!),
+        [source, ...responseHelpersOf(source)].flatMap((text) =>
+          [...text.matchAll(/(?<![\w.'"-])([2-5]\d\d)(?![\w'"-])/g)].map((match) => match[1]!),
+        ),
       )
 
       const documented = new Set(
@@ -138,10 +178,9 @@ describe('OpenAPI-specen mot den faktiska ruttinventeringen', () => {
      *
      * Kravet gäller det rutterna FAKTISKT gör, inte en mall. De som ändrar
      * något kontrollerar origin och hastighetsgräns, och det prövar
-     * api-surface.test.ts, så varje POST och DELETE ska ha 403 och 429. De
-     * två läsrutter som saknar hastighetsgräns, GET /api/elections och
-     * GET /api/push/subscribe, har inget fel att beskriva utöver det
-     * oväntade, och då räcker det att de säger det.
+     * api-surface.test.ts, så varje POST och DELETE ska ha 403 och 429. Sedan
+     * helgrensgranskningen har också varje GET en hastighetsgräns, och 429
+     * står i specen genom testet ovan, som läser statuskoderna i koden.
      */
     for (const { path, method, operation } of operations()) {
       const codes = Object.keys(operation.responses ?? {})

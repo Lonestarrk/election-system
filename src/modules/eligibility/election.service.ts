@@ -132,7 +132,13 @@ export async function mirrorElection(input: MirrorElectionInput): Promise<void> 
 }
 
 /** Omröstningens skalningstillstånd, som det står i röstlängden. */
-export type CloseState = { phase: string; envelopeRoot: string | null }
+/**
+ * `envelopesLeft` är antalet kuvert som ligger på omröstningens valsedlar
+ * (helgrensgranskningen, Viktigt 2). Fasen och roten räcker inte för beskedet att
+ * kopplingen är raderad: den som kan skriva i röstlängden kan sätta dem och låta
+ * kuverten ligga.
+ */
+export type CloseState = { phase: string; envelopeRoot: string | null; envelopesLeft: number }
 
 /**
  * Läser fasen och kuvertroten.
@@ -150,10 +156,22 @@ export type CloseState = { phase: string; envelopeRoot: string | null }
  * inte den publika metadata speglingen finns för.
  */
 export async function closeStateOf(electionId: string): Promise<CloseState | null> {
-  return votersDb.election.findUnique({
+  const election = await votersDb.election.findUnique({
     where: { id: electionId },
     select: { phase: true, envelopeRoot: true },
   })
+  if (!election) return null
+  return { ...election, envelopesLeft: await envelopesLeftOn(electionId) }
+}
+
+/**
+ * Hur många kuvert som ligger på omröstningens valsedlar. `PendingVote.ballotId`
+ * har ingen foreign key mot valsedeln, så uppslagningen görs i två steg, som i
+ * `clearPendingVotes`.
+ */
+export async function envelopesLeftOn(electionId: string): Promise<number> {
+  const ballots = await votersDb.electionBallot.findMany({ where: { electionId }, select: { id: true } })
+  return votersDb.pendingVote.count({ where: { ballotId: { in: ballots.map((ballot) => ballot.id) } } })
 }
 
 /** Tar bort speglingen. Finns för att orkestreringen ska kunna backa. */

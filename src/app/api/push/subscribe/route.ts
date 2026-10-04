@@ -13,7 +13,14 @@ export const dynamic = 'force-dynamic'
  * prenumeration. Den är publik per definition — den identifierar avsändaren
  * mot push-tjänsterna och är värdelös utan sin privata halva.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const rate = checkRateLimit('push-public-key', getClientIp(request), RATE_LIMITS.pushPublicKey)
+  if (!rate.allowed) {
+    return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
+      'Retry-After': String(rate.retryAfterSeconds),
+    })
+  }
+
   return jsonResponse({
     enabled: isPushConfigured(),
     publicKey: publicVapidKey(),

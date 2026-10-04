@@ -4,7 +4,7 @@ import { isValidCsrfToken } from '@/lib/csrf'
 import { errorResponse, getClientIp, hasValidOrigin, jsonResponse } from '@/lib/http'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { compareDeviceVotesSchema, parseJsonBody } from '@/lib/validation'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { AUDIT_EVENTS, recordAuditEvent, recordRejectedOrigin } from '@/modules/eligibility/audit.service'
 import { ballotBelongsToElection } from '@/modules/eligibility/election.service'
 import { compareWithPendingVotes } from '@/modules/eligibility/pending-vote.service'
 import { getValidVotingSession } from '@/modules/eligibility/voting-session.service'
@@ -48,16 +48,22 @@ export const dynamic = 'force-dynamic'
  *
  * Väljaren och omröstningen kommer från sessionen, aldrig från kroppen. Det
  * finns ingen parameter för att fråga om någon annan.
+ *
+ * BARA MEDAN RÖSTNINGEN PÅGÅR (ruling 144). Efter closesAt, eller när fasen
+ * lämnat OPEN, svarar rutten 409 utan att jämföra, med samma villkor som
+ * sessionens `acceptsVotes`. Annars hade `same` efter stängningen varit ett
+ * kvitto på att rösten räknas, se `compareWithPendingVotes`.
  */
 export async function POST(request: Request) {
+  // Posten om fel Origin har en egen gräns per adress (helgrensgranskningen, ruling 145).
   if (!hasValidOrigin(request)) {
-    await recordAuditEvent(AUDIT_EVENTS.CSRF_REJECTED)
+    await recordRejectedOrigin(request)
     return errorResponse('FORBIDDEN_ORIGIN', 'Begäran avvisades.', 403)
   }
 
   const rate = checkRateLimit('vote-compare', getClientIp(request), RATE_LIMITS.compareDeviceVotes)
   if (!rate.allowed) {
-    await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
+    if (rate.firstRejection) await recordAuditEvent(AUDIT_EVENTS.RATE_LIMITED)
     return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
       'Retry-After': String(rate.retryAfterSeconds),
     })
@@ -97,7 +103,14 @@ export async function POST(request: Request) {
     }
   }
 
-  const results = await compareWithPendingVotes(session.voterStatusId, body.data.ballots)
+  const compared = await compareWithPendingVotes(session.voterStatusId, session.electionId, body.data.ballots)
+
+  // Efter stängningen jämförs ingenting (spec 3.1, ruling 144). Svaret är detsamma
+  // för rätt och fel hash, och röstsidan visar då bara att en röst finns.
+  if (compared.status === 'closed') {
+    return errorResponse('VOTING_CLOSED', 'Röstningen har stängt, och rösten jämförs inte längre.', 409)
+  }
+  const results = compared.ballots
 
   // Fälten räknas upp ett och ett, så att ett nytt fält i tjänstens svar inte
   // följer med hit utan att någon bestämt det.

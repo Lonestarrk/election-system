@@ -1,4 +1,5 @@
-import { jsonResponse } from '@/lib/http'
+import { errorResponse, getClientIp, jsonResponse } from '@/lib/http'
+import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { listOpenElections } from '@/modules/ballot-box'
 import { electionPhases } from '@/orchestration/election-phases.usecase'
 
@@ -20,7 +21,8 @@ export const dynamic = 'force-dynamic'
  * raderar det den sparat (spec 3.1 punkt 4). Förut frågade den väljarens
  * session, vars gräns delas av alla bakom samma adress, och ungefär trettio
  * synliga flikar bakom en adress fyllde den. Fasen är inte hemlig, och den här
- * listan har ingen hastighetsgräns som en väljare kan stöta på.
+ * listans gräns, `publicElections`, rymmer trehundra flikar bakom en adress
+ * (helgrensgranskningen, B10).
  *
  * `phases` ger id, namn och fas för varje omröstning, och ingenting annat:
  * aldrig ett antal eller ett tal medan röstningen pågår (spec 6.2). Listan
@@ -31,7 +33,14 @@ export const dynamic = 'force-dynamic'
  * viss person. Vilka som gäller just dig avgörs först efter legitimering, av
  * röstlängden, utifrån var du är folkbokförd.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const rate = checkRateLimit('public-elections', getClientIp(request), RATE_LIMITS.publicElections)
+  if (!rate.allowed) {
+    return errorResponse('RATE_LIMITED', 'För många förfrågningar.', 429, {
+      'Retry-After': String(rate.retryAfterSeconds),
+    })
+  }
+
   const [elections, phases] = await Promise.all([listOpenElections(), electionPhases()])
 
   return jsonResponse({

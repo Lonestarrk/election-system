@@ -270,7 +270,9 @@ const TALLIED_WRITTEN_BY_TALLY: Marker[] = [
       "      where: { id: electionId, phase: 'STRIPPED', envelopeRoot: { not: null } },",
       "      data: { phase: 'TALLIED' },",
       '    })',
-      '    if (cas.count === 1) await recordAuditEvent(AUDIT_EVENTS.ELECTION_TALLIED, tx)',
+      '    if (cas.count !== 1) return false',
+      '    await lockAuditTable(tx)',
+      '    await recordAuditEvent(AUDIT_EVENTS.ELECTION_TALLIED, tx)',
     ].join('\n'),
   },
   { file: 'src/orchestration/tally.usecase.ts', contains: 'for (const ballot of election.ballots) {' },
@@ -337,6 +339,17 @@ export const DEVICE_VIEW: Marker[] = [
     file: 'src/app/api/vote/compare/route.ts',
     contains: 'ballots: results.map((entry) => ({ ballotId: entry.ballotId, result: entry.result })),',
   },
+  // Efter stängningen jämförs ingenting (ruling 144): samma villkor som sessionens
+  // acceptsVotes, och rutten svarar 409 utan utfall.
+  {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains: "if (!election || !acceptsVotesNow(election)) return { status: 'closed' }",
+  },
+  {
+    file: 'src/modules/eligibility/pending-vote.service.ts',
+    contains: 'acceptsVotes: acceptsVotesNow(election),',
+  },
+  { file: 'src/app/api/vote/compare/route.ts', contains: "if (compared.status === 'closed') {" },
   // Röstsidans övriga rutter. Sessionen och valsedeln nämner ingen hash, och
   // underskriftens start svarar med exakt de här fälten.
   { nowhereIn: 'src/app/api/vote/session/route.ts', matches: /ciphertextHash|pendingVoteFor/ },
@@ -439,7 +452,7 @@ export const STRIPPING_TRANSACTION: Marker = {
     '  const stripping = await lock.strip(async (tx) => {',
     '    const stripped = await tx.election.updateMany({',
     "      where: { id: electionId, phase: 'VALIDATED', envelopeRoot: null },",
-    "      data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },",
+    "      data: { phase: 'STRIPPED', linkClearedAt: truncateToHour(new Date()), envelopeRoot, urnRoot },",
     '    })',
     '    if (stripped.count !== 1) throw new PhaseMovedError()',
     '',
@@ -457,6 +470,8 @@ export const STRIPPING_TRANSACTION: Marker = {
     '      throw new EnvelopesChangedError({ moved, removed, left, marked, markersMatch })',
     '    }',
     '',
+    '    // Ingen annan post kan ta löpnumret, se REVISIONSPOSTEN ovan (ruling 145).',
+    '    await tx.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`',
     '    await recordAuditEvent(AUDIT_EVENTS.LINK_CLEARED, tx, { urnRoot })',
     '',
     '    return removed',
@@ -1270,9 +1285,14 @@ export const CURRENTLY = {
   ipAddresses: {
     text:
       'Används till hastighetsbegränsning och hålls hashad i processminnet. Lagras aldrig i en ' +
-      'databas.',
+      'databas. Den skickas däremot till BankID som endUserIp med varje order, både vid ' +
+      'legitimeringen och vid underskriften av rösten, och BankID får den då tillsammans med ' +
+      'personnumret och tiden.',
     holdsWhile: [
       { file: 'src/lib/rate-limit.ts', contains: 'const key = `${scope}:${sha256Hex(rawKey)}`' },
+      // Adressen går till BankID med varje order (helgrensgranskningen, B7).
+      { file: 'src/app/api/auth/bankid/start/route.ts', contains: 'endUserIp: clientIp,' },
+      { file: 'src/app/api/vote/sign-start/route.ts', contains: 'endUserIp: clientIp,' },
       { nowhereIn: 'prisma/voters/schema.prisma', matches: /\n\s+(ip|ipAddress|ipHash|clientIp)\s/i },
       { nowhereIn: 'prisma/votes/schema.prisma', matches: /\n\s+(ip|ipAddress|ipHash|clientIp)\s/i },
     ],
@@ -1898,7 +1918,7 @@ export const PHASES: PhaseRow[] = [
         },
         {
           file: 'src/orchestration/close-election.usecase.ts',
-          contains: "data: { phase: 'STRIPPED', linkClearedAt: new Date(), envelopeRoot, urnRoot },",
+          contains: "data: { phase: 'STRIPPED', linkClearedAt: truncateToHour(new Date()), envelopeRoot, urnRoot },",
         },
         {
           file: 'src/orchestration/close-election.usecase.ts',

@@ -102,6 +102,8 @@ const auditFault = vi.hoisted(() => ({
   failOn: null as null | string,
   meetOn: null as null | string,
   waiting: [] as Array<() => void>,
+  /** Varje post, och om den skrevs med en transaktion. Utan en sväljer `recordAuditEvent` ett fel. */
+  calls: [] as Array<{ eventType: string; inTransaction: boolean }>,
 }))
 
 function meetAnother(): Promise<void> {
@@ -125,6 +127,7 @@ vi.mock('@/modules/eligibility/audit.service', async (importOriginal) => {
   return {
     ...actual,
     recordAuditEvent: async (...args: Parameters<typeof actual.recordAuditEvent>) => {
+      auditFault.calls.push({ eventType: args[0], inTransaction: args[1] !== undefined })
       if (auditFault.failOn !== null && args[0] === auditFault.failOn) {
         throw new Error(`Testet: revisionsposten ${args[0]} gick inte att skriva.`)
       }
@@ -242,6 +245,7 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     auditFault.failOn = null
     auditFault.meetOn = null
     auditFault.waiting = []
+    auditFault.calls = []
     cookieJar.admin = undefined
     resetRateLimits()
     await resetElectionData()
@@ -921,6 +925,46 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
     expect(await auditEvents(AUDIT_EVENTS.BALLOT_TALLIED)).toBe(2)
   })
 
+  it('bidraget och posten PARTIAL_DECRYPTION_RECORDED hör ihop: går posten inte att skriva sparas inget bidrag', async () => {
+    /**
+     * Helgrensgranskningen, Viktigt 1. Posten skrevs efter bidraget och utan
+     * transaktion, och efter fem krockar svaldes felet. Bidraget stod då kvar
+     * utan post. Nu skrivs bidraget i röstdatabasens transaktion och posten i
+     * röstlängdens, inuti den, som räkneverken och BALLOT_TALLIED.
+     */
+    await castFor(anna, 'bp-s')
+    await closed(electionId)
+
+    auditFault.failOn = AUDIT_EVENTS.PARTIAL_DECRYPTION_RECORDED
+    await expect(submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).rejects.toThrow(
+      /PARTIAL_DECRYPTION_RECORDED/,
+    )
+    auditFault.failOn = null
+    expect(await votesDb.partialDecryption.count({ where: { ballotId } })).toBe(0)
+
+    expect(await submitPartialDecryption(ballotId, 1, TRUSTEE_PASSPHRASES[0])).toMatchObject({ status: 'accepted' })
+    expect(await auditEvents(AUDIT_EVENTS.PARTIAL_DECRYPTION_RECORDED)).toBe(1)
+  })
+
+  it('räkningens poster skrivs alla med en transaktion, där ett fel inte sväljs', async () => {
+    await castFor(anna, 'bp-s')
+    await closed(electionId)
+    await submitPartialDecryption(ballotId, 1, 'fel')
+    await bothBallotsContributed()
+    await completeTally(ballotId)
+    await completeTally(counted.second.id)
+
+    const tallyEvents = new Set<string>([
+      AUDIT_EVENTS.PARTIAL_DECRYPTION_RECORDED,
+      AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED,
+      AUDIT_EVENTS.BALLOT_TALLIED,
+      AUDIT_EVENTS.ELECTION_TALLIED,
+    ])
+    const written = auditFault.calls.filter((call) => tallyEvents.has(call.eventType))
+    expect(new Set(written.map((call) => call.eventType))).toEqual(tallyEvents)
+    expect(written.filter((call) => !call.inTransaction)).toEqual([])
+  })
+
   it('en omräkning av en redan räknad valsedel ger samma resultat och inga nya rader', async () => {
     await castFor(anna, 'bp-s')
     await closed(electionId)
@@ -1467,6 +1511,26 @@ describe.skipIf(!databaseAvailable)('räkningen öppnar bara summan', () => {
       expect((await decrypt(body, { 'x-csrf-token': csrfSecret, origin: 'https://angripare.example' })).status).toBe(
         403,
       )
+      expect(await votesDb.partialDecryption.count()).toBe(0)
+    })
+
+    it('en fel fras vars post inte går att skriva säger inte att försöket står i loggen', async () => {
+      // Helgrensgranskningen, Viktigt 1: posten svaldes, och rutten sa ändå att försöket stod i loggen.
+      await closed(electionId)
+      await loginAdmin()
+
+      auditFault.failOn = AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED
+      const unrecorded = await decrypt({ ballotId, trusteeIndex: 1, passphrase: 'fel fras' })
+      auditFault.failOn = null
+      const unrecordedBody = await unrecorded.json()
+      expect(unrecorded.status).toBe(403)
+      expect(unrecordedBody).toMatchObject({ status: 'wrong_passphrase' })
+      expect(unrecordedBody.message).not.toMatch(/står i revisionsloggen/)
+      expect(unrecordedBody.message).toMatch(/kunde inte skrivas i revisionsloggen/)
+
+      const recorded = await decrypt({ ballotId, trusteeIndex: 1, passphrase: 'fel fras' })
+      expect((await recorded.json()).message).toMatch(/Försöket står i revisionsloggen/)
+      expect(await auditEvents(AUDIT_EVENTS.TRUSTEE_PASSPHRASE_REJECTED)).toBe(1)
       expect(await votesDb.partialDecryption.count()).toBe(0)
     })
 

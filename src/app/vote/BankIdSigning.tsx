@@ -318,7 +318,12 @@ export function BankIdSigning({
     }
 
     if (!reply.ok) {
-      const error = reply.data.error as { message?: string } | undefined
+      const error = reply.data.error as { code?: string; message?: string } | undefined
+      // Röstningen har stängt: samma besked om fasen som när läggningen svarar closed.
+      if (error?.code === 'VOTING_CLOSED') {
+        onClosed()
+        return
+      }
       fail(error?.message ?? 'Kunde inte starta BankID. Din röst lades inte.')
       return
     }

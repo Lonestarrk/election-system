@@ -41,6 +41,7 @@ const state = vi.hoisted(() => ({
   sign: vi.fn(),
   cast: vi.fn(),
   shape: { publicKey: 'k', optionCount: 26 } as { publicKey: string; optionCount: number } | null,
+  window: 'open' as 'open' | 'closed' | 'wrong_mode',
 }))
 
 vi.mock('next/headers', () => ({
@@ -57,6 +58,7 @@ vi.mock('@/lib/csrf', () => ({ isValidCsrfToken: () => true }))
 vi.mock('@/modules/eligibility/audit.service', () => ({
   AUDIT_EVENTS: { CSRF_REJECTED: 'x', RATE_LIMITED: 'y' },
   recordAuditEvent: async () => undefined,
+  recordRejectedOrigin: async () => undefined,
 }))
 vi.mock('@/modules/eligibility/voting-session.service', () => ({
   getValidVotingSession: async (id: string) =>
@@ -70,6 +72,7 @@ vi.mock('@/modules/eligibility/election.service', () => ({
 }))
 vi.mock('@/modules/eligibility/pending-vote.service', () => ({
   nextCastSequence: async () => 1,
+  castWindow: async () => state.window,
   castEncryptedBallot: (...args: unknown[]) => state.cast(...args),
 }))
 vi.mock('@/modules/ballot-box', () => ({
@@ -122,6 +125,7 @@ beforeEach(() => {
   resetRateLimits()
   state.sessionId = 'session-a'
   state.shape = { publicKey: 'k', optionCount: 26 }
+  state.window = 'open'
   state.collect
     .mockReset()
     .mockResolvedValue({ status: 'pending', hintCode: 'outstandingTransaction' })
@@ -201,6 +205,25 @@ describe('servern håller valsedeln med ordern', () => {
 
     expect(response.status).toBe(400)
     expect(state.sign).not.toHaveBeenCalled()
+  })
+
+  /**
+   * FASEN, CLOSESAT OCH LÄGET PRÖVAS INNAN BANKID FÅR EN ORDER (helgrensgranskningen, B8).
+   * Läggningen avvisade rösten efteråt, men BankID hade då fått en order med väljarens
+   * identitet för en omröstning som inte tar emot röster.
+   */
+  it.each([
+    ['closed', 'VOTING_CLOSED'],
+    ['wrong_mode', 'WRONG_MODE'],
+  ] as const)('sign-start startar ingen BankID-order när omröstningen är %s', async (window, code) => {
+    state.window = window
+
+    const response = await signStart(post('/api/vote/sign-start', startBody()))
+
+    expect(response.status).toBe(409)
+    expect((await response.json()).error.code).toBe(code)
+    expect(state.sign).not.toHaveBeenCalled()
+    expect(orderCount()).toBe(0)
   })
 
   it('är lagret fullt avbryts BankID-ordern och väljaren får veta att rösten inte lades', async () => {
