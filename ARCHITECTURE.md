@@ -59,7 +59,7 @@ Separationen hålls av fem lager, och de skyddar olika saker:
 | **Topologiskt** | Två PostgreSQL-databaser. En foreign key mellan dem är fysiskt omöjlig, så en räknad röst kan inte peka på en väljare. | någon slår ihop databaserna |
 | **Schemat** | `votes_db` har ingen kolumn för identitet. `tests/security/schema-separation.test.ts` läser schemat och går rött om någon läggs till. | någon tar bort testet |
 | **Modulgränsen** | Bara ett fåtal namngivna filer får importera från båda sidorna, och `tests/security/module-boundaries.test.ts` kräver att listan är exakt den. Skalningen är den enda filen som med flit flyttar kuvert över gränsen. | någon lägger till en fil i listan utan skäl |
-| **Kryptografiskt** | Chiffret går inte att läsa utan k av n andelar. Varje andel är låst med en lösenfras som förtroendepersonen sätter och som aldrig lagras. | k förtroendepersoner går ihop, eller en andel och dess fras läcker |
+| **Kryptografiskt** | Chiffret går inte att läsa utan k av n andelar. Varje andel är låst med en lösenfras som aldrig lagras. Fraserna sätts i praktiken av administratören vid skapandet, se avsnitt 10. | k förtroendepersoner går ihop, eller en andel och dess fras läcker |
 | **Raderingen** | Vid stängningen raderas `pending_vote`, och kopplingen finns inte längre i den levande databasen. | en kopia från före stängningen finns kvar |
 
 Lagren är olika starka under olika faser. Före stängningen bär det kryptografiska lagret
@@ -110,16 +110,19 @@ Föreställ dig en **brevröst**.
 
    5. Vid stängningen kontrolleras de yttre kuverten. Sedan öppnas de,
       och de inre läggs i en gemensam urna, sorterade på innehåll, utan
-      de yttre. Ingen kan längre se vilket som var vems.
+      de yttre. Ingen kan längre se vilket som var vems, i den
+      levande databasen (se "Vad konstruktionen inte ger").
 
-   6. Det inre kuvertet kan inte öppnas av någon enskild. Bara två av tre
-      förtroendepersoner tillsammans kan öppna urnans SUMMA, och ingen
-      öppnar något enskilt kuvert.
+   6. Det inre kuvertet kan inte öppnas av någon enskild. Två av tre
+      förtroendepersoner tillsammans kan öppna kuverten, och urnans summa.
+      Systemet öppnar aldrig något enskilt kuvert, men två andelar gör det
+      tekniskt möjligt.
 ```
 
 Myndigheten vet alltså under röstningen **att** Anna röstat och kan byta ut hennes inre
 kuvert när hon ändrar sig. Den kan inte läsa det. Efter stängningen finns inga namn kvar
-vid kuverten.
+vid kuverten i den levande databasen. Det gäller inte backuper, WAL eller BankID, och inte en
+valsedel med så få röster att markeringarna eller summan pekar ut rösten (spec 10).
 
 ### Samma sak i matematik
 
@@ -191,11 +194,11 @@ Hela listan, med exakt avgränsning, står i spec 10 och i
 |---|---|---|
 | Valhemlighet | Att enskilda röster aldrig dekrypteras, bara summan. Chiffret är låst bakom k av n andelar. | Den som har k andelar och en kopia från före stängningen. Se SECURITY.md 2.2. |
 | Motstånd mot röstköp | Att rösten kan ändras fram till stängningen, och att inget publicerat efteråt går att matcha mot. | Tvång vid slutet. |
-| Kvittofrihet | Att klienten kastar slumptalet och att enskilda chiffer och hashar aldrig publiceras. | En manipulerad klient som behåller slumptalet. |
+| Kvittofrihet | Att klienten kastar slumptalet och att enskilda chiffer och hashar aldrig publiceras, utom i demons livevy. | En manipulerad klient som behåller slumptalet. |
 | Individuell verifierbarhet | Före stängningen: enheten jämför sin sparade hash med servern, som svarar lika, olika eller ingen röst. Efter: markeringen "har röstat". | Efter stängningen kan ingen se vad hon röstade. |
 | Universell verifierbarhet | Att resultatet är en korrekt dekryptering av den publicerade summan, med bevis. | Att summan består av exakt de giltiga rösterna. |
 | Ingen röst kan förfalskas av en klient | Väljarens BankID-signatur med kedja till BankID:s rot. | Den som driver systemet kan ta bort ett äkta kuvert eller lägga tillbaka ett äldre. I demon utfärdar attrappen certifikaten. |
-| Ingen ensam kan öppna resultatet | k-av-n-tröskeldekryptering med lösenfraser. | Skapandet och fastställandet gör en administratör ensam. |
+| Resultatet öppnas av två av tre förtroendepersoner | k-av-n-tröskeldekryptering med lösenfraser. | En administratör som skapat omröstningen och därmed känner alla tre fraser. Skapandet och fastställandet gör dessutom en administratör ensam. |
 
 ---
 
@@ -408,7 +411,7 @@ Specen (3.1) sätter gränsen på ett ställe, och allt annat följer av den:
   *lika*, *olika* eller *ingen röst*. Svaret innehåller aldrig serverns hash. Ingen
   verifikationskod visas.
 - **Efter stängningen** publiceras bara summorna, med bevis. Enskilda chiffer och deras
-  hashar publiceras aldrig. Väljaren ser att hon röstat (`/verify`), inte vad, och
+  hashar publiceras aldrig, utom i livevyn på arkitektursidan i demoläget, som med flit visar databasen som en insider ser den. Väljaren ser att hon röstat (`/verify`), inte vad, och
   markeringen har ingen tidsstämpel.
 
 Det som går att kontrollera utifrån, och det som inte går, står i
@@ -613,9 +616,10 @@ som en som påstår motsatsen.
 
 **Fyra begränsningar löstes av kuvertmodellen** och är borta ur listan: signeringsnycklarna
 i databasen, kvittot som bevisade hur du röstat, att ingen garanterad anonymitetsmängd
-fanns, och att en ensam administratör kunde öppna resultatet. Den sista gäller bara
-resultatet: skapandet och fastställandet av en omröstning gör en administratör fortfarande
-ensam, och posten om det står kvar, omskriven.
+fanns, och att en ensam administratör kunde öppna resultatet. Den sista försvinner bara delvis,
+men `single-administrator` står kvar, omskriven. Dekrypteringen kräver två av tre
+förtroendepersoner, men fraserna sätts alla tre i samma begäran vid skapandet, och en
+administratör som känner dem kan driva hela valet.
 
 Det som kuvertmodellen i stället bär med sig, med den viktigaste först:
 

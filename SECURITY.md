@@ -48,7 +48,7 @@ den är verklig.
 
 | Fråga | Varför inte |
 |---|---|
-| Vad röstade person X på, efter stängningen? | Kopplingen är raderad ur den levande databasen, och enskilda röster dekrypteras aldrig. |
+| Vad röstade person X på, efter stängningen? | Kopplingen är raderad ur den levande databasen, och enskilda röster dekrypteras aldrig, utom att en valsedel med så få röster att summan eller markeringarna pekar ut den avslöjar den (spec 10). |
 | Vilken rad i urnan är väljare X:s? | Raden bär ingen identitet, och en markering har ingen koppling till en rad. |
 | I vilken ordning lades kuverten? | Urnans rader har ett id räknat ur innehållet och ett löpnummer bland likadana, ingen tidsstämpel, och infogas sorterade på innehåll. |
 | Visa en utomstående vad jag röstade. | Slumptalet kastas, och ingenting publiceras per röst. |
@@ -72,13 +72,14 @@ båda databaserna.
 **Medan röstningen pågår:** kopplingen finns i `pending_vote`, så angriparen ser att person X
 röstat, vilket chiffer som är hennes och hur många gånger hon ändrat sig. Chiffret går inte att
 läsa utan två andelar. Andelarna ligger krypterade i `votes_db`, och varje andel är låst med en
-lösenfras som förtroendepersonen sätter och som aldrig lagras. Den som bara läser databaserna
-ser därför ingenting om valet. **I demon skyddar fraserna ingenting**, eftersom de står i repot
+lösenfras som aldrig lagras. Den som bara läser databaserna ser därför ingenting om valet.
+**En administratör som själv skapade omröstningen har däremot satt alla tre fraser** i samma begäran
+och kan, tillsammans med läsrätt i databasen, öppna varje kuvert under röstningen (`single-administrator`). **I demon skyddar fraserna ingenting**, eftersom de står i repot
 (spec 4.5).
 
 **Efter stängningen:** angriparen ser att person X har röstat (markeringen), och vad som röstats
 (summorna). Det finns ingen kolumn, ingen foreign key och ingen gemensam nyckel som binder en
-rad i urnan till en väljare.
+rad i urnan till en väljare, utom på en valsedel med så få röster att summan eller markeringarna pekar ut den (spec 10).
 
 **Var det brister:** se [4.1 tidskorrelation](#41-tidskorrelation) och
 [4.6 databasens egna loggar](#46-databasens-egna-loggar). En administratör med tillgång till
@@ -150,7 +151,7 @@ driftorganisationer, och låter förtroendepersonerna räkna på egna enheter.
 
 **Vad angriparen får:** tidpunkten då en viss IP-adress legitimerade sig och lade sin röst.
 Kombinerat med tillgång till databasen är det ofta nog för att peka ut vilken röst som är vems
-medan kopplingen finns, och efter stängningen särskilt vid låg trafik.
+medan kopplingen finns, och efter stängningen bara på valsedlar med få röster.
 
 **Vad som skyddar:** ingenting i den här POC:en. Det är ett hot mot ett verkligt system som kräver
 åtgärder på nätverksnivå.
@@ -167,7 +168,8 @@ Konstruktionen finns för det här hotet, och dess försvar är avgränsade:
   vad chiffret innehåller, och hon kan skriva om det enheten visar. Ingen verifikationskod
   visas.
 - **Efter stängningen publiceras bara summorna.** Enskilda chiffer och deras hashar publiceras
-  aldrig, så ingenting en väljare eller köpare håller går att matcha mot.
+  aldrig, utom i livevyn på arkitektursidan i demoläget, som med flit visar databasen som en insider
+  ser den. Därför ingenting en väljare eller köpare håller går att matcha mot.
 
 Det som kvarstår, ur spec 10:
 
@@ -185,6 +187,9 @@ Det som kvarstår, ur spec 10:
 ### 2.6 Den som driver systemet
 
 **Angriparen:** driftar appen och databaserna, med skrivrättighet i röstlängden.
+
+En administratör som själv skapade omröstningen har satt alla tre fraser och kan, tillsammans med
+läsrätt i databasen, öppna varje kuvert under röstningen. Det gäller även om hen inte driftar något.
 
 BankID-signaturen och kedjan mot BankID:s rot stoppar en förfalskad ny röst. De stoppar inte att
 den som driver systemet **tar bort ett äkta kuvert, eller lägger tillbaka en väljares tidigare
@@ -238,8 +243,7 @@ aldrig lagras. Skarpt läge vägrar de kända demofraserna.
 ### Chifferhashen
 
 Hashen över valsedelns kanoniska chifferlista används för att enheten ska kunna fråga om rösten
-fortfarande ligger kvar, och för urnans id och urnroten. Hon ser den aldrig, och den publiceras
-aldrig. Jämförelsen går bara åt ett håll: enheten skickar sin hash och får *lika*, *olika* eller
+fortfarande ligger kvar, och för urnans id och urnroten. Den visas aldrig för henne och publiceras inte, och hon behöver aldrig skriva av den. Jämförelsen går bara åt ett håll: enheten skickar sin hash och får *lika*, *olika* eller
 *ingen röst*, aldrig serverns hash. Annars skulle en enhet få veta hashen för en röst som lagts
 från en annan enhet, alltså den som räknas, och den pekar tillsammans med läsrätt i `votes_db`
 ut rätt rad efter stängningen. Jämförelsen är ändå ett orakel för den som har chiffret, och har
@@ -269,7 +273,7 @@ databaserna kunna para ihop rader på tid. Därför:
 röster per dygn är dygnet unikt nog. Och under röstningen finns kopplingen ändå i `pending_vote`.
 Skyddet är starkast när det behövs minst. Någon slumpad fördröjning mellan skrivningarna, som den gamla
 modellen hade, finns inte längre och behövs inte: stängningen infogar alla chiffer i en sats, sorterade på innehåll, och
-anonymitetsmängden är hela valet.
+anonymitetsmängden är alla kuvert på valsedeln, inte hela valet.
 
 ### 4.2 Skrivordning
 
@@ -327,7 +331,7 @@ personnummer till disk, och därifrån vidare till loggaggregering och backuper.
 - all loggning går genom `src/lib/logger.ts`, som maskerar personnummer- och hashmönster
 - ett arkitekturtest misslyckas om någon källfil anropar `console.*` direkt
 - ett test kör ett kuvertflöde och granskar vad som skrevs till konsolen
-- urnans modul loggar ingenting alls vid en lyckad läggning, eftersom en loggrad med
+- urnans modul loggar ingenting alls vid infogningen av chiffer, eftersom en loggrad med
   millisekundsprecision vore samma tidskorrelationsproblem som en exakt tidsstämpel
 
 Seedningen skriver i demoläget ut de tre demofraserna vid varje start. I Azure hamnar de i Log Analytics.
@@ -351,7 +355,8 @@ en bekvämlighet för demonstrationen, och den största avvikelsen från vad mod
 En felrapporteringstjänst som får en stacktrace med request-kroppen bifogad kan få både identitet
 och chiffer i samma nyttolast.
 
-**Åtgärder:** systemet har ingen analytics, ingen telemetri och ingen extern felrapportering.
+**Åtgärder:** systemet har ingen analytics, ingen telemetri och ingen extern felrapportering. Push-notiser går via push-tjänsterna hos webbläsarnas leverantörer,
+med krypterad nyttolast men synlig endpoint och tidpunkt (VERIFIABILITY.md avsnitt 7).
 CSP:n sätter `connect-src 'self'`, vilket gör att sidan inte kan skicka något till en tredje part
 ens om kod för det smugit sig in.
 

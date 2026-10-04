@@ -22,7 +22,7 @@ förtroendepersoner.
   - Markeringen "har röstat" har ingen tidsstämpel.
 - **Läget:** demoläge eller skarpt läge sätts vid driftsättning med `DEMO_MODE`. Ingen knapp
   i appen byter läge. **Skarpt är förvalt**: bara exakt `DEMO_MODE=true` ger demoläge, och
-  `NODE_ENV` läses inte. Den publika demon i Azure är ett produktionsbygge i demoläge.
+  läget läser inte `NODE_ENV`. Den publika demon i Azure är ett produktionsbygge i demoläge.
   - Skarpt läge mot BankID:s testmiljö (`BANKID_ENV=test`) säkrar inte identiteten, eftersom
     vem som helst kan skaffa ett test-BankID med vilket personnummer som helst.
   - Skarpt läge mot produktionen vägrar starta tills läsaren av BankID:s underskrift är

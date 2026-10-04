@@ -28,7 +28,7 @@ Systemet kan inte hålla löftet att den som vet **"person X har röstat"** aldr
 |---|---|
 | **Under röstningen** | Kopplingen finns, och rösten kan ändras. Det är avsikten. Kopplingen finns i `voters_db`, i tabellen `pending_vote`, och rösten i den är ett chiffer som ingen kan läsa utan två av tre andelar av valets nyckel. Det är det som gör att en köpt röst kan ersättas ända fram till stängningen. |
 | **Vid stängningen** | Kuverten kontrolleras. Chiffren flyttas till `votes_db`, sorterade på innehåll. Kopplingen raderas i en transaktion, och kuvertroten och urnroten skrivs. |
-| **Efter stängningen** | Ingen koppling finns kvar i den levande databasen. Bara summorna öppnas, och de publiceras med bevis. Väljaren ser att hon röstat, men inte på vad. |
+| **Efter stängningen** | Ingen koppling finns kvar i den levande databasen, utom på en valsedel med så få röster att summan eller markeringarna pekar ut den (spec 10). Bara summorna öppnas, och de publiceras med bevis. Väljaren ser att hon röstat, men inte på vad. |
 
 **Raderingen omfattar inte backuper, läsreplikor och WAL-loggen.** En kopia från före stängningen
 har kvar kuverten bredvid namnen, och två andelar öppnar dem då. Det är den huvudsakliga
@@ -39,7 +39,7 @@ spec 10.
 Valsedeln ligger i en databas (`voters_db`, röstlängden) medan den är ett yttre kuvert, och i en
 annan (`votes_db`, urnan) när den är ett inre. De ligger i **olika PostgreSQL-databaser**, och en
 foreign key mellan dem är fysiskt omöjlig. Det betyder att en räknad röst inte kan peka på en
-väljare. Det betyder inte att kopplingen aldrig funnits.
+väljare, utom på en valsedel med så få röster att summan eller markeringarna pekar ut den (spec 10). Det betyder inte att kopplingen aldrig funnits.
 
 Vad systemet bygger på, från specens avsnitt 3.1:
 
@@ -47,7 +47,8 @@ Vad systemet bygger på, från specens avsnitt 3.1:
   röst, på enheten hon röstade från.
 - **Ingen verifikationskod visas.** En kod på skärmen är det handtag en köpare antecknar.
 - **Efter stängningen publiceras bara summorna, med bevis.** Enskilda chiffer och deras hashar
-  publiceras aldrig. Väljaren ser att hon röstat, inte på vad, och markeringen har ingen tidsstämpel.
+  publiceras aldrig, utom i livevyn på arkitektursidan i demoläget, som med flit visar databasen som en
+  insider ser den. Väljaren ser att hon röstat, inte på vad, och markeringen har ingen tidsstämpel.
 
 Hur det hänger ihop beskrivs i [ARCHITECTURE.md](ARCHITECTURE.md), och på `/architecture` i appen för
 den som aldrig hört ordet kryptering.
@@ -141,7 +142,7 @@ börja om.
 ### 5. Kontrollera resultatet utifrån
 
 ```bash
-node tools/verify-election.mjs http://localhost:3000/api/observer/results?electionId=<omröstningens id>
+node tools/verify-election.mjs 'http://localhost:3000/api/observer/results?electionId=<omröstningens id>'
 node tools/verify-election.mjs resultat.json <omröstningens id>
 ```
 
@@ -401,11 +402,12 @@ sköts med skillen `azure-drift`, och filerna under `infra/azure/` är Azure-ses
 - **`DEMO_MODE=true` krävs** för demon. Utan den startar appen i skarpt läge och dör på de
   ouppfyllda kraven, och uppstarten seedar inte.
 - **Efter en driftsättning med nya format** ska demovalet återställas med knappen på adminsidan. Ett
-  kuvert som lades före driftsättningen har det gamla formatet, blir `OLD_SIGNATURE_FORMAT` eller
+  kuvert som lades före driftsättningen har det gamla formatet, blir `OLD_SIGNATURE_FORMAT`, `OLD_BANKID_FORMAT` eller
   `BAD_SIGNATURE`, och stoppar stängningen. Återställningen raderar kuverten.
 - **BankID-hemligheterna för skarpt läge mot testmiljön** (RP-certifikatet, frasen och rotfilen för
   kundcertifikat) ska ligga i Key Vault, och `TRUSTED_PROXY_HOPS` ska vara rätt satt bakom Container
-  Apps. Annars blir `endUserIp` `okand`, och varje BankID-anrop avvisas lokalt.
+  Apps. Annars får BankID proxyns adress som `endUserIp` i stället för väljarens, och `okand` om
+  `X-Forwarded-For` helt saknas, vilket avvisas lokalt.
 - **Key Vault skyddar inte mot den som får läsa det**, och inte mot appen, som har hemligheterna i
   minnet. Se `pepper-holder-reads-voter-names` och SECURITY.md avsnitt 9.
 

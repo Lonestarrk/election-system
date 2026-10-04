@@ -716,7 +716,8 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'lösenfraser i en och samma begäran, så den som skapar omröstningen och servern ser dem alla. ' +
       'Fastställandet är ett klick av en administratör, och ingen annan behöver godkänna det. Att ' +
       'skapandet och fastställandet borde kräva att flera behöriga personer agerar tillsammans är ' +
-      'kvar, medan resultatets öppnande inte längre vilar på en enda person.',
+      'kvar. Resultatets öppnande kräver två andelar, men den som skapar omröstningen känner alla tre ' +
+      'fraser och kan driva hela valet.',
     // Försvinner när skapandet och fastställandet kräver flera godkännanden.
     stillTrueIf: [
       {

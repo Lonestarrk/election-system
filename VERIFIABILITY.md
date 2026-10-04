@@ -17,7 +17,7 @@ Spec 3.1 är ett beslut med ett pris:
 - **Före stängningen** kan väljaren se, kontrollera och ändra sin röst, på enheten hon röstade
   från.
 - **Efter stängningen** publiceras bara summorna, med bevis. Enskilda chiffer och deras
-  hashar publiceras aldrig, eftersom allt som publiceras per röst är ett handtag en köpare
+  hashar publiceras aldrig, utom i livevyn på arkitektursidan i demoläget, som med flit visar databasen som en insider ser den, eftersom allt som publiceras per röst är ett handtag en köpare
   kan matcha mot. Väljaren ser att hon röstat, inte vad.
 - **Ingen verifikationskod visas.** En kod på skärmen är just det handtag en köpare antecknar.
 
@@ -239,8 +239,10 @@ bär BankID-miljön (`ELECTION_CERTIFIED` i demoläget, och `_BANKID_TEST` eller
 `_BANKID_PRODUCTION` i skarpt läge), så ett val som fastställts mot testmiljön går att
 skilja från ett mot produktionen.
 
-**Fastställandet gör en administratör ensam.** Att öppna resultatet kräver två av tre
-förtroendepersoner, men att skapa och fastställa omröstningen gör det inte. Se `single-
+**Fastställandet gör en administratör ensam, och det gör fraserna också.** Att öppna resultatet
+kräver två av tre förtroendepersoner, men alla tre fraser sätts i samma begäran vid skapandet.
+Den som skapar omröstningen känner dem alla och kan, med läsrätt i databasen, öppna resultatet
+själv. Se `single-
 administrator` i `src/lib/known-limitations.ts`.
 
 ---
@@ -314,7 +316,7 @@ att k av n förtroendepersoner bidrog. Det är inte ett bevis för att valet var
 
 ### Varför det inte hotar valhemligheten
 
-- Ingenting per röst publiceras, och inga chiffer eller hashar. Det finns inget en köpare eller
+- Ingenting per röst publiceras, och inga chiffer eller hashar, utom i demoläget där livevyn med flit visar databasen som en insider ser den. Det finns inget en köpare eller
   väljare håller som går att matcha mot.
 - Ingen tidsstämpel ingår i det publicerade, och markeringarna har ingen tid.
 - **Undantaget är en valsedel med mycket få röster.** Då visar summan hur de få röstade, och
