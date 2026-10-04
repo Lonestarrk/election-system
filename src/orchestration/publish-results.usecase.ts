@@ -313,6 +313,13 @@ export async function getElectionTallyResults(electionId: string): Promise<Elect
   }
 }
 
+/** Ett alternativs namn. Ett alternativ utan namn är ett fel, och publiceringen ska inte hitta på ett. */
+function labelOf(labels: Map<string, string>, optionId: string): string {
+  const label = labels.get(optionId)
+  if (label === undefined) throw new Error(`Svarsalternativet ${optionId} saknar namn.`)
+  return label
+}
+
 /**
  * Alternativens namn i den kanoniska ordning räkningen använder (blankt,
  * partierna, sedan kandidaterna, eller för en fråga blankt och svaren), som `getEncryptedBallotShape` bygger den.
@@ -327,7 +334,7 @@ export async function optionLabelsOf(ballotId: string): Promise<string[]> {
       allowsCandidateVote: false,
       parties: [],
       options: choices.options.map((option) => ({ id: option.id, displayOrder: option.displayOrder })),
-    }).map((option) => (option.kind === 'OPTION' ? (labelById.get(option.optionId) ?? 'Okänt alternativ') : 'Blankt'))
+    }).map((option) => (option.kind === 'OPTION' ? labelOf(labelById, option.optionId) : 'Blankt'))
   }
 
   const parties = choices.parties.map((party) => ({
@@ -342,8 +349,8 @@ export async function optionLabelsOf(ballotId: string): Promise<string[]> {
 
   return canonicalOptions({ allowsCandidateVote: choices.allowsCandidateVote, parties }).map((option) => {
     if (option.kind === 'BLANK') return 'Blankt'
-    // En partivalsedel har inga svarsalternativ. Raden finns för typens skull.
-    if (option.kind === 'OPTION') return 'Okänt alternativ'
+    // En partivalsedel har inga svarsalternativ, och kanoniska listan bygger inga för den.
+    if (option.kind === 'OPTION') throw new Error('En partivalsedel har ett svarsalternativ i sin alternativlista.')
     const party = partyById.get(option.ballotPartyId)
     if (option.kind === 'PARTY') return party?.name ?? 'Okänt parti'
     return `${candidateById.get(option.candidateId) ?? 'Okänd kandidat'} (${party?.abbreviation ?? '?'})`

@@ -37,6 +37,8 @@ describe('när omröstningen redan finns och är öppen', () => {
 
     expect(report.status).toBe('existing_open')
     expect(report.message).toContain('fanns redan')
+    // Frågan skapas bara tillsammans med omröstningen, och det ska beskedet säga.
+    expect(report.message).toMatch(/frågan skapas inte/i)
     // Det gamla felet i en mening: att hävda ett skapande som inte skett.
     expect(report.message).not.toContain('skapad')
   })

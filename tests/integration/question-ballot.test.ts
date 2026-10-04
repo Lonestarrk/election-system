@@ -68,6 +68,12 @@ function runTool(publication: unknown): { status: number | null; output: string 
   return { status: result.status, output: `${result.stdout}${result.stderr}` }
 }
 
+class RejectedCast extends Error {
+  constructor(readonly status: string) {
+    super(`Kunde inte lägga rösten (${status}).`)
+  }
+}
+
 describe.skipIf(!databaseAvailable)('en fråga i kuvertmodellen, från läggning till publicering', () => {
   const PNS = { anna: '199001011234', kim: '198505152345', robin: '197012125678', lisa: '198203034567' }
   const ADMIN_PN = '198001019876'
@@ -118,9 +124,13 @@ describe.skipIf(!databaseAvailable)('en fråga i kuvertmodellen, från läggning
     }
   })
 
-  async function castFor(name: keyof typeof PNS, choice: BallotOption): Promise<EncryptedBallot> {
+  async function castFor(
+    name: keyof typeof PNS,
+    choice: BallotOption,
+    prepared?: EncryptedBallot,
+  ): Promise<EncryptedBallot> {
     const voterStatusId = voters.get(name)!
-    const encrypted = await encryptBallot(publicKey, electionId, ballotId, options, choice)
+    const encrypted = prepared ?? (await encryptBallot(publicKey, electionId, ballotId, options, choice))
     const castSequence = await nextCastSequence(voterStatusId, ballotId)
 
     const service = new MockBankIdService()
@@ -148,7 +158,7 @@ describe.skipIf(!databaseAvailable)('en fråga i kuvertmodellen, från läggning
       { signature: result.completionData.signature, ocspResponse: result.completionData.ocspResponse, commitmentSalt },
       await getEncryptedBallotShape(ballotId),
     )
-    if (outcome.status !== 'recorded') throw new Error(`Kunde inte lägga rösten (${outcome.status}).`)
+    if (outcome.status !== 'recorded') throw new RejectedCast(outcome.status)
     return encrypted
   }
 
@@ -187,6 +197,72 @@ describe.skipIf(!databaseAvailable)('en fråga i kuvertmodellen, från läggning
         { id: optionIds.nej, label: 'Nej', displayOrder: 2 },
       ],
     })
+  })
+
+  /** En annan omröstning med en partivalsedel och en fråga med två svar, båda med tre alternativ. */
+  async function otherBallots() {
+    const s = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'S' } })
+    const m = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'M' } })
+    const outcome = await createElection({
+      name: 'Den andra omröstningen',
+      kind: 'RIKSDAGSVAL',
+      opensAt: new Date(Date.now() - 60_000),
+      closesAt: new Date(Date.now() + 3_600_000),
+      ballots: [
+        { kind: 'RIKSDAG', label: 'Riksdagen', allowsCandidateVote: false, parties: [{ partyId: s.id }, { partyId: m.id }] },
+        { kind: 'FRAGA', label: 'En annan fråga?', options: ['Ja', 'Nej'] },
+      ],
+      trusteePassphrases: [...TRUSTEE_PASSPHRASES],
+    })
+    if (outcome.status !== 'created') throw new Error('Kunde inte skapa den andra omröstningen.')
+    const otherElectionId = outcome.election.id
+    const forged = []
+    for (const ballot of outcome.election.ballotIds) {
+      const shape = await getEncryptedBallotShape(ballot.id)
+      expect(shape?.optionCount).toBe(3)
+      const parties = await votesDb.ballotParty.findMany({ where: { ballotId: ballot.id }, orderBy: { displayOrder: 'asc' } })
+      const rows = await votesDb.ballotOption.findMany({ where: { ballotId: ballot.id }, orderBy: { displayOrder: 'asc' } })
+      const otherOptions = canonicalOptions({
+        allowsCandidateVote: false,
+        parties: parties.map((party, index) => ({ id: party.id, displayOrder: index, candidates: [] })),
+        options: rows.map((row, index) => ({ id: row.id, displayOrder: index })),
+      })
+      // Krypterat till frågans nyckel, med bevis bundna till den andra valsedelns id.
+      forged.push(await encryptBallot(publicKey, otherElectionId, ballot.id, otherOptions, { kind: 'BLANK' }))
+    }
+    return forged
+  }
+
+  it('ett chiffer bevisat för en partivalsedel eller en annan fråga, med lika många alternativ, avvisas på frågans valsedel', async () => {
+    const [forAParty, forAnotherQuestion] = await otherBallots()
+    for (const forged of [forAParty!, forAnotherQuestion!]) {
+      expect(forged.ciphertext).toHaveLength(3)
+      await expect(castFor('anna', { kind: 'BLANK' }, forged)).rejects.toMatchObject({ status: 'invalid_proof' })
+    }
+    expect(await votersDb.pendingVote.count({ where: { ballotId } })).toBe(0)
+  })
+
+  it('formen styrs av valsedelns slag: ett svarsalternativ på en partivalsedel och ett parti på en fråga räknas inte', async () => {
+    const s = await votesDb.party.findFirstOrThrow({ where: { abbreviation: 'S' } })
+    const outcome = await createElection({
+      name: 'Slagtestet',
+      kind: 'RIKSDAGSVAL',
+      opensAt: new Date(Date.now() - 60_000),
+      closesAt: new Date(Date.now() + 3_600_000),
+      ballots: [{ kind: 'RIKSDAG', label: 'Riksdagen', allowsCandidateVote: false, parties: [{ partyId: s.id }] }],
+      trusteePassphrases: [...TRUSTEE_PASSPHRASES],
+    })
+    if (outcome.status !== 'created') throw new Error('Kunde inte skapa omröstningen.')
+    const partyBallotId = outcome.election.ballotIds[0]!.id
+    expect(await getEncryptedBallotShape(partyBallotId)).toMatchObject({ optionCount: 2 })
+
+    // Rader som skrivits förbi skapandet, direkt i databasen.
+    await votesDb.ballotOption.create({ data: { ballotId: partyBallotId, label: 'Smugglat', displayOrder: 1 } })
+    const party = await votesDb.ballotParty.findFirstOrThrow({ where: { ballotId: partyBallotId } })
+    await votesDb.ballotParty.create({ data: { ballotId, partyId: party.partyId, displayOrder: 1 } })
+
+    expect(await getEncryptedBallotShape(partyBallotId)).toMatchObject({ optionCount: 2 })
+    expect(await getEncryptedBallotShape(ballotId)).toMatchObject({ optionCount: 3 })
   })
 
   it('texten i BankID-appen namnger frågan och säger inte vad väljaren svarat', async () => {

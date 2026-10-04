@@ -331,6 +331,9 @@ const ballotInputSchema = z
     (value) => (value.kind === 'FRAGA' ? (value.options?.length ?? 0) >= 2 : true),
     { message: 'En fråga behöver minst två svarsalternativ.' },
   )
+  .refine((value) => value.kind === 'FRAGA' || !value.options?.length, {
+    message: 'Svarsalternativ finns bara på en fråga.',
+  })
   .refine(
     (value) => (value.kind === 'FRAGA' ? !value.parties?.length : (value.parties?.length ?? 0) > 0),
     { message: 'En partivalsedel behöver minst ett parti, en fråga inga.' },

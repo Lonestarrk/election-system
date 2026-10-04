@@ -51,7 +51,8 @@ export function describeElectionSeed(
   if (isOpen) {
     return {
       status: 'existing_open',
-      message: 'Omröstning: Valet 2026 fanns redan och är öppen — oförändrad.',
+      message: 'Omröstning: Valet 2026 fanns redan och är öppen — oförändrad. ' +
+        'Frågan skapas inte på ett befintligt Valet 2026: ta bort omröstningen och seeda om för att få den.',
     }
   }
 

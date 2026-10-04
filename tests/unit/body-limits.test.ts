@@ -57,16 +57,14 @@ describe('schemat för att skapa en omröstning', () => {
         chars += 36 + take * 120
         return { partyId: ARBITRARY_PARTY, candidates: Array(take).fill(candidate) as string[] }
       })
-      // Alternativen får finnas på en partivalsedel också, och schemat stoppar dem inte.
-      const options = Array.from({ length: 20 }, () => 'b'.repeat(200))
-      chars += 200 + 20 + 20 * 200
+      // Svarsalternativ finns bara på en fråga, som i sin tur inte har partier och är mindre än denna.
+      chars += 200 + 20
       return {
         kind: index % 2 === 0 ? 'RIKSDAG' : 'KOMMUN',
         label: 'c'.repeat(200),
         areaCode: 'd'.repeat(20),
         allowsCandidateVote: true,
         parties,
-        options,
       }
     })
 

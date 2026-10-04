@@ -252,9 +252,12 @@ export async function getEncryptedBallotShape(
    * bara upp igen av positionen i listan, så att `canonicalOptions` (som
    * kräver fältet för att kunna sortera) får en form den känner igen.
    */
+  // Slaget styr formen. Rader av det andra slaget, skrivna förbi skapandet, räknas inte med: en
+  // fråga har svarsalternativ och inga partier, en partivalsedel tvärtom.
+  const isQuestion = ballot.kind === 'FRAGA'
   const options = canonicalOptions({
-    allowsCandidateVote: ballot.allowsCandidateVote,
-    parties: ballot.parties.map((party, partyIndex) => ({
+    allowsCandidateVote: !isQuestion && ballot.allowsCandidateVote,
+    parties: (isQuestion ? [] : ballot.parties).map((party, partyIndex) => ({
       id: party.id,
       displayOrder: partyIndex,
       candidates: party.candidates.map((candidate, candidateIndex) => ({
@@ -262,7 +265,9 @@ export async function getEncryptedBallotShape(
         displayOrder: candidateIndex,
       })),
     })),
-    options: ballot.options.map((option, optionIndex) => ({ id: option.id, displayOrder: optionIndex })),
+    options: isQuestion
+      ? ballot.options.map((option, optionIndex) => ({ id: option.id, displayOrder: optionIndex }))
+      : [],
   })
 
   return { publicKey: ballot.election.encryptionPublicKey, optionCount: options.length }

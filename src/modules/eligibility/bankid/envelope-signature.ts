@@ -94,8 +94,9 @@ export function newCommitmentSalt(): string {
  *
  * Den säger vad som skrivs under, och ingenting som pekar ut rösten: varken
  * chifferhashen eller åtagandet, eftersom BankID sparar också den här texten.
- * Valsedeln namnges efter sitt slag och inte efter sin etikett, som för en
- * kommun- eller regionvalsedel namnger området. Det tar inte bort något BankID
+ * En partivalsedel namnges efter sitt slag och inte efter sin etikett, som för en
+ * kommun- eller regionvalsedel namnger området. Undantaget är en fråga (FRAGA),
+ * som namnges efter sin etikett, eftersom etiketten är frågan och inte ett område. Det tar inte bort något BankID
  * kan veta: valsedelns id står i det signerade, och vilken valsedel det är går
  * att slå upp i det publicerade resultatet. Texten ska bara inte säga mer än
  * väljaren behöver läsa.

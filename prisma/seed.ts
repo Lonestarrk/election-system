@@ -161,7 +161,7 @@ async function main() {
       { kind: 'LANDSTING', label: 'Regionfullmäktige, Region Stockholm', areaCode: REGION },
       { kind: 'RIKSDAG', label: 'Riksdagen', areaCode: null },
       // En fråga, så att demon visar en folkomröstning i kuvertmodellen (uppgift 14c).
-      { kind: 'FRAGA', label: 'Folkomröstning: Ska det införas ett nytt biblioteksbidrag?', areaCode: null },
+      { kind: 'FRAGA', label: 'Ska det införas ett nytt biblioteksbidrag?', areaCode: null },
     ]
 
     // Ett nyckelpar per valsedel. Bindningen mellan röstintyg och valsedel
