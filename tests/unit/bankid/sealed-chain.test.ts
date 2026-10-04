@@ -107,6 +107,12 @@ describe('den förseglade underskriften', () => {
 
   it('ger null för allt som inte är en förseglad underskrift, också en kedja i det gamla formatet, och kastar aldrig', () => {
     const stored = sealBankIdSignature(signatureFor(), row)
+    // Ett tecken mitt i strängen byts mot ett annat. Med en fast ersättning av de två sista
+    // tecknen, som `A=`, blev "skräpet" ibland exakt det förseglade (ungefär var 64:e
+    // körning), och testet föll på slumpen. Mitt i strängen räknas varje bit, till skillnad
+    // från sista tecknet före utfyllnaden.
+    const middle = Math.floor(stored.length / 2)
+    const flipped = `${stored.slice(0, middle)}${stored[middle] === 'A' ? 'B' : 'A'}${stored.slice(middle + 1)}`
 
     for (const junk of [
       '',
@@ -115,7 +121,7 @@ describe('den förseglade underskriften', () => {
       stored.replace(/^v3:/, 'v2:'),
       `${stored}:00`,
       stored.slice(0, -1),
-      `${stored.slice(0, -2)}A=`,
+      flipped,
       sealLegacyCertificateChain([leaf, MOCK_INTERMEDIATE], row),
       null,
       42,
