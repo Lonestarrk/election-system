@@ -128,8 +128,11 @@ export function sharpModeRequirements(): Requirement[] {
       id: 'bankid-test-environment',
       met: bankIdEnvironment !== 'test',
       blocking: false,
+      // Fixrunda 1 av 17c: testmiljön får inte låta som ett riktigt val.
       detail:
-        'BANKID_ENV=test: inloggningarna är riktiga BankID-flöden med test-BankID, inte med riktiga personer.',
+        'BANKID_ENV=test: BankID:s testmiljö, med test-BankID. Vem som helst kan skaffa ett test-BankID för ' +
+        'vilket personnummer som helst och rösta som den personen, så identiteten är inte säkrad. Ett val i ' +
+        'testmiljön är inte ett riktigt val.',
     },
     {
       id: 'bankid-server-root',
@@ -219,6 +222,24 @@ const BANKID_LABELS: Record<BankIdKind, string> = {
   none: 'ingen BankID-klient',
 }
 
+/**
+ * Vad läget betyder, per BankID. Testmiljön är riktiga BankID-flöden men inget
+ * riktigt val, och texten säger det (fixrunda 1 av 17c).
+ */
+const MEANINGS: Record<BankIdKind, string> = {
+  mock: 'BankID är en attrapp, och vem som helst kan legitimera sig som en demoperson. Ett demoval är inget riktigt val.',
+  test:
+    'Skarpt läge mot BankID:s testmiljö är inte ett riktigt val. Vem som helst kan skaffa ett test-BankID för ' +
+    'vilket personnummer som helst och rösta som den personen, så identiteten är inte säkrad. Demogenvägarna ' +
+    'finns inte och attrappen används aldrig.',
+  production:
+    'Demogenvägarna finns inte och attrappen används aldrig. Legitimering och underskrift går till BankID:s ' +
+    'produktion. Skarpt läge är förvalt, och bara DEMO_MODE=true ger demoläge.',
+  none:
+    'Demogenvägarna finns inte och attrappen används aldrig. Ingen BankID-miljö är vald, så ingen kan legitimera ' +
+    'sig eller skriva under.',
+}
+
 /** Läget som en text för loggen och adminsidan. */
 export function describeMode(): {
   mode: RuntimeMode
@@ -235,10 +256,7 @@ export function describeMode(): {
     mode,
     title: mode === 'DEMO' ? 'Demoläge' : 'Skarpt läge',
     summary: `${mode === 'DEMO' ? 'Demoläge' : 'Skarpt läge'}, ${BANKID_LABELS[kind]}`,
-    meaning:
-      mode === 'DEMO'
-        ? 'BankID är en attrapp, och vem som helst kan legitimera sig som en demoperson. Ett demoval är inget riktigt val.'
-        : 'Demogenvägarna finns inte och attrappen används aldrig. Legitimering och underskrift går till BankID, i den miljö BANKID_ENV pekar ut. Skarpt läge är förvalt, och bara DEMO_MODE=true ger demoläge.',
+    meaning: MEANINGS[mode === 'DEMO' ? 'mock' : kind],
     bankId: { kind, label: BANKID_LABELS[kind] },
   }
 }

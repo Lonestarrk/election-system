@@ -71,10 +71,10 @@ export async function POST(request: Request) {
   try {
     result = await bankIdService.collect(body.data.orderRef)
   } catch (error) {
-    const reply = collectErrorReply(error)
+    const reply = collectErrorReply(error, () => bankIdService.cancel(body.data.orderRef))
     if (!reply) throw error
-    await recordAuditEvent(AUDIT_EVENTS.ADMIN_LOGIN_FAILED)
-    return reply
+    if (reply.ended) await recordAuditEvent(AUDIT_EVENTS.ADMIN_LOGIN_FAILED)
+    return reply.response
   }
 
   // BankID:s rekommenderade texter för varje hintCode, se src/lib/bankid-messages.ts.

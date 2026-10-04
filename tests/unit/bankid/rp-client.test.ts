@@ -311,6 +311,21 @@ describe('felkoderna, som BankID rekommenderar', () => {
     }
   })
 
+  it('omförsöken har en sammanlagd tidsgräns (fixrunda 1, Mindre 4)', async () => {
+    const slow = { status: 503, body: { errorCode: 'maintenance', details: '' }, delayMs: 150 }
+    server.reply('collect', slow, slow, slow, slow, slow, slow, slow, slow)
+    const started = Date.now()
+
+    const failed = await failure(
+      client({ maintenanceRetries: 7, retryDelayMs: 50, totalTimeoutMs: 500 }).collect(ORDER.orderRef),
+    )
+
+    expect(failed.code).toBe('timeout')
+    expect(failed.userMessage).toBe(RFA.RFA5)
+    expect(Date.now() - started).toBeLessThan(900)
+    expect(server.requests.length).toBeLessThan(8)
+  })
+
   it('ett för stort svar avvisas', async () => {
     server.reply('collect', { status: 200, raw: 'x'.repeat(300 * 1024) })
     expect((await failure(client().collect(ORDER.orderRef))).code).toBe('too_large')

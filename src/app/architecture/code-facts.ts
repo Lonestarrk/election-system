@@ -2297,7 +2297,8 @@ export const LIMITATION_STATUS: Record<string, Status> = {
   'signing-keys-in-database': statusPlanned('15'),
   'no-guaranteed-anonymity-set': statusPlanned('15'),
   'no-revocation-check': STATUS_OUT_OF_SCOPE,
-  'bankid-reader-untested-against-bankid': statusPlanned('17c'),
+  // Uppgift 17d: en riktig underskrift som testfall, som kräver en människa med test-BankID.
+  'bankid-reader-untested-against-bankid': statusPlanned('17d'),
   // Uppgift 11d stängde bytet före infogningen med återläsningen, och uppgift
   // 12b bytet efter stängningen för den som bara kan skriva i röstdatabasen:
   // räkningen och slutkontrollen prövar urnroten. Kvar är att den kan stoppa

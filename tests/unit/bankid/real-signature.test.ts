@@ -26,11 +26,14 @@ const captures = existsSync(DIRECTORY) ? readdirSync(DIRECTORY).filter((name) =>
 /** srvInfo/name för BankID:s publika testcertifikat FP Testcert 5, som fångsten kör med. */
 const TEST_SERVICE = 'CN=FP Testcert 5,name=Test av BankID,serialNumber=5566304928,O=Testbank A AB (publ),C=SE'
 
-describe.skipIf(captures.length === 0)('en riktig underskrift från BankID:s testmiljö', () => {
-  const roots = (readFileSync(join(DIRECTORY, 'roots.pem'), 'utf8').match(
+/** Läses i testet och inte i describe, som vitest kör också när sviten hoppas över. */
+function roots(): X509Certificate[] {
+  return (readFileSync(join(DIRECTORY, 'roots.pem'), 'utf8').match(
     /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g,
   ) ?? []).map((pem) => new X509Certificate(pem))
+}
 
+describe.skipIf(captures.length === 0)('en riktig underskrift från BankID:s testmiljö', () => {
   it.each(captures)('%s godtas av läsaren', (name) => {
     const capture = JSON.parse(readFileSync(join(DIRECTORY, name), 'utf8')) as {
       environment: string
@@ -40,7 +43,7 @@ describe.skipIf(captures.length === 0)('en riktig underskrift från BankID:s tes
     expect(capture.environment).toBe('test')
 
     const verdict = verifyBankIdSignature(Buffer.from(capture.signature, 'base64'), {
-      roots,
+      roots: roots(),
       signedDuring: signedOnDay(new Date(`${capture.capturedOn}T00:00:00Z`)),
       service: parseServiceName(TEST_SERVICE)!,
     })

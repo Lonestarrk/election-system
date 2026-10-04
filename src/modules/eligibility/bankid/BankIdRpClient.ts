@@ -66,6 +66,11 @@ export type BankIdRpClientOptions = {
   connectTimeoutMs?: number
   /** Hur många gånger en anslutning som aldrig blev klar prövas igen. */
   connectRetries?: number
+  /**
+   * Sammanlagd tidsgräns för ett anrop med alla omförsök (fixrunda 1, Mindre 4).
+   * Väljarens pollning och rutten väntar aldrig längre än så på BankID.
+   */
+  totalTimeoutMs?: number
   /** Hur många gånger ett maintenance-svar prövas igen. */
   maintenanceRetries?: number
   retryDelayMs?: number
@@ -125,6 +130,7 @@ export class BankIdRpClient implements IBankIdService {
   private readonly maintenanceRetries: number
   private readonly connectTimeoutMs: number
   private readonly connectRetries: number
+  private readonly totalTimeoutMs: number
   private readonly retryDelayMs: number
   private readonly maxResponseBytes: number
   private readonly now: () => number
@@ -153,6 +159,7 @@ export class BankIdRpClient implements IBankIdService {
     this.maintenanceRetries = options.maintenanceRetries ?? 2
     this.connectTimeoutMs = Math.min(options.connectTimeoutMs ?? 3_000, this.timeoutMs)
     this.connectRetries = options.connectRetries ?? 2
+    this.totalTimeoutMs = options.totalTimeoutMs ?? 20_000
     this.retryDelayMs = options.retryDelayMs ?? 1_000
     this.maxResponseBytes = options.maxResponseBytes ?? 256 * 1024
     this.now = options.now ?? Date.now
@@ -249,9 +256,13 @@ export class BankIdRpClient implements IBankIdService {
   private async call(method: string, body: Record<string, string>): Promise<Reply> {
     let maintenance = 0
     let connects = 0
+    // Väggklockan och inte `now`, som testerna styr för QR-koden.
+    const deadline = Date.now() + this.totalTimeoutMs
+    const remaining = () => deadline - Date.now()
     for (;;) {
+      if (remaining() <= 0) throw new BankIdRequestError('timeout', null)
       try {
-        return await this.once(method, body)
+        return await this.once(method, body, Math.min(this.timeoutMs, remaining()))
       } catch (error) {
         if (!(error instanceof BankIdRequestError)) throw error
         if (error.code === 'connect_timeout') {
@@ -261,12 +272,15 @@ export class BankIdRpClient implements IBankIdService {
         }
         if (error.code !== 'maintenance' || maintenance >= this.maintenanceRetries) throw error
         maintenance += 1
-        await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs * maintenance))
+        const delay = this.retryDelayMs * maintenance
+        // Räcker tiden inte till väntan och ett anrop till ges beskedet nu, inte efter väntan.
+        if (delay >= remaining()) throw new BankIdRequestError('timeout', null)
+        await new Promise((resolve) => setTimeout(resolve, delay))
       }
     }
   }
 
-  private once(method: string, body: Record<string, string>): Promise<Reply> {
+  private once(method: string, body: Record<string, string>, timeoutMs: number): Promise<Reply> {
     const payload = Buffer.from(JSON.stringify(body), 'utf8')
     const url = new URL(method, this.base)
 
@@ -285,7 +299,7 @@ export class BankIdRpClient implements IBankIdService {
           agent: this.agent,
           // Exakt så: BankID svarar unsupportedMediaType på en charset efter application/json.
           headers: { 'Content-Type': 'application/json', 'Content-Length': payload.length },
-          timeout: this.timeoutMs,
+          timeout: timeoutMs,
         },
         (response) => {
           const chunks: Buffer[] = []
@@ -332,14 +346,14 @@ export class BankIdRpClient implements IBankIdService {
         if (connected) return
         fail(new BankIdRequestError('connect_timeout', null))
         request.destroy()
-      }, this.connectTimeoutMs)
+      }, Math.min(this.connectTimeoutMs, timeoutMs))
       connectDeadline.unref?.()
 
       // Tidsgränsen gäller hela anropet, inte bara tystnad på uttaget.
       const deadline = setTimeout(() => {
         fail(new BankIdRequestError(connected ? 'timeout' : 'connect_timeout', null))
         request.destroy()
-      }, this.timeoutMs)
+      }, timeoutMs)
       deadline.unref?.()
 
       request.on('timeout', () => {

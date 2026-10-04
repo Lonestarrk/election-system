@@ -145,19 +145,20 @@ export async function POST(request: Request) {
   let completion = held.completion
   if (!completion) {
     /**
-     * Ett fel från BankID (uppgift 17c) avslutar ordern här: BankID säger att samma
-     * anrop inte ska göras igen, utom vid maintenance, som klienten redan prövat
-     * igen. Valsedeln släpps, och väljaren får BankID:s text för felet. Andra fel
-     * kastas vidare, som förut.
+     * Ett fel från BankID (uppgift 17c). Ett tillfälligt fel, nätet, en tidsgräns
+     * eller maintenance, avslutar inte ordern: svaret är pending och nästa pollning
+     * frågar igen (fixrunda 1). Varje annat fel avslutar ordern, eftersom BankID
+     * säger att samma anrop inte ska göras igen. Då släpps valsedeln, ordern avbryts
+     * hos BankID, och väljaren får BankID:s text för felet. Andra fel kastas vidare.
      */
     let collected
     try {
       collected = await bankIdService.collect(orderRef)
     } catch (error) {
-      const reply = collectErrorReply(error)
+      const reply = collectErrorReply(error, () => bankIdService.cancel(orderRef))
       if (!reply) throw error
-      takeOrder(orderRef, sessionId)
-      return reply
+      if (reply.ended) takeOrder(orderRef, sessionId)
+      return reply.response
     }
 
     // BankID:s rekommenderade texter för varje hintCode, se src/lib/bankid-messages.ts.

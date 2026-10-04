@@ -11,7 +11,7 @@ import { BankIdRequestError } from '@/modules/eligibility/bankid/BankIdRpClient'
  * BankID:s text för felet och inget annat.
  */
 
-const state = vi.hoisted(() => ({ auth: vi.fn(), collect: vi.fn() }))
+const state = vi.hoisted(() => ({ auth: vi.fn(), collect: vi.fn(), cancel: vi.fn() }))
 
 vi.mock('@/modules/eligibility/audit.service', () => ({
   AUDIT_EVENTS: new Proxy({}, { get: (_target, name) => String(name) }),
@@ -21,6 +21,7 @@ vi.mock('@/modules/eligibility/bankid', () => ({
   bankIdService: {
     auth: (...args: unknown[]) => state.auth(...args),
     collect: (...args: unknown[]) => state.collect(...args),
+    cancel: (...args: unknown[]) => state.cancel(...args),
     qrData: async () => null,
   },
 }))
@@ -47,6 +48,7 @@ beforeEach(() => {
   resetRateLimits()
   state.auth.mockReset().mockResolvedValue({ orderRef: ORDER, autoStartToken: 'auto' })
   state.collect.mockReset()
+  state.cancel.mockReset().mockRejectedValue(new BankIdRequestError('network', null))
 })
 
 describe('start', () => {
@@ -92,10 +94,19 @@ describe.each([
     })
   })
 
-  it('ett fel från BankID ger BankID:s text och 502', async () => {
+  it('ett fel från BankID ger BankID:s text och 502, och ordern avbryts hos BankID', async () => {
     state.collect.mockRejectedValue(new BankIdRequestError('invalidParameters', 400))
     const response = await route(post(path, body))
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ status: 'failed', message: RFA.RFA22 })
+    expect(state.cancel).toHaveBeenCalledWith(ORDER)
+  })
+
+  it('ett tillfälligt fel avslutar inte ordern: svaret är pending', async () => {
+    state.collect.mockRejectedValue(new BankIdRequestError('timeout', null))
+    const response = await route(post(path, body))
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'pending' })
+    expect(state.cancel).not.toHaveBeenCalled()
   })
 })

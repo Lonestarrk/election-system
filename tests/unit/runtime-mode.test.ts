@@ -224,7 +224,7 @@ describe('skarpt läge är en checklista, inte en boolean', () => {
     expect(test.met).toBe(false)
     expect(test.blocking).toBe(false)
     expect(test.detail).toMatch(/test-BankID/)
-    expect(test.detail).toMatch(/inte med riktiga personer/)
+    expect(test.detail).toMatch(/identiteten är inte säkrad/)
 
     const production = await load({ ...SHARP_ENV, BANKID_ENV: 'production' })
     expect(

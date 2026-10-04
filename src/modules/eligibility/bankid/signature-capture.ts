@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
+import { logger } from '@/lib/logger'
 import { runtimeMode } from '@/lib/mode-flag'
 import { truncateToDay } from '@/lib/time'
 import { configuredBankIdEnvironment } from './kind'
@@ -28,6 +29,21 @@ export function signatureCaptureDirectory(): string | null {
   if (!directory) return null
   if (runtimeMode() !== 'SHARP') return null
   if (configuredBankIdEnvironment() !== 'test') return null
+
+  /**
+   * KATALOGEN LIGGER UTANFÖR APPEN (fixrunda 1 av 17c, Mindre 1). En relativ sökväg,
+   * eller en inne i arbetskatalogen, hade kunnat lägga underskrifterna i repot, där
+   * de committas av misstag, eller i en katalog som appen serverar. Då slås fångsten
+   * inte på, och felet loggas utan sökvägen.
+   */
+  const fromCwd = relative(process.cwd(), resolve(directory))
+  const insideCwd = fromCwd === '' || (!fromCwd.startsWith('..') && !isAbsolute(fromCwd))
+  if (!isAbsolute(directory) || insideCwd) {
+    logger.error(
+      'BANKID_CAPTURE_SIGNATURES_DIR måste vara en absolut sökväg utanför appens arbetskatalog. Fångsten är avstängd.',
+    )
+    return null
+  }
   return directory
 }
 

@@ -538,6 +538,44 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       },
     ],
   },
+  /** Fixrunda 1 av uppgift 17c. */
+  {
+    id: 'bankid-test-environment-identity-not-secured',
+    title: 'Skarpt läge mot BankID:s testmiljö säkrar inte vem som röstar',
+    why:
+      'Med BANKID_ENV=test går legitimering och underskrift till BankID:s testmiljö, med riktiga ' +
+      'BankID-flöden. Men vem som helst kan skaffa ett test-BankID för vilket personnummer som helst, och ' +
+      'därmed rösta som vem som helst som står i röstlängden. Ett val i testmiljön är alltså inte ett ' +
+      'riktigt val. Skarpt läge mot testmiljön får ändå starta, så att klienten och läsaren kan prövas: ' +
+      'kravet att läsaren är prövad mot en riktig underskrift är där bara en varning, medan det stoppar ' +
+      'produktionen. Varje sida bär då en banderoll som säger att identiteten inte är säkrad, och ' +
+      'adminsidan och loggen säger detsamma. Fastställandets granskningshändelse bär BankID-miljön i sin ' +
+      'typ. Det publicerade resultatet säger inte vilken BankID-miljö omröstningen kördes mot, eftersom ' +
+      'miljön är serverns inställning och inte lagras med omröstningen.',
+    stillTrueIf: [
+      { file: 'src/lib/runtime-mode.ts', contains: "blocking: bankIdEnvironment !== 'test'," },
+      { file: 'src/lib/mode-banner.ts', contains: "if (configuredBankIdEnvironment() === 'test') {" },
+    ],
+  },
+  /** Fixrunda 1 av uppgift 17c. */
+  {
+    id: 'rp-certificate-change-fails-envelopes',
+    title: 'Ett RP-certifikat som byts under ett val fäller de kuvert som redan lagts',
+    why:
+      'Varje underskrift bär i srvInfo/name namnet ur det RP-certifikat som tjänsten hade när väljaren ' +
+      'skrev under. Valideringen före stängningen jämför det med namnet ur det certifikat som ' +
+      'BANKID_CERT_PATH pekar ut vid stängningen. Byts certifikatet medan röstningen pågår, till exempel ' +
+      'för att det gamla går ut, och får det nya ett annat subject, underkänns varje kuvert som lagts under ' +
+      'det gamla med skälet service_name, och stängningen stoppar med kopplingen kvar. Ett certifikat som ' +
+      'förnyas med samma subject påverkar inte. Systemet har ingen lista över tidigare namn.',
+    stillTrueIf: [
+      { file: 'src/orchestration/validate-before-close.usecase.ts', contains: 'const service = expectedServiceName()' },
+      {
+        file: 'src/modules/eligibility/bankid/service-name.ts',
+        contains: 'const name = serviceNameOf(rpCredentialsFromEnv().certificate)',
+      },
+    ],
+  },
   {
     id: 'pepper-holder-reads-voter-names',
     title: 'Den som har pepparn kan läsa namn och personnummer för varje liggande kuvert',

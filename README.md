@@ -272,7 +272,9 @@ Implementationen av `IBankIdService` väljs på ett enda ställe,
    ```
 
    Appen vägrar starta med en lista på det som saknas. Adminsidan visar då
-   "Skarpt läge, BankID testmiljö".
+   "Skarpt läge, BankID testmiljö", och varje sida bär en banderoll som säger att vem som
+   helst kan skaffa ett test-BankID för vilket personnummer som helst. Ett val i testmiljön
+   är inte ett riktigt val.
 5. Det frivilliga provet mot testmiljön startar en legitimering, frågar efter den och
    avbryter den. Det behöver ingen människa och ingår inte i den vanliga sviten:
 
@@ -281,7 +283,7 @@ Implementationen av `IBankIdService` väljs på ett enda ställe,
    ```
 
 **Läsaren av BankID:s underskrift är inte prövad mot en riktig underskrift.** En sådan kräver
-en människa med test-BankID. Med `BANKID_CAPTURE_SIGNATURES_DIR=<katalog>` skriver appen varje
+en människa med test-BankID. Med `BANKID_CAPTURE_SIGNATURES_DIR=<absolut katalog utanför repot>` skriver appen varje
 underskrift från testmiljön till en egen fil där, men bara i skarpt läge med
 `BANKID_ENV=test`, aldrig i produktion, och aldrig till loggen. Skarpt läge med
 `BANKID_ENV=production` vägrar starta tills en sådan underskrift har lagts in som testfall

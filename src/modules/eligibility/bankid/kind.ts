@@ -4,7 +4,7 @@ import type { RuntimeMode } from '@/lib/mode-flag'
  * Vilken BankID bygget använder i det läge det kör i (uppgift 17).
  *
  *   mock         attrappen, i demoläget
- *   test         BankID:s testmiljö, med test-BankID och inte med riktiga personer
+ *   test         BankID:s testmiljö, med test-BankID som vem som helst kan skaffa för vilket personnummer som helst
  *   production   BankID:s produktionsmiljö
  *   none         ingen klient: skarpt läge utan en riktig BankID-klient
  *

@@ -44,6 +44,23 @@ describe('när fångsten gäller', () => {
   })
 })
 
+describe('katalogen (fixrunda 1, Mindre 1)', () => {
+  it('måste vara en absolut sökväg utanför arbetskatalogen, annars slås fångsten inte på och ett fel loggas utan sökvägen', async () => {
+    const inside = join(process.cwd(), 'tests', 'fangst')
+    for (const candidate of ['fangst', './tests/fangst', inside]) {
+      const capture = await load({ DEMO_MODE: '', BANKID_ENV: 'test', BANKID_CAPTURE_SIGNATURES_DIR: candidate })
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+      expect(capture.signatureCaptureDirectory(), candidate).toBeNull()
+      expect(error).toHaveBeenCalledTimes(1)
+      const line = String(error.mock.calls[0]![0])
+      expect(line).toMatch(/BANKID_CAPTURE_SIGNATURES_DIR/)
+      expect(line).not.toContain('fangst')
+      error.mockRestore()
+    }
+  })
+})
+
 describe('fångsten', () => {
   it('skriver underskriften och spärrsvaret till en egen fil, med dagen och inget annat, och loggar inget', async () => {
     const capture = await load({ DEMO_MODE: '', BANKID_ENV: 'test', BANKID_CAPTURE_SIGNATURES_DIR: directory })

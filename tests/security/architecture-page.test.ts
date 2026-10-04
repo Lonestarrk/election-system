@@ -1121,7 +1121,8 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
 
   const taskHeadings = new Set([...plan.matchAll(/^## Task (\w+):/gm)].map((match) => match[1]!))
 
-  const executionOrderMatch = plan.match(/\*\*Exekveringsordning efter uppgift 11:\*\*([\s\S]*?18\.)/)
+  // Stycket slutar där nästa mening börjar. Sedan planens commit a7ddee7 står 17d efter 18.
+  const executionOrderMatch = plan.match(/\*\*Exekveringsordning efter uppgift 11:\*\*([\s\S]*?)\nOrdningen ändrades/)
   if (!executionOrderMatch) {
     throw new Error('Hittar inte stycket "Exekveringsordning efter uppgift 11" i planen.')
   }
@@ -1139,7 +1140,7 @@ describe('Utvecklingsstatus: klart, kommer att implementeras, saknas (uppgift 11
     // Kontrasten mot ett tomt eller trasigt regexträff: en riktig lista.
     expect(executionOrder).toEqual([
       '11a', '11b', '11c', '11f', '14', '14b', '14f', '11g', '11h', '11d', '14d', '12', '12b',
-      '12c', '13', '17', '14e', '11e', '17b', '17c', '14c', '15', '16', '18',
+      '12c', '13', '17', '14e', '11e', '17b', '17c', '14c', '15', '16', '18', '17d',
     ])
   })
 

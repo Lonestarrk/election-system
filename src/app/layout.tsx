@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { isDemoMode } from '@/lib/demo-mode'
+import { modeBannerText } from '@/lib/mode-banner'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -34,18 +35,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
    * sidan av att skarpt läge är förvalt och att omröstningen bär sitt läge.
    * Texten säger vad sidan är och lovar ingenting om rösten.
    *
-   * I skarpt läge visas ingen banderoll. Sidfoten säger ändå att systemet är
+   * I skarpt läge mot BankID:s produktion visas ingen banderoll, men mot testmiljön en som säger att identiteten inte är säkrad. Sidfoten säger ändå att systemet är
    * ett proof of concept, och den står kvar i båda lägena.
    */
   const demo = isDemoMode()
+  // Texten avgörs i src/lib/mode-banner.ts: demoläget, och sedan fixrunda 1 av 17c också testmiljön.
+  const banner = modeBannerText()
 
   return (
     <html lang="sv">
       {/* Läget för klientkomponenterna, som inte kan fråga isDemoMode() själva (uppgift 17c). */}
       <body data-mode={demo ? 'DEMO' : 'SHARP'}>
-        {demo && (
+        {banner && (
           <div className="mode-banner" role="note" data-testid="mode-banner">
-            Demo, inte ett riktigt val. BankID är en attrapp.
+            {banner}
           </div>
         )}
 

@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { BANKID_ENVIRONMENTS } from '@/modules/eligibility/bankid/bankid-environment'
+import { BANKID_ENVIRONMENTS, serverRootFor } from '@/modules/eligibility/bankid/bankid-environment'
 import { BankIdRequestError, BankIdRpClient } from '@/modules/eligibility/bankid/BankIdRpClient'
 import { loadRpCredentials } from '@/modules/eligibility/bankid/rp-certificate'
 
@@ -28,7 +28,8 @@ function testClient(): BankIdRpClient {
   const credentials = loadRpCredentials(path, process.env.BANKID_CERT_PASSPHRASE ?? 'qwerty123')
   return new BankIdRpClient({
     baseUrl: BANKID_ENVIRONMENTS.test.baseUrl,
-    serverRoots: [BANKID_ENVIRONMENTS.test.serverRootPem],
+    // Som index.ts: roten prövas mot det låsta fingeravtrycket (fixrunda 1, Mindre 3).
+    serverRoots: [serverRootFor('test').toString()],
     credentials: credentials.tls,
   })
 }

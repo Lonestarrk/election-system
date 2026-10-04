@@ -630,16 +630,35 @@ describe('BankID:s meddelanden och felkoder i signeringen', () => {
     expect(await (await encrypted(poll())).json()).toMatchObject({ status: 'failed', message: RFA.RFA16 })
   })
 
-  it('ett fel från BankID i pollningen tar bort ordern och ger BankID:s text', async () => {
+  it('ett fel från BankID i pollningen tar bort ordern, avbryter den hos BankID och ger BankID:s text', async () => {
     await signStart(post('/api/vote/sign-start', startBody()))
     state.collect.mockRejectedValue(new BankIdRequestError('internalError', 500))
+    state.cancel.mockRejectedValue(new BankIdRequestError('network', null))
 
     const response = await encrypted(poll())
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ status: 'failed', message: RFA.RFA5 })
     expect(getOrder(ORDER, 'session-a')).toBeNull()
+    expect(state.cancel).toHaveBeenCalledWith(ORDER)
     expect(verificationReservations()).toBe(0)
   })
+
+  it.each(['network', 'timeout', 'maintenance'])(
+    'ett tillfälligt fel (%s) avslutar inte ordern, och nästa pollning frågar igen',
+    async (code) => {
+      await signStart(post('/api/vote/sign-start', startBody()))
+      state.collect.mockRejectedValueOnce(new BankIdRequestError(code, null))
+
+      const response = await encrypted(poll())
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ status: 'pending' })
+      expect(getOrder(ORDER, 'session-a')).not.toBeNull()
+      expect(state.cancel).not.toHaveBeenCalled()
+
+      state.collect.mockResolvedValue(COMPLETE)
+      expect(await (await encrypted(poll())).json()).toMatchObject({ status: 'recorded' })
+    },
+  )
 
   it('ett fel från BankID när ordern startas ger BankID:s text, och inget läggs i lagret', async () => {
     state.sign.mockRejectedValue(new BankIdRequestError('alreadyInProgress', 400))

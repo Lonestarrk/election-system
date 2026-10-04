@@ -97,7 +97,8 @@ export function ModeCard() {
 
       {data.bankId.kind === 'test' && (
         <div className="notice warning" role="status">
-          Inloggningarna är riktiga BankID-flöden med test-BankID, inte med riktiga personer.
+          BankID:s testmiljö: Vem som helst kan skaffa ett test-BankID för vilket personnummer som helst och
+          rösta som den personen, så identiteten är inte säkrad. Det här är inte ett riktigt val.
         </div>
       )}
 
