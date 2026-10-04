@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=22.10"
   },
+  "scarfSettings": {
+    "enabled": false
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

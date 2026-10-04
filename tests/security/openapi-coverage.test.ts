@@ -359,13 +359,13 @@ describe('beroendena för specen', () => {
     expect(importers(/from\s+['"]@asteasolutions\/zod-to-openapi['"]/)).toEqual(['src/lib/openapi.ts'])
   })
 
-  it('swagger-ui-react importeras bara av dokumentationssidan', () => {
-    expect(importers(/['"]swagger-ui-react(\/[^'"]*)?['"]/)).toEqual(
-      expect.arrayContaining([expect.stringMatching(/^src\/app\/api-docs\//)]),
-    )
-    for (const file of importers(/['"]swagger-ui-react(\/[^'"]*)?['"]/)) {
-      expect(file.startsWith('src/app/api-docs/'), file).toBe(true)
-    }
+  it('swagger-ui-react importeras bara av dokumentationssidans visare', () => {
+    // ARCHITECTURE.md 11b säger "på ett ställe". Typdeklarationen nämner paketet men importerar
+    // det inte i appen.
+    expect(importers(/['"]swagger-ui-react(\/[^'"]*)?['"]/)).toEqual([
+      'src/app/api-docs/SpecViewer.tsx',
+      'src/app/api-docs/swagger-ui-react.d.ts',
+    ])
   })
 
   it('versionerna är låsta, utan ^ eller ~', () => {

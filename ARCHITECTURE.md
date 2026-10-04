@@ -714,8 +714,21 @@ drar med sig många andra, och de ligger i `package-lock.json` som resten. Att d
 röstdata eller identiteter betyder att ingen kod i de vägarna importerar dem, inte att de är
 riskfria i sig: ett komprometterat paket kunde ändra vad som körs i den sida där
 dokumentationen visas, eller vad som skrivs ut som spec. Dokumentationssidan körs under samma
-CSP som övriga sidor, utan `unsafe-eval` och utan externa källor
-(`tests/e2e/api-docs.spec.ts` prövar det i en riktig webbläsare, mot ett produktionsbygge).
+CSP som övriga sidor, utan `unsafe-eval` och utan externa källor.
+`tests/e2e/api-docs.spec.ts` kan pröva det i en riktig webbläsare mot ett produktionsbygge, och
+det gjordes vid uppgift 18. Den vanliga körningen går däremot mot dev-servern, som tillåter
+`unsafe-eval`, och visar då bara att sidan renderar.
+
+**Installationsskript i beroendeträdet.** Swagger UI drar med sig paket som kör skript vid
+installationen: `@scarf/scarf`, som skickar telemetri, `tree-sitter` och dess grammatiker,
+som bygger inbyggd kod, och `core-js-pure`.
+- `package.json` stänger av Scarf (`scarfSettings.enabled: false`).
+- `Dockerfile` installerar med `npm ci --ignore-scripts`, så bygget i Azure kör inga sådana
+  skript.
+- På en utvecklardator och i CI kör ett vanligt `npm install` eller `npm ci` dem. Använd
+  `npm ci --ignore-scripts` följt av `npm run generate`.
+- `tests/security/install-scripts.test.ts` fäller när ett nytt paket med installationsskript
+  dyker upp i `package-lock.json` utöver den uttalade listan.
 
 ---
 
