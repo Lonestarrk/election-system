@@ -43,7 +43,6 @@ export default function StatusPage() {
         <Remaining
           fixable={[
             limitations.revocation,
-            limitations.bankIdUntested,
             limitations.swapCiphertext,
           ]}
         />

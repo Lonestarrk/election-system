@@ -126,7 +126,7 @@ export function BankIdLogin({
        * konsumeras av den första frågan, så den andra får "failed" tillbaka,
        * och väljaren ser "Legitimeringen misslyckades" i stället för det
        * verkliga beskedet — "Du har inte behörighet till administrationen",
-       * "du har redan röstat", eller att legitimeringen faktiskt lyckades.
+       * "du finns inte i röstlängden", eller att legitimeringen faktiskt lyckades.
        *
        * Det syntes först när dev-serverns kompilering gjorde ett svar
        * långsamt, men kräver ingenting mer än ett segt nät för att inträffa i

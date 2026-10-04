@@ -698,7 +698,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
   },
   {
     id: 'commitments-internal-only',
-    title: 'Rötterna sparas bara av systemet självt',
+    title: 'Kuvertroten och urnroten sparas bara av systemet självt',
     why:
       'Kuvertroten och urnroten skrivs i röstlängden och i revisionskedjan, och lämnas ut av ' +
       'observatörsrutten. En rot som bara finns i databasen som den skyddar kan skrivas om ' +

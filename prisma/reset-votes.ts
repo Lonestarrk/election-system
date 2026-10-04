@@ -8,7 +8,7 @@ import { demoElectionWindow } from '../src/lib/demo-election'
  * VARFÖR DET BEHÖVS
  *
  * E2E-testerna röstar på riktigt: de lägger kuvert och stänger omröstningar. En andra
- * körning mot samma databas utgår annars från det förra körningen lämnade.
+ * körning mot samma databas utgår annars från det som förra körningen lämnade.
  *
  * VAD SOM RADERAS OCH VAD SOM BEHÅLLS
  *
@@ -84,8 +84,7 @@ async function main() {
 
   process.stdout.write(
     `Nollställt: ${votedMarkers.count} markeringar, ` +
-      `${outerEnvelopes.count} yttre och ${innerEnvelopes.count} inre kuvert.
-`,
+      `${outerEnvelopes.count} yttre och ${innerEnvelopes.count} inre kuvert.\n`,
   )
 }
 

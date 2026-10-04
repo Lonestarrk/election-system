@@ -924,10 +924,15 @@ export const CURRENTLY = {
       'adminvyn bara valdeltagandet per valsedel. Efter stängningen ser administratören varje ' +
       'valsedel när den räknas, och offentligt publiceras resultatet först när omröstningen är ' +
       'räknad. I demon kan den som driver systemet dekryptera när som helst, eftersom fraserna är ' +
-      'kända. Ingen rutt lämnar ut röster en och en, med innehåll. ' +
-      'Livevyn i demon visar räkneverken först när resultatet är publicerat.',
+      'kända. Ingen rutt i appen lämnar ut röster en och en, med innehåll, förutom demons livevy, som bara finns i ' +
+      'demoläget och visar kuverten i urnan rad för rad som chiffer, med början av hashen. Chiffren går inte att ' +
+      'läsa utan två förtroendepersoner, men i demon är fraserna kända. Livevyn visar räkneverken först när ' +
+      'resultatet är publicerat.',
     holdsWhile: [
       { nowhereIn: 'src/app/api/observer', matches: /votesDb|ballotTally/ },
+      // Livevyn, den enda rutten som visar urnans rader, svarar bara i demoläget.
+      { file: 'src/app/api/demo/database-state/route.ts', contains: 'isDemoMode()' },
+      { file: 'src/app/api/demo/database-state/route.ts', contains: 'ciphertext: previewCiphertext(row.ciphertext)' },
       { file: 'src/app/api/admin/stats/route.ts', contains: 'voted: ballot.voted,' },
       { file: 'src/orchestration/election-overview.usecase.ts', contains: 'const turnout = await turnoutByBallot(electionId)' },
       {
@@ -2103,7 +2108,7 @@ export const BUILT: CodeFact[] = [
     text:
       'Kuvertflödet är den enda vägen: röstintyg, blinda signaturer, kvittokoder och det gamla flödets ' +
       'tabeller finns inte längre i koden eller i schemana. Migreringarna tar bort tabellerna och ' +
-      'kolumnerna, och med dem raderna i dem.',
+      'kolumnerna, och med dem raderna i databaserna. Säkerhetskopior från före migreringen har dem kvar.',
     holdsWhile: OLD_FLOW_REMOVED,
     status: STATUS_DONE,
   },

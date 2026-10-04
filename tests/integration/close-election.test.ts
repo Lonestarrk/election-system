@@ -820,6 +820,65 @@ describe.skipIf(!databaseAvailable)('stängningen skalar bort det yttre kuvertet
     ).toEqual({ phase: 'CLOSED', envelopeRoot: null, linkClearedAt: null })
   })
 
+  it('efter stängningen står ingen väljare, ingen identitet och ingen underskrift i röstdatabasen, och inget chiffer i röstlängden', async () => {
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    const identities = await votersDb.voterStatus.findMany({ select: { id: true, externalIdentityHash: true } })
+    const envelopes = await votersDb.pendingVote.findMany({
+      select: { id: true, ciphertextHash: true, bankIdSignature: true },
+    })
+    expect(envelopes).toHaveLength(2)
+    // Kontrasten: före stängningen finns kopplingen, så sökningen hittar den.
+    const before = await dumpOf(votersDb)
+    expect(before).toContain(envelopes[0]!.ciphertextHash)
+    expect(before).toContain(anna)
+
+    expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 2 })
+
+    const voters = await dumpOf(votersDb)
+    const votes = await dumpOf(votesDb)
+    for (const identity of identities) {
+      expect(votes).not.toContain(identity.id)
+      expect(votes).not.toContain(identity.externalIdentityHash)
+    }
+    for (const envelope of envelopes) {
+      expect(votes).not.toContain(envelope.id)
+      expect(votes).not.toContain(envelope.bankIdSignature)
+      expect(voters).not.toContain(envelope.ciphertextHash)
+    }
+    expect(votes).not.toContain(ANNA_PN)
+    expect(votes).not.toContain(KIM_PN)
+    // Och ingen främmande nyckel går över gränsen: pending_vote är tom.
+    expect(await votersDb.pendingVote.count()).toBe(0)
+  })
+
+  it('tidsstämplarna är grovkorniga i båda databaserna, och urnan har ingen alls', async () => {
+    await castFor(anna, 'bp-s')
+    await castFor(kim, 'bp-m')
+    // Läggningen avrundar till dygn.
+    const pending = await votersDb.pendingVote.findMany({ select: { updatedAt: true } })
+    expect(pending).toHaveLength(2)
+    for (const { updatedAt } of pending) {
+      expect([updatedAt.getUTCHours(), updatedAt.getUTCMinutes(), updatedAt.getUTCSeconds(), updatedAt.getUTCMilliseconds()]).toEqual([0, 0, 0, 0])
+    }
+
+    expect(await closeElection(electionId)).toMatchObject({ status: 'closed', moved: 2 })
+
+    // Revisionsloggen avrundar till hel timme.
+    const audit = await votersDb.auditEvent.findMany({ select: { occurredAt: true } })
+    expect(audit.length).toBeGreaterThan(0)
+    for (const { occurredAt } of audit) {
+      expect([occurredAt.getUTCMinutes(), occurredAt.getUTCSeconds(), occurredAt.getUTCMilliseconds()]).toEqual([0, 0, 0])
+    }
+
+    // Urnan har ingen tidskolumn att avrunda: raderna går inte att ordna i tid.
+    const columns = await votesDb.$queryRaw<Array<{ column_name: string; data_type: string }>>`
+      SELECT column_name::text AS column_name, data_type::text AS data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'encrypted_vote'`
+    expect(columns.filter((column) => /time|date|interval/i.test(column.data_type))).toEqual([])
+  })
+
   /**
    * BANKID:S KOPIA GÅR INTE ATT MATCHA EFTER STÄNGNINGEN (uppgift 11e).
    *

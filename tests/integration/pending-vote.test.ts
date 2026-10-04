@@ -1,5 +1,5 @@
 import type { X509Certificate } from 'node:crypto'
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { votersDb } from '@/modules/eligibility/db'
 import { votesDb } from '@/modules/ballot-box/db'
 import { getEncryptedBallotShape } from '@/modules/ballot-box'
@@ -43,6 +43,7 @@ import {
   type KeyPair,
 } from '../unit/bankid/forged-certificates'
 import { closeElection as closeAndStrip } from '@/orchestration/close-election.usecase'
+import { completeTally, submitPartialDecryption } from '@/orchestration/tally.usecase'
 import { createVoter, disconnect, isDatabaseAvailable, resetElectionData, signingTextFor } from './helpers'
 import { MOCK_SERVICE_NAME, parseServiceName } from '@/modules/eligibility/bankid/service-name'
 
@@ -264,6 +265,82 @@ describe.skipIf(!databaseAvailable)('rösten kan läggas och ändras fram till s
       data: { closesAt: new Date(Date.now() - 1000) },
     })
   }
+
+  describe('ingenting som pekar ut väljaren eller kuvertet skrivs till loggen', () => {
+    /**
+     * Fångar ALLT som skrivs till console under en lyckad läggning, en misslyckad, stängningen och räkningen,
+     * inte bara det som går genom loggern, så en bortglömd console.log under felsökning också syns. Provet
+     * ersatte det som fanns för det gamla flödets token. Loggern maskerar personnummer och 64-teckenshashar,
+     * så provet söker också efter det som den inte maskerar, och mutanterna i rapporten visar att det blir
+     * rött när vart och ett loggas.
+     */
+    let captured: string[] = []
+
+    beforeEach(() => {
+      captured = []
+      for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+        vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+          captured.push(args.map((value) => String(value)).join(' '))
+        })
+      }
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('en lyckad läggning, en misslyckad, stängningen och räkningen loggar inget av det', async () => {
+      const ok = await cast(voter, 'bp-s')
+      expect(ok.status).toBe('recorded')
+      const stored = await pendingVoteFor(voter, ballotId)
+      const saved = await votersDb.pendingVote.findFirstOrThrow({
+        where: { voterStatusId: voter },
+        select: { ciphertextHash: true, commitmentSalt: true },
+      })
+      const commitment = ciphertextCommitment(saved.ciphertextHash, saved.commitmentSalt!)!
+      expect(stored).not.toBeNull()
+
+      // En misslyckad läggning: underskriften är inte BankID:s.
+      const bad = await castRaw(kim, await buildBallot('bp-m'), {
+        signature: 'inte-en-underskrift',
+        ocspResponse: '',
+        commitmentSalt: newCommitmentSalt(),
+      })
+      expect(bad.status).not.toBe('recorded')
+
+      // Stängningen och räkningen.
+      await closeElection(electionId)
+      await votesDb.election.update({ where: { id: electionId }, data: { closesAt: new Date(Date.now() - 1000) } })
+      expect(await closeAndStrip(electionId)).toMatchObject({ status: 'closed' })
+      await submitPartialDecryption(ballotId, 1, 'test-fras-ett')
+      await submitPartialDecryption(ballotId, 2, 'test-fras-tva')
+      expect(await completeTally(ballotId)).toMatchObject({ status: 'tallied' })
+
+      const everything = captured.join(String.fromCharCode(10))
+      // Utdatan finns och provet fångar något: stängningen och räkningen loggar inget alls i dag, så
+      // kontrasten ligger i att varje sökt värde nedan är ett riktigt värde ur körningen.
+      const secrets: Array<[string, string]> = [
+        ['personnummer', VOTER_PN],
+        ['personnummer med bindestreck', VOTER_PN.slice(0, 8) + '-' + VOTER_PN.slice(8)],
+        ['kortare personnummer', VOTER_PN.slice(2)],
+        ['namn', 'Lindqvist'],
+        ['för- och efternamn', 'Anna Lindqvist'],
+        ['voterStatusId', voter],
+        ['voterStatusId för den misslyckade läggningen', kim],
+        ['personnummer för den misslyckade läggningen', KIM_PN],
+        ['chifferhash', saved.ciphertextHash],
+        ['chifferhashens början', saved.ciphertextHash.slice(0, 12)],
+        ['salt', saved.commitmentSalt!],
+        ['saltets början', saved.commitmentSalt!.slice(0, 12)],
+        ['åtagande', commitment],
+        ['åtagandets början', commitment.slice(0, 12)],
+      ]
+      for (const [label, value] of secrets) {
+        expect(value.length, label).toBeGreaterThan(8)
+        expect(everything, `${label} står i loggen`).not.toContain(value)
+      }
+    })
+  })
 
   it('en röstberättigad väljare kan lägga sin röst', async () => {
     const outcome = await cast(voter, 'bp-s')
