@@ -953,6 +953,14 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   incheckad, så den som driver en demo kan fortfarande förfalska en underskrift. Skyddet
   gäller med riktig BankID, där nyckeln finns hos BankID. Testerna visar egenskapen mot
   attrappens inbyggda rot, vars privata nyckel kastades.
+- **Skarpt läge mot BankID:s testmiljö säkrar inte identiteten.** Vem som helst kan skaffa ett
+  test-BankID med vilket personnummer och namn som helst. Läget finns för att pröva den riktiga
+  klienten (uppgift 17c), inte för ett riktigt val. Det visas med en banderoll på varje sida, och
+  kravet `bankid-reader-tested` stoppar skarpt läge mot produktion tills en riktig underskrift
+  finns som testfall (uppgift 17d). Klienten förankrar BankID:s TLS-rot med fingeravtrycket låst
+  per miljö, och prövar att `srvInfo/name` är den egna tjänstens.
+- **Ett RP-certifikat som byts under ett val** fäller tidigare kuvert vid valideringen, eftersom
+  `srvInfo/name` prövas mot det certifikat som gäller vid stängningen.
 - **Läsaren för BankID:s XML-signatur är inte prövad mot BankID.** Den är byggd efter BankID:s
   signaturprofil, men BankID publicerar inget fullständigt exempel. Ett antagande som inte
   håller får varje riktig röst att avvisas, men får aldrig en falsk röst att godtas. Antagandena
