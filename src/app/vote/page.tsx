@@ -10,6 +10,7 @@ import { BankIdSigning, type RecordedVote } from './BankIdSigning'
 import {
   ballotStatus,
   browserStorage,
+  compareSaysVotingClosed,
   forgetDeviceVote,
   forgetElection,
   forgetElectionsNotOpen,
@@ -303,7 +304,7 @@ function VoteContent() {
       return
     }
 
-    const current: Election = {
+    let current: Election = {
       id: String(data.electionId),
       name: typeof data.electionName === 'string' ? data.electionName : '',
       phase: typeof data.phase === 'string' ? data.phase : null,
@@ -318,9 +319,10 @@ function VoteContent() {
       await forgetClosedElections(storage, current.id)
     }
 
-    const device = storage && current.acceptsVotes ? readDeviceVotes(storage, current.id) : {}
+    let device = storage && current.acceptsVotes ? readDeviceVotes(storage, current.id) : {}
     const found: Record<string, DeviceComparison> = {}
     const toCompare = hashesToCompare(device, serverBallots)
+    let closedNotice = ''
 
     if (toCompare.length > 0) {
       try {
@@ -329,10 +331,20 @@ function VoteContent() {
           headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
           body: JSON.stringify({ ballots: toCompare }),
         })
-        if (reply.ok) {
-          const body = (await reply.json()) as {
-            ballots?: Array<{ ballotId: string; result: DeviceComparison }>
-          }
+        const body = (await reply.json().catch(() => null)) as {
+          ballots?: Array<{ ballotId: string; result: DeviceComparison }>
+        } | null
+        if (compareSaysVotingClosed(reply.status, body)) {
+          /**
+           * Röstningen stängde mellan sessionens svar och jämförelsen (ruling
+           * 144). Spec 3.1 punkt 4: enheten raderar det den sparat, som när
+           * bevakningen ser att fasen lämnat OPEN (härdningen, punkt 5).
+           */
+          if (storage) forgetElection(storage, current.id)
+          current = { ...current, acceptsVotes: false }
+          device = {}
+          closedNotice = CLOSED_NOTICE
+        } else if (reply.ok && body) {
           for (const entry of body.ballots ?? []) found[entry.ballotId] = entry.result
         }
       } catch {
@@ -350,6 +362,7 @@ function VoteContent() {
     setBallots(serverBallots)
     setDeviceVotes(device)
     setComparisons(found)
+    if (closedNotice) setNotice(closedNotice)
     setLoad({ kind: 'ready' })
   }, [])
 

@@ -206,6 +206,18 @@ describe('liknelsen säger det den måste säga', () => {
     expect(text).toMatch(/i demon är deras lösenord kända/)
   })
 
+  it('två förtroendepersoner behöver efter skalningen också en kopia av kopplingen för att veta vems röst de öppnat', () => {
+    /**
+     * Härdningen, punkt 5. Efter skalningen bär urnans kuvert inget namn. Den som
+     * öppnar dem ett och ett ser hur någon röstade, men inte vem, utan att också
+     * ha en kopia av kopplingen, till exempel en säkerhetskopia från före
+     * stängningen. Texten sa bara att de kan öppna kuverten.
+     */
+    const text = moment('Efteråt').text
+    expect(text).toMatch(/kopia av kopplingen/)
+    expect(text).toMatch(/efter skalningen/i)
+  })
+
   it('beviset överdriver inte vad allmänheten kan räkna om', () => {
     // Spec 3.1: att summan består av just de giltiga rösterna går inte att
     // räkna om utifrån, utan vilar på kontrollen före stängningen.

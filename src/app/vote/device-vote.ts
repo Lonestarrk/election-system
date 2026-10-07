@@ -281,6 +281,20 @@ export function forgetElectionsNotOpen(storage: DeviceStorage, openElectionIds: 
 /** Serverns svar per valsedel i /api/vote/compare. */
 export type DeviceComparison = 'same' | 'different' | 'none'
 
+/**
+ * Svarade /api/vote/compare att röstningen har stängt (ruling 144)?
+ *
+ * Rutten jämför ingenting efter closesAt eller när fasen lämnat OPEN, och svarar
+ * då 409 med koden VOTING_CLOSED. Sessionen kan ha sagt att röstningen pågick en
+ * stund tidigare, så sidan får veta det först här. Den raderar då det enheten
+ * sparat, som när bevakningen ser att fasen lämnat OPEN (härdningen, punkt 5).
+ */
+export function compareSaysVotingClosed(status: number, body: unknown): boolean {
+  if (status !== 409 || typeof body !== 'object' || body === null) return false
+  const error = (body as { error?: { code?: unknown } }).error
+  return typeof error === 'object' && error !== null && error.code === 'VOTING_CLOSED'
+}
+
 /** Det sessionsrutten säger om en valsedel. */
 export type ServerBallot = {
   id: string

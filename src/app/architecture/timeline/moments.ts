@@ -274,10 +274,12 @@ export const MOMENTS: readonly Moment[] = [
     title: 'Efteråt',
     stage: 'Efteråt',
     text:
-      'Efteråt ser du att du har röstat, men inte vad. Ingen annan kan se din röst heller, varken ' +
+      'Efteråt ser du att du har röstat, men inte vad, och ingen annan kan se din röst heller, varken ' +
       'i urnan eller i resultatet, utom när valsedeln har så få röster att summan visar dem. Två ' +
-      'förtroendepersoner som samarbetar kan öppna kuverten ett och ett, och i demon är deras ' +
-      'lösenord kända, se svagheterna.',
+      'förtroendepersoner som samarbetar kan öppna kuverten i urnan ett och ett, och i demon är deras ' +
+      'lösenord kända, se svagheterna. Efter skalningen bär kuverten inga namn, så för att veta vems ' +
+      'röst de öppnat behöver de också veta vilket kuvert som var vems, till exempel ur en kopia av ' +
+      'kopplingen från före stängningen.',
     yourEnvelope: 'ingen',
     vault: {
       inScene: true,

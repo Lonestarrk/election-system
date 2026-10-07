@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   ballotStatus,
+  compareSaysVotingClosed,
   forgetDeviceVote,
   forgetElectionsNotOpen,
   forgetIfVotingEnded,
@@ -269,5 +272,41 @@ describe('vad valsedeln visar', () => {
     expect(hashesToCompare(votes, [ballot(RIKSDAG, { hasPendingVote: true }), ballot(KOMMUN)])).toEqual([
       { ballotId: RIKSDAG, ciphertextHash: VOTE.ciphertextHash },
     ])
+  })
+})
+
+describe('när jämförelsen svarar att röstningen har stängt', () => {
+  /**
+   * Härdningen, punkt 5. Sedan ruling 144 svarar /api/vote/compare 409
+   * VOTING_CLOSED efter closesAt och när fasen lämnat OPEN. Sidan kan ha fått
+   * acceptsVotes av sessionen en stund tidigare. Den ska då radera det enheten
+   * sparat, som när bevakningen ser att fasen lämnat OPEN, och inte bara låta
+   * bli att visa jämförelsen.
+   */
+  it('känner igen svaret', () => {
+    expect(
+      compareSaysVotingClosed(409, { error: { code: 'VOTING_CLOSED', message: 'Röstningen har stängt.' } }),
+    ).toBe(true)
+  })
+
+  it('läser inget annat som att röstningen stängt', () => {
+    expect(compareSaysVotingClosed(200, { ballots: [] })).toBe(false)
+    expect(compareSaysVotingClosed(409, { error: { code: 'OTHER' } })).toBe(false)
+    expect(compareSaysVotingClosed(401, { error: { code: 'VOTING_CLOSED' } })).toBe(false)
+    expect(compareSaysVotingClosed(409, null)).toBe(false)
+    expect(compareSaysVotingClosed(409, 'VOTING_CLOSED')).toBe(false)
+  })
+
+  it('röstsidan raderar omröstningens poster på svaret, och visar inga röster från enheten', () => {
+    const page = readFileSync(join(process.cwd(), 'src/app/vote/page.tsx'), 'utf8')
+    const start = page.indexOf("fetch('/api/vote/compare'")
+    const end = page.indexOf('staleDeviceVotes(', start)
+    const handling = page.slice(start, end)
+
+    expect(start).toBeGreaterThan(0)
+    expect(handling).toContain('compareSaysVotingClosed(reply.status, body)')
+    expect(handling).toContain('forgetElection(storage, current.id)')
+    expect(handling).toContain('device = {}')
+    expect(handling).toContain('CLOSED_NOTICE')
   })
 })
