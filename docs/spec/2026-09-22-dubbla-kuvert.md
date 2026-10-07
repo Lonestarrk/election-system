@@ -869,6 +869,22 @@ B = `22222222-2222-4222-8222-222222222222`:
   efteråt.
 - **Roten binder chiffret men inte bevisen.** Bevisen prövas av slutkontrollen, rad för rad.
 
+**Revisionskedjan skrivs en post i taget (härdningen, punkt 2).** Varje post i röstlängdens
+revisionskedja har ett löpnummer från 1 och bär föregående posts hash, och posten LINK_CLEARED
+bär urnroten. En post tog förut nästa nummer med "läs det senaste, skriv nästa" utan lås. Två
+skrivare kunde läsa samma nummer. Utanför en transaktion svaldes posten efter fem krockar, och
+inuti en avbröts hela transaktionen. Nu tar varje post tabellens lås, `SHARE ROW EXCLUSIVE`,
+innan den läser det senaste numret, i anroparens transaktion eller i en egen kort. Två skrivare
+väntar på varandra i stället för att krocka.
+
+En sekvens i databasen valdes bort. Den ger två skrivare olika nummer, men båda poster hade
+pekat på samma föregångare, så kedjan hade grenat sig, och skrivningarna måste därför ske i tur
+och ordning ändå. En sekvens ger dessutom hål vid varje återställd transaktion, och
+verifieringen läser ett hål som en borttagen post. Med låset förs en återställd post tillbaka
+innan nästa skrivare läser numret, så löpnumren förblir obrutna. Hashen räknas som förut, och
+en kedja från före härdningen verifierar oförändrad. Priset är att en post väntar på den
+transaktion som håller låset, till exempel skalningens, tills den gör COMMIT.
+
 ### 7.4 Beslut: en struken väljares röst räknas ändå
 
 Hon var röstberättigad när hon röstade, och det är den tidpunkten som gäller. Det

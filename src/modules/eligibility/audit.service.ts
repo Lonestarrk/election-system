@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { Prisma as VotersPrisma } from '.prisma/voters'
 import { getClientIp } from '@/lib/http'
 import { truncateToHour } from '@/lib/time'
 import { logger } from '@/lib/logger'
@@ -204,14 +205,53 @@ export function auditEntryHash(input: {
 export type AuditDetail = { urnRoot: string }
 
 /**
- * Antal försök att få ett ledigt löpnummer.
+ * TVÅ SKRIVARE KROCKAR ALDRIG OM LÖPNUMRET (härdningen, punkt 2).
  *
- * Två samtidiga händelser kan råka läsa samma "senaste löpnummer" och båda
- * försöka skriva nästa. Det unika indexet avvisar den andra, som då får läsa om
- * och försöka igen. Att låta databasen avgöra är avsiktligt: en räknare i
- * applikationen skulle gå sönder så fort systemet kör i mer än en process.
+ * En post tar nästa löpnummer med "läs det senaste, skriv nästa". Förut gjordes
+ * det utan lås: två skrivare kunde läsa samma nummer, och det unika indexet
+ * avvisade den ena. Utanför en transaktion prövades posten om, och efter fem
+ * krockar svaldes den. Testet med 24 samtidiga skrivare tappade 228 av 288
+ * poster så. Inuti en transaktion avbröt krocken hela transaktionen (P2002,
+ * sedan 25P02), om inte anroparen själv hade låst tabellen före posten.
+ *
+ * Nu tar varje post tabellens lås, SHARE ROW EXCLUSIVE, innan den läser det
+ * senaste numret, och håller det till transaktionens slut. Låset utesluter sig
+ * självt och varje annan skrivning i tabellen, men inte läsningar. Två skrivare
+ * väntar alltså på varandra i stället för att krocka, och den som får låset ser
+ * den förras post, eftersom läsningen görs efter låset och under READ COMMITTED.
+ * En post utan anropare i en transaktion skrivs i en egen, kort transaktion.
+ *
+ * VARFÖR INTE EN SEKVENS I DATABASEN. En sekvens ger två skrivare olika nummer,
+ * men kedjan behöver mer än ett nummer: varje post bär föregående posts hash, så
+ * två poster som skrivs samtidigt hade pekat på samma föregångare, och kedjan
+ * hade grenat sig. Skrivningarna måste alltså ske i tur och ordning ändå. En
+ * sekvens hade dessutom gett hål vid varje återställd transaktion, och
+ * `verifyAuditChain` läser ett hål som en borttagen post. Det är den kontroll
+ * kedjan finns för, och den hade då inte gått att lita på. Med låset förs en
+ * återställd post tillbaka innan nästa skrivare läser numret, så löpnumren
+ * förblir 1, 2, 3 utan hål, hashen räknas som förut, och en kedja från före
+ * härdningen verifierar oförändrad.
+ *
+ * VAD LÅSET KOSTAR. En post väntar på den transaktion som håller låset. Det är
+ * skalningens, räkningens, fastställandets och demoåterställningens, och de tar
+ * låset sist, efter jämför-och-sätt på omröstningens rad, och gör COMMIT strax
+ * efter posten. Under tiden väntar en inloggning på sin post.
+ *
+ * ANROPARNAS EGNA LÅS STÅR KVAR. Skalningen, räkningen, fastställandet och
+ * demoåterställningen låser tabellen själva, direkt före posten (ruling 145).
+ * De behövs inte längre för att posten ska gå igenom: låset här är detsamma,
+ * och ett andra lås i samma transaktion är verkningslöst. De står kvar för att
+ * visa, där transaktionen skrivs, att tabellen låses sist, efter omröstningens
+ * rad, så att två av transaktionerna inte kan vänta på varandra i kors.
+ * Arkitektursidans markörer pekar på dem.
  */
-const MAX_SEQUENCE_ATTEMPTS = 5
+/**
+ * Den egna transaktionens gränser, för en post utan anropare i en transaktion.
+ * Posten väntar på låset i transaktionen, och en skalning som håller det kan ta
+ * en stund att göra COMMIT. Tidsgränsen är därför generös, så att posten inte
+ * går förlorad av att den väntat.
+ */
+const AUDIT_TRANSACTION = { isolationLevel: 'ReadCommitted', timeout: 120_000, maxWait: 30_000 } as const
 
 /**
  * Klienten händelsen skrivs med.
@@ -219,9 +259,35 @@ const MAX_SEQUENCE_ATTEMPTS = 5
  * Normalt den delade `votersDb`. En anropare som redan kör i en transaktion
  * skickar in sin `tx` i stället, så att revisionsposten lever och dör med det
  * den beskriver — se `closeElection`, där en post om en radering som rullats
- * tillbaka vore värre än ingen post alls.
+ * tillbaka vore värre än ingen post alls. Transaktionen ska vara READ COMMITTED,
+ * så att läsningen efter låset ser en post som gjort COMMIT medan låset väntade.
  */
-export type AuditClient = Pick<typeof votersDb, 'auditEvent'>
+export type AuditClient = Pick<VotersPrisma.TransactionClient, 'auditEvent' | '$queryRaw'>
+
+/** Tabellens lås, sedan det senaste numret och nästa post, i `db`:s transaktion. */
+async function appendAuditEntry(db: AuditClient, eventType: AuditEventType, urnRoot: string | null): Promise<void> {
+  await db.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`
+
+  const previous = await db.auditEvent.findFirst({
+    orderBy: { sequence: 'desc' },
+    select: { sequence: true, entryHash: true },
+  })
+
+  const sequence = (previous?.sequence ?? 0) + 1
+  const previousHash = previous?.entryHash ?? null
+  const occurredAt = truncateToHour(new Date())
+
+  await db.auditEvent.create({
+    data: {
+      eventType,
+      occurredAt,
+      sequence,
+      previousHash,
+      urnRoot,
+      entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash, urnRoot }),
+    },
+  })
+}
 
 /**
  * Skriver en revisionshändelse.
@@ -260,54 +326,27 @@ export async function recordAuditEvent(
    *
    * Fick funktionen en klient inskickad kör den därför inuti någon annans
    * transaktion, och varje fel den inte kan hantera lämnas vidare så att
-   * `$transaction` rejectar. Det gäller ALLA fel utom den unikhetskonflikt som
-   * slingan nedan är byggd för att retas med — poängen är inte att känna igen
-   * 25P02, utan att ingenting okänt får sväljas här.
+   * `$transaction` rejectar. Det gäller ALLA fel. Sedan härdningen finns ingen
+   * krock om löpnumret att pröva om, se `appendAuditEntry`, så ingenting prövas
+   * om, varken här eller utanför en transaktion.
    */
-  const inTransaction = client !== undefined
-  const db = client ?? votersDb
-
-  const occurredAt = truncateToHour(new Date())
   const urnRoot = detail?.urnRoot ?? null
 
-  for (let attempt = 1; attempt <= MAX_SEQUENCE_ATTEMPTS; attempt += 1) {
-    try {
-      const previous = await db.auditEvent.findFirst({
-        orderBy: { sequence: 'desc' },
-        select: { sequence: true, entryHash: true },
-      })
+  // Inuti någon annans transaktion: felet går vidare, så att $transaction
+  // rejectar i stället för att tyst rulla tillbaka.
+  if (client !== undefined) {
+    await appendAuditEntry(client, eventType, urnRoot)
+    return
+  }
 
-      const sequence = (previous?.sequence ?? 0) + 1
-      const previousHash = previous?.entryHash ?? null
-
-      await db.auditEvent.create({
-        data: {
-          eventType,
-          occurredAt,
-          sequence,
-          previousHash,
-          urnRoot,
-          entryHash: auditEntryHash({ sequence, eventType, occurredAt, previousHash, urnRoot }),
-        },
-      })
-
-      return
-    } catch (error) {
-      const isUniqueViolation =
-        typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002'
-
-      if (isUniqueViolation && attempt < MAX_SEQUENCE_ATTEMPTS) continue
-
-      // Inuti någon annans transaktion: låt felet gå vidare, så att
-      // $transaction rejectar i stället för att tyst rulla tillbaka. Se
-      // resonemanget vid `inTransaction` ovan.
-      if (inTransaction) throw error
-
-      // En revisionslogg som inte går att skriva får inte stoppa en väljare
-      // från att rösta. Felet loggas, men rösträtten går före.
-      logger.error('Kunde inte skriva revisionshändelse', { eventType, attempt })
-      return
-    }
+  try {
+    await votersDb.$transaction((tx) => appendAuditEntry(tx, eventType, urnRoot), AUDIT_TRANSACTION)
+  } catch (error) {
+    // En revisionslogg som inte går att skriva får inte stoppa en väljare från
+    // att rösta. Felet loggas, men rösträtten går före. Det är ett fel i
+    // databasen eller anslutningen, inte en krock med en annan skrivare.
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined
+    logger.error('Kunde inte skriva revisionshändelse', { eventType, code })
   }
 }
 

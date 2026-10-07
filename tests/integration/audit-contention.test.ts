@@ -10,7 +10,13 @@ import { canonicalOptions, type BallotOption } from '@/lib/crypto/ballot-encodin
 import '@/lib/crypto/server'
 import { encryptBallot } from '@/lib/encrypt-client'
 import { RATE_LIMITS, resetRateLimits } from '@/lib/rate-limit'
-import { AUDIT_EVENTS, recordAuditEvent } from '@/modules/eligibility/audit.service'
+import { truncateToHour } from '@/lib/time'
+import {
+  AUDIT_EVENTS,
+  auditEntryHash,
+  recordAuditEvent,
+  verifyAuditChain,
+} from '@/modules/eligibility/audit.service'
 import { MockBankIdService, selectDemoIdentity } from '@/modules/eligibility/bankid/MockBankIdService'
 import {
   ciphertextCommitment,
@@ -161,6 +167,11 @@ function auditStream(): { stop: () => Promise<number> } {
   }
 }
 
+/** Antalet poster av strömmens typ i kedjan. */
+function streamedPosts(): Promise<number> {
+  return votersDb.auditEvent.count({ where: { eventType: AUDIT_EVENTS.AUTH_STARTED } })
+}
+
 async function settle<T>(run: () => Promise<T>): Promise<T | string> {
   try {
     return await run()
@@ -186,13 +197,17 @@ describe.skipIf(!databaseAvailable)('revisionsposter under skalningen och räkni
         await new Promise((resolve) => setTimeout(resolve, 30))
       }
 
+      const before = await streamedPosts()
       const outcome = await settle(async () => (await closeElection(electionId)).status)
       const written = await (stream as ReturnType<typeof auditStream> | null)?.stop()
       outcomes.push(outcome)
       expect(written, 'strömmen skrev inga poster, och provet prövade ingenting').toBeGreaterThan(0)
+      // Härdningen, punkt 2: ingen post ur strömmen har tappats.
+      expect((await streamedPosts()) - before).toBe(written)
     }
 
     expect(outcomes).toEqual(['closed', 'closed', 'closed'])
+    expect(await verifyAuditChain()).toMatchObject({ intact: true })
   }, 180_000)
 
   it('räkningen går igenom medan andra skriver poster, och en stängning av en annan omröstning samtidigt', async () => {
@@ -209,6 +224,7 @@ describe.skipIf(!databaseAvailable)('revisionsposter under skalningen och räkni
     expect(await submitPartialDecryption(b.ballotId, 1, PHRASES[0])).toMatchObject({ status: 'accepted' })
     expect(await submitPartialDecryption(b.ballotId, 2, PHRASES[1])).toMatchObject({ status: 'accepted' })
 
+    const before = await streamedPosts()
     const stream = auditStream()
     await new Promise((resolve) => setTimeout(resolve, 30))
     const [closed, tallied] = await Promise.all([
@@ -221,9 +237,98 @@ describe.skipIf(!databaseAvailable)('revisionsposter under skalningen och räkni
     const written = await stream.stop()
 
     expect(written).toBeGreaterThan(0)
+    expect((await streamedPosts()) - before).toBe(written)
     expect(closed).toBe('closed')
     expect(tallied).toBe('tallied TALLIED')
+    expect(await verifyAuditChain()).toMatchObject({ intact: true })
   }, 180_000)
+})
+
+describe.skipIf(!databaseAvailable)('två skrivare krockar aldrig om löpnumret (härdningen, punkt 2)', () => {
+  /**
+   * En post tog nästa löpnummer med "läs det senaste, skriv nästa". Två
+   * skrivare kunde läsa samma nummer, och det unika indexet avvisade den ena.
+   * Utanför en transaktion prövades posten om, och efter fem krockar svaldes
+   * den: posten fanns inte i kedjan, fast anroparen gick vidare. Inuti en
+   * transaktion avbröt krocken hela transaktionen (P2002, sedan 25P02), om inte
+   * anroparen själv hade låst tabellen.
+   *
+   * Nu tar varje post tabellens lås före läsningen, i en egen kort transaktion
+   * eller i anroparens. Två skrivare väntar på varandra i stället för att
+   * krocka, och löpnumren blir 1, 2, 3 utan hål.
+   */
+  beforeEach(async () => {
+    resetRateLimits()
+    await resetElectionData()
+  })
+
+  it('ingen post tappas när många skriver samtidigt utan transaktion', async () => {
+    const writers = 24
+    const each = 12
+    await Promise.all(
+      Array.from({ length: writers }, async () => {
+        for (let n = 0; n < each; n += 1) await recordAuditEvent(AUDIT_EVENTS.AUTH_STARTED)
+      }),
+    )
+
+    expect(await streamedPosts()).toBe(writers * each)
+    const chain = await verifyAuditChain()
+    expect(chain).toEqual({ intact: true, entries: writers * each })
+  }, 120_000)
+
+  it('en post i en transaktion som inte själv låst tabellen avbryts inte av andra skrivare', async () => {
+    const stream = auditStream()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        settle(() =>
+          votersDb.$transaction(
+            async (tx) => {
+              await recordAuditEvent(AUDIT_EVENTS.AUTH_COMPLETED, tx)
+              await new Promise((resolve) => setTimeout(resolve, 10))
+              return 'skriven'
+            },
+            { isolationLevel: 'ReadCommitted', timeout: 60_000, maxWait: 30_000 },
+          ),
+        ),
+      ),
+    )
+    const written = await stream.stop()
+
+    expect(outcomes).toEqual(Array.from({ length: 12 }, () => 'skriven'))
+    expect(await votersDb.auditEvent.count({ where: { eventType: AUDIT_EVENTS.AUTH_COMPLETED } })).toBe(12)
+    expect(await streamedPosts()).toBe(written)
+    expect(await verifyAuditChain()).toMatchObject({ intact: true })
+  }, 120_000)
+
+  it('en kedja skriven på det gamla sättet verifierar, också med nya poster efter', async () => {
+    /**
+     * Hashen och numreringen är oförändrade: en post hashas över löpnummer, typ,
+     * timme, föregående hash och urnroten när den finns. En kedja som skrevs
+     * före härdningen, här skriven för hand som den gamla koden skrev den,
+     * verifierar alltså som förut.
+     */
+    let previous: { sequence: number; entryHash: string } | null = null
+    for (const [index, eventType] of [AUDIT_EVENTS.AUTH_STARTED, AUDIT_EVENTS.LINK_CLEARED].entries()) {
+      const sequence = index + 1
+      const occurredAt = truncateToHour(new Date())
+      const previousHash: string | null = previous?.entryHash ?? null
+      const urnRoot = eventType === AUDIT_EVENTS.LINK_CLEARED ? 'ab'.repeat(32) : null
+      const entryHash = auditEntryHash({ sequence, eventType, occurredAt, previousHash, urnRoot })
+      await votersDb.auditEvent.create({
+        data: { eventType, occurredAt, sequence, previousHash, urnRoot, entryHash },
+      })
+      previous = { sequence, entryHash }
+    }
+
+    await recordAuditEvent(AUDIT_EVENTS.AUTH_FAILED)
+
+    expect(await verifyAuditChain()).toEqual({ intact: true, entries: 3 })
+    const last = await votersDb.auditEvent.findFirstOrThrow({ orderBy: { sequence: 'desc' } })
+    expect(last.sequence).toBe(3)
+    expect(last.previousHash).toBe(previous?.entryHash)
+  })
 })
 
 describe.skipIf(!databaseAvailable)('en oinloggad kan inte skriva poster utan gräns', () => {

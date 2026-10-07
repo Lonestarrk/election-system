@@ -502,8 +502,14 @@ export const STRIP_IN_LOCK_TRANSACTION: Marker = {
  * villkor som raderingen, sorterade, och skrivna med `skipDuplicates`, så att
  * en markering som redan finns syns i antalet. Klienttyperna låses: en
  * funktion som bara får `pendingVote` och `electionBallot`, respektive
- * `votedMarker` därtill eller `auditEvent`, kan inte skriva i någon annan
- * tabell genom transaktionen utan att typen ändras först.
+ * `votedMarker` därtill, kan inte skriva i någon annan tabell genom
+ * transaktionen utan att typen ändras först.
+ *
+ * Revisionsposten får sedan härdningen (punkt 2) `auditEvent` och `$queryRaw`.
+ * Den råa frågan behövs för tabellens lås före läsningen av det senaste
+ * löpnumret, och med den skulle funktionen kunna skriva var som helst. Att den
+ * bara låser revisionstabellen och skriver en post vilar därför på koden, och
+ * den låses ord för ord i den sista markören.
  */
 export const STRIPPING_HELPERS: Marker[] = [
   {
@@ -569,7 +575,19 @@ export const STRIPPING_HELPERS: Marker[] = [
   },
   {
     file: 'src/modules/eligibility/audit.service.ts',
-    contains: "export type AuditClient = Pick<typeof votersDb, 'auditEvent'>",
+    contains: "export type AuditClient = Pick<VotersPrisma.TransactionClient, 'auditEvent' | '$queryRaw'>",
+  },
+  {
+    file: 'src/modules/eligibility/audit.service.ts',
+    contains: [
+      'async function appendAuditEntry(db: AuditClient, eventType: AuditEventType, urnRoot: string | null): Promise<void> {',
+      '  await db.$queryRaw`LOCK TABLE audit_event IN SHARE ROW EXCLUSIVE MODE`',
+      '',
+      '  const previous = await db.auditEvent.findFirst({',
+      "    orderBy: { sequence: 'desc' },",
+      '    select: { sequence: true, entryHash: true },',
+      '  })',
+    ].join('\n'),
   },
 ]
 

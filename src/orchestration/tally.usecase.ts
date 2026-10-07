@@ -1077,14 +1077,15 @@ async function lockAuditTable(tx: VotersPrisma.TransactionClient): Promise<void>
  * Kör `run` i en transaktion i röstlängden, under räkningens lås för
  * revisionsposter.
  *
- * VARFÖR ETT LÅS. En revisionspost tar nästa löpnummer i kedjan. Utanför en
- * transaktion prövar `recordAuditEvent` igen när två poster tar samma nummer,
- * men inuti en transaktion kan den inte det: PostgreSQL har redan avbrutit
- * transaktionen, och den förs tillbaka. Av två räkningar som skrev sina poster
- * samtidigt hade då den ena förts tillbaka, och testet med två valsedlar som
- * räknas samtidigt visar det. Under låset skriver räkningens poster en i taget.
- * En post från något annat än räkningen höll låset inte borta, och sedan
+ * VARFÖR ETT LÅS. En revisionspost tar nästa löpnummer i kedjan. Inuti en
+ * transaktion kan en krock om numret inte prövas om: PostgreSQL har redan
+ * avbrutit transaktionen, och den förs tillbaka. Av två räkningar som skrev sina
+ * poster samtidigt hade då den ena förts tillbaka, och testet med två valsedlar
+ * som räknas samtidigt visar det. Under låset skriver räkningens poster en i
+ * taget. En post från något annat än räkningen höll låset inte borta, och sedan
  * helgrensgranskningen tar posten dessutom tabellens lås, se `lockAuditTable`.
+ * Sedan härdningen tar `recordAuditEvent` själv tabellens lås före läsningen,
+ * för varje post, så ingen post krockar längre om numret.
  *
  * READ COMMITTED, UTTRYCKLIGEN. Läsningen av det senaste numret görs efter
  * tabellens lås och ska se en post som gjorde COMMIT medan låset väntade.
