@@ -405,13 +405,48 @@ describe.skipIf(!databaseAvailable)('publiceringen och den oberoende kontrollen'
     expect(body.status).toBe('result_mismatch')
   })
 
-  it('publiceringen säger att den inte bär BankID-miljön', async () => {
-    // Helgrensgranskningen: en publicering från testmiljön ser likadan ut som en från produktion.
+  it('publiceringen bär den BankID-miljö omröstningen skapades mot (härdningen, punkt 3)', async () => {
+    // Helgrensgranskningen: en publicering från testmiljön såg likadan ut som en från produktion.
     await castTheVotes()
     await closeAndTally()
 
     const { body } = await published()
-    expect((body.notCheckable as string[]).some((entry) => /Vilken BankID-miljö underskrifterna kom från/.test(entry))).toBe(true)
+    expect((body.election as Record<string, unknown>).bankIdEnvironment).toBe('none')
+    expect((body.notCheckable as string[]).some((entry) => /Publiceringen bär inte miljön/.test(entry))).toBe(false)
+    expect(
+      (body.notCheckable as string[]).some((entry) =>
+        /Att BankID-miljön som publiceringen anger är den som underskrifterna kom från/.test(entry),
+      ),
+    ).toBe(true)
+  })
+
+  it('en omröstning mot testmiljön publiceras som testmiljön, och aldrig av en server mot produktionen', async () => {
+    await castTheVotes()
+    await closeAndTally()
+
+    // Raderna skrivs om till en skarp omröstning mot testmiljön. Röster i skarpt läge
+    // kräver en riktig BankID, och flödet ovan går med attrappen.
+    for (const db of [votersDb, votesDb] as const) {
+      await (db.election.update as (args: unknown) => Promise<unknown>)({
+        where: { id: electionId },
+        data: { mode: 'SHARP', bankIdEnvironment: 'test' },
+      })
+    }
+    vi.stubEnv('DEMO_MODE', '')
+    try {
+      vi.stubEnv('BANKID_ENV', 'test')
+      const test = await published()
+      expect(test.status).toBe(200)
+      expect((test.body.election as Record<string, unknown>).bankIdEnvironment).toBe('test')
+
+      vi.stubEnv('BANKID_ENV', 'production')
+      const production = await published()
+      expect(production.status).toBe(409)
+      expect(production.body.status).toBe('wrong_mode')
+      expect(production.body).not.toHaveProperty('ballots')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('fältet för antalet heter efter vad det är: markeringarna, inte kuverten (fixrunda 1, Mindre 3)', async () => {

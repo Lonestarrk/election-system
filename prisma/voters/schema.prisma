@@ -116,6 +116,21 @@ model Election {
   /// alla databaser som fanns då var demodatabaser.
   mode String @default("DEMO")
 
+  /// none | test | production: den BankID-miljö omröstningen skapades mot
+  /// (härdningen, punkt 3). `none` är attrappen i demoläget, eller skarpt läge
+  /// utan klient.
+  ///
+  /// En server vägrar läggning, stängning, räkning, publicering och fastställande
+  /// i en omröstning från en annan miljö, som för läget. Utan det kunde en
+  /// omröstning mot BankID:s testmiljö, där vem som helst kan skaffa ett
+  /// test-BankID för vilket personnummer som helst, publiceras och fastställas av
+  /// en server mot produktionen. Publiceringen bär miljön ur den här kolumnen.
+  ///
+  /// Inget förval: skapandet skriver alltid miljön, ur serverns egen, och en ny
+  /// väg som glömmer den kompilerar inte. Migreringen gav rader som fanns före
+  /// kolumnen `none` i demoläget och `test` i skarpt läge, se migreringen.
+  bankIdEnvironment String @map("bank_id_environment")
+
   /// Merklerot över (ciphertextHash, bankIdSignature), beräknad före
   /// skalningen och skriven en enda gång.
   ///

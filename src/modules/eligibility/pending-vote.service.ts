@@ -1,5 +1,5 @@
 import { safeEqual } from '@/lib/crypto'
-import { electionBelongsToThisMode } from '@/lib/mode-flag'
+import { electionBelongsToThisServer } from '@/lib/election-environment'
 import { truncateToDay } from '@/lib/time'
 import {
   VerificationAborted,
@@ -139,7 +139,7 @@ export async function castEncryptedBallot(
 ): Promise<CastOutcome> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
-    select: { closesAt: true, linkClearedAt: true, phase: true, mode: true },
+    select: { closesAt: true, linkClearedAt: true, phase: true, mode: true, bankIdEnvironment: true },
   })
 
   /**
@@ -171,9 +171,10 @@ export async function castEncryptedBallot(
     return { status: 'closed' }
   }
 
-  // Läget ändras inte av appen, så prövningen här räcker: raden i transaktionen längre ned
-  // läser samma omröstning, och kolumnen skrivs bara när omröstningen skapas.
-  if (!electionBelongsToThisMode(election.mode)) return { status: 'wrong_mode' }
+  // Läget och BankID-miljön ändras inte av appen, så prövningen här räcker: raden i
+  // transaktionen längre ned läser samma omröstning, och kolumnerna skrivs bara när
+  // omröstningen skapas. Miljön prövas sedan härdningen, punkt 3.
+  if (!electionBelongsToThisServer(election)) return { status: 'wrong_mode' }
 
   if (!shape) return { status: 'not_eligible' }
 
@@ -623,10 +624,10 @@ export function acceptsVotesNow(
 export async function castWindow(electionId: string): Promise<'open' | 'closed' | 'wrong_mode'> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
-    select: { phase: true, closesAt: true, linkClearedAt: true, mode: true },
+    select: { phase: true, closesAt: true, linkClearedAt: true, mode: true, bankIdEnvironment: true },
   })
   if (!election || !acceptsVotesNow(election)) return 'closed'
-  if (!electionBelongsToThisMode(election.mode)) return 'wrong_mode'
+  if (!electionBelongsToThisServer(election)) return 'wrong_mode'
   return 'open'
 }
 

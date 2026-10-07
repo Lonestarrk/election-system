@@ -59,7 +59,7 @@ beforeAll(async () => {
 type Publication = {
   status: string
   format: string
-  election: { id: string; name: string; phase: string }
+  election: { id: string; name: string; phase: string; bankIdEnvironment?: string }
   group: { p: string; q: string; g: string }
   trustees: { count: number; threshold: number; publicShares: Array<{ trusteeIndex: number; publicShare: string }> }
   encryptionPublicKey: string
@@ -129,7 +129,7 @@ function publicationFor(
   return {
     status: 'published',
     format: 'valsystem/publicering/v1',
-    election: { id: ELECTION_ID, name: 'Verktygstestet', phase: 'TALLIED' },
+    election: { id: ELECTION_ID, name: 'Verktygstestet', phase: 'TALLIED', bankIdEnvironment: 'none' },
     group: { p: P.toString(), q: Q.toString(), g: G.toString() },
     trustees: {
       count: TRUSTEE_COUNT,
@@ -279,8 +279,40 @@ describe('en ärlig publicering', () => {
     // Urnroten och kuvertroten går inte att räkna om utan de enskilda chiffren.
     expect(result.output).toMatch(/kan inte räknas om/i)
     expect(result.output).toMatch(/att summan består av exakt de giltiga rösterna/i)
-    // BankID-miljön publiceras inte (helgrensgranskningen): ett prov mot testmiljön ser ut som produktion.
-    expect(result.output).toMatch(/Vilken BankID-miljö underskrifterna kom från/)
+    // Härdningen, punkt 3: miljön publiceras, och verktyget visar den.
+    expect(result.output).toMatch(/BankID-miljö: ingen riktig BankID/)
+    expect(result.output).not.toMatch(/Publiceringen bär inte miljön/)
+    // Miljön är det omröstningen skapades med. Underskrifterna går inte att pröva efteråt.
+    expect(result.output).toMatch(/Att BankID-miljön som publiceringen anger är den som underskrifterna kom från/)
+  })
+
+  it('visar BankID:s testmiljö och säger att det inte är ett riktigt val', () => {
+    const test = copy(honest)
+    test.election.bankIdEnvironment = 'test'
+    const result = tool.verifyPublication(test)
+
+    expect(failed(result)).toEqual([])
+    expect(result.lines.join('\n')).toMatch(/BankID:s testmiljö/)
+    expect(result.lines.join('\n')).toMatch(/inte ett riktigt val/)
+  })
+
+  it('visar produktionen', () => {
+    const production = copy(honest)
+    production.election.bankIdEnvironment = 'production'
+    const result = tool.verifyPublication(production)
+
+    expect(failed(result)).toEqual([])
+    expect(result.lines.join('\n')).toMatch(/BankID:s produktionsmiljö/)
+  })
+
+  it('underkänner en publicering utan BankID-miljö, eller med en okänd', () => {
+    const missing = copy(honest)
+    delete missing.election.bankIdEnvironment
+    expect(failed(tool.verifyPublication(missing)).join('\n')).toMatch(/BankID-miljön/)
+
+    const unknown = copy(honest)
+    unknown.election.bankIdEnvironment = 'staging'
+    expect(failed(tool.verifyPublication(unknown)).join('\n')).toMatch(/BankID-miljön/)
   })
 
   it('godkänns också med alla tre förtroendepersonernas bidrag', () => {

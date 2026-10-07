@@ -145,7 +145,7 @@ export type WrongMode = { status: 'wrong_mode'; message: string }
 const WRONG_MODE: WrongMode = {
   status: 'wrong_mode',
   message:
-    'Omröstningen skapades i ett annat läge än det servern kör i. Ingenting räknas, och ingenting ändras. ' +
+    'Omröstningen skapades i ett annat läge eller mot en annan BankID-miljö än den servern kör i. Ingenting räknas, och ingenting ändras. ' +
     'Läget sätts vid driftsättning.',
 }
 
@@ -517,7 +517,7 @@ async function requireUrnRoot(gate: OpenGate, hashes: readonly string[]): Promis
 export async function aggregate(ballotId: string): Promise<Ciphertext[]> {
   const owner = await votesDb.electionBallot.findUnique({ where: { id: ballotId }, select: { electionId: true } })
   if (owner && (await checkElectionMode(owner.electionId)) === 'wrong') {
-    abort('omröstningen skapades i ett annat läge än det servern kör i, och ingen summa räknas fram.')
+    abort('omröstningen skapades i ett annat läge eller mot en annan BankID-miljö än den servern kör i, och ingen summa räknas fram.')
   }
   const shape = await getEncryptedBallotShape(ballotId)
   if (!shape) abort('valsedeln finns inte i kuvertmodellen, och har ingen summa.')

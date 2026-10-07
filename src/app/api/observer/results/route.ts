@@ -66,8 +66,8 @@ export async function GET(request: Request) {
       {
         status: 'wrong_mode',
         message:
-          'Omröstningen skapades i ett annat läge än det servern kör i, så resultatet lämnas inte ut här. ' +
-          'Läget sätts vid driftsättning.',
+          'Omröstningen skapades i ett annat läge eller mot en annan BankID-miljö än den servern kör i, så ' +
+          'resultatet lämnas inte ut här. Läget och miljön sätts vid driftsättning.',
       },
       409,
     )

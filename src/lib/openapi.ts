@@ -297,7 +297,7 @@ const election = z.object({
 const electionList = z.object({ elections: z.array(election) })
 
 const wrongModeAdmin = (what: string) =>
-  statusReply(`Omröstningen skapades i ett annat läge än det servern kör i, och ${what}. Läget sätts vid driftsättning.`, 'wrong_mode')
+  statusReply(`Omröstningen skapades i ett annat läge eller mot en annan BankID-miljö än den servern kör i, och ${what}. Läget sätts vid driftsättning.`, 'wrong_mode')
 
 // --- Offentligt -----------------------------------------------------------
 
@@ -431,7 +431,14 @@ register({
       .object({
         status: z.literal('published'),
         format: z.string(),
-        election: z.object({ id: z.string().uuid(), name: z.string(), phase: z.string() }),
+        election: z.object({
+          id: z.string().uuid(),
+          name: z.string(),
+          phase: z.string(),
+          bankIdEnvironment: z
+            .enum(['none', 'test', 'production'])
+            .describe('BankID-miljön omröstningen skapades mot. none: attrappen i demoläget. test: BankID:s testmiljö, inget riktigt val.'),
+        }),
         group: z.object({ p: z.string(), q: z.string(), g: z.string() }),
         trustees: z.object({
           count: z.number().int(),
@@ -453,7 +460,7 @@ register({
     409: {
       description:
         'Inget resultat lämnas ut. not_published: omröstningen är inte räknad. wrong_mode: omröstningen ' +
-        'skapades i ett annat läge än serverns. result_mismatch: en omräkning stämmer inte med de sparade räkneverken.',
+        'skapades i ett annat läge eller mot en annan BankID-miljö än serverns. result_mismatch: en omräkning stämmer inte med de sparade räkneverken.',
       content: {
         'application/json': {
           schema: z.object({
@@ -690,7 +697,7 @@ register({
     ]),
     409: error(
       'Omröstningen tar inte emot röster: fasen har lämnat OPEN eller closesAt har passerats, eller så hör den ' +
-        'till ett annat läge än serverns. Ingen BankID-order skapades.',
+        'till ett annat läge eller en annan BankID-miljö än serverns. Ingen BankID-order skapades.',
       ['VOTING_CLOSED', 'WRONG_MODE'],
     ),
     429: rateLimited(),
@@ -749,7 +756,7 @@ register({
         },
       },
     },
-    409: statusReply('Rösten lades inte: omröstningen är stängd, i ett annat läge, eller räknaren är gammal.', [
+    409: statusReply('Rösten lades inte: omröstningen är stängd, i ett annat läge eller en annan BankID-miljö, eller räknaren är gammal.', [
       'closed',
       'wrong_mode',
       'stale_sequence',
@@ -959,7 +966,7 @@ register({
         'Stängningen gjordes inte, eller avbröts. aborted: ett skydd löste ut, och linkState säger om kopplingen är orörd. ' +
         'too_early: omröstningen är öppen till closesAt. in_progress: en annan stängning pågår. ' +
         'validation_failed och invalid_ballot: valideringen hittade avvikelser och kopplingen är kvar. ' +
-        'wrong_mode: omröstningen hör till det andra läget.',
+        'wrong_mode: omröstningen hör till det andra läget eller en annan BankID-miljö.',
       content: {
         'application/json': {
           schema: z.object({
@@ -1125,7 +1132,7 @@ register({
   responses: {
     404: error('Omröstningen finns inte.', ['UNKNOWN_ELECTION']),
     409: statusReply(
-      'Resultatet fastställdes inte. not_ready: förutsättningarna saknas, och ingenting markerades som avvikande. blocked: omröstningen är markerad som avvikande. wrong_mode: omröstningen hör till det andra läget.',
+      'Resultatet fastställdes inte. not_ready: förutsättningarna saknas, och ingenting markerades som avvikande. blocked: omröstningen är markerad som avvikande. wrong_mode: omröstningen hör till det andra läget eller en annan BankID-miljö.',
       ['not_ready', 'blocked', 'wrong_mode'],
       { report: z.unknown().optional().describe('FinalCheckReport, utom vid wrong_mode.') },
     ),

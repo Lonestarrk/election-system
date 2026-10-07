@@ -1,4 +1,5 @@
 import { canonicalOptions } from '@/lib/crypto/ballot-encoding'
+import type { ElectionBankIdEnvironment } from '@/lib/election-environment'
 import type { RuntimeMode } from '@/lib/mode-flag'
 import { votesDb } from './db'
 
@@ -283,6 +284,8 @@ export type CreateElectionInput = {
   kind: ElectionKind
   /** Läget omröstningen skapas i, ur serverns eget läge (uppgift 17). */
   mode: RuntimeMode
+  /** BankID-miljön omröstningen skapas mot, ur serverns egen (härdningen, punkt 3). */
+  bankIdEnvironment: ElectionBankIdEnvironment
   opensAt: Date
   closesAt: Date
   ballots: Array<{
@@ -320,6 +323,7 @@ export async function createElection(input: CreateElectionInput): Promise<Create
         name: input.name,
         kind: input.kind,
         mode: input.mode,
+        bankIdEnvironment: input.bankIdEnvironment,
         opensAt: input.opensAt,
         closesAt: input.closesAt,
       },

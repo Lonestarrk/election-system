@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       {
         status: 'wrong_mode',
         message:
-          'Omröstningen skapades i ett annat läge än det servern kör i. Ingenting skrevs eller startades. ' +
+          'Omröstningen skapades i ett annat läge eller mot en annan BankID-miljö än den servern kör i. Ingenting skrevs eller startades. ' +
           'Läget sätts vid driftsättning.',
       },
       409,

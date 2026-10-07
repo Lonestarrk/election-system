@@ -13,6 +13,7 @@ import { generateKeyPair, publicShare, splitSecret } from '@/lib/crypto/server'
 import { TRUSTEE_COUNT, TRUSTEE_THRESHOLD } from '@/lib/crypto/threshold'
 import { encryptShare } from '@/lib/crypto/share-storage'
 import { isKnownDemoPassphrase } from '@/lib/demo-election'
+import { serverBankIdEnvironment } from '@/lib/election-environment'
 import { runtimeMode } from '@/lib/mode-flag'
 
 /**
@@ -100,6 +101,13 @@ export async function createElection(
    * står i repot, och är ingen bedömning av frasers styrka.
    */
   const mode = runtimeMode()
+  /**
+   * BankID-miljön skrivs som läget, ur serverns egen, i båda databaserna
+   * (härdningen, punkt 3). En omröstning mot testmiljön kan då aldrig stängas,
+   * räknas, publiceras eller fastställas av en server mot produktionen, och
+   * publiceringen säger vilken miljö det var. Se src/lib/election-environment.ts.
+   */
+  const bankIdEnvironment = serverBankIdEnvironment()
   if (mode === 'SHARP' && input.trusteePassphrases.some(isKnownDemoPassphrase)) {
     logger.warn('Skapandet av en omröstning vägrades: en av fraserna är en känd demofras')
     return {
@@ -116,6 +124,7 @@ export async function createElection(
     created = await createElectionInVotesDb({
       ...input,
       mode,
+      bankIdEnvironment,
     })
   } catch (error) {
     logger.error('Kunde inte skapa omröstningen i röstdatabasen', { error: String(error) })
@@ -176,6 +185,7 @@ export async function createElection(
       name: input.name,
       kind: input.kind,
       mode,
+      bankIdEnvironment,
       opensAt: input.opensAt,
       closesAt: input.closesAt,
       ballots: created.ballotIds,

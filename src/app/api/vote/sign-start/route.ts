@@ -126,7 +126,7 @@ export async function POST(request: Request) {
     return errorResponse('VOTING_CLOSED', 'Röstningen har stängt, och ingen röst kan läggas.', 409)
   }
   if (window === 'wrong_mode') {
-    return errorResponse('WRONG_MODE', 'Omröstningen hör inte till det läge servern kör i.', 409)
+    return errorResponse('WRONG_MODE', 'Omröstningen hör inte till det läge eller den BankID-miljö servern kör i.', 409)
   }
 
   const subject = await signingSubject(body.data.ballotId, session.electionId)

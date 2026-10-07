@@ -1,3 +1,4 @@
+import type { ElectionBankIdEnvironment } from '@/lib/election-environment'
 import type { RuntimeMode } from '@/lib/mode-flag'
 import { votersDb } from './db'
 
@@ -85,6 +86,8 @@ export type MirrorElectionInput = {
   kind: string
   /** Samma läge som i röstdatabasen (uppgift 17). */
   mode: RuntimeMode
+  /** Samma BankID-miljö som i röstdatabasen (härdningen, punkt 3). */
+  bankIdEnvironment: ElectionBankIdEnvironment
   opensAt: Date
   closesAt: Date
   ballots: Array<{
@@ -111,6 +114,7 @@ export async function mirrorElection(input: MirrorElectionInput): Promise<void> 
         name: input.name,
         kind: input.kind,
         mode: input.mode,
+        bankIdEnvironment: input.bankIdEnvironment,
         opensAt: input.opensAt,
         closesAt: input.closesAt,
       },

@@ -74,7 +74,13 @@ export type PublishedBallot = {
 export type Publication = {
   status: 'published'
   format: typeof PUBLICATION_FORMAT
-  election: { id: string; name: string; phase: string }
+  /**
+   * `bankIdEnvironment` är den BankID-miljö omröstningen skapades mot, ur dess rad i
+   * röstlängden (härdningen, punkt 3): none, test eller production. En server mot en
+   * annan miljö publicerar inte omröstningen alls, så den publiceras aldrig som något
+   * annat än det den skapades som.
+   */
+  election: { id: string; name: string; phase: string; bankIdEnvironment: string }
   group: { p: string; q: string; g: string }
   trustees: {
     count: number
@@ -108,10 +114,10 @@ export const NOT_CHECKABLE: readonly string[] = [
   'Att antalet rader i urnan och markeringarna är riktiga. De går att jämföra med varandra och med ' +
     'räkneverken, inte med något utanför systemet. Antalet kuvert som skalades publiceras inte för sig.',
   'Vilka valsedlar omröstningen har. En valsedel som saknas i publiceringen syns inte här.',
-  // Helgrensgranskningen: miljön står i fastställandets revisionspost men inte här.
-  'Vilken BankID-miljö underskrifterna kom från. Publiceringen bär inte miljön, så en omröstning ' +
-    'med BankID:s testmiljö, där vem som helst kan skaffa ett BankID med vilket personnummer som ' +
-    'helst, ser likadan ut som en med produktionen. Fastställandets post i revisionskedjan bär miljön.',
+  // Härdningen, punkt 3: miljön publiceras, men den går inte att pröva utifrån.
+  'Att BankID-miljön som publiceringen anger är den som underskrifterna kom från. Miljön är den ' +
+    'omröstningen skapades mot, och underskrifterna raderas vid stängningen. Den som kan skriva i ' +
+    'båda databaserna kan skriva om den.',
 ]
 
 /**
@@ -163,6 +169,7 @@ export async function publishedResults(electionId: string): Promise<PublicationO
     select: {
       name: true,
       phase: true,
+      bankIdEnvironment: true,
       envelopeRoot: true,
       urnRoot: true,
       ballots: { select: { id: true, label: true, kind: true }, orderBy: { displayOrder: 'asc' } },
@@ -254,7 +261,7 @@ export async function publishedResults(electionId: string): Promise<PublicationO
     publication: {
       status: 'published',
       format: PUBLICATION_FORMAT,
-      election: { id: electionId, name: election.name, phase },
+      election: { id: electionId, name: election.name, phase, bankIdEnvironment: election.bankIdEnvironment },
       group: { p: P.toString(), q: Q.toString(), g: G.toString() },
       trustees: {
         count: TRUSTEE_COUNT,

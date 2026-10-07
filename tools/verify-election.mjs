@@ -70,6 +70,21 @@ export const TRUSTEE_THRESHOLD = 2
 /** Publiceringens format, som rutten skriver det. */
 export const PUBLICATION_FORMAT = 'valsystem/publicering/v1'
 
+/**
+ * BankID-miljön omröstningen skapades mot, som publiceringen anger den
+ * (härdningen, punkt 3). En omröstning bär miljön från skapandet, och en server
+ * mot en annan miljö vägrar lägga i, stänga, räkna och publicera den.
+ */
+export const BANKID_ENVIRONMENTS = {
+  none:
+    'ingen riktig BankID, alltså demons attrapp eller ingen klient. Det är inte ett riktigt val: i demon ' +
+    'kan vem som helst legitimera sig som en demoperson',
+  test:
+    'BankID:s testmiljö. Det är inte ett riktigt val: vem som helst kan skaffa ett test-BankID för vilket ' +
+    'personnummer som helst',
+  production: 'BankID:s produktionsmiljö',
+}
+
 /** Antalet siffror i p. Inget tal i gruppen är längre. */
 const MAX_DIGITS = P.toString().length
 
@@ -377,6 +392,15 @@ export function verifyPublication(publication, options = {}) {
     else fail(`Publiceringen gäller omröstningen ${electionId}, men ${options.electionId} efterfrågades`)
   }
 
+  // --- BankID-miljön (härdningen, punkt 3) ---------------------------------------
+  // En publicering utan miljö underkänns. Den hade annars kunnat läsas som produktion.
+  const environment = publication.election?.bankIdEnvironment
+  if (typeof environment === 'string' && Object.hasOwn(BANKID_ENVIRONMENTS, environment)) {
+    pass('Publiceringen anger BankID-miljön', `${environment}: ${BANKID_ENVIRONMENTS[environment]}`)
+  } else {
+    fail('BankID-miljön saknas i publiceringen eller är ingen av none, test och production', String(environment))
+  }
+
   // --- Rötterna ------------------------------------------------------------------
   for (const [key, name] of [
     ['envelopeRoot', 'Kuvertroten'],
@@ -656,9 +680,9 @@ export function verifyPublication(publication, options = {}) {
       '    och underkänner en valsedel som står två gånger, men ser inte om en valsedel saknas.',
       '  – Att valets publika nyckel och förtroendepersonernas andelar är de som fanns när rösterna',
       '    krypterades. Den som sparade nyckeln medan röstningen pågick kan jämföra med den.',
-      '  – Vilken BankID-miljö underskrifterna kom från. Publiceringen bär inte miljön, så ett prov mot',
-      '    BankID:s testmiljö, där vem som helst kan skaffa ett BankID med vilket personnummer som helst,',
-      '    ser likadant ut som ett val med produktionen.',
+      '  – Att BankID-miljön som publiceringen anger är den som underskrifterna kom från. Miljön är den',
+      '    omröstningen skapades mot, och underskrifterna raderas vid stängningen, så den går inte att',
+      '    pröva här. Den som kan skriva i båda databaserna kan skriva om den.',
       '',
     )
     return { ok: failures === 0, lines }
@@ -717,6 +741,14 @@ async function main(argv) {
   const name = typeof publication?.election?.name === 'string' ? publication.election.name : 'okänd omröstning'
   console.log(`\nOmröstning: ${name}`)
   if (typeof publication?.election?.phase === 'string') console.log(`Fas: ${publication.election.phase}`)
+  const environment = publication?.election?.bankIdEnvironment
+  console.log(
+    `BankID-miljö: ${
+      typeof environment === 'string' && Object.hasOwn(BANKID_ENVIRONMENTS, environment)
+        ? BANKID_ENVIRONMENTS[environment]
+        : 'anges inte, se kontrollerna nedan'
+    }`,
+  )
   console.log('')
 
   const { ok, lines } = verifyPublication(publication, { electionId: argv[3] ?? expectedElectionIdFrom(source) })

@@ -163,6 +163,8 @@ async function main() {
         kind: 'RIKSDAGSVAL',
         // Seedningen körs bara i demoläget, och demovalet bär det (uppgift 17).
         mode: 'DEMO',
+        // Attrappen, alltså ingen riktig BankID-miljö (härdningen, punkt 3).
+        bankIdEnvironment: 'none',
         // Tiderna räknas från idag (ruling 136), så att demovalet är öppet när det seedas.
         ...demoElectionWindow(),
       },
@@ -258,6 +260,7 @@ async function main() {
         name: election.name,
         kind: election.kind,
         mode: 'DEMO',
+        bankIdEnvironment: 'none',
         opensAt: election.opensAt,
         closesAt: election.closesAt,
       },

@@ -164,7 +164,7 @@ export async function POST(request: Request) {
       {
         status: 'wrong_mode',
         message:
-          'Omröstningen skapades i ett annat läge än det servern kör i, och stängs inte här. ' +
+          'Omröstningen skapades i ett annat läge eller mot en annan BankID-miljö än den servern kör i, och stängs inte här. ' +
           'Ingenting har ändrats. Läget sätts vid driftsättning.',
       },
       409,

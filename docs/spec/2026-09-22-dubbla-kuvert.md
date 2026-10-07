@@ -990,6 +990,12 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   kravet `bankid-reader-tested` stoppar skarpt läge mot produktion tills en riktig underskrift
   finns som testfall (uppgift 17d). Klienten förankrar BankID:s TLS-rot med fingeravtrycket låst
   per miljö, och prövar att `srvInfo/name` är den egna tjänstens.
+  - Omröstningen bär den BankID-miljö den skapades mot, `none`, `test` eller `production`, i båda
+    databaserna (härdningen, punkt 3). `none` är attrappen i demoläget. En server mot en annan
+    miljö vägrar lägga i, stänga, räkna, publicera och fastställa omröstningen, som för läget.
+  - Publiceringen och verktyget visar miljön. En omröstning mot testmiljön publiceras alltså
+    aldrig som något annat. Att underskrifterna faktiskt kom från den miljön går inte att pröva
+    efteråt, eftersom de raderas, och den som kan skriva i båda databaserna kan skriva om miljön.
 - **Stängningens lås hänger på en enda anslutning.** Anslutningen får en lätt fråga varje minut
   och TCP keepalive från servern, så att nätets tomgångsgränser inte kapar den under en lång
   stängning (6.1). En kortare tomgångsgräns, en omstart av databasen eller ett avbrott i nätet

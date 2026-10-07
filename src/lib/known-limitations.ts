@@ -538,11 +538,22 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'kravet att läsaren är prövad mot en riktig underskrift är där bara en varning, medan det stoppar ' +
       'produktionen. Varje sida bär då en banderoll som säger att identiteten inte är säkrad, och ' +
       'adminsidan och loggen säger detsamma. Fastställandets granskningshändelse bär BankID-miljön i sin ' +
-      'typ. Det publicerade resultatet säger inte vilken BankID-miljö omröstningen kördes mot, eftersom ' +
-      'miljön är serverns inställning och inte lagras med omröstningen.',
+      'typ. Omröstningen bär den BankID-miljö den skapades mot, och det publicerade resultatet och ' +
+      'verktyget som prövar det visar miljön. En server mot produktionen vägrar lägga i, stänga, räkna, ' +
+      'publicera och fastställa en omröstning från testmiljön. Den som kan skriva i båda databaserna kan ' +
+      'ändå skriva om miljön.',
     stillTrueIf: [
       { file: 'src/lib/runtime-mode.ts', contains: "blocking: bankIdEnvironment !== 'test'," },
       { file: 'src/lib/mode-banner.ts', contains: "if (configuredBankIdEnvironment() === 'test') {" },
+      // Publiceringen bär miljön ur omröstningens rad, och spärren prövar den (härdningen, punkt 3).
+      {
+        file: 'src/orchestration/publish-results.usecase.ts',
+        contains: 'bankIdEnvironment: election.bankIdEnvironment',
+      },
+      {
+        file: 'src/lib/election-environment.ts',
+        contains: 'election.bankIdEnvironment === serverBankIdEnvironment()',
+      },
     ],
   },
   /** Fixrunda 1 av uppgift 17c. */
@@ -624,16 +635,17 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'summan. Lösenfraserna skyddar alltså ingenting för demovalet. I skarpt läge vägrar skapandet av en ' +
       'omröstning de tre fraserna, och seedningen vägrar köra. Spärren gäller de tre fraserna i repot, ' +
       'inte svaga fraser i allmänhet, och den hänger inte på en miljövariabel. ' +
-      'Omröstningen bär sitt läge, i båda databaserna. Ett demoval som redan finns kan därför inte ' +
-      'läggas i, stängas, räknas, publiceras eller fastställas av en server i skarpt läge, och ett ' +
-      'skarpt val inte av en demoserver. Spärren gäller läggningen av kuvert, stängningen, ' +
+      'Omröstningen bär sitt läge och sin BankID-miljö, i båda databaserna. Ett demoval som redan finns ' +
+      'kan därför inte läggas i, stängas, räknas, publiceras eller fastställas av en server i skarpt ' +
+      'läge, ett skarpt val inte av en demoserver, och ett val mot BankID:s testmiljö inte av en server ' +
+      'mot produktionen. Spärren gäller läggningen av kuvert, stängningen, ' +
       'räkningens ingångar, dekrypteringen, omräkningen och publiceringen, fastställandet, och ' +
       'rutten som startar slutkontrollen. Läsvägarna spärras inte: ' +
       'adminsidans läsning av fas och antal (state), observatörens överblick (observer/election) och ' +
       'verifieringssidans besked (participation) svarar i båda lägena, eftersom de ändrar ingenting ' +
       'och bara lämnar ut antal, fas och väljarens eget besked. ' +
       'Läggningen läser röstlängdens rad, och stängning och fastställande kräver att båda raderna ' +
-      'stämmer. Den som kan skriva i båda databaserna kan ändå byta läget, och den som läser databasen ' +
+      'stämmer. Den som kan skriva i båda databaserna kan ändå byta läget och miljön, och den som läser databasen ' +
       'direkt hindras inte av något läge. Spärren skyddar alltså mot ett misstag och inte mot en sådan ' +
       'skrivning.',
     stillTrueIf: [
@@ -654,7 +666,7 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       },
       { file: 'prisma/seed.ts', contains: 'assertSeedAllowed()' },
       // Omröstningens läge prövas i läggningen av kuvert, räkningen och publiceringen ...
-      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'electionBelongsToThisMode(election.mode)' },
+      { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'electionBelongsToThisServer(election)' },
       { file: 'src/orchestration/tally.usecase.ts', contains: 'checkElectionMode(' },
       { file: 'src/orchestration/publish-results.usecase.ts', contains: 'checkElectionMode(' },
       // ... och i rutten som startar slutkontrollen.
