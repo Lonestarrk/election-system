@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  describeElectionSeed,
+  planElectionSeed,
   SEED_WARNING_PREFIX,
+  type ExistingElection,
 } from '../../prisma/election-seed-report'
+import { demoElectionWindow } from '@/lib/demo-election'
 
 /**
  * SEEDNINGEN FÅR INTE PÅSTÅ ATT DEN GJORT NÅGOT DEN INTE GJORT.
@@ -15,99 +17,137 @@ import {
  *
  * En falsk kvittens är värre än inget besked, eftersom den aktivt styr bort
  * från orsaken.
+ *
+ * SEDAN HÄRDNINGEN FLYTTAR SEEDNINGEN FRAM TIDERNA på ett demoval som redan
+ * finns och inte är stängt. Förut lämnades det orört, och ett demoval som en
+ * gång seedats stängde för läggning efter trettio dygn, tills någon tryckte på
+ * återställningsknappen. Ett stängt demoval, alltså ett vars fas lämnat OPEN,
+ * rörs fortfarande inte: där har stängningen raderat kopplingen, och bara
+ * återställningen tömmer urnan och sätter fasen till OPEN.
  */
 
 const NU = new Date('2026-09-22T12:00:00Z')
+const FÖNSTRET = demoElectionWindow(NU)
+
+function demoval(fields: Partial<ExistingElection>): ExistingElection {
+  return {
+    opensAt: new Date('2026-09-01T00:00:00Z'),
+    closesAt: new Date('2026-09-30T00:00:00Z'),
+    phase: 'OPEN',
+    mode: 'DEMO',
+    ...fields,
+  }
+}
 
 describe('när ingen omröstning finns', () => {
-  it('rapporterar att den skapades', () => {
-    const report = describeElectionSeed(null, NU)
+  it('skapar den och rapporterar det', () => {
+    const plan = planElectionSeed(null, NU)
 
-    expect(report.status).toBe('created')
-    expect(report.message).toContain('skapad')
+    expect(plan.action).toBe('create')
+    expect(plan.report.status).toBe('created')
+    expect(plan.report.message).toContain('skapad')
   })
 })
 
-describe('när omröstningen redan finns och är öppen', () => {
-  it('säger att den lämnades orörd — inte att den skapades', () => {
-    const report = describeElectionSeed(
-      { opensAt: new Date('2026-09-01T00:00:00Z'), closesAt: new Date('2026-09-30T00:00:00Z') },
-      NU,
-    )
+describe('när demovalet finns och inte är stängt', () => {
+  it('flyttar fram tiderna till demovalets fönster från idag', () => {
+    const plan = planElectionSeed(demoval({}), NU)
 
-    expect(report.status).toBe('existing_open')
-    expect(report.message).toContain('fanns redan')
+    expect(plan.action).toBe('advance')
+    if (plan.action !== 'advance') return
+    expect(plan.window).toEqual(FÖNSTRET)
+    expect(plan.report.status).toBe('existing_advanced')
+    expect(plan.report.message).toContain('fanns redan')
+    expect(plan.report.message).toContain(FÖNSTRET.closesAt.toISOString().slice(0, 10))
     // Frågan skapas bara tillsammans med omröstningen, och det ska beskedet säga.
-    expect(report.message).toMatch(/frågan skapas inte/i)
-    // Det gamla felet i en mening: att hävda ett skapande som inte skett.
-    expect(report.message).not.toContain('skapad')
-  })
-})
-
-describe('när omröstningen finns men inte är öppen', () => {
-  /**
-   * DET FARLIGA UTFALLET.
-   *
-   * Seedningen har då inte gjort någonting, appen visar "ingen omröstning är
-   * öppen". `npm run reset:votes` rättar det, eftersom skriptet sätter fasen
-   * till OPEN och flyttar fram demovalets tider. Beskedet måste därför bära
-   * åtgärden, inte bara konstaterandet.
-   */
-  const STÄNGD = {
-    opensAt: new Date('2026-09-01T00:00:00Z'),
-    closesAt: new Date('2026-09-10T00:00:00Z'),
-  }
-
-  it('varnar i stället för att rapportera framgång', () => {
-    const report = describeElectionSeed(STÄNGD, NU)
-
-    expect(report.status).toBe('existing_closed')
-    expect(report.message).toContain(SEED_WARNING_PREFIX)
-    expect(report.message).not.toContain('skapad')
+    expect(plan.report.message).toMatch(/frågan skapas inte/i)
+    expect(plan.report.message).not.toContain('skapad')
   })
 
-  it('namnger datumen så att orsaken syns direkt', () => {
-    const report = describeElectionSeed(STÄNGD, NU)
-
-    expect(report.message).toContain('2026-09-01')
-    expect(report.message).toContain('2026-09-10')
-  })
-
-  it('talar om vad appen kommer att visa, och hur man rättar det', () => {
-    const report = describeElectionSeed(STÄNGD, NU)
-
-    expect(report.message).toContain('ingen omröstning är öppen')
-    // Åtgärden måste vara körbar, inte en uppmaning att "kontrollera datan".
-    expect(report.message).toContain('delete from election')
-  })
-
-  it('varnar också för en omröstning som ännu inte öppnat', () => {
-    const report = describeElectionSeed(
-      { opensAt: new Date('2026-10-01T00:00:00Z'), closesAt: new Date('2026-10-30T00:00:00Z') },
+  it('flyttar fram tiderna också när closesAt har passerat men fasen står i OPEN', () => {
+    const plan = planElectionSeed(
+      demoval({ opensAt: new Date('2026-08-01T00:00:00Z'), closesAt: new Date('2026-08-31T00:00:00Z') }),
       NU,
     )
 
-    expect(report.status).toBe('existing_closed')
-    expect(report.message).toContain(SEED_WARNING_PREFIX)
+    expect(plan.action).toBe('advance')
+    expect(plan.report.message).not.toContain(SEED_WARNING_PREFIX)
+  })
+
+  it('flyttar fram ett demoval som ännu inte öppnat', () => {
+    const plan = planElectionSeed(
+      demoval({ opensAt: new Date('2026-10-01T00:00:00Z'), closesAt: new Date('2026-10-01T12:00:00Z') }),
+      NU,
+    )
+
+    expect(plan.action).toBe('advance')
+  })
+
+  it('flyttar aldrig tiderna bakåt: ett fönster som redan räcker längre lämnas', () => {
+    const plan = planElectionSeed(
+      demoval({ opensAt: new Date('2026-09-22T00:00:00Z'), closesAt: new Date('2026-12-31T00:00:00Z') }),
+      NU,
+    )
+
+    expect(plan.action).toBe('leave')
+    expect(plan.report.status).toBe('existing_open')
+    expect(plan.report.message).toContain('oförändrad')
+  })
+})
+
+describe('när demovalet är stängt', () => {
+  /**
+   * DET FARLIGA UTFALLET. Seedningen gör då ingenting, och appen visar "ingen
+   * omröstning är öppen". Beskedet måste bära åtgärden, och åtgärden är
+   * knappen "Återställ demovalet" på adminsidan.
+   */
+  it.each(['CLOSED', 'VALIDATED', 'STRIPPED', 'TALLIED', 'CERTIFIED'])('rör inte ett demoval i %s', (phase) => {
+    const plan = planElectionSeed(demoval({ phase }), NU)
+
+    expect(plan.action).toBe('leave')
+    expect(plan.report.status).toBe('existing_closed')
+    expect(plan.report.message).toContain(SEED_WARNING_PREFIX)
+    expect(plan.report.message).toContain(phase)
+    expect(plan.report.message).toContain('Återställ demovalet')
+    expect(plan.report.message).toContain('ingen omröstning är öppen')
+    expect(plan.report.message).not.toContain('skapad')
+  })
+
+  it('rör inte ett demoval utan rad i röstlängden, där fasen inte går att läsa', () => {
+    const plan = planElectionSeed(demoval({ phase: null }), NU)
+
+    expect(plan.action).toBe('leave')
+    expect(plan.report.status).toBe('existing_closed')
+    expect(plan.report.message).toContain(SEED_WARNING_PREFIX)
   })
 })
 
 describe('gränserna för när en omröstning räknas som öppen', () => {
   /**
-   * Måste stämma med listOpenElections, som filtrerar på
-   * `opensAt <= now` och `closesAt > now`. Glider de isär rapporterar
-   * seedningen "öppen" om något appen inte visar, vilket återinför exakt den
-   * förvirring den här filen finns för att förhindra.
+   * Måste stämma med listOpenElections, som filtrerar på `opensAt <= now` och
+   * `closesAt > now` (tests/integration/open-elections.test.ts). Bara ett
+   * demoval som är öppet enligt det villkoret lämnas med beskedet "öppen".
    */
-  it('öppningsögonblicket räknas som öppet', () => {
-    const report = describeElectionSeed({ opensAt: NU, closesAt: new Date('2026-09-30') }, NU)
+  const SENT = new Date('2027-01-31T00:00:00Z')
 
-    expect(report.status).toBe('existing_open')
+  it('öppningsögonblicket räknas som öppet', () => {
+    const plan = planElectionSeed(demoval({ opensAt: NU, closesAt: SENT }), NU)
+
+    expect(plan.report.status).toBe('existing_open')
   })
 
-  it('stängningsögonblicket räknas som stängt', () => {
-    const report = describeElectionSeed({ opensAt: new Date('2026-09-01'), closesAt: NU }, NU)
+  it('stängningsögonblicket räknas som stängt i tid, och tiderna flyttas fram', () => {
+    const plan = planElectionSeed(demoval({ opensAt: new Date('2026-09-01'), closesAt: NU }), NU)
 
-    expect(report.status).toBe('existing_closed')
+    expect(plan.action).toBe('advance')
+  })
+})
+
+describe('när omröstningen med namnet inte är ett demoval', () => {
+  it('rör den inte, och varnar', () => {
+    const plan = planElectionSeed(demoval({ mode: 'SHARP' }), NU)
+
+    expect(plan.action).toBe('leave')
+    expect(plan.report.message).toContain(SEED_WARNING_PREFIX)
   })
 })

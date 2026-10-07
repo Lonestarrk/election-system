@@ -1,5 +1,5 @@
 import { scryptHex } from '../src/lib/crypto'
-import { describeElectionSeed } from './election-seed-report'
+import { closedElectionReport, planElectionSeed } from './election-seed-report'
 import { assertSeedAllowed, demoElectionWindow } from '../src/lib/demo-election'
 // Serverns ingång, som i createElection: nyckeln exponentieras i OpenSSL.
 import { generateKeyPair, publicShare, splitSecret } from '../src/lib/crypto/server'
@@ -143,12 +143,45 @@ async function main() {
 
   // --- Valet 2026 ----------------------------------------------------------
   const existing = await votesDb.election.findFirst({ where: { name: 'Valet 2026' } })
+  const mirrored = existing
+    ? await votersDb.election.findUnique({ where: { id: existing.id }, select: { phase: true } })
+    : null
 
-  // Beslutet om vad som ska rapporteras ligger i election-seed-report.ts, och
-  // är testat där. Utskriften nedan får inte påstå något annat.
-  const electionSummary = describeElectionSeed(existing, new Date()).message
+  // Beslutet om vad som görs och rapporteras ligger i election-seed-report.ts,
+  // och är testat där. Utskriften nedan får inte påstå något annat.
+  const plan = planElectionSeed(
+    existing
+      ? { opensAt: existing.opensAt, closesAt: existing.closesAt, phase: mirrored?.phase ?? null, mode: existing.mode }
+      : null,
+    new Date(),
+  )
+  let electionSummary = plan.report.message
 
-  if (!existing) {
+  if (existing && plan.action === 'advance') {
+    /**
+     * Röstlängden först, med villkor på fasen och läget: det är där fasen står,
+     * och en stängning som hunnit börja efter läsningen ovan skriver CLOSED
+     * där. Träffar villkoret inte rörs ingenting, och beskedet blir det för ett
+     * stängt demoval.
+     */
+    const moved = await votersDb.election.updateMany({
+      where: { id: existing.id, phase: 'OPEN', mode: 'DEMO' },
+      data: plan.window,
+    })
+    if (moved.count === 1) {
+      await votesDb.election.updateMany({ where: { id: existing.id, mode: 'DEMO' }, data: plan.window })
+    } else {
+      const now = await votersDb.election.findUnique({ where: { id: existing.id }, select: { phase: true } })
+      electionSummary = closedElectionReport({
+        opensAt: existing.opensAt,
+        closesAt: existing.closesAt,
+        phase: now?.phase ?? null,
+        mode: existing.mode,
+      }).message
+    }
+  }
+
+  if (plan.action === 'create') {
     const ballotSpecs = [
       { kind: 'KOMMUN', label: 'Kommunfullmäktige, Stockholms kommun', areaCode: MUNICIPALITY },
       { kind: 'LANDSTING', label: 'Regionfullmäktige, Region Stockholm', areaCode: REGION },
