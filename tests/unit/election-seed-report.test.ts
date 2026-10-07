@@ -83,6 +83,18 @@ describe('när demovalet finns och inte är stängt', () => {
     expect(plan.action).toBe('advance')
   })
 
+  it('flyttar aldrig closesAt bakåt för ett demoval som inte har öppnat än (granskningen av härdningen)', () => {
+    // opensAt ligger i framtiden, och closesAt längre fram än demovalets nya fönster.
+    const closesAt = new Date('2027-03-31T00:00:00Z')
+    const plan = planElectionSeed(demoval({ opensAt: new Date('2026-12-01T00:00:00Z'), closesAt }), NU)
+
+    expect(plan.action).toBe('advance')
+    if (plan.action !== 'advance') return
+    expect(plan.window.opensAt).toEqual(FÖNSTRET.opensAt)
+    expect(plan.window.closesAt).toEqual(closesAt)
+    expect(plan.report.message).toContain('2027-03-31')
+  })
+
   it('flyttar aldrig tiderna bakåt: ett fönster som redan räcker längre lämnas', () => {
     const plan = planElectionSeed(
       demoval({ opensAt: new Date('2026-09-22T00:00:00Z'), closesAt: new Date('2026-12-31T00:00:00Z') }),

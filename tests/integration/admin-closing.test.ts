@@ -487,6 +487,34 @@ describe.skipIf(!databaseAvailable)('adminsidans rutter', () => {
       expect(await votersDb.auditEvent.count({ where: { eventType: 'ELECTION_DEMO_RESET' } })).toBe(0)
     })
 
+    it.each([
+      ['en SHARP-omröstning', { mode: 'SHARP' }],
+      ['en omröstning mot BankID:s testmiljö', { bankIdEnvironment: 'test' }],
+    ] as const)('vägrar %s som heter som demovalet, och rör ingenting (granskningen av härdningen)', async (_, data) => {
+      /**
+       * Namnet ensamt räckte förut. En skarp omröstning som fått demovalets namn, i
+       * någon av databaserna, hade då kunnat tömmas av den som är administratör i en
+       * demoserver. Nu krävs också läget DEMO och miljön none, i båda raderna.
+       */
+      await loginAdmin()
+      const { electionId, ballotId } = await newElection(DEMO_ELECTION_NAME)
+      await tallied(electionId, ballotId)
+
+      for (const db of [votersDb, votesDb]) {
+        await (db.election.update as (args: unknown) => Promise<unknown>)({ where: { id: electionId }, data })
+        const response = await reset(electionId)
+        expect(response.status).toBe(403)
+        expect((await response.json()).error.code).toBe('NOT_DEMO_ELECTION')
+        expect(await phaseOf(electionId)).toBe('TALLIED')
+        expect(await votesDb.ballotTally.count({ where: { ballotId } })).toBeGreaterThan(0)
+        expect(await votersDb.auditEvent.count({ where: { eventType: 'ELECTION_DEMO_RESET' } })).toBe(0)
+        await (db.election.update as (args: unknown) => Promise<unknown>)({
+          where: { id: electionId },
+          data: { mode: 'DEMO', bankIdEnvironment: 'none' },
+        })
+      }
+    })
+
     it('svarar 404 för en omröstning som inte finns', async () => {
       await loginAdmin()
       expect((await reset('00000000-0000-4000-8000-000000000000')).status).toBe(404)

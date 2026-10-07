@@ -641,6 +641,8 @@ export type DeviceComparison = 'same' | 'different' | 'none'
 export type DeviceComparisonOutcome =
   | { status: 'compared'; ballots: Array<{ ballotId: string; result: DeviceComparison }> }
   | { status: 'closed' }
+  /** Omröstningen hör till ett annat läge eller en annan BankID-miljö än serverns. */
+  | { status: 'wrong_mode' }
 
 /**
  * Jämför enhetens sparade chifferhashar med väljarens liggande kuvert.
@@ -671,6 +673,10 @@ export type DeviceComparisonOutcome =
  * kopplingen kvar. Villkoret är `acceptsVotesNow`, samma som sessionens
  * `acceptsVotes`. Är det falskt jämförs ingenting, och svaret är detsamma för
  * rätt och fel hash.
+ *
+ * LÄGE OCH MILJÖ, SOM LÄGGNINGEN (granskningen av härdningen). En omröstning i ett
+ * annat läge eller mot en annan BankID-miljö än serverns jämförs inte, efter samma
+ * villkor och i samma ordning som `castWindow`.
  */
 export async function compareWithPendingVotes(
   voterStatusId: string,
@@ -679,9 +685,10 @@ export async function compareWithPendingVotes(
 ): Promise<DeviceComparisonOutcome> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
-    select: { phase: true, closesAt: true, linkClearedAt: true },
+    select: { phase: true, closesAt: true, linkClearedAt: true, mode: true, bankIdEnvironment: true },
   })
   if (!election || !acceptsVotesNow(election)) return { status: 'closed' }
+  if (!electionBelongsToThisServer(election)) return { status: 'wrong_mode' }
 
   const envelopes = await votersDb.pendingVote.findMany({
     where: { voterStatusId, ballotId: { in: deviceHashes.map((entry) => entry.ballotId) } },

@@ -462,6 +462,26 @@ describe.skipIf(!databaseAvailable)('jämförelsen av enhetens röst', () => {
       expect(await castWindow('00000000-0000-4000-8000-000000000000')).toBe('closed')
     })
 
+    it.each([
+      ['läge', { mode: 'SHARP' }],
+      ['BankID-miljö', { bankIdEnvironment: 'test' }],
+    ] as const)(
+      'jämförelsen prövar läge och miljö som läggningen: en omröstning i fel %s jämförs inte (granskningen av härdningen)',
+      async (_, data) => {
+        const { ballot } = await cast(bpS)
+        await (votersDb.election.update as (args: unknown) => Promise<unknown>)({ where: { id: electionId }, data })
+
+        const right = await compareWith(ballot.ciphertextHash)
+        const wrong = await compareWith('0'.repeat(64))
+
+        expect(right.status).toBe(409)
+        expect(JSON.parse(right.text).error.code).toBe('WRONG_MODE')
+        expect(right.text).toBe(wrong.text)
+        expect(right.text).not.toMatch(/same|different|none/)
+        expect(right.text).not.toMatch(ANY_HASH)
+      },
+    )
+
     it('kontrasten: samma kuvert före closesAt ger lika', async () => {
       const { ballot } = await cast(bpS)
       const reply = await compareWith(ballot.ciphertextHash)

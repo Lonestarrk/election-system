@@ -110,6 +110,9 @@ export async function POST(request: Request) {
   if (compared.status === 'closed') {
     return errorResponse('VOTING_CLOSED', 'Röstningen har stängt, och rösten jämförs inte längre.', 409)
   }
+  if (compared.status === 'wrong_mode') {
+    return errorResponse('WRONG_MODE', 'Omröstningen hör inte till det läge eller den BankID-miljö servern kör i.', 409)
+  }
   const results = compared.ballots
 
   // Fälten räknas upp ett och ett, så att ett nytt fält i tjänstens svar inte

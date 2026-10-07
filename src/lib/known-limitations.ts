@@ -638,13 +638,15 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       'Omröstningen bär sitt läge och sin BankID-miljö, i båda databaserna. Ett demoval som redan finns ' +
       'kan därför inte läggas i, stängas, räknas, publiceras eller fastställas av en server i skarpt ' +
       'läge, ett skarpt val inte av en demoserver, och ett val mot BankID:s testmiljö inte av en server ' +
-      'mot produktionen. Spärren gäller läggningen av kuvert, stängningen, ' +
-      'räkningens ingångar, dekrypteringen, omräkningen och publiceringen, fastställandet, och ' +
-      'rutten som startar slutkontrollen. Läsvägarna spärras inte: ' +
+      'mot produktionen. Spärren gäller läggningen av kuvert, underskriftens start (sign-start), ' +
+      'jämförelsen med enhetens röst (compare), stängningen, räkningens ingångar, dekrypteringen, ' +
+      'omräkningen och publiceringen, fastställandet, och rutten som startar slutkontrollen. ' +
+      'Demoåterställningen kräver demovalets namn, läget DEMO och miljön none i båda raderna. ' +
+      'Läsvägarna spärras inte: ' +
       'adminsidans läsning av fas och antal (state), observatörens överblick (observer/election) och ' +
       'verifieringssidans besked (participation) svarar i båda lägena, eftersom de ändrar ingenting ' +
       'och bara lämnar ut antal, fas och väljarens eget besked. ' +
-      'Läggningen läser röstlängdens rad, och stängning och fastställande kräver att båda raderna ' +
+      'Läggningen, underskriftens start och jämförelsen läser röstlängdens rad, och stängning och fastställande kräver att båda raderna ' +
       'stämmer. Den som kan skriva i båda databaserna kan ändå byta läget och miljön, och den som läser databasen ' +
       'direkt hindras inte av något läge. Spärren skyddar alltså mot ett misstag och inte mot en sådan ' +
       'skrivning.',
@@ -668,6 +670,14 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       // Omröstningens läge prövas i läggningen av kuvert, räkningen och publiceringen ...
       { file: 'src/modules/eligibility/pending-vote.service.ts', contains: 'electionBelongsToThisServer(election)' },
       { file: 'src/orchestration/tally.usecase.ts', contains: 'checkElectionMode(' },
+      // ... i underskriftens start och jämförelsen, som läser röstlängdens rad som läggningen ...
+      { file: 'src/app/api/vote/sign-start/route.ts', contains: "if (window === 'wrong_mode') {" },
+      { file: 'src/app/api/vote/compare/route.ts', contains: "if (compared.status === 'wrong_mode') {" },
+      // ... och demoåterställningen kräver läget och miljön, inte bara namnet.
+      {
+        file: 'src/orchestration/reset-demo-election.usecase.ts',
+        contains: "row !== null && row.mode === 'DEMO' && row.bankIdEnvironment === 'none'",
+      },
       { file: 'src/orchestration/publish-results.usecase.ts', contains: 'checkElectionMode(' },
       // ... och i rutten som startar slutkontrollen.
       { file: 'src/app/api/admin/elections/check/route.ts', contains: 'checkElectionMode(' },

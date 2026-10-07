@@ -670,7 +670,7 @@ register({
       'INVALID_INPUT',
       'INVALID_BALLOT',
     ]),
-    409: error('Omröstningen tar inte längre emot röster, och ingenting jämförs (spec 3.1).', ['VOTING_CLOSED']),
+    409: error('Ingenting jämförs. VOTING_CLOSED: omröstningen tar inte längre emot röster (spec 3.1). WRONG_MODE: omröstningen hör till ett annat läge eller en annan BankID-miljö än serverns.', ['VOTING_CLOSED', 'WRONG_MODE']),
     429: rateLimited(),
   },
 })

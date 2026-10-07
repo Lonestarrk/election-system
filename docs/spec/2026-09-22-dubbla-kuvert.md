@@ -894,6 +894,23 @@ innan nästa skrivare läser numret, så löpnumren förblir obrutna. Hashen rä
 en kedja från före härdningen verifierar oförändrad. Priset är att en post väntar på den
 transaktion som håller låset, till exempel skalningens, tills den gör COMMIT.
 
+**Taket.** En post utan anropare i en transaktion skrivs i en egen transaktion. Den väntar högst
+30 sekunder på en anslutning ur poolen (Prismas `maxWait`), och transaktionen får ta högst 120
+sekunder (`timeout`), väntan på låset inräknad. Något `lock_timeout` sätts inte för posten, utan
+det är transaktionens gräns som avbryter väntan. Når posten inte fram inom gränserna loggas felet
+och posten saknas i kedjan, men begäran som skrev den går vidare. Posten skrivs inuti anroparens
+transaktion när anroparen skickar med sin, och då gäller anroparens gränser och felet går vidare.
+
+**Vid en rusning av inloggningar** skrivs posterna en i taget och köar bakom varandra. Granskningens
+prob skrev 400 poster samtidigt utan att någon försvann, men någon genomströmning är inte mätt mot
+en riktig databas i drift. Varje post som väntar
+håller en anslutning ur poolen, och inloggningen väntar på sin post innan den svarar. Vid en större
+rusning, eller medan skalningen håller låset, blir inloggningarna därför långsammare, och poolen kan
+ta slut också för begäranden som inte skriver någon post. Då väntar de högst `maxWait`. Får en post
+ingen anslutning inom 30 sekunder, eller blir den inte klar inom 120 sekunder, saknas den i kedjan.
+En lucka i löpnumren uppstår inte av det, eftersom numret tas först under låset. Kedjan är alltså
+alltid obruten, men den är inte fullständig om en post fått ge upp.
+
 ### 7.4 Beslut: en struken väljares röst räknas ändå
 
 Hon var röstberättigad när hon röstade, och det är den tidpunkten som gäller. Det

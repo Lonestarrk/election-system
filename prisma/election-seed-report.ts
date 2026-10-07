@@ -111,7 +111,16 @@ export function planElectionSeed(existing: ExistingElection | null, now: Date): 
 
   if (existing.phase !== 'OPEN') return { action: 'leave', report: closedElectionReport(existing) }
 
-  const window = demoElectionWindow(now)
+  /**
+   * closesAt flyttas aldrig bakåt (granskningen av härdningen). Det största av det
+   * nuvarande och det nya slutdatumet gäller, också för ett demoval som inte har
+   * öppnat än och vars closesAt redan ligger längre fram än det nya fönstret.
+   */
+  const fresh = demoElectionWindow(now)
+  const window = {
+    opensAt: fresh.opensAt,
+    closesAt: fresh.closesAt > existing.closesAt ? fresh.closesAt : existing.closesAt,
+  }
   if (!isOpenAt(existing, now) || window.closesAt > existing.closesAt) {
     return {
       action: 'advance',

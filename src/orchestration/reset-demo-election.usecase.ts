@@ -61,10 +61,24 @@ export type ResetOutcome =
 export async function resetDemoElection(electionId: string): Promise<ResetOutcome> {
   const election = await votersDb.election.findUnique({
     where: { id: electionId },
-    select: { name: true, ballots: { select: { id: true } } },
+    select: { name: true, mode: true, bankIdEnvironment: true, ballots: { select: { id: true } } },
   })
   if (!election) return { status: 'unknown_election' }
-  if (election.name !== DEMO_ELECTION_NAME) return { status: 'not_demo_election' }
+
+  /**
+   * NAMNET RÄCKER INTE (granskningen av härdningen). Demovalet bär läget DEMO och
+   * miljön none, i båda databaserna. En skarp omröstning som fått demovalets namn
+   * vägras, så att den som är administratör i en demoserver inte kan tömma den.
+   */
+  const votes = await votesDb.election.findUnique({
+    where: { id: electionId },
+    select: { mode: true, bankIdEnvironment: true },
+  })
+  const isDemo = (row: { mode: string; bankIdEnvironment: string } | null) =>
+    row !== null && row.mode === 'DEMO' && row.bankIdEnvironment === 'none'
+  if (election.name !== DEMO_ELECTION_NAME || !isDemo(election) || !isDemo(votes)) {
+    return { status: 'not_demo_election' }
+  }
 
   const ballotIds = election.ballots.map((ballot) => ballot.id)
 
