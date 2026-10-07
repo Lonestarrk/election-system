@@ -728,29 +728,41 @@ export const KNOWN_LIMITATIONS: KnownLimitation[] = [
       { file: 'src/lib/validation.ts', contains: 'trusteePassphrases: trusteePassphrasesSchema,' },
     ],
   },
+  /**
+   * Härdningen, punkt 1. Posten hette förut "står stilla på sin anslutning" och sa att
+   * systemet varken skickade keepalive eller frågade låset med jämna mellanrum. Båda görs
+   * nu, och det som står kvar är att låset hänger på en enda anslutning.
+   */
   {
     id: 'closing-lock-connection-idles',
-    title: 'Stängningens lås står stilla på sin anslutning under en stor stängning',
+    title: 'Stängningens lås hänger på en enda anslutning',
     why:
-      'Stängningen håller sitt lås i en egen transaktion i röstlängden, och den anslutningen gör ' +
-      'ingenting medan kuverten valideras och flyttas på andra anslutningar, i ett stort val i ' +
-      'timmar. Databasens egen gräns för en transaktion som står stilla stängs av för just den, men ' +
-      'nätet emellan har egna tomgångsgränser, till exempel omkring fyra minuter för SNAT i Azure, ' +
-      'och systemet skickar inga keepalive-paket och frågar inte låset med jämna mellanrum. Avbryts ' +
-      'anslutningen släpps låset, och stängningen märker det vid nästa fråga till låset eller i ' +
-      'skalningen. Den avbryts då åt det säkra hållet, utan att ha raderat något och med det ' +
-      'försiktiga beskedet, och kan köras om. Men ett tillräckligt stort val kan bli omöjligt att ' +
-      'stänga i ett nät med en kort tomgångsgräns.',
+      'Stängningen håller sitt lås i en egen transaktion i röstlängden, på en anslutning som inget annat ' +
+      'använder medan kuverten valideras och flyttas på andra anslutningar, i ett stort val i timmar. ' +
+      'Anslutningen får en lätt fråga varje minut, och servern skickar TCP keepalive efter en minut utan ' +
+      'trafik, så att nätets tomgångsgränser, till exempel omkring fyra minuter för SNAT i Azure, inte ' +
+      'ska kapa den. Ett test prövar frågan mot en tomgångsgräns som räknas i trafik på anslutningen. Att ' +
+      'keepalive ensamt räcker mot Azures gräns är inte prövat. En tomgångsgräns under en minut, en ' +
+      'omstart av databasen eller ett avbrott i nätet släpper ändå låset. Stängningen märker det vid nästa ' +
+      'fråga till låset eller i skalningen, avbryts åt det säkra hållet, utan att ha raderat något och med ' +
+      'det försiktiga beskedet, och kan köras om. Låsets transaktion har dessutom en egen tidsgräns på sex ' +
+      'timmar, och en stängning som tar längre tid går inte att genomföra.',
     stillTrueIf: [
       // Låsets transaktion står stilla med avsikt, och databasens tomgångsgräns stängs av för den.
       {
         file: 'src/orchestration/close-election.usecase.ts',
         contains: "await tx.$queryRaw`SELECT set_config('idle_in_transaction_session_timeout', '0', true)`",
       },
-      // Låset frågas bara före de steg det skyddar, inte med jämna mellanrum.
+      // Hjärtslaget en gång i minuten, och serverns keepalive efter en minut.
       {
         file: 'src/orchestration/close-election.usecase.ts',
-        contains: 'stillHeld: async () => {\n            try {\n              await tx.$queryRaw`SELECT 1`',
+        contains: 'export const closingLockHeartbeat = { intervalMs: 60_000 }',
+      },
+      { file: 'src/orchestration/close-election.usecase.ts', contains: "set_config('tcp_keepalives_idle', '60', true)" },
+      // Låsets egen tidsgräns.
+      {
+        file: 'src/orchestration/close-election.usecase.ts',
+        contains: 'const CLOSING_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000',
       },
     ],
   },

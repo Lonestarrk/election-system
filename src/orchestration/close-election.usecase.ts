@@ -463,8 +463,10 @@ function describeUnexpectedState(state: CloseState): string {
  * timmar på en stor validering.
  *
  * VAD SOM HÄNDER OM LÅSET GÅR FÖRLORAT. Transaktionen som håller låset har en
- * tidsgräns, och en anslutning kan tappas. Då släpps låset, men stängningen
- * märker det inte av sig själv. Den frågar därför transaktionen, med
+ * tidsgräns, och en anslutning kan tappas. Hjärtslaget och TCP keepalive gör
+ * det mindre troligt att nätet kapar en anslutning som står stilla (härdningen,
+ * punkt 1), men en omstart av databasen eller ett avbrott i nätet släpper ändå
+ * låset. Stängningen märker det inte av sig själv. Den frågar därför transaktionen, med
  * `stillHeld`, före de steg låset skyddar: städningen i röstdatabasen, en gång
  * före läsningen och en gång direkt före raderingen, och skalningen. Har låset
  * gått förlorat avbryts stängningen, och beskedet om kopplingen kommer då ur
@@ -545,6 +547,16 @@ class StrippingNotCommitted extends Error {
 const CLOSING_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000
 
 /**
+ * Hur ofta låsets anslutning får en lätt fråga medan stängningen arbetar på andra
+ * anslutningar (härdningen, punkt 1). En minut är väl under de tomgångsgränser
+ * som brukar finnas i nätet, omkring fyra minuter för SNAT i Azure, och frågan
+ * kostar ingenting att tala om. Ett objekt och inte en konstant, så att
+ * testerna kan pröva hjärtslaget mot en tomgångsgräns på några sekunder.
+ * Värdet läses när låset tas.
+ */
+export const closingLockHeartbeat = { intervalMs: 60_000 }
+
+/**
  * Skalningens egna gränser, i låsets transaktion (fixrunda 3 av 11d).
  *
  * `STRIP_LOCK_TIMEOUT_MS` är hur länge en sats i skalningen väntar på ett lås.
@@ -594,19 +606,67 @@ export async function withClosingLock<T>(
          */
         await tx.$queryRaw`SELECT set_config('idle_in_transaction_session_timeout', '0', true)`
 
+        /**
+         * TCP KEEPALIVE PÅ LÅSETS ANSLUTNING (härdningen, punkt 1). Servern
+         * skickar ett keepalive-paket efter en minut utan trafik, och sedan var
+         * tionde sekund, och ger upp efter sex obesvarade. Prismas
+         * anslutningssträng har ingen parameter för klientens keepalive, så det är
+         * serverns sida som sätts, med `set_config` för just den här
+         * transaktionen. Inställningen gäller bara en anslutning över TCP.
+         */
+        await tx.$queryRaw`SELECT set_config('tcp_keepalives_idle', '60', true) AS idle, set_config('tcp_keepalives_interval', '10', true) AS interval, set_config('tcp_keepalives_count', '6', true) AS count`
+
         /** En transaktion som inte går att föra tillbaka till sparpunkten får aldrig göra COMMIT. */
         let unusable = false
 
-        const lock: ClosingLock = {
-          stillHeld: async () => {
+        /**
+         * EN SATS I TAGET PÅ LÅSETS ANSLUTNING. Hjärtslaget, `stillHeld` och
+         * skalningen köar här, så att hjärtslaget aldrig hamnar mitt i
+         * skalningens satser, mellan sparpunkten och återgången till den.
+         */
+        let queue: Promise<unknown> = Promise.resolve()
+        const onLockConnection = <R>(work: () => Promise<R>): Promise<R> => {
+          const next = queue.then(work, work)
+          queue = next.catch(() => undefined)
+          return next
+        }
+
+        /**
+         * HJÄRTSLAGET (härdningen, punkt 1). Låsets anslutning står annars
+         * stilla medan kuverten valideras på andra anslutningar, i ett stort val
+         * i timmar, och nätets tomgångsgränser kan kapa den, till exempel SNAT i
+         * Azure efter omkring fyra minuter. En lätt fråga med jämna mellanrum
+         * håller trafik på anslutningen. Ett hjärtslag som felar betyder att
+         * transaktionen inte längre går att använda, och då svarar `stillHeld`
+         * nej från och med nu. Ett lås som gått förlorat kommer inte tillbaka,
+         * så ett ja betyder fortfarande att låset hållits hela vägen dit.
+         * Hjärtslaget skriver ingenting och ändrar inte vad skalningen gör.
+         */
+        let heartbeatFailed = false
+        const heartbeat = setInterval(() => {
+          void onLockConnection(async () => {
             try {
               await tx.$queryRaw`SELECT 1`
-              return true
             } catch {
-              return false
+              heartbeatFailed = true
             }
-          },
-          strip: async (work) => {
+          })
+        }, closingLockHeartbeat.intervalMs)
+        heartbeat.unref?.()
+
+        const lock: ClosingLock = {
+          stillHeld: () =>
+            onLockConnection(async () => {
+              if (heartbeatFailed) return false
+              try {
+                await tx.$queryRaw`SELECT 1`
+                return true
+              } catch {
+                return false
+              }
+            }),
+          strip: <R>(work: (tx: VotersTransaction) => Promise<R>) =>
+            onLockConnection<Stripping<R>>(async () => {
             try {
               /**
                * SKALNINGEN HAR EGNA TIDSGRÄNSER (fixrunda 3 av 11d, omgranskningens
@@ -641,7 +701,7 @@ export async function withClosingLock<T>(
                 return { outcome: 'lost', error }
               }
             }
-          },
+          }),
         }
 
         try {
@@ -654,12 +714,18 @@ export async function withClosingLock<T>(
            */
           if (carriesStripping) {
             carriesStripping = false
-            try {
-              await tx.$queryRaw`ROLLBACK TO SAVEPOINT stripping`
-            } catch {
-              unusable = true
-            }
+            await onLockConnection(async () => {
+              try {
+                await tx.$queryRaw`ROLLBACK TO SAVEPOINT stripping`
+              } catch {
+                unusable = true
+              }
+            })
           }
+        } finally {
+          // Inget hjärtslag efter stängningen, och inget som pågår när transaktionen gör COMMIT.
+          clearInterval(heartbeat)
+          await queue
         }
 
         if (unusable) throw new StrippingNotCommitted()

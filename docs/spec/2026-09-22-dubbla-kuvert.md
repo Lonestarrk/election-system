@@ -660,6 +660,15 @@ kopplingen bevisligen är borta, eftersom övergången till `STRIPPED` är villk
 - Skalningen körs i låsets egen transaktion. Den omfattar `STRIPPED`, kuvertroten,
   markeringarna och raderingen. En stängning vars lås har gått förlorat kan därför inte
   heller göra COMMIT på en skalning.
+- Låsets anslutning står annars stilla medan kuverten valideras på andra anslutningar, i ett
+  stort val i timmar. Nätets tomgångsgränser, till exempel omkring fyra minuter för SNAT i
+  Azure, kunde då kapa den, och stängningen avbröts. Därför får anslutningen en lätt fråga
+  varje minut, och servern skickar TCP keepalive efter en minut utan trafik (härdningen, punkt
+  1). Frågan och skalningens satser köar på anslutningen, en i taget. Ett hjärtslag som felar
+  gör att låset räknas som förlorat. Frågan skriver ingenting, och ett lås som gått förlorat
+  kommer inte tillbaka. Ett ja från låset betyder alltså fortfarande att det hållits hela vägen.
+  En tomgångsgräns under en minut, en omstart av databasen eller ett avbrott i nätet släpper
+  ändå låset, och stängningen avbryts då åt det säkra hållet.
 - Läggningen prövar fasen och räknaren i sin egen transaktion, mot en rad som stängningen
   måste vänta på. En röst som tas emot räknas alltså alltid, och annars får väljaren ett
   fel.
@@ -981,6 +990,11 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   kravet `bankid-reader-tested` stoppar skarpt läge mot produktion tills en riktig underskrift
   finns som testfall (uppgift 17d). Klienten förankrar BankID:s TLS-rot med fingeravtrycket låst
   per miljö, och prövar att `srvInfo/name` är den egna tjänstens.
+- **Stängningens lås hänger på en enda anslutning.** Anslutningen får en lätt fråga varje minut
+  och TCP keepalive från servern, så att nätets tomgångsgränser inte kapar den under en lång
+  stängning (6.1). En kortare tomgångsgräns, en omstart av databasen eller ett avbrott i nätet
+  släpper ändå låset. Stängningen avbryts då åt det säkra hållet och kan köras om. Låsets
+  transaktion har en tidsgräns på sex timmar, och en längre stängning går inte att genomföra.
 - **Ett RP-certifikat som byts under ett val** fäller tidigare kuvert vid valideringen, eftersom
   `srvInfo/name` prövas mot det certifikat som gäller vid stängningen.
 - **Läsaren för BankID:s XML-signatur är inte prövad mot BankID.** Den är byggd efter BankID:s
