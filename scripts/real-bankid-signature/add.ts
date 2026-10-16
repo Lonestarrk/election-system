@@ -58,7 +58,9 @@ export function addRealBankIdSignature(
   /**
    * BARA TESTMILJÖN. I produktion bär underskriften en riktig persons personnummer
    * och namn, och den hör aldrig hemma i repot. Fångsten skriver bara i testmiljön,
-   * men verktyget prövar ändå både filen och BANKID_ENV.
+   * men verktyget prövar ändå både filen och BANKID_ENV. Ett osatt BANKID_ENV godtas,
+   * eftersom verktyget alltid prövar mot testmiljöns förankrade kundrot och vägrar en
+   * fångst vars fil säger något annat än test.
    */
   const bankIdEnv = options.bankIdEnv?.trim() ?? ''
   if (bankIdEnv !== '' && bankIdEnv !== 'test') {

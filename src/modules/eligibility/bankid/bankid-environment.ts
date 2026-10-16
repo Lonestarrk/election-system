@@ -160,8 +160,10 @@ export function serverRootFor(
  * läge mot testmiljön startade med TLS-roten som rot för underskrifterna. Nu ska
  * varje rot i filen vara exakt kundroten för den miljö BANKID_ENV pekar ut, på
  * fingeravtrycket och på subject, se `customerRootProblem` i ./trusted-roots.ts och
- * kravet `bankid-customer-root` i src/lib/runtime-mode.ts. Testmiljöns kundrot kan
- * alltså aldrig hamna i en produktionskonfiguration, och tvärtom.
+ * kravet `bankid-customer-root` i src/lib/runtime-mode.ts. En server i skarpt läge
+ * vägrar alltså att starta med testmiljöns kundrot i en produktionskonfiguration, och
+ * tvärtom. Prövningen sker vid uppstarten. `trustedBankIdRoots()` prövar inte miljön
+ * igen medan servern kör.
  *
  * KÄLLA: developers.bankid.com/how-to-guides/verifying-signatures, avsnittet
  * "Instruction and certificates", hämtad 2026-10-16. Sidan länkar till

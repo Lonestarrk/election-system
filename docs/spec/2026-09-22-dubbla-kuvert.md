@@ -1012,7 +1012,9 @@ kontroll mot nuläget skulle förkasta giltiga röster.
     den andra miljöns kundrot, attrappens rot och en okänd rot vägras alla vid start.
   - BankID publicerar kundrötterna på cdn.bankid.com men inga fingeravtryck. Fingeravtrycken är
     därför räknade på de hämtade filerna, och certifikaten ligger i repot så att vem som helst
-    kan räkna om dem.
+    kan räkna om dem. Förankringen bygger på en hämtning över https från BankID:s egen server,
+    och inget oberoende bevis. Testroten bekräftas när en riktig underskrift valideras mot den
+    (uppgift 17d). Produktionsroten bekräftas först i produktion.
   - Omröstningen bär den BankID-miljö den skapades mot, `none`, `test` eller `production`, i båda
     databaserna (härdningen, punkt 3). `none` är attrappen i demoläget. En server mot en annan
     miljö vägrar lägga i, stänga, räkna, publicera och fastställa omröstningen, som för läget.
