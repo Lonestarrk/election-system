@@ -1007,6 +1007,12 @@ kontroll mot nuläget skulle förkasta giltiga röster.
   kravet `bankid-reader-tested` stoppar skarpt läge mot produktion tills en riktig underskrift
   finns som testfall (uppgift 17d). Klienten förankrar BankID:s TLS-rot med fingeravtrycket låst
   per miljö, och prövar att `srvInfo/name` är den egna tjänstens.
+  - Rötterna för underskrifterna, BankID:s kundrötter, är också låsta per miljö
+    (kravet `bankid-customer-root`). De prövas med SHA-256, subject och utfärdare. TLS-roten,
+    den andra miljöns kundrot, attrappens rot och en okänd rot vägras alla vid start.
+  - BankID publicerar kundrötterna på cdn.bankid.com men inga fingeravtryck. Fingeravtrycken är
+    därför räknade på de hämtade filerna, och certifikaten ligger i repot så att vem som helst
+    kan räkna om dem.
   - Omröstningen bär den BankID-miljö den skapades mot, `none`, `test` eller `production`, i båda
     databaserna (härdningen, punkt 3). `none` är attrappen i demoläget. En server mot en annan
     miljö vägrar lägga i, stänga, räkna, publicera och fastställa omröstningen, som för läget.
