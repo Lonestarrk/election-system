@@ -10,7 +10,11 @@ import {
 import { signatureCaptureDirectory } from '@/modules/eligibility/bankid/signature-capture'
 import { serverRootProblem } from '@/modules/eligibility/bankid/bankid-environment'
 import { rpCredentialProblem, rpCredentialsFromEnv } from '@/modules/eligibility/bankid/rp-certificate'
-import { isMockBankIdRoot, trustedBankIdRoots } from '@/modules/eligibility/bankid/trusted-roots'
+import {
+  customerRootProblem,
+  isMockBankIdRoot,
+  trustedBankIdRoots,
+} from '@/modules/eligibility/bankid/trusted-roots'
 
 /**
  * DEMOLÄGE OCH SKARPT LÄGE (uppgift 17).
@@ -108,6 +112,7 @@ export function sharpModeRequirements(): Requirement[] {
   const kind = bankIdKind('SHARP')
   const bankIdEnvironment = configuredBankIdEnvironment()
   const certificateProblem = rpCertificateProblem(bankIdEnvironment)
+  const customerProblem = customerRootProblem(bankIdEnvironment)
 
   return [
     {
@@ -163,6 +168,18 @@ export function sharpModeRequirements(): Requirement[] {
         'Läsaren av BankID:s underskrift är inte prövad mot en riktig underskrift från BankID, bara mot ' +
         'attrappen och mot dokument som en oberoende implementation godkände. Ett antagande som inte ' +
         'håller får varje röst att avvisas. I testmiljön är det en varning, och i produktion ett stopp.',
+    },
+    {
+      id: 'bankid-customer-root',
+      met: customerProblem === null,
+      blocking: true,
+      // Uppgift 17d, punkt 4 (B5 i helgrensgranskningen).
+      detail:
+        'Varje rot i BANKID_ROOT_CERTIFICATES måste vara BankID:s rot för kundcertifikat för den miljö ' +
+        'BANKID_ENV pekar ut, och dess SHA-256-fingeravtryck och subject är låsta i koden per miljö. ' +
+        'Produktion vägrar testmiljöns kundrot, testmiljön produktionens, och båda vägrar BankID:s TLS-rot ' +
+        'och attrappens rot.' +
+        (customerProblem ? ` Just nu: ${customerProblem}` : ''),
     },
     {
       id: 'bankid-root-not-mock',

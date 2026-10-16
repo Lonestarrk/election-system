@@ -360,8 +360,11 @@ uppgift 17d, och den kräver en människa med test-BankID.
    - Appen måste installeras om för att fungera mot produktionen igen.
    - Lägg in test-BankID:ts personnummer i röstlängden för omröstningen.
 3. Rötterna för väljarnas certifikat. Kedjan i en underskrift går till BankID:s rot för
-   kundcertifikat i testmiljön. BankID lämnar ut den på begäran. Den läggs i en PEM-fil som
-   `BANKID_ROOT_CERTIFICATES` pekar ut.
+   kundcertifikat i testmiljön. BankID publicerar den på developers.bankid.com/how-to-guides/verifying-signatures,
+   som <https://cdn.bankid.com/pki/bankid/Test-BankID-Root-CA-v1-Test.pem>. Den läggs i en PEM-fil som
+   `BANKID_ROOT_CERTIFICATES` pekar ut. Fingeravtrycket och subject är låsta i koden per miljö
+   (uppgift 17d), och appen vägrar starta med någon annan rot i filen, också TLS-roten
+   "Test BankID SSL Root CA v1 Test" från sidan Environments (kravet `bankid-customer-root`).
 4. Miljövariablerna:
 
    ```bash
@@ -393,6 +396,86 @@ underskrift från testmiljön till en egen fil där, men bara i skarpt läge med
 `BANKID_ENV=test`, aldrig i produktion, och aldrig till loggen. Skarpt läge med
 `BANKID_ENV=production` vägrar starta tills en sådan underskrift har lagts in som testfall
 (kravet `bankid-reader-tested`).
+
+#### Uppgift 17d steg för steg
+
+Det här kräver en människa med en telefon eller dator med BankID-appen. Allt sker mot BankID:s
+testmiljö, och ingenting rör demon i Azure.
+
+1. Test-BankID. Ställ in BankID-appen för test och utfärda ett test-BankID, som steg 2 ovan
+   beskriver. Utfärdandet sker på developers.bankid.com/test-portal/testing, som har ersatt
+   demo.bankid.com. Välj ett av Skatteverkets testpersonnummer och ett påhittat namn. Båda följer
+   med underskriften in i repot och går inte att byta efteråt.
+2. Certifikatet och roten. Hämta RP-certifikatet och kundroten:
+
+   ```bash
+   npx tsx scripts/fetch-bankid-test-cert.ts
+   curl -o certs/bankid-test/kundrot-test.pem https://cdn.bankid.com/pki/bankid/Test-BankID-Root-CA-v1-Test.pem
+   ```
+
+3. Egna databaser. Skarpt läge seedar inte, och demovalet går inte att använda i skarpt läge.
+   Skapa två egna databaser, migrera dem och lägg in test-BankID:ts personnummer som administratör
+   och väljare:
+
+   ```bash
+   docker exec election-postgres createdb -U election voters_sharp
+   docker exec election-postgres createdb -U election votes_sharp
+   export VOTERS_DATABASE_URL="postgresql://election:election@localhost:5432/voters_sharp?schema=public"
+   export VOTES_DATABASE_URL="postgresql://election:election@localhost:5432/votes_sharp?schema=public"
+   export IDENTITY_PEPPER="<minst 32 tecken, inte exempelvärdet>"
+   npm run migrate
+   HASH=$(npx tsx scripts/voter-identity-hash.ts <personnummer>)
+   docker exec election-postgres psql -U election -d voters_sharp -c \
+     "INSERT INTO voter_status (id, external_identity_hash, is_admin) VALUES (gen_random_uuid()::text, '$HASH', true)"
+   ```
+
+4. Starta i skarpt läge mot testmiljön, med fångsten på. Stoppa först dev-servern på port
+   3000, eftersom båda bygger till `.next-dev`. I samma skal som steg 3:
+
+   ```bash
+   export DEMO_MODE= BANKID_ENV=test COOKIE_SECURE=true APP_ORIGIN=https://localhost:3001
+   export BANKID_CERT_PATH=certs/bankid-test/FPTestcert5_20240610.p12 BANKID_CERT_PASSPHRASE=qwerty123
+   export BANKID_ROOT_CERTIFICATES=certs/bankid-test/kundrot-test.pem
+   # En absolut sökväg utanför repot. I Git Bash i Windows ska den skrivas som C:/..., inte /c/...
+   export BANKID_CAPTURE_SIGNATURES_DIR=C:/temp/bankid-fangst
+   mkdir -p "$BANKID_CAPTURE_SIGNATURES_DIR"
+   npx next dev --experimental-https -p 3001
+   ```
+
+   Adminsidan ska visa "Skarpt läge, BankID testmiljö", med varningarna `bankid-test-environment`
+   och `bankid-reader-tested`. Startar appen inte räknar den upp vad som saknas.
+5. En omröstning. Logga in på <https://localhost:3001/admin> med test-BankID:t. Adminsidan har
+   inget formulär för att skapa en omröstning, så skapa en allmän omröstning från webbläsarens
+   konsol på adminsidan:
+
+   ```js
+   const csrf = document.cookie.match(/valcsrf=([^;]+)/)[1]
+   await fetch('/api/admin/elections', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+     body: JSON.stringify({ name: 'Prov 17d', kind: 'ALLMAN_OMROSTNING', opensAt: new Date(Date.now() - 60000), closesAt: new Date(Date.now() + 86400000),
+       ballots: [{ kind: 'FRAGA', label: 'Fungerar BankID?', options: ['Ja', 'Nej'] }],
+       trusteePassphrases: ['<egen fras ett>', '<egen fras två>', '<egen fras tre>'] }) }).then((r) => r.json())
+   ```
+
+6. Rösta en gång på <https://localhost:3001> med test-BankID:t. Varje underskrift skrivs som
+   `bankid-signature-<hex>.json` i fångstkatalogen, också när läsaren avvisar den.
+7. Lägg in underskriften och kör sviten.
+
+   ```bash
+   npx tsx scripts/add-real-bankid-signature.ts "$BANKID_CAPTURE_SIGNATURES_DIR"/bankid-signature-<hex>.json \
+     --app "<BankID-appen och versionen, till exempel BankID för Android 10.4.1 (CUST)>"
+   ```
+
+   Skriptet prövar underskriften mot läsaren med BankID:s förankrade kundrot. Avvisar läsaren den
+   säger skriptet vilket antagande från uppgift 17b som inte höll, och skriver ingen fixtur. Godtas
+   den visar skriptet personnummer och namn och kräver `--confirm-test-identity` innan det lägger
+   fixturen i `tests/unit/bankid/fixtures/real/`. Sedan skriver det ut vad som återstår, bland annat
+   att köra `npx vitest run tests/unit/bankid/real-signature.test.ts` och hela sviten.
+
+**Fälla på den här datorn:** Windows namnuppslagning av `appapi2.test.bankid.com` hänger sig i
+3–8 sekunder i ungefär var femte ny uppslagning, och klienten ger då `timeout`. Felet sitter i
+datorns DNS-klient och inte i appen. En rad `185.198.6.24 appapi2.test.bankid.com` i
+`C:\Windows\System32\drivers\etc\hosts` (kräver administratör) gör att namnet aldrig slås upp.
+Ta bort raden efteråt, eftersom BankID kan byta adress.
 
 ### Azure och drift
 

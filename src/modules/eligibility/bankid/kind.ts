@@ -36,6 +36,14 @@ export const REAL_BANKID_CLIENT_BUILT = true
  * kravet `bankid-reader-tested` stoppar BANKID_ENV=production och varnar i
  * testmiljön. Konstanten byts mot true i samma commit som underskriften läggs in
  * som testfall.
+ *
+ * KONSTANTEN FÖLJER FIXTURERNA (uppgift 17d). tests/unit/bankid/real-signature.test.ts
+ * kräver att den är sann exakt när minst en fixtur i tests/unit/bankid/fixtures/real
+ * kommer från testmiljön och godtas av läsaren mot BankID:s förankrade kundrot. Den
+ * går alltså inte att sätta utan en sådan fixtur, och den kan inte stå kvar som falsk
+ * när en finns. Den läses inte ur filerna när appen kör: då hade den som kan lägga en
+ * fil i en driftsatt app kunnat slå på kravet utan granskning. En fixtur läggs in med
+ * scripts/add-real-bankid-signature.ts.
  */
 export const READER_TESTED_AGAINST_REAL_SIGNATURE = false
 

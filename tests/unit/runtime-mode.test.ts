@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { authority, encryptedKeyPem, rpCredential } from './bankid/fake-rp-server'
-import { customHierarchy } from './bankid/forged-certificates'
+import { CUSTOMER_ROOTS } from '@/modules/eligibility/bankid/bankid-environment'
 
 /**
  * Demoläge och skarpt läge (uppgift 17).
@@ -28,9 +28,8 @@ const SHARP_ENV = {
 }
 
 /**
- * Ett RP-certifikat med krypterad nyckel och en rotfil med en egen rot, som
- * skarpt läge kräver. Rötterna är inte BankID:s, men kraven prövar bara att de
- * går att läsa och inte är attrappens.
+ * Ett RP-certifikat med krypterad nyckel och en rotfil med BankID:s kundrot för
+ * testmiljön, som skarpt läge med BANKID_ENV=test kräver (uppgift 17d).
  */
 function sharpFiles(): Record<string, string> {
   const directory = mkdtempSync(join(tmpdir(), 'skarpt-'))
@@ -39,7 +38,7 @@ function sharpFiles(): Record<string, string> {
   const certPath = join(directory, 'rp.pem')
   writeFileSync(certPath, `${rp.certPem}${encryptedKeyPem(rp, 'qwerty123')}`)
   const rootsPath = join(directory, 'rotter.pem')
-  writeFileSync(rootsPath, customHierarchy('kundrot för skarpt läge', {}, [{}]).root.toString())
+  writeFileSync(rootsPath, CUSTOMER_ROOTS.test.pem)
   return { BANKID_CERT_PATH: certPath, BANKID_CERT_PASSPHRASE: 'qwerty123', BANKID_ROOT_CERTIFICATES: rootsPath }
 }
 
@@ -131,6 +130,7 @@ describe('skarpt läge är en checklista, inte en boolean', () => {
 
     expect(unmet.map((requirement) => requirement.id).sort()).toEqual([
       'bankid-client-certificate',
+      'bankid-customer-root',
       'bankid-env',
       'bankid-reader-tested',
       'bankid-real',

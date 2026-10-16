@@ -17,9 +17,9 @@ import { X509Certificate } from 'node:crypto'
  * testroten och testmiljön produktionsroten.
  *
  * DET HÄR ÄR INTE ROTEN FÖR VÄLJARNAS CERTIFIKAT. Kedjan i en underskrift går till
- * BankID:s rot för kundcertifikat, som BankID lämnar ut på begäran och som läggs i
- * BANKID_ROOT_CERTIFICATES, se ./trusted-roots.ts. Den rotens fingeravtryck går
- * inte att låsa här, eftersom BankID inte publicerar den.
+ * BankID:s rot för kundcertifikat, som läggs i BANKID_ROOT_CERTIFICATES, se
+ * ./trusted-roots.ts. Den rotens fingeravtryck är låst längre ned, i
+ * `CUSTOMER_ROOTS` (uppgift 17d).
  */
 
 export type BankIdEnvironment = 'test' | 'production'
@@ -149,4 +149,147 @@ export function serverRootFor(
   const problem = serverRootProblem(environment, pem)
   if (problem) throw new Error(problem)
   return new X509Certificate(pem)
+}
+
+/**
+ * BANKID:S RÖTTER FÖR KUNDCERTIFIKAT, LÅSTA PER MILJÖ (uppgift 17d, punkt 4, B5).
+ *
+ * Kedjan i väljarens underskrift går till BankID:s rot för kundcertifikat, inte
+ * till TLS-roten ovan. Helgrensgranskningen visade att uppstartsvakten bara
+ * prövade att rötterna i BANKID_ROOT_CERTIFICATES inte var attrappens, och skarpt
+ * läge mot testmiljön startade med TLS-roten som rot för underskrifterna. Nu ska
+ * varje rot i filen vara exakt kundroten för den miljö BANKID_ENV pekar ut, på
+ * fingeravtrycket och på subject, se `customerRootProblem` i ./trusted-roots.ts och
+ * kravet `bankid-customer-root` i src/lib/runtime-mode.ts. Testmiljöns kundrot kan
+ * alltså aldrig hamna i en produktionskonfiguration, och tvärtom.
+ *
+ * KÄLLA: developers.bankid.com/how-to-guides/verifying-signatures, avsnittet
+ * "Instruction and certificates", hämtad 2026-10-16. Sidan länkar till
+ * https://cdn.bankid.com/pki/bankid/BankID-Root-CA-v1.pem ("Production certificate")
+ * och https://cdn.bankid.com/pki/bankid/Test-BankID-Root-CA-v1-Test.pem ("Test
+ * certificate"). Förut (2026-10-03) sa sidan att rötterna lämnades ut på begäran.
+ *
+ * BankID publicerar certifikaten men inga fingeravtryck. Fingeravtrycken nedan är
+ * räknade på filerna som hämtades från adresserna ovan 2026-10-16, och PEM:erna är
+ * incheckade här, så att vem som helst kan räkna om dem och jämföra med BankID:s
+ * filer. De förankrar alltså just de filerna: byter BankID rot måste den nya
+ * granskas och värdena bytas för hand.
+ */
+
+/** CN = Test BankID Root CA v1 Test, OU = BankID Member Banks CA, O = Finansiell ID-Teknik BID AB. */
+const TEST_CUSTOMER_ROOT = `-----BEGIN CERTIFICATE-----
+MIIF0jCCA7qgAwIBAgIISpGbuE9LL/0wDQYJKoZIhvcNAQENBQAwbTEkMCIGA1UE
+CgwbRmluYW5zaWVsbCBJRC1UZWtuaWsgQklEIEFCMR8wHQYDVQQLDBZCYW5rSUQg
+TWVtYmVyIEJhbmtzIENBMSQwIgYDVQQDDBtUZXN0IEJhbmtJRCBSb290IENBIHYx
+IFRlc3QwHhcNMTEwOTIyMTQwMTMzWhcNMzQxMjMxMTQwMTMzWjBtMSQwIgYDVQQK
+DBtGaW5hbnNpZWxsIElELVRla25payBCSUQgQUIxHzAdBgNVBAsMFkJhbmtJRCBN
+ZW1iZXIgQmFua3MgQ0ExJDAiBgNVBAMMG1Rlc3QgQmFua0lEIFJvb3QgQ0EgdjEg
+VGVzdDCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBANPXoOB9BQOW8i2C
+Kk7U/d8rFNB0ktVlcgBSh8CKvnTsW3i+NrAM5LY9jgAO9vkHT3bl3nK626zePhmh
+dhVXMKAanbcF/NJ/oSF+DKCGx/VgPmCCqVyTMLjID/59diiLg3xNH3NaaBM69qnw
+5yOCYkB2wXxcATLO0eTxvL0vdKGJ2HU2AcEtaMMxrScuNCztPuwjYNP0KrYI+y/J
+Gkf2dBhomAhDLdQSSW3zXqYgbQvJ8La2ECgo3rGQQRZG9/5MZ5dOWtpAx0ybeCbh
+CPO8XIBCHrPZxv60gZK1CTwlZUoMTBSivv+vmFrH8JdmUnOP9e/wNhuM9/fQ0h5t
+4BGXoz8M5nxdH6uNJG5SpdxaXYflezBb7YdjgNiF9Yqo3DYTRrZT7dyRLYqlmKQh
+T1pqEov1tkXktQF8r1QJkTJO3x1QEzMNCnHyN8iDOqENSE4nhkzU9ESbXNOhFpnc
+XJqoFwvbeAJpV7fVwn+Jumyc/zsD9t+1Vo1lM95q1geVPfnA5z7NZ+uaayJx4DhL
+MvufDI17fqgiWHe+BMA/vGd8OjFK3JUmCV+7QeG/Z3JWbzU0GeDljqO+H4CQ0+LO
+4E4JGEZtxfUu4/XuOkCqiZ4/shoPOOxaXcZlBEMHsDzei0tNSKIxB+PoDTje/BQC
+lunVZvjcG2ehpeF540EXgzzECaNLAgMBAAGjdjB0MB0GA1UdDgQWBBRK96NqCNoI
+OBcZUyjI2qbWNNhaujAPBgNVHRMBAf8EBTADAQH/MB8GA1UdIwQYMBaAFEr3o2oI
+2gg4FxlTKMjaptY02Fq6MBEGA1UdIAQKMAgwBgYEKgMEBTAOBgNVHQ8BAf8EBAMC
+AQYwDQYJKoZIhvcNAQENBQADggIBAJVcP9Sm2tukKW0Qx8EZG9gdXfCmNMrHXF3g
+via5zpuSMl9wdXHd1FPdGFshRZJ2sW4mb9vRI81vBIXMFVtLZFzeGHoKyz1g8hfj
+uuLKpItw0OwVNdvSRq/TKKxjVKpvt50Eydgnz4Q59YkFlGVyi7+z74mGfvN06Ssj
+2WIRtr3UD+IC6Tie6Lm/zuZs4gu0ZP/fddKh7gC3syHLNXQmN+9Y0wkdO7H98K/9
+uuIrxWtSOFVatxesw7XJRnq+uYI0IdP8xP8U4S680rTse7nsTguQxzRs2vOyoaXm
+Fdf7XQ03btd15Z4yJlEfs9/4ohgafMs49PMkACqyX45/4WBygO0QwMGVIUnKNFBt
+/I+0T2SkWFa2JdcRCSTObb7tesoeTIPgI9UcrMvNOG3gxGpB/H5/s7jTV0AOoDgM
+hOxieGgyTsZ3oP0k6bc47FJ4nE+vifAluyeXioB5JaN2kvm8eqfzC05zSF40V9GA
+zElVDbsBPR/2CE6CMyR+eqip4gDSZ6mnZYPeBecEXU4Xu+RAgqYxjKosfxOpMZsN
++2BSm5QSRLhHacPQTnoQxujnGuUzh5TdAbWqmS0cKEZJ+CACmVLyOphdRoeEQCqQ
+8DYAyOtq2S4+hAJW+2Xq4NCdvmjm99r2RFkibSlLtqctj1JyzUC6huUiQXx9KZ8n
+FA0TsFHG
+-----END CERTIFICATE-----
+`
+
+/** CN = BankID Root CA v1, OU = BankID Member Banks CA, O = Finansiell ID-Teknik BID AB. */
+const PRODUCTION_CUSTOMER_ROOT = `-----BEGIN CERTIFICATE-----
+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
+-----END CERTIFICATE-----
+`
+
+export const CUSTOMER_ROOTS: Record<BankIdEnvironment, { subject: string; sha256: string; pem: string }> = {
+  test: {
+    subject: 'O=Finansiell ID-Teknik BID AB\nOU=BankID Member Banks CA\nCN=Test BankID Root CA v1 Test',
+    sha256: 'C6:FA:EA:F8:CC:AD:CF:D0:73:8D:C9:91:40:CA:78:8C:1A:19:A9:3F:84:3C:5A:9E:C1:36:98:72:D5:0E:45:F2',
+    pem: TEST_CUSTOMER_ROOT,
+  },
+  production: {
+    subject: 'O=Finansiell ID-Teknik BID AB\nOU=BankID Member Banks CA\nCN=BankID Root CA v1',
+    sha256: 'CA:32:58:8E:38:5B:96:1D:58:E2:60:10:C6:F8:C8:39:F7:CA:07:1E:49:7D:E6:B7:84:16:40:A6:15:06:FD:31',
+    pem: PRODUCTION_CUSTOMER_ROOT,
+  },
+}
+
+/**
+ * Är certifikatet exakt kundroten för miljön? Fingeravtrycket avgör, och subject och
+ * utfärdare prövas också, så att ett fel i ett av de låsta värdena inte ensamt
+ * släpper igenom en annan rot.
+ */
+export function isCustomerRoot(environment: BankIdEnvironment, certificate: X509Certificate): boolean {
+  const pinned = CUSTOMER_ROOTS[environment]
+  return (
+    certificate.fingerprint256 === pinned.sha256 &&
+    certificate.subject === pinned.subject &&
+    certificate.issuer === pinned.subject
+  )
+}
+
+/**
+ * Kundroten för miljön, ur den incheckade PEM:en. Kastar om den inte är den låsta.
+ * `pem` är bara till för testerna, som prövar att en miljö vägrar den andras rot.
+ */
+export function customerRootFor(
+  environment: BankIdEnvironment,
+  pem: string = CUSTOMER_ROOTS[environment].pem,
+): X509Certificate {
+  const root = new X509Certificate(pem)
+  if (!isCustomerRoot(environment, root)) {
+    throw new Error(
+      `Kundroten för BANKID_ENV=${environment} har fingeravtrycket ${root.fingerprint256}, och det låsta är ` +
+        `${CUSTOMER_ROOTS[environment].sha256}.`,
+    )
+  }
+  return root
 }

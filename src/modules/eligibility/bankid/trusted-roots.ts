@@ -2,6 +2,12 @@ import { X509Certificate } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { isDemoMode } from '@/lib/demo-mode'
 import { env } from '@/lib/env'
+import {
+  type BankIdEnvironment,
+  CUSTOMER_ROOTS,
+  isCustomerRoot,
+  SERVER_ROOT_SHA256,
+} from './bankid-environment'
 import { certificateFromPem, hasReadableConstraints } from './certificate-chain'
 import { MOCK_BANKID_ROOT_CERTIFICATE } from './mock-ca/root-certificate'
 
@@ -11,15 +17,17 @@ import { MOCK_BANKID_ROOT_CERTIFICATE } from './mock-ca/root-certificate'
  * VILKEN ROT FÖR VILKEN MILJÖ (uppgift 17b). Kedjan i BankID:s underskrift går
  * till BankID:s rot för kundcertifikat. För BANKID_ENV=test är det BankID:s
  * testrot och för BANKID_ENV=production produktionsroten, och i demoläget
- * attrappens rot. BankID publicerar inte de två rötterna: de lämnas ut på
- * begäran, enligt developers.bankid.com/how-to-guides/verifying-signatures
- * (hämtad 2026-10-03). Därför kan ingen av dem checkas in här, och den som
- * driftsätter lägger den rot som hör till BANKID_ENV i filen som
- * BANKID_ROOT_CERTIFICATES pekar ut. Rotcertifikatet som developers.bankid.com
- * publicerar under "Environments", "BankID SSL Root CA v1", är roten för
- * BankID:s servercertifikat i TLS och inte för väljarnas certifikat. Ligger det
- * i filen av misstag går ingen kedja till det, och varje underskrift avvisas.
- * Uppgift 17c prövar rötterna mot testmiljön.
+ * attrappens rot. Den som driftsätter lägger den rot som hör till BANKID_ENV i
+ * filen som BANKID_ROOT_CERTIFICATES pekar ut. BankID publicerar båda rötterna på
+ * developers.bankid.com/how-to-guides/verifying-signatures (hämtad 2026-10-16;
+ * 2026-10-03 sa sidan att de lämnades ut på begäran), och sedan uppgift 17d är
+ * deras fingeravtryck och subject låsta per miljö i ./bankid-environment.ts.
+ * Uppstartsvakten vägrar skarpt läge när filen har någon annan rot än kundroten
+ * för BANKID_ENV, se `customerRootProblem` nedan. Rotcertifikatet som
+ * developers.bankid.com publicerar under "Environments", "BankID SSL Root CA v1",
+ * är roten för BankID:s servercertifikat i TLS och inte för väljarnas
+ * certifikat. Före 17d startade skarpt läge mot testmiljön med den i filen, och
+ * då hade varje underskrift avvisats.
  *
  * Rötterna är konfiguration och aldrig data. De lagras inte med kuvertet och
  * kan inte komma ur BankID:s svar: en rot som följde med kedjan vore en rot
@@ -156,5 +164,50 @@ export function trustedBankIdRoots(): X509Certificate[] {
   throw new Error(
     'BANKID_ROOT_CERTIFICATES saknas. Utanför demoläget finns ingen rot att pröva BankID-kedjan ' +
       'mot, och en underskrift som inte kan prövas godtas inte.',
+  )
+}
+
+/** Vad certifikatet är, för beskedet när det inte är kundroten för miljön. */
+function describeRoot(certificate: X509Certificate): string {
+  for (const environment of ['test', 'production'] as const) {
+    const where = environment === 'test' ? 'testmiljön' : 'produktion'
+    if (isCustomerRoot(environment, certificate)) return `BankID:s kundrot för ${where}`
+    if (certificate.fingerprint256 === SERVER_ROOT_SHA256[environment]) {
+      return `BankID:s TLS-rot för ${where}, roten för BankID:s servercertifikat och inte för väljarnas certifikat`
+    }
+  }
+  if (isMockBankIdRoot(certificate)) return 'attrappens rot'
+  const subject = certificate.subject.replace(/\n/g, ', ')
+  return `en okänd rot (${subject}, SHA-256 ${certificate.fingerprint256})`
+}
+
+/**
+ * ROTEN FÖR UNDERSKRIFTERNA ÄR KUNDROTEN FÖR BANKID_ENV (uppgift 17d, punkt 4, B5).
+ *
+ * Varje rot i BANKID_ROOT_CERTIFICATES ska vara exakt BankID:s kundrot för miljön,
+ * låst på fingeravtrycket och subject i ./bankid-environment.ts. En enda annan rot i
+ * filen räcker för att vägra, eftersom kedjeprövningen godtar en kedja till vilken
+ * rot i filen som helst. Svarar med vad som är fel, eller null.
+ *
+ * Prövningen gäller uppstarten i skarpt läge. Rötterna läses fortfarande ur filen
+ * när kedjan prövas, och testerna ger där sina egna rötter.
+ */
+export function customerRootProblem(environment: BankIdEnvironment | null): string | null {
+  if (environment === null) return 'BANKID_ENV saknas, så det finns ingen kundrot att pröva rötterna mot.'
+  if (env.bankIdRootCertificatesPath === null) return 'BANKID_ROOT_CERTIFICATES saknas.'
+
+  let roots: X509Certificate[]
+  try {
+    roots = trustedBankIdRoots()
+  } catch (error) {
+    return (error as Error).message
+  }
+
+  const where = environment === 'test' ? 'testmiljön' : 'produktion'
+  const wrong = roots.filter((root) => !isCustomerRoot(environment, root))
+  if (wrong.length === 0) return null
+  return (
+    `Filen har ${wrong.map(describeRoot).join(' och ')}. För BANKID_ENV=${environment} godtas bara BankID:s ` +
+    `kundrot för ${where}, SHA-256 ${CUSTOMER_ROOTS[environment].sha256}.`
   )
 }

@@ -1,53 +1,65 @@
-import { X509Certificate } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { signedOnDay } from '@/modules/eligibility/bankid/certificate-chain'
-import { parseServiceName } from '@/modules/eligibility/bankid/service-name'
-import { verifyBankIdSignature } from '@/modules/eligibility/bankid/xmldsig'
+import { READER_TESTED_AGAINST_REAL_SIGNATURE } from '@/modules/eligibility/bankid/kind'
+import {
+  acceptedRealFixtures,
+  parseRealFixture,
+  verifyRealSignature,
+} from '@/modules/eligibility/bankid/real-signature'
 
 /**
- * RIKTIGA UNDERSKRIFTER FRÅN BANKID:S TESTMILJÖ (uppgift 17c, beslut 4).
+ * RIKTIGA UNDERSKRIFTER FRÅN BANKID:S TESTMILJÖ (uppgift 17c, beslut 4, och 17d).
  *
  * Mappen fixtures/real är tom tills en människa med test-BankID har skrivit under
- * en röst mot testmiljön med BANKID_CAPTURE_SIGNATURES_DIR satt. Då läggs:
+ * en röst mot testmiljön med BANKID_CAPTURE_SIGNATURES_DIR satt och lagt in filen
+ * med scripts/add-real-bankid-signature.ts. Se README, "Uppgift 17d steg för steg".
  *
- *   fixtures/real/<namn>.json   filen som fångsten skrev, oförändrad
- *   fixtures/real/roots.pem     BankID:s rot för kundcertifikat i testmiljön
+ * Varje fixtur prövas med läsaren, som läggningen gör, mot BankID:s kundrot för
+ * testmiljön så som den är förankrad i koden (bankid-environment.ts), och aldrig
+ * mot en rotfil bredvid fixturen: en sådan fil hade kunnat vara vilken rot som
+ * helst, också attrappens.
  *
- * och testet nedan prövar varje underskrift med läsaren, som läggningen gör, mot
- * roten, på dagen den fångades och med RP-certifikatets namn som srvInfo/name.
- * Utan filer hoppas testet över, och kravet `bankid-reader-tested` står kvar.
+ * KRAVET bankid-reader-tested FÖLJER FIXTURERNA. Konstanten
+ * READER_TESTED_AGAINST_REAL_SIGNATURE i kind.ts ska vara sann exakt när minst en
+ * fixtur från testmiljön godtas här. Testet nedan går rött åt båda hållen: en
+ * konstant som sätts utan fixtur, och en fixtur som godtas medan konstanten står
+ * kvar. Konstanten läses inte ur filerna när appen kör, eftersom den som kan lägga
+ * en fil i en driftsatt app då hade kunnat slå på kravet utan granskning.
  */
 
 const DIRECTORY = join(process.cwd(), 'tests', 'unit', 'bankid', 'fixtures', 'real')
-const captures = existsSync(DIRECTORY) ? readdirSync(DIRECTORY).filter((name) => name.endsWith('.json')) : []
+const fixtures = existsSync(DIRECTORY) ? readdirSync(DIRECTORY).filter((name) => name.endsWith('.json')) : []
 
-/** srvInfo/name för BankID:s publika testcertifikat FP Testcert 5, som fångsten kör med. */
-const TEST_SERVICE = 'CN=FP Testcert 5,name=Test av BankID,serialNumber=5566304928,O=Testbank A AB (publ),C=SE'
+describe('riktiga underskrifter från BankID:s testmiljö', () => {
+  ;(fixtures.length === 0 ? it.skip : it)(
+    'hoppas över: tests/unit/bankid/fixtures/real är tom. En riktig underskrift läggs in med ' +
+      'scripts/add-real-bankid-signature.ts, se README, "Uppgift 17d steg för steg"',
+    () => {},
+  )
 
-/** Läses i testet och inte i describe, som vitest kör också när sviten hoppas över. */
-function roots(): X509Certificate[] {
-  return (readFileSync(join(DIRECTORY, 'roots.pem'), 'utf8').match(
-    /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g,
-  ) ?? []).map((pem) => new X509Certificate(pem))
-}
+  for (const name of fixtures) {
+    it(`${name} har metadata och godtas av läsaren mot testmiljöns förankrade kundrot`, () => {
+      const parsed = parseRealFixture(JSON.parse(readFileSync(join(DIRECTORY, name), 'utf8')))
+      if (!parsed.ok) throw new Error(`${name}: ${parsed.problem}`)
+      expect(parsed.fixture.environment).toBe('test')
 
-describe.skipIf(captures.length === 0)('en riktig underskrift från BankID:s testmiljö', () => {
-  it.each(captures)('%s godtas av läsaren', (name) => {
-    const capture = JSON.parse(readFileSync(join(DIRECTORY, name), 'utf8')) as {
-      environment: string
-      capturedOn: string
-      signature: string
-    }
-    expect(capture.environment).toBe('test')
-
-    const verdict = verifyBankIdSignature(Buffer.from(capture.signature, 'base64'), {
-      roots: roots(),
-      signedDuring: signedOnDay(new Date(`${capture.capturedOn}T00:00:00Z`)),
-      service: parseServiceName(TEST_SERVICE)!,
+      const result = verifyRealSignature(parsed.fixture)
+      if (!result.ok) {
+        throw new Error(
+          `${name} avvisades: ${result.reason}\n` + result.findings.map((finding) => `  ${finding.text}`).join('\n'),
+        )
+      }
     })
+  }
 
-    expect(verdict).toMatchObject({ ok: true })
+  it('READER_TESTED_AGAINST_REAL_SIGNATURE är sann exakt när en riktig fixtur från testmiljön godtas', () => {
+    const accepted = acceptedRealFixtures(DIRECTORY)
+    expect(
+      READER_TESTED_AGAINST_REAL_SIGNATURE,
+      accepted.length > 0
+        ? `${accepted.join(', ')} godtas. Byt READER_TESTED_AGAINST_REAL_SIGNATURE mot true i kind.ts.`
+        : 'Ingen riktig fixtur godtas, och då får kravet bankid-reader-tested inte vara uppfyllt.',
+    ).toBe(accepted.length > 0)
   })
 })
