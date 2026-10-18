@@ -360,9 +360,12 @@ uppgift 17d, och den kräver en människa med test-BankID.
      under Inställningar → Support.
    - **Dator:** skapa filen `CavaServerSelector.txt` med ordet `kundtest` i BankID:s
      Config-katalog (`%appdata%\BankID\Config` i Windows).
-   - Utfärda sedan ett test-BankID på developers.bankid.com/test-portal/testing, som har
-     ersatt demo.bankid.com. Man väljer personnummer och namn. Ta personnummer från
-     Skatteverkets testpersonnummer, eftersom andra kan använda samma nummer samtidigt.
+   - Utfärda sedan ett test-BankID i BankID:s testportal,
+     <https://developers.bankid.com/test-portal/testing>, som har ersatt demo.bankid.com.
+     Man loggar in i portalen med sitt vanliga BankID. Den som inte har ett beställer först en
+     personlig kod på <https://developers.bankid.com/test-portal/testing/request-personal-code>.
+     Man väljer personnummer och namn för test-BankID:t. Ta personnummer från Skatteverkets
+     testpersonnummer, eftersom andra kan använda samma nummer samtidigt.
    - Appen måste installeras om för att fungera mot produktionen igen.
    - Lägg in test-BankID:ts personnummer i röstlängden för omröstningen.
 3. Rötterna för väljarnas certifikat. Kedjan i en underskrift går till BankID:s rot för
@@ -409,9 +412,10 @@ Det här kräver en människa med en telefon eller dator med BankID-appen. Allt 
 testmiljö, och ingenting rör demon i Azure.
 
 1. Test-BankID. Ställ in BankID-appen för test och utfärda ett test-BankID, som steg 2 ovan
-   beskriver. Utfärdandet sker på developers.bankid.com/test-portal/testing, som har ersatt
-   demo.bankid.com. Välj ett av Skatteverkets testpersonnummer och ett påhittat namn. Båda följer
-   med underskriften in i repot och går inte att byta efteråt.
+   beskriver. Utfärdandet sker i testportalen,
+   <https://developers.bankid.com/test-portal/testing>, dit du loggar in med ditt vanliga BankID
+   eller en beställd personlig kod. Välj ett av Skatteverkets testpersonnummer och ett påhittat
+   namn. Båda följer med underskriften in i repot och går inte att byta efteråt.
 2. Certifikatet och roten. Hämta RP-certifikatet och kundroten:
 
    ```bash

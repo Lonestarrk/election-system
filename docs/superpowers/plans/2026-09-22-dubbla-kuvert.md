@@ -5397,7 +5397,7 @@ kanoniseringen ur W3C:s specifikation, och ange källorna i koden.
 ## Task 17c: En riktig BankID-klient mot BankID:s testmiljö
 
 **Varför:** användarens beslut 2026-09-24 (ruling 122). Med klienten loggar man in och
-röstar med den riktiga BankID-appen och ett test-BankID från demo.bankid.com. Samma klient
+röstar med den riktiga BankID-appen och ett test-BankID från BankID:s testportal (developers.bankid.com/test-portal/testing). Samma klient
 kan senare pekas mot produktion, med ett eget certifikat och ett avtal med en bank.
 
 **Beroenden:**
@@ -5422,7 +5422,7 @@ kan senare pekas mot produktion, med ett eget certifikat och ett avtal med en ba
    klienten och demoläget attrappen (17).
 3. **Testcertifikatet committas inte.** `scripts/fetch-bankid-test-cert` hämtar det från
    BankID:s webbplats och kontrollerar det mot en förankrad SHA-256. README beskriver hur
-   man skaffar ett test-BankID på demo.bankid.com och ställer in BankID-appen för
+   man skaffar ett test-BankID i BankID:s testportal (developers.bankid.com/test-portal/testing) och ställer in BankID-appen för
    testmiljön.
 4. **Ordern:**
    - `endUserIp` kommer från de betrodda proxyleden, som i dag.
@@ -5459,7 +5459,7 @@ läge mot produktion (spec 10).
 **Kräver en människa.** Uppgiften kan inte köras av en agent ensam.
 
 1. **Användaren eller en utsedd person** gör följande:
-   - skaffar ett test-BankID på demo.bankid.com och ställer in appen för testmiljön
+   - skaffar ett test-BankID i BankID:s testportal (developers.bankid.com/test-portal/testing) och ställer in appen för testmiljön
    - begär BankID:s kundrot för testmiljön
    - kör appen i skarpt läge mot testmiljön med `BANKID_CAPTURE_SIGNATURES_DIR` satt, enligt
      README från 17c
