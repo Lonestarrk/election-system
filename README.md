@@ -79,6 +79,7 @@ uppstarten seedar.
 | `/architecture` | Hur modellen fungerar, utan fackord. I demoläget visar den databasernas innehåll och "Följ en röst". |
 | `/architecture/technical` | Faserna, kryptografin, databasgränsen, metadatarisker och hela listan över kända begränsningar |
 | `/architecture/status` | Vad som är byggt och vad som återstår |
+| `/api-docs` | API:ets OpenAPI-spec, härledd ur valideringsschemana. Skrivskyddad. Specen själv finns på `/api/openapi`. |
 
 De gamla svenska sökvägarna `/legitimera`, `/rosta`, `/verifiera` och `/demo` omdirigeras till de
 nya. Det finns inga tokens och inga kvitton i modellen.
@@ -307,11 +308,14 @@ det.
 - **Skarpt läge** kräver en riktig BankID-klient och en komplett konfiguration, och appen vägrar
   starta med en lista på det som saknas: `COOKIE_SECURE=true`, https i `APP_ORIGIN`, en egen
   `IDENTITY_PEPPER`, `BANKID_ENV`, `BANKID_ROOT_CERTIFICATES`, `BANKID_CERT_PATH` och
-  `BANKID_CERT_PASSPHRASE`. Skarpt läge vägrar också attrappens rot, demons kända lösenfraser och
-  seedningen.
+  `BANKID_CERT_PASSPHRASE`. Rotfilen måste innehålla exakt BankID:s kundrot för den miljö
+  `BANKID_ENV` pekar ut (kravet `bankid-customer-root`). Skarpt läge vägrar också attrappens rot,
+  demons kända lösenfraser och seedningen.
 
-Varje omröstning bär det läge den skapades i, och läggning, stängning, räkning, publicering och
-fastställande vägrar en omröstning i ett annat läge än serverns.
+Varje omröstning bär det läge och den BankID-miljö den skapades i: `none` för attrappen, `test` eller
+`production`. Läggning, jämförelse, stängning, räkning, publicering och fastställande vägrar en
+omröstning vars läge eller miljö skiljer sig från serverns. Det publicerade resultatet och
+verktyget visar miljön, så ett val i testmiljön kan inte publiceras som något annat.
 
 ### BankID
 
@@ -323,7 +327,9 @@ Implementationen av `IBankIdService` väljs på ett enda ställe,
 - **Skarpt läge** använder `BankIdRpClient` mot BankID:s RP API v6.0 (uppgift 17c), med
   ömsesidig TLS. `BANKID_ENV=test` går mot BankID:s testmiljö och `BANKID_ENV=production`
   mot produktionen. Serverroten för varje miljö är förankrad i koden med ett låst
-  SHA-256-fingeravtryck, och systemets CA-lager används aldrig.
+  SHA-256-fingeravtryck, och systemets CA-lager används aldrig. Kundroten, som underskrifterna
+  prövas mot, är på samma sätt låst per miljö. BankID publicerar kundrötterna men inga
+  fingeravtryck, så fingeravtrycken är räknade på de hämtade filerna, som ligger i repot.
 
 **Skarpt läge mot BankID:s testmiljö säkrar inte identiteten.** Vem som helst kan skaffa ett test-BankID
 med vilket personnummer och namn som helst. Läget finns för att pröva den riktiga klienten, inte för ett
@@ -484,6 +490,12 @@ sköts med skillen `azure-drift`, och filerna under `infra/azure/` är Azure-ses
 
 - **`DEMO_MODE=true` krävs** för demon. Utan den startar appen i skarpt läge och dör på de
   ouppfyllda kraven, och uppstarten seedar inte.
+- **Migreringarna** körs vid uppstarten.
+  - `20261004100000_drop_old_flow` släpper det gamla flödets tabeller (`vote`,
+    `election_commitment` och `voter_ballot_status`), med deras rader.
+  - `20261007090000_bankid_environment` ger befintliga omröstningar miljön `none` i demoläge och
+    `test` i skarpt läge.
+  - Båda går att köra på en databas med data.
 - **Efter en driftsättning med nya format** ska demovalet återställas med knappen på adminsidan. Ett
   kuvert som lades före driftsättningen har det gamla formatet, blir `OLD_SIGNATURE_FORMAT`, `OLD_BANKID_FORMAT` eller
   `BAD_SIGNATURE`, och stoppar stängningen. Återställningen raderar kuverten.
